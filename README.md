@@ -85,6 +85,7 @@ Server starts on `http://localhost:3000` with hot reload.
 | `npm start` | Run compiled output (production) |
 | `npm run db:generate` | Generate a new Drizzle migration from schema changes |
 | `npm run db:migrate` | Apply pending migrations |
+| `npm run db:reset` | Drop all tables, types, and migration records — run `db:migrate` after to start fresh |
 
 ---
 
@@ -94,8 +95,8 @@ Server starts on `http://localhost:3000` with hot reload.
 
 Both `kinkane-server` and `onix_ingester` point to the same `DATABASE_URL`. They manage separate tables:
 
-- `onix_ingester` owns: `books`, `book_contributors`, `book_subjects`, `book_genres`, `book_prices`, `genres`, `ingestion_jobs`, `ingestion_chunks`
-- `kinkane-server` owns: `users`, `refresh_tokens`
+- `onix_ingester` owns: `books`, `book_contributors`, `book_subjects`, `book_genres`, `book_prices`, `genres`
+- `kinkane-server` owns: `users`, `refresh_tokens`, `user_providers`, `ingestion_jobs`, `ingestion_chunks`
 
 The server defines read-only Drizzle schema representations of the book tables so it can query them without owning their migrations. This is clearly marked in `src/db/schema/books.ts`.
 
@@ -156,6 +157,7 @@ server/
 │   ├── config/index.ts              # Env validation (zod), typed config
 │   ├── db/
 │   │   ├── index.ts                 # Drizzle client
+│   │   ├── reset.ts                 # Drops all tables and types (dev utility)
 │   │   └── schema/
 │   │       ├── users.ts             # users, refresh_tokens, user_providers (owned by this service)
 │   │       ├── books.ts             # Read-only book tables (owned by onix_ingester)
@@ -272,7 +274,7 @@ See [onix_ingester README](../onix_ingester/README.md) for full schema documenta
 npm run db:migrate
 ```
 
-Only runs migrations for tables this service owns (`users`, `refresh_tokens`, `user_providers`). Safe to run on every deploy — Drizzle tracks applied migrations.
+Only runs migrations for tables this service owns (`users`, `refresh_tokens`, `user_providers`, `ingestion_jobs`, `ingestion_chunks`). Safe to run on every deploy — Drizzle tracks applied migrations.
 
 To generate a new migration after editing a schema file:
 
