@@ -6,6 +6,7 @@ import {
   timestamp,
   integer,
   index,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core';
 
 export const users = pgTable(
@@ -14,8 +15,8 @@ export const users = pgTable(
     id: serial('id').primaryKey(),
     fullName: varchar('full_name', { length: 500 }).notNull(),
     email: varchar('email', { length: 500 }).notNull().unique(),
-    // Nullable to support OAuth-only accounts added later
     passwordHash: varchar('password_hash', { length: 500 }),
+    photoUrl: varchar('photo_url', { length: 1000 }),
     emailVerified: boolean('email_verified').default(false).notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -43,6 +44,25 @@ export const refreshTokens = pgTable(
   }),
 );
 
+// Links a user to a Firebase social provider (google.com, facebook.com, apple.com)
+export const userProviders = pgTable(
+  'user_providers',
+  {
+    id: serial('id').primaryKey(),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    provider: varchar('provider', { length: 50 }).notNull(),
+    providerUid: varchar('provider_uid', { length: 256 }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    providerUidUniq: uniqueIndex('idx_user_providers_provider_uid').on(t.provider, t.providerUid),
+    userIdIdx: index('idx_user_providers_user_id').on(t.userId),
+  }),
+);
+
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type RefreshToken = typeof refreshTokens.$inferSelect;
+export type UserProvider = typeof userProviders.$inferSelect;

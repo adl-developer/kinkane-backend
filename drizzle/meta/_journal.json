@@ -8,6 +8,13 @@
       "when": 1779170991517,
       "tag": "0000_real_slyde",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1779207736981,
+      "tag": "0001_petite_quasimodo",
+      "breakpoints": true
     }
   ]
 }

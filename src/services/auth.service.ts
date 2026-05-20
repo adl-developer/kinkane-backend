@@ -3,8 +3,9 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { eq, and, gt } from 'drizzle-orm';
 import { db } from '../db';
-import { users, refreshTokens } from '../db/schema';
+import { users, refreshTokens, userProviders } from '../db/schema';
 import { config } from '../config';
+import { admin } from '../lib/firebase';
 
 const BCRYPT_ROUNDS = 12;
 
@@ -167,5 +168,78 @@ export const authService = {
     } catch {
       throw Object.assign(new Error('Invalid or expired access token'), { statusCode: 401 });
     }
+  },
+
+  async socialLogin(
+    idToken: string,
+  ): Promise<{ user: AuthUser; tokens: TokenPair; isNewUser: boolean }> {
+    let decoded: admin.auth.DecodedIdToken;
+    try {
+      decoded = await admin.auth().verifyIdToken(idToken);
+    } catch {
+      throw Object.assign(new Error('Invalid Firebase ID token'), { statusCode: 401 });
+    }
+
+    const provider = decoded.firebase.sign_in_provider;
+    const providerUid = decoded.uid;
+    const email = decoded.email?.toLowerCase().trim();
+    const fullName = decoded.name ?? '';
+    const photoUrl = decoded.picture ?? null;
+
+    if (!email) {
+      throw Object.assign(new Error('Social account has no email address'), { statusCode: 422 });
+    }
+
+    // 1. Check if this exact provider account already exists
+    const [existingProvider] = await db
+      .select({ userId: userProviders.userId })
+      .from(userProviders)
+      .where(and(eq(userProviders.provider, provider), eq(userProviders.providerUid, providerUid)))
+      .limit(1);
+
+    if (existingProvider) {
+      const [user] = await db
+        .select({ id: users.id, fullName: users.fullName, email: users.email, emailVerified: users.emailVerified })
+        .from(users)
+        .where(eq(users.id, existingProvider.userId))
+        .limit(1);
+
+      const tokens = await issueTokenPair(user.id, user.email);
+      return { user, tokens, isNewUser: false };
+    }
+
+    // 2. Check if a user with the same email already exists (account linking)
+    const [existingUser] = await db
+      .select()
+      .from(users)
+      .where(eq(users.email, email))
+      .limit(1);
+
+    if (existingUser) {
+      await db.insert(userProviders).values({ userId: existingUser.id, provider, providerUid });
+
+      // Backfill photo if missing
+      if (!existingUser.photoUrl && photoUrl) {
+        await db.update(users).set({ photoUrl }).where(eq(users.id, existingUser.id));
+      }
+
+      const tokens = await issueTokenPair(existingUser.id, existingUser.email);
+      return {
+        user: { id: existingUser.id, fullName: existingUser.fullName, email: existingUser.email, emailVerified: true },
+        tokens,
+        isNewUser: false,
+      };
+    }
+
+    // 3. Brand new user
+    const [newUser] = await db
+      .insert(users)
+      .values({ fullName, email, photoUrl, emailVerified: true })
+      .returning({ id: users.id, fullName: users.fullName, email: users.email, emailVerified: users.emailVerified });
+
+    await db.insert(userProviders).values({ userId: newUser.id, provider, providerUid });
+
+    const tokens = await issueTokenPair(newUser.id, newUser.email);
+    return { user: newUser, tokens, isNewUser: true };
   },
 };

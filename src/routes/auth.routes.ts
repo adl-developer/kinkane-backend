@@ -34,6 +34,13 @@ router.post('/refresh', refreshLimiter, authController.refresh);
 router.post('/logout', authController.logout);
 
 /**
+ * POST /auth/social
+ * Body: { idToken } — Firebase ID token from the mobile app
+ * Signs in or registers via Google, Facebook, or Apple.
+ */
+router.post('/social', loginLimiter, authController.socialLogin);
+
+/**
  * GET /auth/me
  * Returns the currently authenticated user.
  */
