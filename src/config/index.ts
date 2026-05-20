@@ -14,6 +14,10 @@ const envSchema = z.object({
 
   ACCESS_TOKEN_TTL: z.coerce.number().default(900),        // 15 min
   REFRESH_TOKEN_TTL: z.coerce.number().default(2592000),   // 30 days
+
+  FIREBASE_PROJECT_ID: z.string().min(1),
+  FIREBASE_CLIENT_EMAIL: z.string().email(),
+  FIREBASE_PRIVATE_KEY: z.string().min(1),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -36,6 +40,12 @@ export const config = {
     refreshSecret: env.JWT_REFRESH_SECRET,
     accessTtl: env.ACCESS_TOKEN_TTL,
     refreshTtl: env.REFRESH_TOKEN_TTL,
+  },
+  firebase: {
+    projectId: env.FIREBASE_PROJECT_ID,
+    clientEmail: env.FIREBASE_CLIENT_EMAIL,
+    // Render/env files escape newlines as \n literals — unescape them
+    privateKey: env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
   },
 } as const;
 

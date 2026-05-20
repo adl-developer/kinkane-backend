@@ -24,6 +24,10 @@ const logoutSchema = z.object({
   refreshToken: z.string().min(1),
 });
 
+const socialSchema = z.object({
+  idToken: z.string().min(1),
+});
+
 export const authController = {
   async signup(req: Request, res: Response): Promise<void> {
     const parsed = signupSchema.safeParse(req.body);
@@ -104,5 +108,25 @@ export const authController = {
   async me(req: Request, res: Response): Promise<void> {
     // req.user is set by requireAuth middleware
     res.status(200).json({ user: (req as Request & { user: unknown }).user });
+  },
+
+  async socialLogin(req: Request, res: Response): Promise<void> {
+    const parsed = socialSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+
+    try {
+      const { user, tokens, isNewUser } = await authService.socialLogin(parsed.data.idToken);
+      res.status(isNewUser ? 201 : 200).json({
+        user,
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken,
+      });
+    } catch (err: unknown) {
+      const e = err as Error & { statusCode?: number };
+      res.status(e.statusCode ?? 500).json({ error: e.message });
+    }
   },
 };

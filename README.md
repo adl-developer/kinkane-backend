@@ -27,6 +27,7 @@ This is one of two independent services that share the same PostgreSQL database:
 - [Search Behaviour](#search-behaviour)
 - [Running Locally](#running-locally)
 - [Deploying to Render](#deploying-to-render)
+- [Firebase Setup](#firebase-setup)
 
 ---
 
@@ -84,6 +85,7 @@ Server starts on `http://localhost:3000` with hot reload.
 | `npm start` | Run compiled output (production) |
 | `npm run db:generate` | Generate a new Drizzle migration from schema changes |
 | `npm run db:migrate` | Apply pending migrations |
+| `npm run db:reset` | Drop all tables, types, and migration records — run `db:migrate` after to start fresh |
 
 ---
 
@@ -93,20 +95,35 @@ Server starts on `http://localhost:3000` with hot reload.
 
 Both `kinkane-server` and `onix_ingester` point to the same `DATABASE_URL`. They manage separate tables:
 
-- `onix_ingester` owns: `books`, `book_contributors`, `book_subjects`, `book_genres`, `book_prices`, `genres`, `ingestion_jobs`, `ingestion_chunks`
-- `kinkane-server` owns: `users`, `refresh_tokens`
+- `onix_ingester` owns: `books`, `book_contributors`, `book_subjects`, `book_genres`, `book_prices`, `genres`
+- `kinkane-server` owns: `users`, `refresh_tokens`, `user_providers`, `ingestion_jobs`, `ingestion_chunks`
 
 The server defines read-only Drizzle schema representations of the book tables so it can query them without owning their migrations. This is clearly marked in `src/db/schema/books.ts`.
 
 ### Auth flow
 
-JWT-based with two token types:
+Supports two sign-in methods that both produce the same token pair:
 
+**Email/password**
 ```
 POST /api/v1/auth/signup or /login
   ← { accessToken, refreshToken, user }
+```
 
-Client stores both tokens.
+**Social (Google, Facebook, Apple) via Firebase**
+```
+Mobile app signs in with provider via Firebase SDK
+  ← Firebase ID token
+
+POST /api/v1/auth/social  { idToken: "<firebase-id-token>" }
+  ← { accessToken, refreshToken, user }
+```
+
+Firebase is only involved at sign-in time. After the first exchange the mobile app uses the same JWT pair as email/password users — `requireAuth` middleware is identical for both.
+
+**Token lifecycle**
+```
+Client stores accessToken + refreshToken.
 
 Every request → Authorization: Bearer <accessToken>   (15 min TTL)
 
@@ -140,11 +157,13 @@ server/
 │   ├── config/index.ts              # Env validation (zod), typed config
 │   ├── db/
 │   │   ├── index.ts                 # Drizzle client
+│   │   ├── reset.ts                 # Drops all tables and types (dev utility)
 │   │   └── schema/
-│   │       ├── users.ts             # users + refresh_tokens (owned by this service)
+│   │       ├── users.ts             # users, refresh_tokens, user_providers (owned by this service)
 │   │       ├── books.ts             # Read-only book tables (owned by onix_ingester)
 │   │       └── index.ts
 │   ├── lib/
+│   │   ├── firebase.ts              # Firebase Admin SDK initialisation
 │   │   └── logger.ts                # Structured JSON logger
 │   ├── services/
 │   │   ├── auth.service.ts          # signup, login, refresh, logout, verifyAccessToken
@@ -190,9 +209,16 @@ JWT_REFRESH_SECRET=your_refresh_token_secret_min_32_chars
 # Token lifetimes in seconds
 ACCESS_TOKEN_TTL=900        # 15 minutes
 REFRESH_TOKEN_TTL=2592000   # 30 days
+
+# Firebase Admin SDK — from your Firebase project service account JSON
+FIREBASE_PROJECT_ID=your-firebase-project-id
+FIREBASE_CLIENT_EMAIL=firebase-adminsdk-xxxxx@your-project.iam.gserviceaccount.com
+FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
 ```
 
 **Why two JWT secrets?** Access and refresh tokens are signed with different secrets. A leaked access token cannot be used to forge a refresh token.
+
+**Firebase private key newlines:** The private key in service account JSON contains literal `\n` characters. When pasting into Render or a `.env` file, wrap the value in double quotes and keep the `\n` literals — the server unescapes them automatically at startup.
 
 ---
 
@@ -207,8 +233,9 @@ REFRESH_TOKEN_TTL=2592000   # 30 days
 | id | serial PK | |
 | full_name | varchar(500) NOT NULL | |
 | email | varchar(500) UNIQUE NOT NULL | Stored lowercase |
-| password_hash | varchar(500) | Nullable — supports OAuth-only accounts later |
-| email_verified | boolean | Default false — email verification flow to be added |
+| password_hash | varchar(500) | Nullable — NULL for social-only accounts |
+| photo_url | varchar(1000) | Profile photo from social provider, if provided |
+| email_verified | boolean | Default false; set true when provider confirms email |
 | created_at / updated_at | timestamptz | |
 
 #### refresh_tokens
@@ -220,6 +247,20 @@ REFRESH_TOKEN_TTL=2592000   # 30 days
 | token_hash | varchar(64) UNIQUE | SHA-256 hex of the raw token — raw never stored |
 | expires_at | timestamptz | |
 | created_at | timestamptz | |
+
+#### user_providers
+
+Links a user account to one or more Firebase social providers. A user who signs in with both Google and Apple has two rows here pointing to the same `user_id`.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| id | serial PK | |
+| user_id | integer FK → users.id CASCADE DELETE | |
+| provider | varchar(50) NOT NULL | `google.com`, `facebook.com`, or `apple.com` |
+| provider_uid | varchar(256) NOT NULL | Firebase UID for this provider |
+| created_at | timestamptz | |
+
+Unique index on `(provider, provider_uid)` — prevents the same social account being linked to two different users.
 
 ### Tables read from (owned by onix_ingester)
 
@@ -233,7 +274,7 @@ See [onix_ingester README](../onix_ingester/README.md) for full schema documenta
 npm run db:migrate
 ```
 
-Only runs migrations for tables this service owns (`users`, `refresh_tokens`). Safe to run on every deploy — Drizzle tracks applied migrations.
+Only runs migrations for tables this service owns (`users`, `refresh_tokens`, `user_providers`, `ingestion_jobs`, `ingestion_chunks`). Safe to run on every deploy — Drizzle tracks applied migrations.
 
 To generate a new migration after editing a schema file:
 
@@ -332,6 +373,39 @@ Exchange a valid refresh token for a new access token. Does not rotate the refre
 
 **Errors**
 - `401` — token not found or expired
+
+---
+
+#### `POST /api/v1/auth/social`
+
+Sign in or register using a Firebase ID token obtained by the mobile app after the user completes a Google, Facebook, or Apple sign-in. If no account exists for this provider identity, one is created automatically. If an account with the same email already exists (e.g. from a previous email/password signup), the social provider is linked to that existing account.
+
+**Body**
+```json
+{ "idToken": "<firebase-id-token>" }
+```
+
+**Response `200`**
+```json
+{
+  "user": {
+    "id": 1,
+    "fullName": "Jane Smith",
+    "email": "jane@example.com",
+    "emailVerified": true,
+    "photoUrl": "https://lh3.googleusercontent.com/..."
+  },
+  "accessToken": "<jwt>",
+  "refreshToken": "<opaque-token>"
+}
+```
+
+**Errors**
+- `400` — `idToken` missing or blank
+- `401` — Firebase rejected the token (expired, malformed, wrong project)
+- `401` — Provider identity has no email (required to create/match an account)
+
+**Note for the mobile team:** send the Firebase ID token, not the Google/Facebook/Apple access token directly. Obtain it with `firebaseUser.getIdToken()` after a successful Firebase sign-in.
 
 ---
 
@@ -559,6 +633,7 @@ Rate limits are applied per IP address. Exceeding a limit returns `429 Too Many 
 |-------|-------|--------|--------|
 | `POST /auth/signup` | 10 | 1 hour | Prevents mass account creation |
 | `POST /auth/login` | 20 | 15 min | Brute-force protection |
+| `POST /auth/social` | 20 | 15 min | Same risk profile as login |
 | `POST /auth/refresh` | 60 | 15 min | Apps refresh silently on every token expiry |
 | All other `/v1/` routes | 300 | 15 min | Comfortable for active browsing |
 | `GET /health` | None | — | Uptime checkers must not be blocked |
@@ -604,3 +679,40 @@ Runs on every deploy before the new instance starts. Only applies new migrations
 Build:  npm install && npm run build
 Start:  node dist/server.js
 ```
+
+---
+
+## Firebase Setup
+
+### 1. Create a Firebase project
+
+1. Go to [console.firebase.google.com](https://console.firebase.google.com) and create a new project
+2. In the project, go to **Authentication → Sign-in method** and enable the providers you need: Google, Facebook, Apple
+
+### 2. Generate a service account key
+
+1. Go to **Project Settings → Service accounts**
+2. Click **Generate new private key** — this downloads a JSON file
+3. From that JSON, copy these three values into your `.env`:
+
+```
+FIREBASE_PROJECT_ID      ← "project_id"
+FIREBASE_CLIENT_EMAIL    ← "client_email"
+FIREBASE_PRIVATE_KEY     ← "private_key"
+```
+
+Keep the private key wrapped in double quotes and leave the `\n` characters as-is — the server unescapes them at startup.
+
+### 3. Enable providers on the mobile side
+
+The mobile team initialises Firebase in the app and calls the appropriate sign-in method per provider. After a successful sign-in they call `firebaseUser.getIdToken()` and POST that string to `POST /api/v1/auth/social`. No further Firebase configuration is needed on the backend.
+
+### 4. Facebook & Apple extra steps
+
+- **Facebook** — requires a Facebook App ID and secret entered into Firebase's Facebook provider settings. The mobile team also needs the App ID.
+- **Apple** — requires an Apple Developer account. Firebase's Apple sign-in docs walk through creating a Services ID and private key. Apple sign-in is mandatory on iOS if your app offers any other social login option (App Store guideline 4.8).
+
+### Service account security
+
+- Never commit the service account JSON or your `.env` to version control
+- On Render, set `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, and `FIREBASE_PRIVATE_KEY` as environment variables in the dashboard — they are injected at runtime and never touch the filesystem
