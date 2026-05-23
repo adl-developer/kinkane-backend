@@ -95,17 +95,46 @@ export interface BookDetail extends BookListItem {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function buildWhereClause(opts: ListBooksOptions, useFts: boolean): SQL | undefined {
+function buildSearchCondition(q: string): SQL {
+  const prefix = q + '%';
+  const wordPrefix = '% ' + q + '%';
+  // Tier 3 (FTS on description/subtitle) only fires for complete words
+  const fts = q.length >= 3
+    ? sql` OR ${books.searchVector} @@ plainto_tsquery('english', ${q})`
+    : sql``;
+
+  return sql`(
+    ${books.title} ILIKE ${prefix}
+    OR ${books.title} ILIKE ${wordPrefix}
+    OR word_similarity(${q}, ${books.title}) > 0.3
+    ${fts}
+  )`;
+}
+
+function buildSearchOrderBy(q: string): SQL[] {
+  const prefix = q + '%';
+  const wordPrefix = '% ' + q + '%';
+
+  return [
+    sql`CASE
+      WHEN ${books.title} ILIKE ${prefix}     THEN 0
+      WHEN ${books.title} ILIKE ${wordPrefix} THEN 1
+      WHEN word_similarity(${q}, ${books.title}) > 0.3 THEN 2
+      ELSE 3
+    END`,
+    sql`word_similarity(${q}, ${books.title}) DESC`,
+    sql`ts_rank(${books.searchVector}, plainto_tsquery('english', ${q})) DESC`,
+  ];
+}
+
+function buildWhereClause(opts: ListBooksOptions): SQL | undefined {
   const conditions: SQL[] = [];
 
-  if (opts.q && useFts) {
-    conditions.push(
-      sql`${books.searchVector} @@ plainto_tsquery('english', ${opts.q})`,
-    );
+  if (opts.q) {
+    conditions.push(buildSearchCondition(opts.q));
   }
 
   if (opts.genre) {
-    // Subquery: book must appear in book_genres for this genre slug
     conditions.push(
       sql`${books.id} IN (
         SELECT bg.book_id FROM book_genres bg
@@ -193,19 +222,15 @@ async function attachRelationsToList(
 
 export const booksService = {
   async list(opts: ListBooksOptions): Promise<{ books: BookListItem[]; total: number }> {
-    const where = buildWhereClause(opts, true);
+    const where = buildWhereClause(opts);
+    const orderBy = opts.q ? buildSearchOrderBy(opts.q) : [books.updatedAt];
 
-    // Run data + count queries in parallel
     const [rows, [countRow]] = await Promise.all([
       db
         .select(LIST_COLUMNS)
         .from(books)
         .where(where)
-        .orderBy(
-          opts.q
-            ? sql`ts_rank(${books.searchVector}, plainto_tsquery('english', ${opts.q})) DESC`
-            : books.updatedAt,
-        )
+        .orderBy(...orderBy)
         .limit(opts.limit)
         .offset(opts.offset),
 
@@ -215,39 +240,6 @@ export const booksService = {
         .where(where),
     ]);
 
-    // Trigram fallback — if FTS returned nothing and a query was provided, try similarity on title
-    if (rows.length === 0 && opts.q) {
-      const trigramWhere = buildWhereClause({ ...opts, q: undefined }, false);
-      const [fallbackRows, [fallbackCount]] = await Promise.all([
-        db
-          .select(LIST_COLUMNS)
-          .from(books)
-          .where(
-            trigramWhere
-              ? and(trigramWhere, sql`${books.title} % ${opts.q}`)
-              : sql`${books.title} % ${opts.q}`,
-          )
-          .orderBy(sql`similarity(${books.title}, ${opts.q}) DESC`)
-          .limit(opts.limit)
-          .offset(opts.offset),
-
-        db
-          .select({ count: sql<number>`COUNT(*)::int` })
-          .from(books)
-          .where(
-            trigramWhere
-              ? and(trigramWhere, sql`${books.title} % ${opts.q}`)
-              : sql`${books.title} % ${opts.q}`,
-          ),
-      ]);
-
-      const relations = await attachRelationsToList(fallbackRows);
-      return {
-        books: fallbackRows.map((r) => ({ ...r, ...relations.get(r.id)! })),
-        total: fallbackCount?.count ?? 0,
-      };
-    }
-
     const relations = await attachRelationsToList(rows);
     return {
       books: rows.map((r) => ({ ...r, ...relations.get(r.id)! })),
@@ -256,14 +248,12 @@ export const booksService = {
   },
 
   async suggestions(q: string, limit: number): Promise<SuggestionItem[]> {
-    const prefix = q + '%';
-    const wordPrefix = '% ' + q + '%';
-
-    // Three-tier match, all using the GIN trigram index on title:
-    //   0 — title starts with q              (e.g. "Harr" → "Harry Potter...")
-    //   1 — a word in the title starts with q (e.g. "Pot"  → "Harry Potter...")
-    //   2 — word_similarity > 0.3             (e.g. "Haary" → "Harry Potter...")
-    // Within each tier, rank by word_similarity descending.
+    // Four-tier match on title (tiers 0–2) with FTS description fallback (tier 3):
+    //   0 — title starts with q              (e.g. "Harr"        → "Harry Potter...")
+    //   1 — a word in title starts with q    (e.g. "Pot"         → "Harry Potter...")
+    //   2 — word_similarity > 0.3            (e.g. "Haary"       → "Harry Potter...")
+    //   3 — FTS hit in description/subtitle  (e.g. "magic school" → matched via description)
+    // Within each tier, ranked by word_similarity then ts_rank descending.
     const rows = await db
       .select({
         id: books.id,
@@ -274,23 +264,8 @@ export const booksService = {
         coverUrl: books.coverUrl,
       })
       .from(books)
-      .where(
-        sql`
-          ${books.title} ILIKE ${prefix}
-          OR ${books.title} ILIKE ${wordPrefix}
-          OR word_similarity(${q}, ${books.title}) > 0.3
-        `,
-      )
-      .orderBy(
-        sql`
-          CASE
-            WHEN ${books.title} ILIKE ${prefix}     THEN 0
-            WHEN ${books.title} ILIKE ${wordPrefix} THEN 1
-            ELSE 2
-          END
-        `,
-        sql`word_similarity(${q}, ${books.title}) DESC`,
-      )
+      .where(buildSearchCondition(q))
+      .orderBy(...buildSearchOrderBy(q))
       .limit(limit);
 
     if (rows.length === 0) return [];

@@ -15,6 +15,27 @@
       "when": 1779207736981,
       "tag": "0001_petite_quasimodo",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1779382355615,
+      "tag": "0002_superb_nocturne",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1779484615038,
+      "tag": "0003_abandoned_lady_mastermind",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1779575302220,
+      "tag": "0004_right_talkback",
+      "breakpoints": true
     }
   ]
 }
