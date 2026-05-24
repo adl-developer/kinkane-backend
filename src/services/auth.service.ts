@@ -3,9 +3,10 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { eq, and, gt } from 'drizzle-orm';
 import { db } from '../db';
-import { users, refreshTokens, userProviders } from '../db/schema';
+import { users, refreshTokens, userProviders, guestSessions, userPreferences, userInteractions, userBooks } from '../db/schema';
 import { config } from '../config';
 import { admin } from '../lib/firebase';
+import { logger } from '../lib/logger';
 
 const BCRYPT_ROUNDS = 12;
 
@@ -50,11 +51,89 @@ async function issueTokenPair(userId: number, email: string): Promise<TokenPair>
   return { accessToken, refreshToken: rawRefresh };
 }
 
+// ── Guest session migration ───────────────────────────────────────────────────
+
+/**
+ * Copies onboarding data from a guest session to the newly created user record.
+ * Runs after the user row already exists. Non-transactional by design —
+ * if any step fails the user account is still fully usable; the error is logged.
+ *
+ * Steps:
+ *  1. Save structured preferences (feelings, genres, dislikes, liked books)
+ *  2. Seed reading list with the 5 chosen books (status: want_to_read)
+ *  3. Record those choices as interactions (type: chosen_from_recommendation)
+ *  4. Delete the guest session row
+ */
+async function migrateGuestSession(userId: number, sessionId: string): Promise<void> {
+  await db.transaction(async (tx) => {
+    // Delete-first strategy: deleting the row is the atomic lock.
+    // If two concurrent registrations race, only one DELETE returns a row;
+    // the other gets an empty array and exits cleanly — no duplicate inserts possible.
+    const deleted = await tx
+      .delete(guestSessions)
+      .where(
+        and(
+          eq(guestSessions.id, sessionId),
+          gt(guestSessions.expiresAt, new Date()),
+        ),
+      )
+      .returning();
+
+    if (deleted.length === 0) {
+      logger.warn('Guest session not found or expired during migration — skipping', {
+        sessionId,
+        userId,
+      });
+      return;
+    }
+
+    const session = deleted[0];
+
+    // 1. User preferences
+    await tx.insert(userPreferences).values({
+      userId,
+      feelings: session.feelings,
+      bookIds: session.bookIds,
+      genres: session.genres,
+      dislikes: session.dislikes,
+    });
+
+    // 2 + 3. Seed reading list and interaction signals for each chosen book
+    if ((session.chosenBookIds ?? []).length > 0) {
+      await tx
+        .insert(userBooks)
+        .values(
+          (session.chosenBookIds ?? []).map((bookId) => ({
+            userId,
+            bookId,
+            status: 'want_to_read',
+            source: 'chosen_from_onboarding',
+          })),
+        )
+        .onConflictDoNothing();
+
+      await tx.insert(userInteractions).values(
+        (session.chosenBookIds ?? []).map((bookId) => ({
+          userId,
+          bookId,
+          type: 'chosen_from_recommendation',
+          weight: 1.0,
+        })),
+      );
+    }
+
+    logger.info('Guest session migrated successfully', { sessionId, userId });
+  });
+}
+
+// ── Auth service ──────────────────────────────────────────────────────────────
+
 export const authService = {
   async signup(
     fullName: string,
     email: string,
     password: string,
+    guestSessionId?: string,
   ): Promise<{ user: AuthUser; tokens: TokenPair }> {
     const existing = await db
       .select({ id: users.id })
@@ -85,6 +164,16 @@ export const authService = {
       });
 
     const tokens = await issueTokenPair(user.id, user.email);
+
+    if (guestSessionId) {
+      migrateGuestSession(user.id, guestSessionId).catch((err) => {
+        logger.error('Guest session migration failed after signup', {
+          guestSessionId,
+          userId: user.id,
+          error: (err as Error).message,
+        });
+      });
+    }
 
     return { user, tokens };
   },
@@ -121,7 +210,7 @@ export const authService = {
     };
   },
 
-  async refresh(rawToken: string): Promise<{ accessToken: string }> {
+  async refresh(rawToken: string): Promise<TokenPair> {
     const tokenHash = hashToken(rawToken);
 
     const [stored] = await db
@@ -149,8 +238,11 @@ export const authService = {
       throw Object.assign(new Error('User not found'), { statusCode: 401 });
     }
 
-    const accessToken = signAccessToken(user.id, user.email);
-    return { accessToken };
+    // Rotate — delete the consumed token before issuing the new pair.
+    // If a stolen token is replayed after the legitimate client already rotated,
+    // the delete returns 0 rows and the 401 above fires on the next request.
+    await db.delete(refreshTokens).where(eq(refreshTokens.id, stored.id));
+    return issueTokenPair(user.id, user.email);
   },
 
   async logout(rawToken: string): Promise<void> {
@@ -172,6 +264,7 @@ export const authService = {
 
   async socialLogin(
     idToken: string,
+    guestSessionId?: string,
   ): Promise<{ user: AuthUser; tokens: TokenPair; isNewUser: boolean }> {
     let decoded: admin.auth.DecodedIdToken;
     try {
@@ -240,6 +333,17 @@ export const authService = {
     await db.insert(userProviders).values({ userId: newUser.id, provider, providerUid });
 
     const tokens = await issueTokenPair(newUser.id, newUser.email);
+
+    if (guestSessionId) {
+      migrateGuestSession(newUser.id, guestSessionId).catch((err) => {
+        logger.error('Guest session migration failed after social login', {
+          guestSessionId,
+          userId: newUser.id,
+          error: (err as Error).message,
+        });
+      });
+    }
+
     return { user: newUser, tokens, isNewUser: true };
   },
 };

@@ -1,12 +1,12 @@
 # Kinkane Server
 
-The main API for the Kinkane book platform. Serves book catalogue data, handles user authentication, and is designed to grow into the full consumer-facing backend.
+The main API for the Kinkane book platform. Serves book catalogue data, handles user authentication, AI-powered book recommendations, and the pre-registration onboarding flow.
 
 This is one of two independent services that share the same PostgreSQL database:
 
 | Service | Responsibility |
 |---------|---------------|
-| **kinkane-server** (this) | Serves books to clients, manages users and auth |
+| **kinkane-server** (this) | Serves books to clients, manages users, auth, recommendations, and onboarding |
 | **onix-ingester** | Ingests ONIX 3.1 XML feeds from Cloudflare R2 into PostgreSQL |
 
 ---
@@ -16,6 +16,11 @@ This is one of two independent services that share the same PostgreSQL database:
 - [Prerequisites](#prerequisites)
 - [Project Setup](#project-setup)
 - [Architecture](#architecture)
+  - [Two apps, one database](#two-apps-one-database)
+  - [Onboarding flow](#onboarding-flow)
+  - [AI recommendations](#ai-recommendations)
+  - [Auth flow](#auth-flow)
+  - [Route versioning](#route-versioning)
 - [Project Structure](#project-structure)
 - [Environment Variables](#environment-variables)
 - [Database](#database)
@@ -23,8 +28,11 @@ This is one of two independent services that share the same PostgreSQL database:
   - [Health](#health)
   - [Auth](#auth)
   - [Books](#books)
+  - [Recommendations](#recommendations)
+  - [Guest Sessions](#guest-sessions)
 - [Rate Limiting](#rate-limiting)
 - [Search Behaviour](#search-behaviour)
+- [Background Jobs](#background-jobs)
 - [Running Locally](#running-locally)
 - [Deploying to Render](#deploying-to-render)
 - [Firebase Setup](#firebase-setup)
@@ -37,7 +45,8 @@ This is one of two independent services that share the same PostgreSQL database:
 |-------------|----------------|-------|
 | Node.js | 20+ | Node 22 recommended |
 | npm | 9+ | Bundled with Node |
-| PostgreSQL | 14+ | Must have `pg_trgm` extension enabled (handled by `onix_ingester`) |
+| PostgreSQL | 14+ | Must have `pg_trgm` and `pgvector` extensions enabled (handled by `onix_ingester`) |
+| Google Gemini API key | — | Same key used by `onix_ingester` — see [AI Recommendations](#ai-recommendations) |
 
 No Redis required — this service is stateless aside from the database.
 
@@ -66,7 +75,7 @@ Fill in all values. See [Environment Variables](#environment-variables) for the 
 npm run db:migrate
 ```
 
-This creates the `users` and `refresh_tokens` tables. The book-related tables are owned by `onix_ingester` — this service only reads from them.
+Creates all tables owned by this service. Book-related tables are owned by `onix_ingester` — this service only reads from them.
 
 ### 4. Start the development server
 
@@ -85,7 +94,7 @@ Server starts on `http://localhost:3000` with hot reload.
 | `npm start` | Run compiled output (production) |
 | `npm run db:generate` | Generate a new Drizzle migration from schema changes |
 | `npm run db:migrate` | Apply pending migrations |
-| `npm run db:reset` | Drop all tables, types, and migration records — run `db:migrate` after to start fresh |
+| `npm run db:reset` | Drop all tables and migration records — run `db:migrate` after to start fresh |
 
 ---
 
@@ -96,9 +105,75 @@ Server starts on `http://localhost:3000` with hot reload.
 Both `kinkane-server` and `onix_ingester` point to the same `DATABASE_URL`. They manage separate tables:
 
 - `onix_ingester` owns: `books`, `book_contributors`, `book_subjects`, `book_genres`, `book_prices`, `genres`
-- `kinkane-server` owns: `users`, `refresh_tokens`, `user_providers`, `ingestion_jobs`, `ingestion_chunks`
+- `kinkane-server` owns: `users`, `refresh_tokens`, `user_providers`, `recommendation_cache`, `guest_sessions`, `user_preferences`, `user_interactions`, `user_books`
 
 The server defines read-only Drizzle schema representations of the book tables so it can query them without owning their migrations. This is clearly marked in `src/db/schema/books.ts`.
+
+---
+
+### Onboarding flow
+
+New users go through a guided wizard before creating an account. The entire flow is designed to work without an account — a temporary guest session holds the user's data.
+
+```
+1.  User enters their name
+2.  Selects 3 feelings (how they want to feel while reading)
+3.  Selects up to 10 books they've enjoyed
+4.  Selects 3 genres
+5.  Selects reading dislikes
+
+       ↓  POST /api/v1/recommendations
+
+6.  Server generates ranked book recommendations + creates a guest session
+7.  Client receives: recommendations + guestSessionId + expiresAt
+
+8.  User picks 5 books from the results
+
+       ↓  POST /api/v1/guest-sessions/:id/selections
+
+9.  Server saves the 5 chosen books to the guest session
+
+10. User chooses: create account or skip
+```
+
+**If they register:**
+`POST /api/v1/auth/signup` or `/auth/social` with `guestSessionId` → server migrates all onboarding data to the new user account (preferences, reading list, interaction signals) and deletes the guest session.
+
+**If they skip:**
+The guest session expires after `GUEST_SESSION_TTL_HOURS` (default 72 hours / 3 days). The cleanup cron deletes it automatically.
+
+---
+
+### AI recommendations
+
+Recommendations are powered by two Gemini models working together:
+
+| Step | Model | Purpose |
+|------|-------|---------|
+| Query embedding | `text-embedding-004` | Converts user preferences to a 768-dim vector |
+| Ranking | pgvector (`<=>`) | Cosine similarity against stored book embeddings |
+| Explanations | `gemini-2.5-flash-lite` | Generates a ≤120-char explanation per book |
+
+**Important:** `GEMINI_EMBEDDING_MODEL` must match the model `onix_ingester` used to embed books. Both default to `text-embedding-004`. If you change one, change both.
+
+**Recommendation flow:**
+
+```
+User preferences (feelings, genres, dislikes, liked books)
+  → buildPreferenceText()         natural language paragraph
+  → text-embedding-004            768-dim query vector
+  → pgvector cosine search        top 250 most similar books
+  → dislike SQL filters           page count, series patterns
+  → gemini-2.5-flash-lite (batch) one ≤120-char explanation per book
+  → recommendation_cache (48h)    same preferences return instantly
+  → guest session created         guestSessionId returned to client
+```
+
+**Caching:** Results are cached in `recommendation_cache` for 48 hours keyed on a SHA-256 hash of the preferences. `displayName` is excluded from the hash — two users with identical preferences but different names share the same cached results. A new guest session is always created regardless of cache state.
+
+**Cost:** At `gemini-2.5-flash-lite` rates, a full uncached request (250 books, 250 explanations) costs roughly $0.01. Cached requests cost nothing.
+
+---
 
 ### Auth flow
 
@@ -137,14 +212,18 @@ POST /api/v1/auth/logout  { refreshToken }
 
 Refresh tokens are stored in PostgreSQL as a SHA-256 hash — the raw token is only ever held by the client. This means logout is real: the token cannot be used again even if intercepted.
 
+---
+
 ### Route versioning
 
 All routes are versioned under `/api/v1/`. Adding a v2 means creating a new router and mounting it at `/v2` in `src/routes/index.ts` — nothing else changes.
 
 ```
-/api/health          — unversioned, no rate limit (uptime checks)
-/api/v1/auth/...     — auth routes
-/api/v1/books/...    — book routes
+/api/health                  — unversioned, no rate limit (uptime checks)
+/api/v1/auth/...             — auth routes
+/api/v1/books/...            — book routes
+/api/v1/recommendations      — AI recommendation route
+/api/v1/guest-sessions/...   — onboarding guest session routes
 ```
 
 ---
@@ -157,29 +236,40 @@ server/
 │   ├── config/index.ts              # Env validation (zod), typed config
 │   ├── db/
 │   │   ├── index.ts                 # Drizzle client
-│   │   ├── reset.ts                 # Drops all tables and types (dev utility)
+│   │   ├── reset.ts                 # Drops all tables (dev utility)
 │   │   └── schema/
-│   │       ├── users.ts             # users, refresh_tokens, user_providers (owned by this service)
+│   │       ├── users.ts             # users, refresh_tokens, user_providers
 │   │       ├── books.ts             # Read-only book tables (owned by onix_ingester)
+│   │       ├── recommendations.ts   # recommendation_cache
+│   │       ├── onboarding.ts        # guest_sessions, user_preferences, user_interactions, user_books
 │   │       └── index.ts
+│   ├── jobs/
+│   │   └── guest-cleanup.cron.ts   # Deletes expired guest sessions every 6 hours
 │   ├── lib/
 │   │   ├── firebase.ts              # Firebase Admin SDK initialisation
+│   │   ├── gemini.ts                # Gemini embedding + explanation helpers
 │   │   └── logger.ts                # Structured JSON logger
 │   ├── services/
-│   │   ├── auth.service.ts          # signup, login, refresh, logout, verifyAccessToken
-│   │   └── books.service.ts         # list (FTS + trigram fallback), getById
+│   │   ├── auth.service.ts          # signup, login, refresh, logout, socialLogin, guest migration
+│   │   ├── books.service.ts         # list (FTS + trigram fallback), suggestions, getById
+│   │   ├── guest.service.ts         # create, saveSelections, getById
+│   │   └── recommendations.service.ts  # pgvector search, Gemini calls, caching
 │   ├── controllers/
-│   │   ├── auth.controller.ts       # Input validation + delegates to auth.service
-│   │   └── books.controller.ts      # Input validation + delegates to books.service
+│   │   ├── auth.controller.ts
+│   │   ├── books.controller.ts
+│   │   ├── guest.controller.ts
+│   │   └── recommendations.controller.ts
 │   ├── middleware/
 │   │   ├── auth.middleware.ts       # requireAuth — verifies Bearer JWT
 │   │   └── rate-limit.middleware.ts # Per-route rate limiters
 │   ├── routes/
 │   │   ├── index.ts                 # Mounts /health + v1 router
-│   │   ├── auth.routes.ts           # Auth route definitions
-│   │   └── books.routes.ts          # Book route definitions
+│   │   ├── auth.routes.ts
+│   │   ├── books.routes.ts
+│   │   ├── guest.routes.ts
+│   │   └── recommendations.routes.ts
 │   ├── app.ts                       # Express app, middleware, error handler
-│   └── server.ts                    # Entry point, graceful shutdown
+│   └── server.ts                    # Entry point, starts cron jobs, graceful shutdown
 ├── drizzle/                         # Migration SQL files
 ├── drizzle.config.ts
 ├── render.yaml
@@ -214,11 +304,23 @@ REFRESH_TOKEN_TTL=2592000   # 30 days
 FIREBASE_PROJECT_ID=your-firebase-project-id
 FIREBASE_CLIENT_EMAIL=firebase-adminsdk-xxxxx@your-project.iam.gserviceaccount.com
 FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+
+# Google Gemini — same API key as onix_ingester
+# GEMINI_EMBEDDING_MODEL must match the model used to embed books (default: text-embedding-004)
+GEMINI_API_KEY=your-gemini-api-key
+GEMINI_EMBEDDING_MODEL=text-embedding-004
+GEMINI_FLASH_MODEL=gemini-2.5-flash-lite
+
+# Guest session lifetime in hours. Default: 72 (24 * 3 = 3 days).
+# Set to 168 for a full week, 24 for a single day, etc.
+GUEST_SESSION_TTL_HOURS=72
 ```
 
 **Why two JWT secrets?** Access and refresh tokens are signed with different secrets. A leaked access token cannot be used to forge a refresh token.
 
 **Firebase private key newlines:** The private key in service account JSON contains literal `\n` characters. When pasting into Render or a `.env` file, wrap the value in double quotes and keep the `\n` literals — the server unescapes them automatically at startup.
+
+**Gemini embedding model:** Must be identical to the value used by `onix_ingester` when it generated book embeddings. If the ingester used a different model, the query vector and book vectors will be in different spaces and similarity results will be meaningless.
 
 ---
 
@@ -231,7 +333,7 @@ FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY----
 | Column | Type | Notes |
 |--------|------|-------|
 | id | serial PK | |
-| full_name | varchar(500) NOT NULL | |
+| full_name | varchar(500) NOT NULL | Freeform — no first/last splitting |
 | email | varchar(500) UNIQUE NOT NULL | Stored lowercase |
 | password_hash | varchar(500) | Nullable — NULL for social-only accounts |
 | photo_url | varchar(1000) | Profile photo from social provider, if provided |
@@ -262,6 +364,77 @@ Links a user account to one or more Firebase social providers. A user who signs 
 
 Unique index on `(provider, provider_uid)` — prevents the same social account being linked to two different users.
 
+#### recommendation_cache
+
+Caches recommendation results for 48 hours to avoid redundant Gemini API calls. Keyed on a SHA-256 hash of the user's preferences (excluding their name).
+
+| Column | Type | Notes |
+|--------|------|-------|
+| id | serial PK | |
+| input_hash | varchar(64) UNIQUE NOT NULL | SHA-256 of sorted preferences |
+| results | jsonb NOT NULL | `[{ bookId, rank, explanation }]` |
+| created_at | timestamptz | |
+| expires_at | timestamptz NOT NULL | created_at + 48 hours |
+
+#### guest_sessions
+
+Temporary record created at recommendation time. Lives for `GUEST_SESSION_TTL_HOURS` (default 72 hours). Migrated to user tables on account creation, or deleted by the cleanup cron if the user never registers.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| id | uuid PK | `gen_random_uuid()` — returned to client as `guestSessionId` |
+| display_name | varchar(200) NOT NULL | Name entered during onboarding |
+| feelings | jsonb NOT NULL | `string[3]` |
+| book_ids | jsonb NOT NULL | `number[]` — books they said they enjoyed (up to 10) |
+| genres | jsonb NOT NULL | `string[3]` |
+| dislikes | jsonb NOT NULL | `{ emotionalTone?, pacingStructure?, writingStyle?, genreFocus?, commitmentLevel? }` |
+| chosen_book_ids | jsonb | `number[]` — 5 books chosen from recommendations. Null until `POST /:id/selections` is called |
+| recommendation_hash | varchar(64) | Links back to `recommendation_cache.input_hash` |
+| created_at | timestamptz | |
+| expires_at | timestamptz NOT NULL | created_at + GUEST_SESSION_TTL_HOURS |
+
+#### user_preferences
+
+Migrated from `guest_sessions` when the user creates an account. One row per user.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| id | serial PK | |
+| user_id | integer UNIQUE FK → users.id CASCADE DELETE | |
+| feelings | jsonb NOT NULL | |
+| book_ids | jsonb NOT NULL | Books they enjoyed during onboarding |
+| genres | jsonb NOT NULL | |
+| dislikes | jsonb NOT NULL | |
+| updated_at | timestamptz | |
+
+#### user_interactions
+
+Behavioural signals for future recommendation tuning. Seeded at registration from the 5 chosen onboarding books, then grows as the user browses, purchases, and rates books.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| id | serial PK | |
+| user_id | integer FK → users.id CASCADE DELETE | |
+| book_id | integer FK → books.id CASCADE DELETE | |
+| type | varchar(50) NOT NULL | `view`, `purchase`, `high_rating`, `wishlist`, `chosen_from_recommendation` |
+| weight | real NOT NULL | Default `1.0` — higher = stronger signal |
+| created_at | timestamptz | |
+
+#### user_books
+
+The user's personal reading list. Seeded at registration with the 5 onboarding choices as `want_to_read`.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| id | serial PK | |
+| user_id | integer FK → users.id CASCADE DELETE | |
+| book_id | integer FK → books.id CASCADE DELETE | |
+| status | varchar(20) NOT NULL | `want_to_read`, `reading`, `read` |
+| source | varchar(50) NOT NULL | `chosen_from_onboarding`, `manual`, `recommended` |
+| added_at | timestamptz | |
+
+Unique index on `(user_id, book_id)` — a book can only appear once per reading list.
+
 ### Tables read from (owned by onix_ingester)
 
 `books`, `book_contributors`, `book_subjects`, `book_genres`, `book_prices`, `genres`
@@ -274,9 +447,7 @@ See [onix_ingester README](../onix_ingester/README.md) for full schema documenta
 npm run db:migrate
 ```
 
-Only runs migrations for tables this service owns (`users`, `refresh_tokens`, `user_providers`, `ingestion_jobs`, `ingestion_chunks`). Safe to run on every deploy — Drizzle tracks applied migrations.
-
-To generate a new migration after editing a schema file:
+Safe to run on every deploy — Drizzle tracks applied migrations. To generate a new migration after editing a schema file:
 
 ```bash
 npm run db:generate   # creates a new SQL file in drizzle/
@@ -309,16 +480,19 @@ No auth. No rate limit.
 
 #### `POST /api/v1/auth/signup`
 
-Creates a new account. Returns the user and both tokens.
+Creates a new account. Accepts an optional `guestSessionId` to migrate onboarding data (preferences, reading list, interaction signals) onto the new account.
 
 **Body**
 ```json
 {
   "fullName": "Jane Smith",
   "email": "jane@example.com",
-  "password": "min8characters"
+  "password": "min8characters",
+  "guestSessionId": "f47ac10b-58cc-4372-a567-0e02b2c3d479"
 }
 ```
+
+`guestSessionId` is optional. When present and valid, the guest session data is migrated in the background after the account is created — the response is not delayed.
 
 **Response `201`**
 ```json
@@ -376,39 +550,6 @@ Exchange a valid refresh token for a new access token. Does not rotate the refre
 
 ---
 
-#### `POST /api/v1/auth/social`
-
-Sign in or register using a Firebase ID token obtained by the mobile app after the user completes a Google, Facebook, or Apple sign-in. If no account exists for this provider identity, one is created automatically. If an account with the same email already exists (e.g. from a previous email/password signup), the social provider is linked to that existing account.
-
-**Body**
-```json
-{ "idToken": "<firebase-id-token>" }
-```
-
-**Response `200`**
-```json
-{
-  "user": {
-    "id": 1,
-    "fullName": "Jane Smith",
-    "email": "jane@example.com",
-    "emailVerified": true,
-    "photoUrl": "https://lh3.googleusercontent.com/..."
-  },
-  "accessToken": "<jwt>",
-  "refreshToken": "<opaque-token>"
-}
-```
-
-**Errors**
-- `400` — `idToken` missing or blank
-- `401` — Firebase rejected the token (expired, malformed, wrong project)
-- `401` — Provider identity has no email (required to create/match an account)
-
-**Note for the mobile team:** send the Firebase ID token, not the Google/Facebook/Apple access token directly. Obtain it with `firebaseUser.getIdToken()` after a successful Firebase sign-in.
-
----
-
 #### `POST /api/v1/auth/logout`
 
 Deletes the refresh token from the database. The access token expires naturally (15 min).
@@ -425,6 +566,44 @@ Deletes the refresh token from the database. The access token expires naturally 
 
 ---
 
+#### `POST /api/v1/auth/social`
+
+Sign in or register using a Firebase ID token. If no account exists for this provider identity, one is created automatically. If an account with the same email already exists, the social provider is linked to it.
+
+Accepts an optional `guestSessionId` to migrate onboarding data — only applied when a brand new account is created.
+
+**Body**
+```json
+{
+  "idToken": "<firebase-id-token>",
+  "guestSessionId": "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+}
+```
+
+**Response `200` / `201`**
+```json
+{
+  "user": {
+    "id": 1,
+    "fullName": "Jane Smith",
+    "email": "jane@example.com",
+    "emailVerified": true
+  },
+  "accessToken": "<jwt>",
+  "refreshToken": "<opaque-token>"
+}
+```
+
+`201` for new accounts, `200` for returning users.
+
+**Errors**
+- `401` — Firebase rejected the token
+- `422` — social account has no email address
+
+**Mobile note:** Send the Firebase ID token, not the Google/Facebook/Apple access token. Obtain it with `firebaseUser.getIdToken()` after a successful Firebase sign-in. For OAuth flows, embed `guestSessionId` in the Firebase `customParameters` state so it survives the redirect and can be passed here after the callback.
+
+---
+
 #### `GET /api/v1/auth/me`
 
 Returns the currently authenticated user.
@@ -436,12 +615,7 @@ Authorization: Bearer <accessToken>
 
 **Response `200`**
 ```json
-{
-  "user": {
-    "id": 1,
-    "email": "jane@example.com"
-  }
-}
+{ "user": { "id": 1, "email": "jane@example.com" } }
 ```
 
 **Errors**
@@ -451,23 +625,18 @@ Authorization: Bearer <accessToken>
 
 ### Books
 
-Both book endpoints are **public** — no auth required.
+All book endpoints are **public** — no auth required.
 
 #### `GET /api/v1/books/search`
 
-Typeahead suggestions — designed to be called on every keystroke. Returns up to 15 ranked results as the user types. Minimum 2 characters.
+Typeahead suggestions. Designed to be called on every keystroke. Returns up to 15 results. Minimum 2 characters.
 
 **Query parameters**
 
 | Param | Type | Description |
 |-------|------|-------------|
-| `q` | string | The text being typed. Min 2, max 100 chars. |
-| `limit` | number | Max suggestions to return. 1–15, default `8` |
-
-**Example**
-```
-GET /api/v1/books/search?q=harr&limit=5
-```
+| `q` | string | The text being typed. Min 2, max 100 chars |
+| `limit` | number | Max suggestions. 1–15, default `8` |
 
 **Response `200`**
 ```json
@@ -479,83 +648,40 @@ GET /api/v1/books/search?q=harr&limit=5
       "subtitle": null,
       "isbn13": "9781234567890",
       "productForm": "BC",
-      "authors": ["J.K. Rowling"]
-    },
-    {
-      "id": 43,
-      "title": "Harry Potter and the Chamber of Secrets",
-      "subtitle": null,
-      "isbn13": "9781234567891",
-      "productForm": "BC",
+      "coverUrl": "https://...",
       "authors": ["J.K. Rowling"]
     }
   ]
 }
 ```
 
-Results are ranked in this order:
-1. Titles that **start with** the typed text
-2. Titles where **a word starts with** the typed text
-3. Titles with **trigram similarity > 0.3** (catches typos)
-
-Within each tier, results are further sorted by `word_similarity` score descending. Returns an empty array if fewer than 2 characters are provided.
+Results ranked: title-starts-with → word-starts-with → trigram similarity > 0.3.
 
 ---
 
 #### `GET /api/v1/books`
 
-Returns a paginated list of books with optional filters and search.
+Paginated book list with optional filters and full-text search.
 
 **Query parameters**
 
 | Param | Type | Description |
 |-------|------|-------------|
-| `q` | string | Full text search. Plain words, no operators needed. |
-| `genre` | string | Genre slug e.g. `fiction_crime_mystery` |
-| `availability` | string | ONIX availability code e.g. `20` (Available) |
-| `productForm` | string | ONIX product form code e.g. `BB` (Hardback), `BC` (Paperback), `ED` (Digital) |
-| `publishingStatus` | string | ONIX publishing status code e.g. `04` (Active) |
+| `q` | string | Full text search |
+| `genre` | string | Genre slug |
+| `availability` | string | ONIX availability code e.g. `20` |
+| `productForm` | string | ONIX product form e.g. `BB`, `BC`, `ED` |
+| `publishingStatus` | string | ONIX publishing status e.g. `04` |
 | `publisher` | string | Partial match on publisher name |
-| `limit` | number | Results per page. 1–50, default `20` |
-| `offset` | number | Pagination offset, default `0` |
-
-**Example**
-```
-GET /api/v1/books?q=harry+potter&availability=20&limit=10
-```
+| `limit` | number | 1–50, default `20` |
+| `offset` | number | Default `0` |
 
 **Response `200`**
 ```json
 {
-  "books": [
-    {
-      "id": 42,
-      "isbn13": "9781234567890",
-      "recordReference": "PUB-001",
-      "title": "Harry Potter and the Philosopher's Stone",
-      "subtitle": null,
-      "publisherName": "Bloomsbury",
-      "imprintName": null,
-      "productForm": "BC",
-      "publicationDate": "1997-06-26",
-      "publishingStatus": "04",
-      "availabilityCode": "20",
-      "pageCount": 223,
-      "contributors": [
-        { "sequenceNumber": 1, "role": "A01", "personName": "J.K. Rowling" }
-      ],
-      "genres": [
-        { "name": "Children's fiction", "slug": "childrens_fiction" }
-      ],
-      "prices": [
-        { "priceType": "02", "priceAmount": "9.99", "currencyCode": "GBP" }
-      ],
-      "createdAt": "2026-05-01T10:00:00Z",
-      "updatedAt": "2026-05-01T10:00:00Z"
-    }
-  ],
+  "books": [ { "id": 42, "title": "...", "contributors": [], "genres": [], "prices": [] } ],
   "total": 1,
-  "limit": 10,
+  "limit": 20,
   "offset": 0
 }
 ```
@@ -564,12 +690,7 @@ GET /api/v1/books?q=harry+potter&availability=20&limit=10
 
 #### `GET /api/v1/books/:id`
 
-Returns full book detail including descriptions, all subjects, and physical dimensions.
-
-**Example**
-```
-GET /api/v1/books/42
-```
+Full book detail including descriptions, subjects, and physical dimensions.
 
 **Response `200`**
 ```json
@@ -578,43 +699,13 @@ GET /api/v1/books/42
     "id": 42,
     "isbn13": "9781234567890",
     "title": "Harry Potter and the Philosopher's Stone",
-    "subtitle": null,
     "shortDescription": "The book that started it all.",
     "longDescription": "Harry Potter has never even heard of Hogwarts...",
-    "publisherName": "Bloomsbury",
-    "productForm": "BC",
-    "publicationDate": "1997-06-26",
-    "publishingStatus": "04",
-    "availabilityCode": "20",
-    "editionNumber": null,
     "pageCount": 223,
-    "heightMm": "197.00",
-    "widthMm": "129.00",
-    "thicknessMm": "16.00",
-    "weightGr": "245.00",
-    "countryOfManufacture": "GB",
-    "countryOfPublication": "GB",
-    "returnsCode": null,
-    "orderTime": null,
-    "contributors": [
-      { "sequenceNumber": 1, "role": "A01", "personName": "J.K. Rowling" }
-    ],
-    "genres": [
-      { "name": "Children's fiction", "slug": "childrens_fiction" }
-    ],
-    "prices": [
-      { "priceType": "02", "priceAmount": "9.99", "currencyCode": "GBP" }
-    ],
-    "subjects": [
-      {
-        "schemeIdentifier": "93",
-        "subjectCode": "YFB",
-        "subjectHeadingText": "Children's fiction",
-        "isMainSubject": true
-      }
-    ],
-    "createdAt": "2026-05-01T10:00:00Z",
-    "updatedAt": "2026-05-01T10:00:00Z"
+    "contributors": [ { "role": "A01", "personName": "J.K. Rowling", "sequenceNumber": 1 } ],
+    "genres": [ { "name": "Children's fiction", "slug": "childrens_fiction" } ],
+    "prices": [ { "priceType": "02", "priceAmount": "9.99", "currencyCode": "GBP" } ],
+    "subjects": [ { "schemeIdentifier": "93", "subjectCode": "YFB", "subjectHeadingText": "Children's fiction", "isMainSubject": true } ]
   }
 }
 ```
@@ -622,6 +713,146 @@ GET /api/v1/books/42
 **Errors**
 - `400` — ID is not a valid integer
 - `404` — book not found
+
+---
+
+### Recommendations
+
+#### `POST /api/v1/recommendations`
+
+The core of the onboarding flow. Generates a ranked list of up to 250 book recommendations personalised to the user's preferences using pgvector similarity search, then adds a short explanation per book via Gemini. Also creates a guest session and returns its ID alongside the results.
+
+Results are cached for 48 hours — identical preferences (regardless of name) return instantly from cache. A fresh guest session is always created.
+
+**Body**
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `displayName` | string | Yes | The name entered in step 1 of onboarding. Max 200 chars |
+| `feelings` | string[3] | Yes | Exactly 3. Preset labels or freeform text (max 200 chars each) |
+| `bookIds` | number[] | No | IDs of books they've enjoyed. Max 10. Default `[]` |
+| `genres` | string[3] | Yes | Exactly 3 from the genre enum |
+| `dislikes` | object | No | Reading experiences to avoid — all sub-arrays optional |
+
+**Dislikes object**
+
+```json
+{
+  "emotionalTone":    ["too dark or heavy", "sad or tragic ending", "emotionally intense"],
+  "pacingStructure":  ["slow paced", "complex or layered plot", "multiple POVs"],
+  "writingStyle":     ["academic or dense", "experimental writing style"],
+  "genreFocus":       ["romance-heavy", "fantasy-heavy", "faith-based themes"],
+  "commitmentLevel":  ["long book (500+ pages)", "series commitment"]
+}
+```
+
+`commitmentLevel` dislikes apply hard SQL filters before the similarity search. The others are factored into the preference embedding.
+
+**Valid genre values**
+
+`literary fiction`, `poetry`, `self-help`, `mystery`, `romance`, `business`, `horror`, `sci-fi`, `historical fiction`, `biography`, `fantasy`, `non-fiction`, `society & education`, `sport`, `crime`, `young adult`, `classics`, `graphic novel`, `politics`, `health & lifestyle`, `travel`
+
+**Example**
+```bash
+curl -X POST http://localhost:3000/api/v1/recommendations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "displayName": "Jason",
+    "feelings": ["inspired", "relaxed", "thoughtful"],
+    "bookIds": [1, 4, 17],
+    "genres": ["literary fiction", "biography", "self-help"],
+    "dislikes": {
+      "emotionalTone": ["too dark or heavy"],
+      "commitmentLevel": ["long book (500+ pages)", "series commitment"]
+    }
+  }'
+```
+
+**Response `200`**
+```json
+{
+  "recommendations": [
+    {
+      "bookId": 42,
+      "rank": 1,
+      "explanation": "A quiet memoir matching your love of biography and need to feel inspired."
+    },
+    {
+      "bookId": 7,
+      "rank": 2,
+      "explanation": "Short literary essays perfect for relaxed, reflective reading."
+    }
+  ],
+  "guestSessionId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+  "expiresAt": "2026-05-26T14:32:00.000Z"
+}
+```
+
+The client should store `guestSessionId` immediately — it is needed for the next two steps.
+
+**Errors**
+- `400` — validation failure (wrong number of feelings/genres, invalid genre value, etc.)
+- `429` — rate limit exceeded (20 requests per hour per IP)
+
+---
+
+### Guest Sessions
+
+#### `POST /api/v1/guest-sessions/:id/selections`
+
+Saves the 5 books the user chose from the recommendations screen. Must be called after `POST /recommendations` and before the user registers.
+
+**Params**
+- `id` — the `guestSessionId` returned by `POST /recommendations`
+
+**Body**
+```json
+{ "chosenBookIds": [42, 7, 103, 56, 88] }
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `chosenBookIds` | number[] | 1–5 book IDs from the recommendation results |
+
+**Example**
+```bash
+curl -X POST http://localhost:3000/api/v1/guest-sessions/f47ac10b-58cc-4372-a567-0e02b2c3d479/selections \
+  -H "Content-Type: application/json" \
+  -d '{ "chosenBookIds": [42, 7, 103, 56, 88] }'
+```
+
+**Response `200`**
+```json
+{ "ok": true }
+```
+
+**Errors**
+- `400` — invalid UUID or validation failure
+- `404` — session not found or expired
+
+---
+
+#### `GET /api/v1/guest-sessions/:id`
+
+Checks whether a stored `guestSessionId` is still alive. Useful on app resume to decide whether to prompt the user to re-do the flow or proceed to registration.
+
+**Example**
+```bash
+curl http://localhost:3000/api/v1/guest-sessions/f47ac10b-58cc-4372-a567-0e02b2c3d479
+```
+
+**Response `200`**
+```json
+{
+  "guestSessionId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+  "displayName": "Jason",
+  "expiresAt": "2026-05-26T14:32:00.000Z"
+}
+```
+
+**Errors**
+- `400` — invalid UUID format
+- `404` — session not found or expired
 
 ---
 
@@ -635,6 +866,7 @@ Rate limits are applied per IP address. Exceeding a limit returns `429 Too Many 
 | `POST /auth/login` | 20 | 15 min | Brute-force protection |
 | `POST /auth/social` | 20 | 15 min | Same risk profile as login |
 | `POST /auth/refresh` | 60 | 15 min | Apps refresh silently on every token expiry |
+| `POST /recommendations` | 20 | 1 hour | Each uncached request calls Gemini API (real cost) |
 | All other `/v1/` routes | 300 | 15 min | Comfortable for active browsing |
 | `GET /health` | None | — | Uptime checkers must not be blocked |
 
@@ -649,11 +881,47 @@ Response headers on every rate-limited route:
 
 When `q` is provided on `GET /api/v1/books`:
 
-1. **Full text search** — uses the `search_vector` tsvector column maintained by a database trigger on the books table. Runs `plainto_tsquery('english', q)` so users write plain words with no special syntax. Results are ranked by `ts_rank`.
+1. **Full text search** — uses the `search_vector` tsvector column maintained by a database trigger. Runs `plainto_tsquery('english', q)`. Results ranked by `ts_rank`.
 
-2. **Trigram fallback** — if FTS returns zero results, a second query automatically runs using `pg_trgm` similarity on the title column. This catches typos and partial words (e.g. `"Filosopher Stone"` still finds the right book). Results are ranked by similarity score.
+2. **Trigram fallback** — if FTS returns zero results, a second query runs using `pg_trgm` similarity on the title column. Catches typos (e.g. `"Filosopher Stone"` still finds the right book).
 
-3. **Filter combination** — `q` combines with all other filter params in the same query. Searching for `q=rowling&genre=childrens_fiction` returns only books matching both.
+3. **Filter combination** — `q` combines with all other filter params. Searching `q=rowling&genre=childrens_fiction` returns only books matching both.
+
+---
+
+## Background Jobs
+
+### Guest session cleanup
+
+A `node-cron` job runs inside the server process every 6 hours:
+
+```
+Cron: 0 */6 * * *
+Task: DELETE FROM guest_sessions WHERE expires_at < NOW()
+```
+
+Logs the number of deleted rows at `info` level. Errors are caught and logged without crashing the server. The cleanup interval is fixed at 6 hours; the session lifetime itself is controlled by `GUEST_SESSION_TTL_HOURS`.
+
+---
+
+## Running Locally
+
+```bash
+# 1. Install dependencies
+npm install
+
+# 2. Set up environment
+cp .env.example .env
+# Fill in DATABASE_URL, JWT secrets, Firebase credentials, GEMINI_API_KEY
+
+# 3. Apply migrations
+npm run db:migrate
+
+# 4. Start with hot reload
+npm run dev
+```
+
+The server requires the book tables to already exist (created by `onix_ingester`). If running without the ingester, run the ingester's `db:init` first, or manually apply its migrations against the same database.
 
 ---
 
@@ -663,7 +931,7 @@ When `q` is provided on `GET /api/v1/books`:
 
 ### Environment variables on Render
 
-Set all values from [Environment Variables](#environment-variables) in the Render dashboard. `DATABASE_URL` is injected automatically from the linked database. `JWT_ACCESS_SECRET` and `JWT_REFRESH_SECRET` are auto-generated by Render on first deploy.
+Set all values from [Environment Variables](#environment-variables) in the Render dashboard. `DATABASE_URL` is injected automatically from the linked database.
 
 ### Pre-deploy command
 
@@ -671,7 +939,7 @@ Set all values from [Environment Variables](#environment-variables) in the Rende
 npm run db:migrate
 ```
 
-Runs on every deploy before the new instance starts. Only applies new migrations — idempotent and safe.
+Runs on every deploy before the new instance starts. Idempotent and safe.
 
 ### Build and start
 
@@ -687,13 +955,13 @@ Start:  node dist/server.js
 ### 1. Create a Firebase project
 
 1. Go to [console.firebase.google.com](https://console.firebase.google.com) and create a new project
-2. In the project, go to **Authentication → Sign-in method** and enable the providers you need: Google, Facebook, Apple
+2. Go to **Authentication → Sign-in method** and enable the providers you need: Google, Facebook, Apple
 
 ### 2. Generate a service account key
 
 1. Go to **Project Settings → Service accounts**
-2. Click **Generate new private key** — this downloads a JSON file
-3. From that JSON, copy these three values into your `.env`:
+2. Click **Generate new private key** — downloads a JSON file
+3. Copy these three values into your `.env`:
 
 ```
 FIREBASE_PROJECT_ID      ← "project_id"
@@ -701,18 +969,20 @@ FIREBASE_CLIENT_EMAIL    ← "client_email"
 FIREBASE_PRIVATE_KEY     ← "private_key"
 ```
 
-Keep the private key wrapped in double quotes and leave the `\n` characters as-is — the server unescapes them at startup.
+Keep the private key wrapped in double quotes and leave the `\n` characters as-is.
 
-### 3. Enable providers on the mobile side
+### 3. Mobile integration
 
-The mobile team initialises Firebase in the app and calls the appropriate sign-in method per provider. After a successful sign-in they call `firebaseUser.getIdToken()` and POST that string to `POST /api/v1/auth/social`. No further Firebase configuration is needed on the backend.
+The mobile app initialises Firebase and calls the appropriate sign-in method per provider. After a successful sign-in, call `firebaseUser.getIdToken()` and POST that string to `POST /api/v1/auth/social`.
+
+For the onboarding flow, the `guestSessionId` must survive the OAuth redirect. Embed it in the Firebase `customParameters` state parameter before initiating the provider sign-in, then read it back from state in the OAuth callback and include it in the `POST /auth/social` request body.
 
 ### 4. Facebook & Apple extra steps
 
-- **Facebook** — requires a Facebook App ID and secret entered into Firebase's Facebook provider settings. The mobile team also needs the App ID.
-- **Apple** — requires an Apple Developer account. Firebase's Apple sign-in docs walk through creating a Services ID and private key. Apple sign-in is mandatory on iOS if your app offers any other social login option (App Store guideline 4.8).
+- **Facebook** — requires a Facebook App ID and secret entered into Firebase's Facebook provider settings
+- **Apple** — requires an Apple Developer account. Apple sign-in is mandatory on iOS if your app offers any other social login option (App Store guideline 4.8)
 
 ### Service account security
 
 - Never commit the service account JSON or your `.env` to version control
-- On Render, set `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, and `FIREBASE_PRIVATE_KEY` as environment variables in the dashboard — they are injected at runtime and never touch the filesystem
+- On Render, set `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, and `FIREBASE_PRIVATE_KEY` as environment variables in the dashboard
