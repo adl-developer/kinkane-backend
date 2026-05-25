@@ -1,1 +1,0 @@
-ALTER TABLE "guest_sessions" ALTER COLUMN "chosen_book_ids" DROP NOT NULL;

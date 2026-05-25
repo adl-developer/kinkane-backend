@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { eq, and, gt } from 'drizzle-orm';
 import { db } from '../db';
-import { users, refreshTokens, userProviders, guestSessions, userPreferences, userInteractions, userBooks } from '../db/schema';
+import { users, refreshTokens, userProviders, guestSessions, userPreferences, userInteractions, userBooks, userSubscriptions } from '../db/schema';
 import { config } from '../config';
 import { admin } from '../lib/firebase';
 import { logger } from '../lib/logger';
@@ -17,7 +17,7 @@ export interface TokenPair {
 
 export interface AuthUser {
   id: number;
-  fullName: string;
+  name: string;
   email: string;
   emailVerified: boolean;
 }
@@ -126,14 +126,18 @@ async function migrateGuestSession(userId: number, sessionId: string): Promise<v
   });
 }
 
+// ── Subscription ──────────────────────────────────────────────────────────────
+
+const TRIAL_DAYS = 90; // 3 months
+
 // ── Auth service ──────────────────────────────────────────────────────────────
 
 export const authService = {
   async signup(
-    fullName: string,
+    name: string,
     email: string,
     password: string,
-    guestSessionId?: string,
+    guestSessionId: string,
   ): Promise<{ user: AuthUser; tokens: TokenPair }> {
     const existing = await db
       .select({ id: users.id })
@@ -149,31 +153,29 @@ export const authService = {
 
     const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
 
-    const [user] = await db
-      .insert(users)
-      .values({
-        fullName: fullName.trim(),
-        email: email.toLowerCase().trim(),
-        passwordHash,
-      })
-      .returning({
-        id: users.id,
-        fullName: users.fullName,
-        email: users.email,
-        emailVerified: users.emailVerified,
-      });
+    const trialEndsAt = new Date();
+    trialEndsAt.setDate(trialEndsAt.getDate() + TRIAL_DAYS);
+
+    // Atomic: user + subscription committed together — if either insert fails,
+    // neither row persists and the client can safely retry without hitting a 409.
+    const user = await db.transaction(async (tx) => {
+      const [u] = await tx
+        .insert(users)
+        .values({ name: name.trim(), email: email.toLowerCase().trim(), passwordHash })
+        .returning({ id: users.id, name: users.name, email: users.email, emailVerified: users.emailVerified });
+      await tx.insert(userSubscriptions).values({ userId: u.id, tier: 'plus', status: 'trialing', trialEndsAt });
+      return u;
+    });
 
     const tokens = await issueTokenPair(user.id, user.email);
 
-    if (guestSessionId) {
-      migrateGuestSession(user.id, guestSessionId).catch((err) => {
-        logger.error('Guest session migration failed after signup', {
-          guestSessionId,
-          userId: user.id,
-          error: (err as Error).message,
-        });
+    migrateGuestSession(user.id, guestSessionId).catch((err) => {
+      logger.error('Guest session migration failed after signup', {
+        guestSessionId,
+        userId: user.id,
+        error: (err as Error).message,
       });
-    }
+    });
 
     return { user, tokens };
   },
@@ -202,7 +204,7 @@ export const authService = {
     return {
       user: {
         id: user.id,
-        fullName: user.fullName,
+        name: user.name,
         email: user.email,
         emailVerified: user.emailVerified,
       },
@@ -264,7 +266,7 @@ export const authService = {
 
   async socialLogin(
     idToken: string,
-    guestSessionId?: string,
+    guestSessionId: string | undefined,
   ): Promise<{ user: AuthUser; tokens: TokenPair; isNewUser: boolean }> {
     let decoded: admin.auth.DecodedIdToken;
     try {
@@ -276,7 +278,7 @@ export const authService = {
     const provider = decoded.firebase.sign_in_provider;
     const providerUid = decoded.uid;
     const email = decoded.email?.toLowerCase().trim();
-    const fullName = decoded.name ?? '';
+    const name = decoded.name ?? '';
     const photoUrl = decoded.picture ?? null;
 
     if (!email) {
@@ -292,7 +294,7 @@ export const authService = {
 
     if (existingProvider) {
       const [user] = await db
-        .select({ id: users.id, fullName: users.fullName, email: users.email, emailVerified: users.emailVerified })
+        .select({ id: users.id, name: users.name, email: users.email, emailVerified: users.emailVerified })
         .from(users)
         .where(eq(users.id, existingProvider.userId))
         .limit(1);
@@ -318,31 +320,43 @@ export const authService = {
 
       const tokens = await issueTokenPair(existingUser.id, existingUser.email);
       return {
-        user: { id: existingUser.id, fullName: existingUser.fullName, email: existingUser.email, emailVerified: true },
+        user: { id: existingUser.id, name: existingUser.name, email: existingUser.email, emailVerified: true },
         tokens,
         isNewUser: false,
       };
     }
 
-    // 3. Brand new user
-    const [newUser] = await db
-      .insert(users)
-      .values({ fullName, email, photoUrl, emailVerified: true })
-      .returning({ id: users.id, fullName: users.fullName, email: users.email, emailVerified: users.emailVerified });
+    // 3. Brand new user — guestSessionId is required to migrate onboarding data
+    if (!guestSessionId) {
+      throw Object.assign(
+        new Error('guestSessionId is required when creating a new account via social login'),
+        { statusCode: 400 },
+      );
+    }
 
-    await db.insert(userProviders).values({ userId: newUser.id, provider, providerUid });
+    const trialEndsAt = new Date();
+    trialEndsAt.setDate(trialEndsAt.getDate() + TRIAL_DAYS);
+
+    // Atomic: user + provider link + subscription committed together.
+    const newUser = await db.transaction(async (tx) => {
+      const [u] = await tx
+        .insert(users)
+        .values({ name, email, photoUrl, emailVerified: true })
+        .returning({ id: users.id, name: users.name, email: users.email, emailVerified: users.emailVerified });
+      await tx.insert(userProviders).values({ userId: u.id, provider, providerUid });
+      await tx.insert(userSubscriptions).values({ userId: u.id, tier: 'plus', status: 'trialing', trialEndsAt });
+      return u;
+    });
 
     const tokens = await issueTokenPair(newUser.id, newUser.email);
 
-    if (guestSessionId) {
-      migrateGuestSession(newUser.id, guestSessionId).catch((err) => {
-        logger.error('Guest session migration failed after social login', {
-          guestSessionId,
-          userId: newUser.id,
-          error: (err as Error).message,
-        });
+    migrateGuestSession(newUser.id, guestSessionId).catch((err) => {
+      logger.error('Guest session migration failed after social login', {
+        guestSessionId,
+        userId: newUser.id,
+        error: (err as Error).message,
       });
-    }
+    });
 
     return { user: newUser, tokens, isNewUser: true };
   },

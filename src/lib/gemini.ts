@@ -32,15 +32,25 @@ export interface ExplanationResult {
   explanation: string;
 }
 
+// Books per Gemini call — small enough to stay within output-token limits,
+// large enough to keep the number of parallel calls reasonable (250 / 25 = 10).
+const EXPLANATION_CHUNK_SIZE = 25;
+
+function chunkArray<T>(arr: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) {
+    chunks.push(arr.slice(i, i + size));
+  }
+  return chunks;
+}
+
 /**
- * Asks gemini-2.5-flash-lite to generate a ≤120-character explanation for
- * each book in the list, explaining why it matches the user's preferences.
- * Returns one explanation per book in the same order as the input.
- *
- * Falls back to an empty string per book if the model response can't be parsed,
- * so the rest of the recommendation result is never lost.
+ * Single-chunk helper. Calls the model for one batch of books and returns
+ * explanations for that batch. Falls back to empty strings for the whole
+ * chunk if the model response can't be parsed — so one bad chunk never
+ * corrupts the rest.
  */
-export async function generateExplanations(
+async function generateExplanationsChunk(
   preferenceText: string,
   books: BookContext[],
 ): Promise<ExplanationResult[]> {
@@ -83,13 +93,12 @@ ${bookList}
   try {
     parsed = JSON.parse(raw);
   } catch {
-    logger.error('Failed to parse Gemini explanations response', { raw: raw.slice(0, 500) });
-    // Graceful fallback — return empty strings so the ranked IDs are still usable
+    logger.error('Failed to parse Gemini explanations chunk', { raw: raw.slice(0, 500) });
     return books.map((b) => ({ bookId: b.bookId, explanation: '' }));
   }
 
   if (!Array.isArray(parsed)) {
-    logger.error('Gemini explanations response is not an array', { type: typeof parsed });
+    logger.error('Gemini explanations chunk is not an array', { type: typeof parsed });
     return books.map((b) => ({ bookId: b.bookId, explanation: '' }));
   }
 
@@ -98,4 +107,26 @@ ${bookList}
     bookId: item.bookId,
     explanation: (item.explanation ?? '').slice(0, 120),
   }));
+}
+
+/**
+ * Asks gemini-2.5-flash-lite to generate a ≤120-character explanation for
+ * every book in the list, explaining why it matches the user's preferences.
+ *
+ * Books are split into chunks of EXPLANATION_CHUNK_SIZE and all chunks are
+ * requested in parallel — this keeps each individual call well within the
+ * model's output-token limit while still completing the full list in one
+ * round-trip wall-clock time.
+ *
+ * Returns one explanation per book in the same order as the input.
+ */
+export async function generateExplanations(
+  preferenceText: string,
+  books: BookContext[],
+): Promise<ExplanationResult[]> {
+  const chunks = chunkArray(books, EXPLANATION_CHUNK_SIZE);
+  const chunkResults = await Promise.all(
+    chunks.map((chunk) => generateExplanationsChunk(preferenceText, chunk)),
+  );
+  return chunkResults.flat();
 }

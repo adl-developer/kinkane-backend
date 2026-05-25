@@ -21,6 +21,12 @@ async function main() {
   await sql`DROP TABLE IF EXISTS book_genres, book_contributors, book_subjects, book_prices CASCADE`;
   await sql`DROP TABLE IF EXISTS ingestion_chunks CASCADE`;
   await sql`DROP TABLE IF EXISTS ingestion_jobs CASCADE`;
+  await sql`DROP TABLE IF EXISTS recommendation_cache CASCADE`;
+  await sql`DROP TABLE IF EXISTS guest_sessions CASCADE`;
+  await sql`DROP TABLE IF EXISTS user_books CASCADE`;
+  await sql`DROP TABLE IF EXISTS user_interactions CASCADE`;
+  await sql`DROP TABLE IF EXISTS user_preferences CASCADE`;
+  await sql`DROP TABLE IF EXISTS user_subscriptions CASCADE`;
   await sql`DROP TABLE IF EXISTS books CASCADE`;
   await sql`DROP TABLE IF EXISTS genres CASCADE`;
   await sql`DROP TABLE IF EXISTS user_providers CASCADE`;
@@ -30,6 +36,8 @@ async function main() {
   console.log('Dropping types...');
   await sql`DROP TYPE IF EXISTS chunk_status`;
   await sql`DROP TYPE IF EXISTS ingestion_status`;
+  await sql`DROP TYPE IF EXISTS subscription_status`;
+  await sql`DROP TYPE IF EXISTS subscription_tier`;
 
   console.log('Clearing drizzle migration records...');
   await sql`DELETE FROM drizzle.__drizzle_migrations`;

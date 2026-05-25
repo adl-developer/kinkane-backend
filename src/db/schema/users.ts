@@ -13,7 +13,7 @@ export const users = pgTable(
   'users',
   {
     id: serial('id').primaryKey(),
-    fullName: varchar('full_name', { length: 500 }).notNull(),
+    name: varchar('name', { length: 500 }).notNull(),
     email: varchar('email', { length: 500 }).notNull().unique(),
     passwordHash: varchar('password_hash', { length: 500 }),
     photoUrl: varchar('photo_url', { length: 1000 }),
