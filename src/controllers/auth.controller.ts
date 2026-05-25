@@ -5,14 +5,18 @@ import { AuthenticatedRequest } from '../middleware/auth.middleware';
 import { logger } from '../lib/logger';
 
 const signupSchema = z.object({
-  fullName: z.string().min(1, 'Full name is required').max(500),
+  name: z.string().min(1, 'Name is required').max(500),
   email: z.string().email('Invalid email address'),
   password: z
     .string()
     .min(8, 'Password must be at least 8 characters')
-    .max(128),
-  // Optional — present when the user went through onboarding before registering
-  guestSessionId: z.string().uuid().optional(),
+    .max(128, 'Password must be at most 128 characters')
+    .regex(/[A-Z]/, 'Password must contain at least one uppercase letter')
+    .regex(/[a-z]/, 'Password must contain at least one lowercase letter')
+    .regex(/[0-9]/, 'Password must contain at least one number')
+    .regex(/[!@#$%^&*()\-_+=\[\]{}|;:,.<>?`~]/, 'Password must contain at least one special character'),
+  // Required — the user always goes through onboarding before creating an account
+  guestSessionId: z.string().uuid(),
 });
 
 const loginSchema = z.object({
@@ -30,7 +34,7 @@ const logoutSchema = z.object({
 
 const socialSchema = z.object({
   idToken: z.string().min(1),
-  // Optional — embed the guestSessionId in the Firebase OAuth state param and pass it here
+  // Optional for returning users; required for brand-new accounts (enforced in the service layer)
   guestSessionId: z.string().uuid().optional(),
 });
 
@@ -42,10 +46,10 @@ export const authController = {
       return;
     }
 
-    const { fullName, email, password, guestSessionId } = parsed.data;
+    const { name, email, password, guestSessionId } = parsed.data;
 
     try {
-      const { user, tokens } = await authService.signup(fullName, email, password, guestSessionId);
+      const { user, tokens } = await authService.signup(name, email, password, guestSessionId);
       res.status(201).json({
         user,
         accessToken: tokens.accessToken,

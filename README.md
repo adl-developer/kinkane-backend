@@ -30,6 +30,7 @@ This is one of two independent services that share the same PostgreSQL database:
   - [Books](#books)
   - [Recommendations](#recommendations)
   - [Guest Sessions](#guest-sessions)
+- [Subscriptions](#subscriptions)
 - [Rate Limiting](#rate-limiting)
 - [Search Behaviour](#search-behaviour)
 - [Background Jobs](#background-jobs)
@@ -105,7 +106,7 @@ Server starts on `http://localhost:3000` with hot reload.
 Both `kinkane-server` and `onix_ingester` point to the same `DATABASE_URL`. They manage separate tables:
 
 - `onix_ingester` owns: `books`, `book_contributors`, `book_subjects`, `book_genres`, `book_prices`, `genres`
-- `kinkane-server` owns: `users`, `refresh_tokens`, `user_providers`, `recommendation_cache`, `guest_sessions`, `user_preferences`, `user_interactions`, `user_books`
+- `kinkane-server` owns: `users`, `refresh_tokens`, `user_providers`, `user_subscriptions`, `recommendation_cache`, `guest_sessions`, `user_preferences`, `user_interactions`, `user_books`
 
 The server defines read-only Drizzle schema representations of the book tables so it can query them without owning their migrations. This is clearly marked in `src/db/schema/books.ts`.
 
@@ -137,7 +138,7 @@ New users go through a guided wizard before creating an account. The entire flow
 ```
 
 **If they register:**
-`POST /api/v1/auth/signup` or `/auth/social` with `guestSessionId` → server migrates all onboarding data to the new user account (preferences, reading list, interaction signals) and deletes the guest session.
+`POST /api/v1/auth/signup` or `/auth/social` with `guestSessionId` (required) → server creates the account, starts a 90-day Kinkane Plus trial, and migrates all onboarding data (preferences, reading list, interaction signals) to the new account in the background.
 
 **If they skip:**
 The guest session expires after `GUEST_SESSION_TTL_HOURS` (default 72 hours / 3 days). The cleanup cron deletes it automatically.
@@ -204,13 +205,13 @@ Every request → Authorization: Bearer <accessToken>   (15 min TTL)
 
 When access token expires:
 POST /api/v1/auth/refresh  { refreshToken }
-  ← { accessToken }   (refresh token valid for 30 days)
+  ← { accessToken, refreshToken }   ← store the NEW refreshToken; old one is deleted
 
 POST /api/v1/auth/logout  { refreshToken }
   → refresh token deleted from DB, immediately invalidated
 ```
 
-Refresh tokens are stored in PostgreSQL as a SHA-256 hash — the raw token is only ever held by the client. This means logout is real: the token cannot be used again even if intercepted.
+Refresh tokens are stored in PostgreSQL as a SHA-256 hash — the raw token is only ever held by the client. **Token rotation is enforced on every refresh** — the submitted token is deleted and a new pair is issued. This means a stolen token becomes invalid the moment the legitimate client next refreshes. Logout is real: the token cannot be used again even if intercepted.
 
 ---
 
@@ -242,6 +243,7 @@ server/
 │   │       ├── books.ts             # Read-only book tables (owned by onix_ingester)
 │   │       ├── recommendations.ts   # recommendation_cache
 │   │       ├── onboarding.ts        # guest_sessions, user_preferences, user_interactions, user_books
+│   │       ├── subscriptions.ts     # user_subscriptions + getEffectiveTier() helper
 │   │       └── index.ts
 │   ├── jobs/
 │   │   └── guest-cleanup.cron.ts   # Deletes expired guest sessions every 6 hours
@@ -333,7 +335,7 @@ GUEST_SESSION_TTL_HOURS=72
 | Column | Type | Notes |
 |--------|------|-------|
 | id | serial PK | |
-| full_name | varchar(500) NOT NULL | Freeform — no first/last splitting |
+| name | varchar(500) NOT NULL | Freeform — no first/last splitting |
 | email | varchar(500) UNIQUE NOT NULL | Stored lowercase |
 | password_hash | varchar(500) | Nullable — NULL for social-only accounts |
 | photo_url | varchar(1000) | Profile photo from social provider, if provided |
@@ -363,6 +365,27 @@ Links a user account to one or more Firebase social providers. A user who signs 
 | created_at | timestamptz | |
 
 Unique index on `(provider, provider_uid)` — prevents the same social account being linked to two different users.
+
+#### user_subscriptions
+
+One row per user. Created synchronously at account creation — every new user starts on a 90-day Kinkane Plus trial. The effective tier is computed at read time using `getEffectiveTier()` — no cron job is needed to downgrade expired trials.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| id | serial PK | |
+| user_id | integer UNIQUE FK → users.id CASCADE DELETE | |
+| tier | enum `free \| plus` | DB-level tier. Defaults to `free` |
+| status | enum `active \| trialing \| cancelled` | New signups start as `trialing` |
+| trial_ends_at | timestamptz | `NOW() + 90 days` on signup. Null on non-trial plans |
+| stripe_customer_id | varchar(256) | Nullable — populated when Stripe is integrated |
+| stripe_subscription_id | varchar(256) | Nullable — populated when Stripe is integrated |
+| created_at / updated_at | timestamptz | |
+
+**Effective tier rule:** if `status = 'trialing'` and `trial_ends_at < NOW()`, the user is treated as `free` — no DB write needed. Call `getEffectiveTier(subscription)` wherever tier-gating is required.
+
+**Free tier limit:** Free users can save a maximum of **5 books** to their reading list. Check `user_books` count before any insert and reject with 403 if the user is on the free tier and already has 5 books.
+
+---
 
 #### recommendation_cache
 
@@ -480,26 +503,24 @@ No auth. No rate limit.
 
 #### `POST /api/v1/auth/signup`
 
-Creates a new account. Accepts an optional `guestSessionId` to migrate onboarding data (preferences, reading list, interaction signals) onto the new account.
+Creates a new email/password account. `guestSessionId` is **required** — the user must complete the onboarding quiz before registering. A 90-day Kinkane Plus trial is started synchronously before tokens are returned. Guest session data (preferences, reading list, interaction signals) is migrated to the new account in the background.
 
 **Body**
 ```json
 {
-  "fullName": "Jane Smith",
+  "name": "Jane Smith",
   "email": "jane@example.com",
   "password": "min8characters",
   "guestSessionId": "f47ac10b-58cc-4372-a567-0e02b2c3d479"
 }
 ```
 
-`guestSessionId` is optional. When present and valid, the guest session data is migrated in the background after the account is created — the response is not delayed.
-
 **Response `201`**
 ```json
 {
   "user": {
     "id": 1,
-    "fullName": "Jane Smith",
+    "name": "Jane Smith",
     "email": "jane@example.com",
     "emailVerified": false
   },
@@ -509,7 +530,7 @@ Creates a new account. Accepts an optional `guestSessionId` to migrate onboardin
 ```
 
 **Errors**
-- `400` — validation failure (password too short, invalid email, etc.)
+- `400` — validation failure (missing guestSessionId, password too short, invalid email, etc.)
 - `409` — email already registered
 
 ---
@@ -533,7 +554,7 @@ Creates a new account. Accepts an optional `guestSessionId` to migrate onboardin
 
 #### `POST /api/v1/auth/refresh`
 
-Exchange a valid refresh token for a new access token. Does not rotate the refresh token.
+Exchanges a valid refresh token for a new access token and a **rotated refresh token**. The submitted token is deleted immediately — store the new `refreshToken` from the response. Each token can only be used once.
 
 **Body**
 ```json
@@ -542,7 +563,10 @@ Exchange a valid refresh token for a new access token. Does not rotate the refre
 
 **Response `200`**
 ```json
-{ "accessToken": "<new-jwt>" }
+{
+  "accessToken": "<new-jwt>",
+  "refreshToken": "<new-opaque-token>"
+}
 ```
 
 **Errors**
@@ -570,7 +594,7 @@ Deletes the refresh token from the database. The access token expires naturally 
 
 Sign in or register using a Firebase ID token. If no account exists for this provider identity, one is created automatically. If an account with the same email already exists, the social provider is linked to it.
 
-Accepts an optional `guestSessionId` to migrate onboarding data — only applied when a brand new account is created.
+`guestSessionId` is **required**. For new accounts it triggers onboarding migration and starts a 90-day Plus trial. For returning users the field is validated but migration is skipped. Embed the `guestSessionId` in the Firebase OAuth `customParameters` state so it survives the provider redirect.
 
 **Body**
 ```json
@@ -580,12 +604,12 @@ Accepts an optional `guestSessionId` to migrate onboarding data — only applied
 }
 ```
 
-**Response `200` / `201`**
+**Response `201` (new account) / `200` (returning user)**
 ```json
 {
   "user": {
     "id": 1,
-    "fullName": "Jane Smith",
+    "name": "Jane Smith",
     "email": "jane@example.com",
     "emailVerified": true
   },
@@ -594,13 +618,12 @@ Accepts an optional `guestSessionId` to migrate onboarding data — only applied
 }
 ```
 
-`201` for new accounts, `200` for returning users.
-
 **Errors**
+- `400` — missing or invalid guestSessionId
 - `401` — Firebase rejected the token
 - `422` — social account has no email address
 
-**Mobile note:** Send the Firebase ID token, not the Google/Facebook/Apple access token. Obtain it with `firebaseUser.getIdToken()` after a successful Firebase sign-in. For OAuth flows, embed `guestSessionId` in the Firebase `customParameters` state so it survives the redirect and can be passed here after the callback.
+**Mobile note:** Send the Firebase ID token, not the Google/Facebook/Apple access token. Obtain it with `firebaseUser.getIdToken()` after a successful Firebase sign-in.
 
 ---
 
@@ -853,6 +876,48 @@ curl http://localhost:3000/api/v1/guest-sessions/f47ac10b-58cc-4372-a567-0e02b2c
 **Errors**
 - `400` — invalid UUID format
 - `404` — session not found or expired
+
+---
+
+## Subscriptions
+
+Every user starts on a **90-day Kinkane Plus trial** created synchronously at account creation. After the trial period, their effective tier becomes **Free** — no cron job or DB write is needed.
+
+### Tiers
+
+| Tier | How obtained | Bookshelf limit | Features |
+|------|-------------|-----------------|----------|
+| **Free** | Default after trial expires | **5 books max** | Quiz, recommendations, basic bookshelf, community browsing, trending content |
+| **Kinkane Plus** | Trial (90 days) or paid subscription | Unlimited | Everything in Free + memory across sessions, smarter recommendations, reading identity profile, Kin Reads, expanded history, enhanced community features |
+
+### Trial lifecycle
+
+```
+Signup
+  → user_subscriptions: { tier: 'plus', status: 'trialing', trial_ends_at: NOW() + 90 days }
+
+During trial
+  → getEffectiveTier() returns 'plus'
+
+After trial_ends_at
+  → getEffectiveTier() returns 'free'  ← no DB write required, computed at read time
+
+User pays
+  → tier updated to 'plus', status to 'active', trial_ends_at cleared
+  → stripe_customer_id / stripe_subscription_id populated
+```
+
+### Checking a user's tier
+
+Use `getEffectiveTier(subscription)` from `src/db/schema/subscriptions.ts` anywhere tier-gating is required. It takes the `user_subscriptions` row and returns `'free'` or `'plus'`.
+
+### Free tier bookshelf cap
+
+Before inserting into `user_books`, check the count of existing rows for that user. If count ≥ 5 and `getEffectiveTier()` returns `'free'`, reject with **403 Forbidden**. The onboarding migration seeds at most 5 books (enforced by the selections endpoint), so newly registered free users start exactly at the limit.
+
+### Stripe integration
+
+`stripe_customer_id` and `stripe_subscription_id` columns are present but nullable. Wire them up when adding Stripe webhooks to handle payment confirmation, cancellation, and renewal.
 
 ---
 

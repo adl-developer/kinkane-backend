@@ -1,5 +1,7 @@
 CREATE TYPE "public"."chunk_status" AS ENUM('pending', 'processing', 'completed', 'failed');--> statement-breakpoint
 CREATE TYPE "public"."ingestion_status" AS ENUM('pending', 'processing', 'enqueued', 'completed', 'failed');--> statement-breakpoint
+CREATE TYPE "public"."subscription_status" AS ENUM('active', 'trialing', 'cancelled');--> statement-breakpoint
+CREATE TYPE "public"."subscription_tier" AS ENUM('free', 'plus');--> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "refresh_tokens" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"user_id" integer NOT NULL,
@@ -9,11 +11,20 @@ CREATE TABLE IF NOT EXISTS "refresh_tokens" (
 	CONSTRAINT "refresh_tokens_token_hash_unique" UNIQUE("token_hash")
 );
 --> statement-breakpoint
+CREATE TABLE IF NOT EXISTS "user_providers" (
+	"id" serial PRIMARY KEY NOT NULL,
+	"user_id" integer NOT NULL,
+	"provider" varchar(50) NOT NULL,
+	"provider_uid" varchar(256) NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "users" (
 	"id" serial PRIMARY KEY NOT NULL,
-	"full_name" varchar(500) NOT NULL,
+	"name" varchar(500) NOT NULL,
 	"email" varchar(500) NOT NULL,
 	"password_hash" varchar(500),
+	"photo_url" varchar(1000),
 	"email_verified" boolean DEFAULT false NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -132,8 +143,78 @@ CREATE TABLE IF NOT EXISTS "ingestion_jobs" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
+CREATE TABLE IF NOT EXISTS "recommendation_cache" (
+	"id" serial PRIMARY KEY NOT NULL,
+	"input_hash" varchar(64) NOT NULL,
+	"results" jsonb NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"expires_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "recommendation_cache_input_hash_unique" UNIQUE("input_hash")
+);
+--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS "guest_sessions" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"display_name" varchar(200) NOT NULL,
+	"feelings" jsonb NOT NULL,
+	"book_ids" jsonb NOT NULL,
+	"genres" jsonb NOT NULL,
+	"dislikes" jsonb NOT NULL,
+	"chosen_book_ids" jsonb,
+	"recommendation_hash" varchar(64),
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"expires_at" timestamp with time zone NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS "user_books" (
+	"id" serial PRIMARY KEY NOT NULL,
+	"user_id" integer NOT NULL,
+	"book_id" integer NOT NULL,
+	"status" varchar(20) DEFAULT 'want_to_read' NOT NULL,
+	"source" varchar(50) DEFAULT 'manual' NOT NULL,
+	"added_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS "user_interactions" (
+	"id" serial PRIMARY KEY NOT NULL,
+	"user_id" integer NOT NULL,
+	"book_id" integer NOT NULL,
+	"type" varchar(50) NOT NULL,
+	"weight" real DEFAULT 1 NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS "user_preferences" (
+	"id" serial PRIMARY KEY NOT NULL,
+	"user_id" integer NOT NULL,
+	"feelings" jsonb NOT NULL,
+	"book_ids" jsonb NOT NULL,
+	"genres" jsonb NOT NULL,
+	"dislikes" jsonb NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "user_preferences_user_id_unique" UNIQUE("user_id")
+);
+--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS "user_subscriptions" (
+	"id" serial PRIMARY KEY NOT NULL,
+	"user_id" integer NOT NULL,
+	"tier" "subscription_tier" DEFAULT 'free' NOT NULL,
+	"status" "subscription_status" DEFAULT 'active' NOT NULL,
+	"trial_ends_at" timestamp with time zone,
+	"stripe_customer_id" varchar(256),
+	"stripe_subscription_id" varchar(256),
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "user_subscriptions_user_id_unique" UNIQUE("user_id")
+);
+--> statement-breakpoint
 DO $$ BEGIN
  ALTER TABLE "refresh_tokens" ADD CONSTRAINT "refresh_tokens_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;
+--> statement-breakpoint
+DO $$ BEGIN
+ ALTER TABLE "user_providers" ADD CONSTRAINT "user_providers_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
@@ -174,7 +255,45 @@ EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
 --> statement-breakpoint
+DO $$ BEGIN
+ ALTER TABLE "user_books" ADD CONSTRAINT "user_books_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;
+--> statement-breakpoint
+DO $$ BEGIN
+ ALTER TABLE "user_books" ADD CONSTRAINT "user_books_book_id_books_id_fk" FOREIGN KEY ("book_id") REFERENCES "public"."books"("id") ON DELETE cascade ON UPDATE no action;
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;
+--> statement-breakpoint
+DO $$ BEGIN
+ ALTER TABLE "user_interactions" ADD CONSTRAINT "user_interactions_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;
+--> statement-breakpoint
+DO $$ BEGIN
+ ALTER TABLE "user_interactions" ADD CONSTRAINT "user_interactions_book_id_books_id_fk" FOREIGN KEY ("book_id") REFERENCES "public"."books"("id") ON DELETE cascade ON UPDATE no action;
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;
+--> statement-breakpoint
+DO $$ BEGIN
+ ALTER TABLE "user_preferences" ADD CONSTRAINT "user_preferences_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;
+--> statement-breakpoint
+DO $$ BEGIN
+ ALTER TABLE "user_subscriptions" ADD CONSTRAINT "user_subscriptions_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_refresh_tokens_user_id" ON "refresh_tokens" USING btree ("user_id");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "idx_user_providers_provider_uid" ON "user_providers" USING btree ("provider","provider_uid");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "idx_user_providers_user_id" ON "user_providers" USING btree ("user_id");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_users_email" ON "users" USING btree ("email");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_book_contributors_book_id" ON "book_contributors" USING btree ("book_id");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_book_genres_genre_id" ON "book_genres" USING btree ("genre_id");--> statement-breakpoint
@@ -186,4 +305,11 @@ CREATE INDEX IF NOT EXISTS "idx_books_publisher" ON "books" USING btree ("publis
 CREATE INDEX IF NOT EXISTS "idx_books_availability" ON "books" USING btree ("availability_code");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_ingestion_chunks_job_id" ON "ingestion_chunks" USING btree ("job_id");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_ingestion_jobs_file_key" ON "ingestion_jobs" USING btree ("file_key");--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "idx_ingestion_jobs_status" ON "ingestion_jobs" USING btree ("status");
+CREATE INDEX IF NOT EXISTS "idx_ingestion_jobs_status" ON "ingestion_jobs" USING btree ("status");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "idx_rec_cache_expires_at" ON "recommendation_cache" USING btree ("expires_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "idx_guest_sessions_expires_at" ON "guest_sessions" USING btree ("expires_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "idx_user_books_user_id" ON "user_books" USING btree ("user_id");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "idx_user_books_user_book" ON "user_books" USING btree ("user_id","book_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "idx_user_interactions_user_id" ON "user_interactions" USING btree ("user_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "idx_user_interactions_book_id" ON "user_interactions" USING btree ("book_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "idx_user_interactions_type" ON "user_interactions" USING btree ("type");

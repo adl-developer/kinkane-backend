@@ -5,36 +5,8 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1779170991517,
-      "tag": "0000_real_slyde",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1779207736981,
-      "tag": "0001_petite_quasimodo",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "7",
-      "when": 1779382355615,
-      "tag": "0002_superb_nocturne",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "7",
-      "when": 1779484615038,
-      "tag": "0003_abandoned_lady_mastermind",
-      "breakpoints": true
-    },
-    {
-      "idx": 4,
-      "version": "7",
-      "when": 1779575302220,
-      "tag": "0004_right_talkback",
+      "when": 1779649320427,
+      "tag": "0000_init",
       "breakpoints": true
     }
   ]
