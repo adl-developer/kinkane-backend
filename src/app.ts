@@ -1,11 +1,24 @@
 import express, { Request, Response, NextFunction } from 'express';
+import { createBullBoard } from '@bull-board/api';
+import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
+import { ExpressAdapter } from '@bull-board/express';
 import { logger } from './lib/logger';
+import { emailQueue } from './lib/email-queue';
 import apiRoutes from './routes';
 
 const app = express();
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
+
+// ── Bull Board ────────────────────────────────────────────────────────────────
+// Visual dashboard for monitoring email job queue — view pending, active,
+// completed and failed jobs at /admin/queues.
+// TODO: Protect this route with admin auth before going to production.
+const bullBoardAdapter = new ExpressAdapter();
+bullBoardAdapter.setBasePath('/admin/queues');
+createBullBoard({ queues: [new BullMQAdapter(emailQueue)], serverAdapter: bullBoardAdapter });
+app.use('/admin/queues', bullBoardAdapter.getRouter());
 
 app.use('/api', apiRoutes);
 

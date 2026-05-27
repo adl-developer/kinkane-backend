@@ -8,6 +8,7 @@ const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
 
   DATABASE_URL: z.string().url(),
+  REDIS_URL: z.string().url(),
 
   JWT_ACCESS_SECRET: z.string().min(32),
   JWT_REFRESH_SECRET: z.string().min(32),
@@ -27,6 +28,13 @@ const envSchema = z.object({
   // How long a guest session lives before the cleanup cron removes it.
   // Default: 24 * 3 = 72 hours (3 days). Set to e.g. 168 for a full week.
   GUEST_SESSION_TTL_HOURS: z.coerce.number().int().min(1).default(72),
+
+  SENDGRID_API_KEY: z.string().min(1),
+  EMAIL_FROM: z.string().email().default('hello@kinkane.com'),
+  EMAIL_FROM_NAME: z.string().default('Kinkane'),
+
+  // Frontend base URL — used to build links in emails (e.g. password reset)
+  APP_URL: z.string().url().default('https://kinkane.com'),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -43,6 +51,9 @@ export const config = {
   nodeEnv: env.NODE_ENV,
   database: {
     url: env.DATABASE_URL,
+  },
+  redis: {
+    url: env.REDIS_URL,
   },
   jwt: {
     accessSecret: env.JWT_ACCESS_SECRET,
@@ -64,6 +75,12 @@ export const config = {
   guestSession: {
     ttlHours: env.GUEST_SESSION_TTL_HOURS,
   },
+  sendgrid: {
+    apiKey: env.SENDGRID_API_KEY,
+    from: env.EMAIL_FROM,
+    fromName: env.EMAIL_FROM_NAME,
+  },
+  appUrl: env.APP_URL,
 } as const;
 
 export type Config = typeof config;
