@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { authController } from '../controllers/auth.controller';
 import { requireAuth } from '../middleware/auth.middleware';
-import { signupLimiter, loginLimiter, refreshLimiter } from '../middleware/rate-limit.middleware';
+import { signupLimiter, loginLimiter, refreshLimiter, passwordResetLimiter } from '../middleware/rate-limit.middleware';
 
 const router = Router();
 
@@ -75,6 +75,31 @@ router.post('/logout', authController.logout);
  * Errors: 400 validation | 401 invalid Firebase token | 422 no email on social account
  */
 router.post('/social', loginLimiter, authController.socialLogin);
+
+/**
+ * POST /api/v1/auth/forgot-password
+ *
+ * Sends a password reset link to the given email address.
+ * Always returns 200 regardless of whether the email is registered —
+ * this prevents account enumeration.
+ *
+ * Body: { email }
+ * Returns 200: { message }
+ */
+router.post('/forgot-password', passwordResetLimiter, authController.forgotPassword);
+
+/**
+ * POST /api/v1/auth/reset-password
+ *
+ * Validates the reset token and updates the user's password.
+ * The token expires after 1 hour and is single-use.
+ * On success, all active sessions (refresh tokens) are invalidated.
+ *
+ * Body: { token, password }
+ * Returns 200: { message }
+ * Errors: 400 invalid/expired token | 400 password validation failure
+ */
+router.post('/reset-password', passwordResetLimiter, authController.resetPassword);
 
 /**
  * GET /api/v1/auth/me

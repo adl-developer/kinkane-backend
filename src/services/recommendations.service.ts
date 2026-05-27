@@ -6,6 +6,7 @@ import { recommendationCache, type RecommendationItem } from '../db/schema/recom
 import { generateEmbedding, generateExplanations, type BookContext } from '../lib/gemini';
 import { guestService } from './guest.service';
 import { logger } from '../lib/logger';
+import { redis } from '../lib/redis';
 
 // Max books returned per recommendation request — balances quality vs Gemini cost
 const CANDIDATE_LIMIT = 250;
@@ -171,9 +172,26 @@ export const recommendationsService = {
   async getRecommendations(input: RecommendationInput): Promise<RecommendationResult> {
     const hash = hashInput(input);
     const now = new Date();
+    const redisCacheKey = `recommendations:hash:${hash}`;
 
-    // 1. Check cache — same preferences within 48 h return instantly.
-    //    A fresh guest session is always created regardless of cache state.
+    // 1a. Redis fast path — same preferences return without touching Postgres.
+    const redisHit = await redis.get(redisCacheKey);
+    if (redisHit) {
+      logger.info('Recommendation Redis cache hit', { hash });
+      const cachedResults = JSON.parse(redisHit) as RecommendationItem[];
+      const { id: guestSessionId, expiresAt } = await guestService.create({
+        displayName: input.displayName,
+        feelings: input.feelings,
+        bookIds: input.bookIds,
+        genres: input.genres,
+        dislikes: input.dislikes,
+        recommendationHash: hash,
+      });
+      return { recommendations: cachedResults, guestSessionId, expiresAt };
+    }
+
+    // 1b. DB cache — same preferences within 48 h return instantly.
+    //     A fresh guest session is always created regardless of cache state.
     const [cached] = await db
       .select()
       .from(recommendationCache)
@@ -186,7 +204,9 @@ export const recommendationsService = {
       .limit(1);
 
     if (cached) {
-      logger.info('Recommendation cache hit', { hash });
+      logger.info('Recommendation DB cache hit', { hash });
+      const ttlSeconds = Math.floor((cached.expiresAt.getTime() - now.getTime()) / 1000);
+      await redis.set(redisCacheKey, JSON.stringify(cached.results), 'EX', ttlSeconds);
       const { id: guestSessionId, expiresAt } = await guestService.create({
         displayName: input.displayName,
         feelings: input.feelings,
@@ -223,13 +243,16 @@ export const recommendationsService = {
     if (candidateRows.length === 0) {
       // Cache the empty result so identical preferences don't re-run the vector search
       const cacheExpiresAt = new Date(now.getTime() + CACHE_TTL_HOURS * 60 * 60 * 1000);
-      await db
-        .insert(recommendationCache)
-        .values({ inputHash: hash, results: [], expiresAt: cacheExpiresAt })
-        .onConflictDoUpdate({
-          target: recommendationCache.inputHash,
-          set: { results: [], expiresAt: cacheExpiresAt },
-        });
+      await Promise.all([
+        db
+          .insert(recommendationCache)
+          .values({ inputHash: hash, results: [], expiresAt: cacheExpiresAt })
+          .onConflictDoUpdate({
+            target: recommendationCache.inputHash,
+            set: { results: [], expiresAt: cacheExpiresAt },
+          }),
+        redis.set(redisCacheKey, '[]', 'EX', CACHE_TTL_HOURS * 60 * 60),
+      ]);
 
       const { id: guestSessionId, expiresAt } = await guestService.create({
         displayName: input.displayName,
@@ -296,13 +319,16 @@ export const recommendationsService = {
 
     // 8. Persist to cache — upsert in case of a race condition on concurrent identical requests
     const cacheExpiresAt = new Date(now.getTime() + CACHE_TTL_HOURS * 60 * 60 * 1000);
-    await db
-      .insert(recommendationCache)
-      .values({ inputHash: hash, results, expiresAt: cacheExpiresAt })
-      .onConflictDoUpdate({
-        target: recommendationCache.inputHash,
-        set: { results, expiresAt: cacheExpiresAt },
-      });
+    await Promise.all([
+      db
+        .insert(recommendationCache)
+        .values({ inputHash: hash, results, expiresAt: cacheExpiresAt })
+        .onConflictDoUpdate({
+          target: recommendationCache.inputHash,
+          set: { results, expiresAt: cacheExpiresAt },
+        }),
+      redis.set(redisCacheKey, JSON.stringify(results), 'EX', CACHE_TTL_HOURS * 60 * 60),
+    ]);
 
     // 9. Create guest session now that results are ready
     const { id: guestSessionId, expiresAt } = await guestService.create({

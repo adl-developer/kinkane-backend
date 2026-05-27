@@ -13,6 +13,10 @@ import {
   type BookSubject,
   type BookPrice,
 } from '../db/schema';
+import { redis } from '../lib/redis';
+
+const BOOK_DETAIL_TTL = 60 * 60;       // 1 hour
+const SUGGESTIONS_TTL = 5 * 60;        // 5 minutes
 
 export interface ListBooksOptions {
   q?: string;
@@ -248,6 +252,10 @@ export const booksService = {
   },
 
   async suggestions(q: string, limit: number): Promise<SuggestionItem[]> {
+    const cacheKey = `suggestions:${q}:${limit}`;
+    const cached = await redis.get(cacheKey);
+    if (cached) return JSON.parse(cached) as SuggestionItem[];
+
     // Four-tier match on title (tiers 0–2) with FTS description fallback (tier 3):
     //   0 — title starts with q              (e.g. "Harr"        → "Harry Potter...")
     //   1 — a word in title starts with q    (e.g. "Pot"         → "Harry Potter...")
@@ -268,7 +276,10 @@ export const booksService = {
       .orderBy(...buildSearchOrderBy(q))
       .limit(limit);
 
-    if (rows.length === 0) return [];
+    if (rows.length === 0) {
+      await redis.set(cacheKey, '[]', 'EX', SUGGESTIONS_TTL);
+      return [];
+    }
 
     // Batch-fetch authors (A01 role only) for matched books
     const ids = rows.map((r) => r.id);
@@ -290,13 +301,25 @@ export const booksService = {
       if (c.personName) authorMap.get(c.bookId)!.push(c.personName);
     }
 
-    return rows.map((r) => ({
+    const results = rows.map((r) => ({
       ...r,
       authors: authorMap.get(r.id) ?? [],
     }));
+
+    await redis.set(cacheKey, JSON.stringify(results), 'EX', SUGGESTIONS_TTL);
+    return results;
   },
 
   async getById(id: number): Promise<BookDetail | null> {
+    const cacheKey = `book:detail:${id}`;
+    const cached = await redis.get(cacheKey);
+    if (cached) {
+      const detail = JSON.parse(cached) as BookDetail;
+      detail.createdAt = new Date(detail.createdAt);
+      detail.updatedAt = new Date(detail.updatedAt);
+      return detail;
+    }
+
     const [book] = await db.select().from(books).where(eq(books.id, id)).limit(1);
     if (!book) return null;
 
@@ -337,7 +360,7 @@ export const booksService = {
         .where(eq(bookSubjects.bookId, id)),
     ]);
 
-    return {
+    const detail: BookDetail = {
       id: book.id,
       isbn13: book.isbn13,
       recordReference: book.recordReference,
@@ -369,5 +392,8 @@ export const booksService = {
       prices: priceRows,
       subjects,
     };
+
+    await redis.set(cacheKey, JSON.stringify(detail), 'EX', BOOK_DETAIL_TTL);
+    return detail;
   },
 };

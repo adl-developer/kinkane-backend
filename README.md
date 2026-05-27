@@ -34,6 +34,10 @@ This is one of two independent services that share the same PostgreSQL database:
 - [Rate Limiting](#rate-limiting)
 - [Search Behaviour](#search-behaviour)
 - [Background Jobs](#background-jobs)
+  - [Guest session cleanup](#guest-session-cleanup)
+  - [Email queue](#email-queue)
+  - [Weekly digest](#weekly-digest)
+- [Email](#email)
 - [Running Locally](#running-locally)
 - [Deploying to Render](#deploying-to-render)
 - [Firebase Setup](#firebase-setup)
@@ -47,9 +51,9 @@ This is one of two independent services that share the same PostgreSQL database:
 | Node.js | 20+ | Node 22 recommended |
 | npm | 9+ | Bundled with Node |
 | PostgreSQL | 14+ | Must have `pg_trgm` and `pgvector` extensions enabled (handled by `onix_ingester`) |
+| Redis | 6+ | Required for rate limiting and the email job queue |
 | Google Gemini API key | — | Same key used by `onix_ingester` — see [AI Recommendations](#ai-recommendations) |
-
-No Redis required — this service is stateless aside from the database.
+| SendGrid API key | — | Required for transactional and marketing emails — see [Email](#email) |
 
 ---
 
@@ -106,7 +110,7 @@ Server starts on `http://localhost:3000` with hot reload.
 Both `kinkane-server` and `onix_ingester` point to the same `DATABASE_URL`. They manage separate tables:
 
 - `onix_ingester` owns: `books`, `book_contributors`, `book_subjects`, `book_genres`, `book_prices`, `genres`
-- `kinkane-server` owns: `users`, `refresh_tokens`, `user_providers`, `user_subscriptions`, `recommendation_cache`, `guest_sessions`, `user_preferences`, `user_interactions`, `user_books`
+- `kinkane-server` owns: `users`, `refresh_tokens`, `user_providers`, `user_subscriptions`, `recommendation_cache`, `guest_sessions`, `user_preferences`, `user_interactions`, `user_books`, `password_reset_tokens`
 
 The server defines read-only Drizzle schema representations of the book tables so it can query them without owning their migrations. This is clearly marked in `src/db/schema/books.ts`.
 
@@ -244,15 +248,35 @@ server/
 │   │       ├── recommendations.ts   # recommendation_cache
 │   │       ├── onboarding.ts        # guest_sessions, user_preferences, user_interactions, user_books
 │   │       ├── subscriptions.ts     # user_subscriptions + getEffectiveTier() helper
+│   │       ├── password-reset-tokens.ts  # password_reset_tokens
 │   │       └── index.ts
+│   ├── emails/
+│   │   ├── index.ts                 # Re-exports all email senders
+│   │   ├── transactional/
+│   │   │   ├── welcome.ts           # New user welcome
+│   │   │   ├── verify-email.ts      # Email verification link
+│   │   │   └── password-reset.ts    # Password reset link
+│   │   ├── notifications/
+│   │   │   ├── trial-ending.ts      # Trial expiry warning
+│   │   │   └── new-recommendation.ts
+│   │   ├── marketing/
+│   │   │   └── newsletter.ts        # Bulk marketing sends
+│   │   └── reports/
+│   │       └── weekly-digest.ts     # Weekly reading summary
 │   ├── jobs/
-│   │   └── guest-cleanup.cron.ts   # Deletes expired guest sessions every 6 hours
+│   │   ├── guest-cleanup.cron.ts    # Deletes expired guest sessions every 6 hours
+│   │   └── weekly-digest.cron.ts    # Enqueues digest emails every Monday at 08:00 UTC
 │   ├── lib/
+│   │   ├── email-queue.ts           # BullMQ queue, job type map, enqueueEmail() helper
 │   │   ├── firebase.ts              # Firebase Admin SDK initialisation
 │   │   ├── gemini.ts                # Gemini embedding + explanation helpers
-│   │   └── logger.ts                # Structured JSON logger
+│   │   ├── logger.ts                # Structured JSON logger
+│   │   ├── redis.ts                 # ioredis client (rate limiting)
+│   │   └── sendgrid.ts              # SendGrid client initialisation
+│   ├── workers/
+│   │   └── email.worker.ts          # BullMQ worker — processes all email job types
 │   ├── services/
-│   │   ├── auth.service.ts          # signup, login, refresh, logout, socialLogin, guest migration
+│   │   ├── auth.service.ts          # signup, login, refresh, logout, socialLogin, forgotPassword, resetPassword
 │   │   ├── books.service.ts         # list (FTS + trigram fallback), suggestions, getById
 │   │   ├── guest.service.ts         # create, saveSelections, getById
 │   │   └── recommendations.service.ts  # pgvector search, Gemini calls, caching
@@ -270,8 +294,8 @@ server/
 │   │   ├── books.routes.ts
 │   │   ├── guest.routes.ts
 │   │   └── recommendations.routes.ts
-│   ├── app.ts                       # Express app, middleware, error handler
-│   └── server.ts                    # Entry point, starts cron jobs, graceful shutdown
+│   ├── app.ts                       # Express app, middleware, Bull Board at /admin/queues
+│   └── server.ts                    # Entry point, starts worker + cron jobs, graceful shutdown
 ├── drizzle/                         # Migration SQL files
 ├── drizzle.config.ts
 ├── render.yaml
@@ -293,6 +317,9 @@ NODE_ENV=development
 
 # PostgreSQL — same database as onix_ingester
 DATABASE_URL=postgresql://user:password@host:5432/dbname
+
+# Redis — used for rate limiting and the email job queue
+REDIS_URL=redis://localhost:6379
 
 # JWT secrets — must be at least 32 characters each, keep separate
 JWT_ACCESS_SECRET=your_access_token_secret_min_32_chars
@@ -316,6 +343,15 @@ GEMINI_FLASH_MODEL=gemini-2.5-flash-lite
 # Guest session lifetime in hours. Default: 72 (24 * 3 = 3 days).
 # Set to 168 for a full week, 24 for a single day, etc.
 GUEST_SESSION_TTL_HOURS=72
+
+# SendGrid — https://app.sendgrid.com/settings/api_keys
+SENDGRID_API_KEY=SG.your-api-key-here
+EMAIL_FROM=hello@kinkane.com
+EMAIL_FROM_NAME=Kinkane
+
+# Frontend base URL — used to build links in emails (e.g. password reset)
+# Use http://localhost:3001 (or your frontend's port) in development
+APP_URL=https://kinkane.com
 ```
 
 **Why two JWT secrets?** Access and refresh tokens are signed with different secrets. A leaked access token cannot be used to forge a refresh token.
@@ -457,6 +493,18 @@ The user's personal reading list. Seeded at registration with the 5 onboarding c
 | added_at | timestamptz | |
 
 Unique index on `(user_id, book_id)` — a book can only appear once per reading list.
+
+#### password_reset_tokens
+
+One row per in-flight password reset request. The raw token is never stored — only its SHA-256 hex hash. Deleted on use, and replaced when a new reset is requested (one active token per user at a time).
+
+| Column | Type | Notes |
+|--------|------|-------|
+| id | serial PK | |
+| user_id | integer FK → users.id CASCADE DELETE | |
+| token_hash | varchar(64) UNIQUE NOT NULL | SHA-256 hex of the raw token sent to the client |
+| expires_at | timestamptz NOT NULL | 1 hour from creation |
+| created_at | timestamptz | |
 
 ### Tables read from (owned by onix_ingester)
 
@@ -624,6 +672,51 @@ Sign in or register using a Firebase ID token. If no account exists for this pro
 - `422` — social account has no email address
 
 **Mobile note:** Send the Firebase ID token, not the Google/Facebook/Apple access token. Obtain it with `firebaseUser.getIdToken()` after a successful Firebase sign-in.
+
+---
+
+#### `POST /api/v1/auth/forgot-password`
+
+Sends a password reset link to the given email address. Always returns `200` regardless of whether the email is registered — this prevents account enumeration. The reset link expires in **1 hour**.
+
+**Body**
+```json
+{ "email": "jane@example.com" }
+```
+
+**Response `200`**
+```json
+{ "message": "If that email is registered, a reset link has been sent" }
+```
+
+**Errors**
+- `400` — invalid email format
+- `429` — rate limit exceeded (5 requests per hour)
+
+---
+
+#### `POST /api/v1/auth/reset-password`
+
+Validates the reset token and updates the user's password. The token is single-use — it is deleted on success. All active sessions (refresh tokens) are invalidated, forcing the user to log in again on all devices.
+
+**Body**
+```json
+{
+  "token": "<raw-token-from-email-link>",
+  "password": "NewPassword123!"
+}
+```
+
+Password must be at least 8 characters and contain at least one uppercase letter, one lowercase letter, one number, and one special character.
+
+**Response `200`**
+```json
+{ "message": "Password updated successfully. Please log in again." }
+```
+
+**Errors**
+- `400` — invalid or expired token, or password fails validation
+- `429` — rate limit exceeded (5 requests per hour)
 
 ---
 
@@ -931,6 +1024,8 @@ Rate limits are applied per IP address. Exceeding a limit returns `429 Too Many 
 | `POST /auth/login` | 20 | 15 min | Brute-force protection |
 | `POST /auth/social` | 20 | 15 min | Same risk profile as login |
 | `POST /auth/refresh` | 60 | 15 min | Apps refresh silently on every token expiry |
+| `POST /auth/forgot-password` | 5 | 1 hour | Prevents email bombing and token brute-forcing |
+| `POST /auth/reset-password` | 5 | 1 hour | Same window as forgot-password |
 | `POST /recommendations` | 20 | 1 hour | Each uncached request calls Gemini API (real cost) |
 | All other `/v1/` routes | 300 | 15 min | Comfortable for active browsing |
 | `GET /health` | None | — | Uptime checkers must not be blocked |
@@ -969,6 +1064,88 @@ Logs the number of deleted rows at `info` level. Errors are caught and logged wi
 
 ---
 
+### Email queue
+
+All outgoing emails are processed through a **BullMQ** queue backed by Redis. Emails are never sent directly from the HTTP request path — the service layer enqueues a job and returns immediately. A worker running inside the same process picks it up asynchronously.
+
+**Why a queue instead of direct sends?**
+- Automatic retries with exponential backoff (3 attempts, 2s → 4s)
+- Survives transient SendGrid outages without losing emails
+- Controlled concurrency (5 simultaneous sends) respects SendGrid rate limits
+- Priority lanes ensure password reset emails jump ahead of bulk newsletter jobs
+- Full job history visible in Bull Board
+
+**Job priorities** (lower = higher priority):
+
+| Job type | Priority |
+|----------|----------|
+| `password-reset` | 1 — user is blocked without this |
+| `welcome` | 5 |
+| `trial-ending` | 5 |
+| `new-recommendation` | 7 |
+| `weekly-digest` | 8 |
+| `newsletter` | 10 — bulk, can wait |
+
+**Retry policy:** 3 attempts with exponential backoff (2s, 4s). After all attempts are exhausted the job moves to `failed` state and is retained in Redis for inspection via Bull Board.
+
+**Bull Board** — a visual dashboard for the email queue — is available at `/admin/queues`. It shows all pending, active, completed, and failed jobs with full payloads and error details.
+
+> **Important:** Protect `/admin/queues` with authentication before going to production.
+
+**Graceful shutdown:** On `SIGTERM`/`SIGINT` the worker finishes its currently active job before closing, ensuring no email is dropped mid-send.
+
+---
+
+### Weekly digest
+
+A `node-cron` job fires every Monday at **08:00 UTC** and enqueues a `weekly-digest` job for each active user. The worker processes them in batches of 5 (controlled by the worker's `concurrency` setting).
+
+```
+Cron: 0 8 * * 1  (Mondays at 08:00 UTC)
+Task: enqueueEmail('weekly-digest', { to, payload }) per active user
+```
+
+> The query to fetch active users and build each digest payload is not yet implemented — the cron stub is in place and ready to be wired up once the user activity data layer is built.
+
+---
+
+## Email
+
+All emails are sent via **SendGrid** and routed through the BullMQ queue. Email templates live in `src/emails/` organised by type.
+
+### Email types
+
+| Type | File | Trigger |
+|------|------|---------|
+| Welcome | `transactional/welcome.ts` | New account created (email/password or social) |
+| Password reset | `transactional/password-reset.ts` | `POST /auth/forgot-password` |
+| Trial ending | `notifications/trial-ending.ts` | Manually enqueued when trial nears expiry |
+| New recommendation | `notifications/new-recommendation.ts` | Manually enqueued after recommendation generation |
+| Newsletter | `marketing/newsletter.ts` | Manually enqueued per campaign |
+| Weekly digest | `reports/weekly-digest.ts` | Monday 08:00 UTC cron |
+
+### Sending an email from code
+
+Always enqueue via the helper — never call `sendXxxEmail()` directly from a service:
+
+```ts
+import { enqueueEmail } from '../lib/email-queue';
+
+await enqueueEmail('welcome', { to: user.email, name: user.name });
+await enqueueEmail('trial-ending', { to: user.email, name: user.name, daysLeft: 7 });
+```
+
+The helper is fully typed — TypeScript will catch mismatched payloads at compile time.
+
+### SendGrid setup
+
+1. Create an account at [sendgrid.com](https://sendgrid.com)
+2. Go to **Settings → API Keys** and create a key with **Mail Send** permission
+3. Verify your sender domain or email address under **Settings → Sender Authentication**
+4. Add `SENDGRID_API_KEY` and `EMAIL_FROM` to your `.env`
+
+---
+
 ## Running Locally
 
 ```bash
@@ -977,7 +1154,8 @@ npm install
 
 # 2. Set up environment
 cp .env.example .env
-# Fill in DATABASE_URL, JWT secrets, Firebase credentials, GEMINI_API_KEY
+# Fill in DATABASE_URL, REDIS_URL, JWT secrets, Firebase credentials,
+# GEMINI_API_KEY, SENDGRID_API_KEY, and APP_URL
 
 # 3. Apply migrations
 npm run db:migrate
@@ -986,7 +1164,11 @@ npm run db:migrate
 npm run dev
 ```
 
-The server requires the book tables to already exist (created by `onix_ingester`). If running without the ingester, run the ingester's `db:init` first, or manually apply its migrations against the same database.
+The server requires:
+- **PostgreSQL** with the book tables already created by `onix_ingester`. If running without the ingester, run the ingester's `db:init` first, or manually apply its migrations against the same database.
+- **Redis** running locally (`redis://localhost:6379` by default). Used for rate limiting and the email job queue.
+
+Once running, the **Bull Board** queue dashboard is available at `http://localhost:3000/admin/queues`.
 
 ---
 
@@ -996,7 +1178,7 @@ The server requires the book tables to already exist (created by `onix_ingester`
 
 ### Environment variables on Render
 
-Set all values from [Environment Variables](#environment-variables) in the Render dashboard. `DATABASE_URL` is injected automatically from the linked database.
+Set all values from [Environment Variables](#environment-variables) in the Render dashboard. `DATABASE_URL` is injected automatically from the linked database. `REDIS_URL` is injected automatically from the linked Redis instance. Set `SENDGRID_API_KEY`, `EMAIL_FROM`, `EMAIL_FROM_NAME`, and `APP_URL` manually.
 
 ### Pre-deploy command
 

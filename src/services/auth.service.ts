@@ -3,10 +3,11 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { eq, and, gt } from 'drizzle-orm';
 import { db } from '../db';
-import { users, refreshTokens, userProviders, guestSessions, userPreferences, userInteractions, userBooks, userSubscriptions } from '../db/schema';
+import { users, refreshTokens, userProviders, guestSessions, userPreferences, userInteractions, userBooks, userSubscriptions, passwordResetTokens } from '../db/schema';
 import { config } from '../config';
 import { admin } from '../lib/firebase';
 import { logger } from '../lib/logger';
+import { enqueueEmail } from '../lib/email-queue';
 
 const BCRYPT_ROUNDS = 12;
 
@@ -177,6 +178,13 @@ export const authService = {
       });
     });
 
+    enqueueEmail('welcome', { to: user.email, name: user.name }).catch((err) => {
+      logger.error('Failed to enqueue welcome email after signup', {
+        userId: user.id,
+        error: (err as Error).message,
+      });
+    });
+
     return { user, tokens };
   },
 
@@ -250,6 +258,82 @@ export const authService = {
   async logout(rawToken: string): Promise<void> {
     const tokenHash = hashToken(rawToken);
     await db.delete(refreshTokens).where(eq(refreshTokens.tokenHash, tokenHash));
+  },
+
+  /**
+   * Initiates a password reset for the given email address.
+   * Always resolves silently — never reveals whether the email is registered,
+   * to prevent account enumeration.
+   */
+  async forgotPassword(email: string): Promise<void> {
+    const [user] = await db
+      .select({ id: users.id, name: users.name, email: users.email })
+      .from(users)
+      .where(eq(users.email, email.toLowerCase().trim()))
+      .limit(1);
+
+    // Return without error even if no account exists — caller gets the same 200
+    if (!user) return;
+
+    // One active token per user — delete any existing ones before issuing a new one
+    await db.delete(passwordResetTokens).where(eq(passwordResetTokens.userId, user.id));
+
+    const rawToken = crypto.randomBytes(40).toString('hex');
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+
+    await db.insert(passwordResetTokens).values({
+      userId: user.id,
+      tokenHash: hashToken(rawToken),
+      expiresAt,
+    });
+
+    const resetUrl = `${config.appUrl}/reset-password?token=${rawToken}`;
+
+    enqueueEmail('password-reset', { to: user.email, name: user.name, resetUrl }).catch((err) => {
+      logger.error('Failed to enqueue password reset email', {
+        userId: user.id,
+        error: (err as Error).message,
+      });
+    });
+  },
+
+  /**
+   * Validates the reset token and updates the user's password.
+   * Deletes the token and all active refresh tokens on success,
+   * forcing the user to log in again on all devices.
+   */
+  async resetPassword(rawToken: string, newPassword: string): Promise<void> {
+    const tokenHash = hashToken(rawToken);
+
+    const [stored] = await db
+      .select({
+        id: passwordResetTokens.id,
+        userId: passwordResetTokens.userId,
+        expiresAt: passwordResetTokens.expiresAt,
+      })
+      .from(passwordResetTokens)
+      .where(eq(passwordResetTokens.tokenHash, tokenHash))
+      .limit(1);
+
+    if (!stored || stored.expiresAt < new Date()) {
+      throw Object.assign(new Error('Invalid or expired password reset token'), { statusCode: 400 });
+    }
+
+    const passwordHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+
+    // Atomic: update password, consume token, invalidate all sessions
+    await db.transaction(async (tx) => {
+      await tx
+        .update(users)
+        .set({ passwordHash, updatedAt: new Date() })
+        .where(eq(users.id, stored.userId));
+      await tx
+        .delete(passwordResetTokens)
+        .where(eq(passwordResetTokens.id, stored.id));
+      await tx
+        .delete(refreshTokens)
+        .where(eq(refreshTokens.userId, stored.userId));
+    });
   },
 
   verifyAccessToken(token: string): { sub: number; email: string } {
@@ -353,6 +437,13 @@ export const authService = {
     migrateGuestSession(newUser.id, guestSessionId).catch((err) => {
       logger.error('Guest session migration failed after social login', {
         guestSessionId,
+        userId: newUser.id,
+        error: (err as Error).message,
+      });
+    });
+
+    enqueueEmail('welcome', { to: newUser.email, name: newUser.name }).catch((err) => {
+      logger.error('Failed to enqueue welcome email after social signup', {
         userId: newUser.id,
         error: (err as Error).message,
       });

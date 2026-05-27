@@ -38,6 +38,22 @@ const socialSchema = z.object({
   guestSessionId: z.string().uuid().optional(),
 });
 
+const forgotPasswordSchema = z.object({
+  email: z.string().email(),
+});
+
+const resetPasswordSchema = z.object({
+  token: z.string().min(1),
+  password: z
+    .string()
+    .min(8, 'Password must be at least 8 characters')
+    .max(128, 'Password must be at most 128 characters')
+    .regex(/[A-Z]/, 'Password must contain at least one uppercase letter')
+    .regex(/[a-z]/, 'Password must contain at least one lowercase letter')
+    .regex(/[0-9]/, 'Password must contain at least one number')
+    .regex(/[!@#$%^&*()\-_+=\[\]{}|;:,.<>?`~]/, 'Password must contain at least one special character'),
+});
+
 export const authController = {
   async signup(req: Request, res: Response): Promise<void> {
     const parsed = signupSchema.safeParse(req.body);
@@ -132,6 +148,48 @@ export const authController = {
       const e = err as Error & { statusCode?: number };
       logger.error('Unexpected error during logout', { error: e.message });
       res.status(500).json({ error: 'An unexpected error occurred' });
+    }
+  },
+
+  async forgotPassword(req: Request, res: Response): Promise<void> {
+    const parsed = forgotPasswordSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+
+    try {
+      await authService.forgotPassword(parsed.data.email);
+      // Always return 200 — never reveal whether the email is registered
+      res.status(200).json({ message: 'If that email is registered, a reset link has been sent' });
+    } catch (err: unknown) {
+      const e = err as Error;
+      logger.error('Unexpected error during forgot-password', { error: e.message });
+      res.status(500).json({ error: 'An unexpected error occurred' });
+    }
+  },
+
+  async resetPassword(req: Request, res: Response): Promise<void> {
+    const parsed = resetPasswordSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+
+    const { token, password } = parsed.data;
+
+    try {
+      await authService.resetPassword(token, password);
+      res.status(200).json({ message: 'Password updated successfully. Please log in again.' });
+    } catch (err: unknown) {
+      const e = err as Error & { statusCode?: number };
+      const status = e.statusCode ?? 500;
+      if (status >= 500) {
+        logger.error('Unexpected error during password reset', { error: e.message });
+        res.status(500).json({ error: 'An unexpected error occurred' });
+      } else {
+        res.status(status).json({ error: e.message });
+      }
     }
   },
 
