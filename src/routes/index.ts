@@ -4,6 +4,7 @@ import authRoutes from './auth.routes';
 import booksRoutes from './books.routes';
 import recommendationsRoutes from './recommendations.routes';
 import guestRoutes from './guest.routes';
+import genresRoutes from './genres.routes';
 
 const router = Router();
 
@@ -17,6 +18,7 @@ const v1 = Router();
 v1.use(apiLimiter);
 v1.use('/auth', authRoutes);
 v1.use('/books', booksRoutes);
+v1.use('/genres', genresRoutes);
 v1.use('/recommendations', recommendationsRoutes);
 v1.use('/guest-sessions', guestRoutes);
 
