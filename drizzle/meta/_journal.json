@@ -15,6 +15,13 @@
       "when": 1779743402036,
       "tag": "0001_new_bishop",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1779918968987,
+      "tag": "0002_chemical_big_bertha",
+      "breakpoints": true
     }
   ]
 }

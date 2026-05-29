@@ -1,4 +1,4 @@
-import { eq, sql, and, ilike, inArray, type SQL } from 'drizzle-orm';
+import { eq, sql, and, ilike, inArray, asc, desc, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   books,
@@ -25,6 +25,7 @@ export interface ListBooksOptions {
   productForm?: string;
   publishingStatus?: string;
   publisher?: string;
+  sort?: 'asc' | 'desc';
   limit: number;
   offset: number;
 }
@@ -227,7 +228,13 @@ async function attachRelationsToList(
 export const booksService = {
   async list(opts: ListBooksOptions): Promise<{ books: BookListItem[]; total: number }> {
     const where = buildWhereClause(opts);
-    const orderBy = opts.q ? buildSearchOrderBy(opts.q) : [books.updatedAt];
+    // When a search query is present, relevance ranking takes priority and sort is ignored.
+    // Otherwise sort by title (asc/desc) when specified, falling back to updatedAt.
+    const orderBy = opts.q
+      ? buildSearchOrderBy(opts.q)
+      : opts.sort
+        ? [opts.sort === 'desc' ? desc(books.title) : asc(books.title)]
+        : [books.updatedAt];
 
     const [rows, [countRow]] = await Promise.all([
       db
