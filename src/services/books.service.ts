@@ -20,6 +20,7 @@ const SUGGESTIONS_TTL = 5 * 60;        // 5 minutes
 
 export interface ListBooksOptions {
   q?: string;
+  author?: string;
   genre?: string;
   availability?: string;
   productForm?: string;
@@ -132,11 +133,53 @@ function buildSearchOrderBy(q: string): SQL[] {
   ];
 }
 
+function buildAuthorSearchCondition(author: string): SQL {
+  const prefix = author + '%';
+  const wordPrefix = '% ' + author + '%';
+  const fts = author.length >= 3
+    ? sql` OR to_tsvector('simple', COALESCE(${bookContributors.personName}, '')) @@ plainto_tsquery('simple', ${author})`
+    : sql``;
+
+  return sql`${books.id} IN (
+    SELECT bc.book_id FROM book_contributors bc
+    WHERE (
+      bc.person_name ILIKE ${prefix}
+      OR bc.person_name ILIKE ${wordPrefix}
+      OR word_similarity(${author}, bc.person_name) > 0.3
+      ${fts}
+    )
+  )`;
+}
+
+function buildAuthorSearchOrderBy(author: string): SQL[] {
+  return [
+    sql`(
+      SELECT MIN(CASE
+        WHEN bc.person_name ILIKE ${author + '%'}     THEN 0
+        WHEN bc.person_name ILIKE ${'% ' + author + '%'} THEN 1
+        WHEN word_similarity(${author}, bc.person_name) > 0.3 THEN 2
+        ELSE 3
+      END)
+      FROM book_contributors bc
+      WHERE bc.book_id = ${books.id}
+    )`,
+    sql`(
+      SELECT MAX(word_similarity(${author}, bc.person_name))
+      FROM book_contributors bc
+      WHERE bc.book_id = ${books.id}
+    ) DESC`,
+  ];
+}
+
 function buildWhereClause(opts: ListBooksOptions): SQL | undefined {
   const conditions: SQL[] = [];
 
   if (opts.q) {
     conditions.push(buildSearchCondition(opts.q));
+  }
+
+  if (opts.author) {
+    conditions.push(buildAuthorSearchCondition(opts.author));
   }
 
   if (opts.genre) {
@@ -232,9 +275,11 @@ export const booksService = {
     // Otherwise sort by title (asc/desc) when specified, falling back to updatedAt.
     const orderBy = opts.q
       ? buildSearchOrderBy(opts.q)
-      : opts.sort
-        ? [opts.sort === 'desc' ? desc(books.title) : asc(books.title)]
-        : [books.updatedAt];
+      : opts.author
+        ? buildAuthorSearchOrderBy(opts.author)
+        : opts.sort
+          ? [opts.sort === 'desc' ? desc(books.title) : asc(books.title)]
+          : [books.updatedAt];
 
     const [rows, [countRow]] = await Promise.all([
       db

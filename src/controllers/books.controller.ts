@@ -10,6 +10,7 @@ const suggestionsSchema = z.object({
 
 const listSchema = z.object({
   q: z.string().min(1).max(200).optional(),
+  author: z.string().min(1).max(200).optional(),
   genre: z.string().min(1).max(300).optional(),
   availability: z.string().length(2).optional(),
   productForm: z.string().min(1).max(10).optional(),
