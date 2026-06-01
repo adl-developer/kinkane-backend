@@ -15,6 +15,8 @@ export const bullConnection = new IORedis(config.redis.url, {
 export interface EmailJobMap {
   'welcome':            { to: string; name: string };
   'password-reset':     { to: string; name: string; resetUrl: string };
+  'password-changed':   { to: string; name: string };
+  'account-deleted':    { to: string; name: string };
   'trial-ending':       { to: string; name: string; daysLeft: number };
   'new-recommendation': { to: string; name: string; books: RecommendedBook[] };
   'newsletter':         { to: string; payload: NewsletterPayload };
@@ -28,6 +30,8 @@ export type EmailJobName = keyof EmailJobMap;
 
 export const EMAIL_PRIORITY: Record<EmailJobName, number> = {
   'password-reset':     1,
+  'password-changed':   1,
+  'account-deleted':    1,
   'welcome':            5,
   'trial-ending':       5,
   'new-recommendation': 7,

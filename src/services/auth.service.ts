@@ -4,6 +4,7 @@ import jwt from 'jsonwebtoken';
 import { eq, and, gt } from 'drizzle-orm';
 import { db } from '../db';
 import { users, refreshTokens, userProviders, guestSessions, userPreferences, userInteractions, userBooks, userSubscriptions, passwordResetTokens } from '../db/schema';
+import { getEffectiveTier } from '../db/schema/subscriptions';
 import { config } from '../config';
 import { admin } from '../lib/firebase';
 import { logger } from '../lib/logger';
@@ -21,6 +22,17 @@ export interface AuthUser {
   name: string;
   email: string;
   emailVerified: boolean;
+}
+
+export interface MeUser extends AuthUser {
+  photoUrl: string | null;
+  subscription: {
+    tier: 'free' | 'plus';
+    status: 'active' | 'trialing' | 'cancelled';
+    effectiveTier: 'free' | 'plus';
+    trialEndsAt: Date | null;
+  };
+  providers: string[];
 }
 
 function hashToken(raw: string): string {
@@ -334,6 +346,120 @@ export const authService = {
         .delete(refreshTokens)
         .where(eq(refreshTokens.userId, stored.userId));
     });
+  },
+
+  async changePassword(userId: number, currentPassword: string, newPassword: string): Promise<void> {
+    const [user] = await db
+      .select({ id: users.id, name: users.name, email: users.email, passwordHash: users.passwordHash })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+
+    if (!user) {
+      throw Object.assign(new Error('User not found'), { statusCode: 404 });
+    }
+
+    if (!user.passwordHash) {
+      throw Object.assign(
+        new Error('This account uses social login and has no password to change'),
+        { statusCode: 400 },
+      );
+    }
+
+    const valid = await bcrypt.compare(currentPassword, user.passwordHash);
+    if (!valid) {
+      throw Object.assign(new Error('Current password is incorrect'), { statusCode: 401 });
+    }
+
+    const newHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+    await db
+      .update(users)
+      .set({ passwordHash: newHash, updatedAt: new Date() })
+      .where(eq(users.id, userId));
+
+    enqueueEmail('password-changed', { to: user.email, name: user.name }).catch((err) => {
+      logger.error('Failed to enqueue password-changed email', {
+        userId,
+        error: (err as Error).message,
+      });
+    });
+  },
+
+  async deleteAccount(userId: number, password: string): Promise<void> {
+    const [user] = await db
+      .select({ id: users.id, name: users.name, email: users.email, passwordHash: users.passwordHash })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+
+    if (!user) {
+      throw Object.assign(new Error('User not found'), { statusCode: 404 });
+    }
+
+    if (!user.passwordHash) {
+      throw Object.assign(
+        new Error('This account uses social login and has no password'),
+        { statusCode: 400 },
+      );
+    }
+
+    const valid = await bcrypt.compare(password, user.passwordHash);
+    if (!valid) {
+      throw Object.assign(new Error('Incorrect password'), { statusCode: 401 });
+    }
+
+    await db.delete(users).where(eq(users.id, userId));
+
+    enqueueEmail('account-deleted', { to: user.email, name: user.name }).catch((err) => {
+      logger.error('Failed to enqueue account-deleted email', {
+        userId,
+        error: (err as Error).message,
+      });
+    });
+  },
+
+  async getMe(userId: number): Promise<MeUser> {
+    const [user] = await db
+      .select({
+        id: users.id,
+        name: users.name,
+        email: users.email,
+        emailVerified: users.emailVerified,
+        photoUrl: users.photoUrl,
+      })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+
+    if (!user) {
+      throw Object.assign(new Error('User not found'), { statusCode: 404 });
+    }
+
+    const [sub] = await db
+      .select()
+      .from(userSubscriptions)
+      .where(eq(userSubscriptions.userId, userId))
+      .limit(1);
+
+    if (!sub) {
+      throw Object.assign(new Error('Subscription not found'), { statusCode: 404 });
+    }
+
+    const providerRows = await db
+      .select({ provider: userProviders.provider })
+      .from(userProviders)
+      .where(eq(userProviders.userId, userId));
+
+    return {
+      ...user,
+      subscription: {
+        tier: sub.tier,
+        status: sub.status,
+        effectiveTier: getEffectiveTier(sub),
+        trialEndsAt: sub.trialEndsAt,
+      },
+      providers: providerRows.map((r) => r.provider),
+    };
   },
 
   verifyAccessToken(token: string): { sub: number; email: string } {

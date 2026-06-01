@@ -7,7 +7,10 @@ import {
   integer,
   index,
   uniqueIndex,
+  pgEnum,
 } from 'drizzle-orm/pg-core';
+
+export const shelfVisibilityEnum = pgEnum('shelf_visibility', ['public', 'friends', 'private']);
 
 export const users = pgTable(
   'users',
@@ -18,6 +21,7 @@ export const users = pgTable(
     passwordHash: varchar('password_hash', { length: 500 }),
     photoUrl: varchar('photo_url', { length: 1000 }),
     emailVerified: boolean('email_verified').default(false).notNull(),
+    shelfVisibility: shelfVisibilityEnum('shelf_visibility').notNull().default('private'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
@@ -62,6 +66,7 @@ export const userProviders = pgTable(
   }),
 );
 
+export type ShelfVisibility = 'public' | 'friends' | 'private';
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type RefreshToken = typeof refreshTokens.$inferSelect;

@@ -102,13 +102,45 @@ router.post('/forgot-password', passwordResetLimiter, authController.forgotPassw
 router.post('/reset-password', passwordResetLimiter, authController.resetPassword);
 
 /**
+ * DELETE /api/v1/auth/account
+ *
+ * Permanently deletes the authenticated user's account and all associated data
+ * (library, preferences, interactions, subscription). A goodbye email is sent
+ * after deletion. The client should discard the access token on receipt of 200.
+ *
+ * Body: { password }
+ * Returns 200: { message }
+ * Errors: 400 missing password | 400 social account | 401 wrong password
+ */
+router.delete('/account', requireAuth, authController.deleteAccount);
+
+/**
+ * POST /api/v1/auth/change-password
+ *
+ * Allows an authenticated user to change their password by providing
+ * their current password and a new one. Social-only accounts (no password)
+ * receive a 400.
+ *
+ * Body: { currentPassword, newPassword }
+ * Returns 200: { message }
+ * Errors: 400 validation | 400 social-only account | 401 wrong current password
+ */
+router.post('/change-password', requireAuth, authController.changePassword);
+
+/**
  * GET /api/v1/auth/me
  *
- * Returns the currently authenticated user's basic profile.
+ * Returns the full profile of the currently authenticated user.
  * Requires a valid Bearer access token in the Authorization header.
  *
- * Returns 200: { user: { id, email } }
- * Errors: 401 missing or expired token
+ * Returns 200: {
+ *   user: {
+ *     id, name, email, emailVerified, photoUrl,
+ *     subscription: { tier, status, effectiveTier, trialEndsAt },
+ *     providers: string[]   // e.g. ['google.com', 'password']
+ *   }
+ * }
+ * Errors: 401 missing or expired token | 404 user not found
  */
 router.get('/me', requireAuth, authController.me);
 

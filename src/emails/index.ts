@@ -2,6 +2,8 @@
 export { sendWelcomeEmail } from './transactional/welcome';
 export { sendVerifyEmail } from './transactional/verify-email';
 export { sendPasswordResetEmail } from './transactional/password-reset';
+export { sendPasswordChangedEmail } from './transactional/password-changed';
+export { sendAccountDeletedEmail } from './transactional/account-deleted';
 
 // Notifications
 export { sendTrialEndingEmail } from './notifications/trial-ending';

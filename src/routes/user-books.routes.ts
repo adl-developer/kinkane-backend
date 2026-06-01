@@ -27,9 +27,20 @@ router.put('/:bookId', requireAuth, (req: Request, res: Response) =>
 );
 
 /**
+ * POST /user-books/reset
+ * Clears the user's entire reading list after verifying their password.
+ * Body: { password }
+ * Returns 200: { deleted: number } — the count of removed entries.
+ * Errors: 400 missing password | 400 social account | 401 wrong password
+ */
+router.post('/reset', requireAuth, (req: Request, res: Response) =>
+  userBooksController.resetLibrary(req as AuthenticatedRequest, res),
+);
+
+/**
  * DELETE /user-books/:bookId
  * Remove a book from the user's reading list entirely.
- * Returns 204 No Content on success.
+ * Returns 200: { success: true }
  */
 router.delete('/:bookId', requireAuth, (req: Request, res: Response) =>
   userBooksController.remove(req as AuthenticatedRequest, res),

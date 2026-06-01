@@ -11,6 +11,10 @@ const listSchema = z.object({
   offset: z.coerce.number().int().min(0).default(0),
 });
 
+const resetLibrarySchema = z.object({
+  password: z.string().min(1, 'Password is required'),
+});
+
 const upsertSchema = z
   .object({
     status: z.enum(['want_to_read', 'reading', 'read']).optional(),
@@ -69,6 +73,23 @@ export const userBooksController = {
     }
   },
 
+  async resetLibrary(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const parsed = resetLibrarySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+
+    try {
+      const { deleted } = await userBooksService.resetLibrary(req.user.id, parsed.data.password);
+      res.status(200).json({ deleted });
+    } catch (err: unknown) {
+      const e = err as Error & { statusCode?: number };
+      const status = e.statusCode ?? 500;
+      res.status(status).json({ error: e.message });
+    }
+  },
+
   async remove(req: AuthenticatedRequest, res: Response): Promise<void> {
     const bookId = parseInt(req.params.bookId, 10);
     if (isNaN(bookId)) {
@@ -78,7 +99,7 @@ export const userBooksController = {
 
     try {
       await userBooksService.remove(req.user.id, bookId);
-      res.status(204).send();
+      res.status(200).json({ success: true });
     } catch (err: unknown) {
       const e = err as Error;
       res.status(500).json({ error: e.message });
