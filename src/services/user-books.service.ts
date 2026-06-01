@@ -1,3 +1,4 @@
+import bcrypt from 'bcryptjs';
 import { eq, and, asc, desc, ilike, sql, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
@@ -245,6 +246,45 @@ export const userBooksService = {
     await db
       .delete(userBooks)
       .where(and(eq(userBooks.userId, userId), eq(userBooks.bookId, bookId)));
+  },
+
+  /**
+   * Deletes every book from the user's reading list and clears any cached
+   * public notes for the affected books.
+   */
+  async resetLibrary(userId: number, password: string): Promise<{ deleted: number }> {
+    const [user] = await db
+      .select({ passwordHash: users.passwordHash })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+
+    if (!user?.passwordHash) {
+      throw Object.assign(
+        new Error('This account uses social login and has no password'),
+        { statusCode: 400 },
+      );
+    }
+
+    const valid = await bcrypt.compare(password, user.passwordHash);
+    if (!valid) {
+      throw Object.assign(new Error('Incorrect password'), { statusCode: 401 });
+    }
+
+    const deleted = await db
+      .delete(userBooks)
+      .where(eq(userBooks.userId, userId))
+      .returning({ bookId: userBooks.bookId });
+
+    if (deleted.length > 0) {
+      const pipeline = redis.pipeline();
+      for (const { bookId } of deleted) {
+        pipeline.del(`book:public-notes:${bookId}`);
+      }
+      await pipeline.exec();
+    }
+
+    return { deleted: deleted.length };
   },
 
   /**

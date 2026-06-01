@@ -30,6 +30,8 @@ This is one of two independent services that share the same PostgreSQL database:
   - [Books](#books)
   - [Recommendations](#recommendations)
   - [Guest Sessions](#guest-sessions)
+  - [User Books](#user-books)
+  - [User Settings](#user-settings)
 - [Subscriptions](#subscriptions)
 - [Rate Limiting](#rate-limiting)
 - [Search Behaviour](#search-behaviour)
@@ -224,11 +226,13 @@ Refresh tokens are stored in PostgreSQL as a SHA-256 hash — the raw token is o
 All routes are versioned under `/api/v1/`. Adding a v2 means creating a new router and mounting it at `/v2` in `src/routes/index.ts` — nothing else changes.
 
 ```
-/api/health                  — unversioned, no rate limit (uptime checks)
-/api/v1/auth/...             — auth routes
-/api/v1/books/...            — book routes
-/api/v1/recommendations      — AI recommendation route
-/api/v1/guest-sessions/...   — onboarding guest session routes
+/api/health                        — unversioned, no rate limit (uptime checks)
+/api/v1/auth/...                   — auth routes
+/api/v1/books/...                  — book routes
+/api/v1/recommendations            — AI recommendation route
+/api/v1/guest-sessions/...         — onboarding guest session routes
+/api/v1/user-books/...             — authenticated user reading list routes
+/api/v1/user/settings/...          — authenticated user settings routes
 ```
 
 ---
@@ -243,7 +247,7 @@ server/
 │   │   ├── index.ts                 # Drizzle client
 │   │   ├── reset.ts                 # Drops all tables (dev utility)
 │   │   └── schema/
-│   │       ├── users.ts             # users, refresh_tokens, user_providers
+│   │       ├── users.ts             # users, refresh_tokens, user_providers, shelfVisibilityEnum
 │   │       ├── books.ts             # Read-only book tables (owned by onix_ingester)
 │   │       ├── recommendations.ts   # recommendation_cache
 │   │       ├── onboarding.ts        # guest_sessions, user_preferences, user_interactions, user_books
@@ -255,7 +259,9 @@ server/
 │   │   ├── transactional/
 │   │   │   ├── welcome.ts           # New user welcome
 │   │   │   ├── verify-email.ts      # Email verification link
-│   │   │   └── password-reset.ts    # Password reset link
+│   │   │   ├── password-reset.ts    # Password reset link (forgot password flow)
+│   │   │   ├── password-changed.ts  # Security notice after password change
+│   │   │   └── account-deleted.ts   # Goodbye email after account deletion
 │   │   ├── notifications/
 │   │   │   ├── trial-ending.ts      # Trial expiry warning
 │   │   │   └── new-recommendation.ts
@@ -276,15 +282,19 @@ server/
 │   ├── workers/
 │   │   └── email.worker.ts          # BullMQ worker — processes all email job types
 │   ├── services/
-│   │   ├── auth.service.ts          # signup, login, refresh, logout, socialLogin, forgotPassword, resetPassword
+│   │   ├── auth.service.ts          # signup, login, refresh, logout, socialLogin, forgotPassword, resetPassword, changePassword, deleteAccount, getMe
 │   │   ├── books.service.ts         # list (FTS + trigram fallback), suggestions, getById
 │   │   ├── guest.service.ts         # create, saveSelections, getById
-│   │   └── recommendations.service.ts  # pgvector search, Gemini calls, caching
+│   │   ├── recommendations.service.ts  # pgvector search, Gemini calls, caching
+│   │   ├── user-books.service.ts    # reading list CRUD, resetLibrary
+│   │   └── user-settings.service.ts # getUserSettings, updateShelfVisibility
 │   ├── controllers/
 │   │   ├── auth.controller.ts
 │   │   ├── books.controller.ts
 │   │   ├── guest.controller.ts
-│   │   └── recommendations.controller.ts
+│   │   ├── recommendations.controller.ts
+│   │   ├── user-books.controller.ts
+│   │   └── user-settings.controller.ts
 │   ├── middleware/
 │   │   ├── auth.middleware.ts       # requireAuth — verifies Bearer JWT
 │   │   └── rate-limit.middleware.ts # Per-route rate limiters
@@ -293,7 +303,9 @@ server/
 │   │   ├── auth.routes.ts
 │   │   ├── books.routes.ts
 │   │   ├── guest.routes.ts
-│   │   └── recommendations.routes.ts
+│   │   ├── recommendations.routes.ts
+│   │   ├── user-books.routes.ts
+│   │   └── user-settings.routes.ts
 │   ├── app.ts                       # Express app, middleware, Bull Board at /admin/queues
 │   └── server.ts                    # Entry point, starts worker + cron jobs, graceful shutdown
 ├── drizzle/                         # Migration SQL files
@@ -376,6 +388,7 @@ APP_URL=https://kinkane.com
 | password_hash | varchar(500) | Nullable — NULL for social-only accounts |
 | photo_url | varchar(1000) | Profile photo from social provider, if provided |
 | email_verified | boolean | Default false; set true when provider confirms email |
+| shelf_visibility | enum `public \| friends \| private` | Default `private` — controls who can view the user's reading list |
 | created_at / updated_at | timestamptz | |
 
 #### refresh_tokens
@@ -490,6 +503,8 @@ The user's personal reading list. Seeded at registration with the 5 onboarding c
 | book_id | integer FK → books.id CASCADE DELETE | |
 | status | varchar(20) NOT NULL | `want_to_read`, `reading`, `read` |
 | source | varchar(50) NOT NULL | `chosen_from_onboarding`, `manual`, `recommended` |
+| note | text | Optional user note about the book (max 1000 chars) |
+| note_is_public | boolean NOT NULL | Default false — when true, note is visible to all users |
 | added_at | timestamptz | |
 
 Unique index on `(user_id, book_id)` — a book can only appear once per reading list.
@@ -722,7 +737,7 @@ Password must be at least 8 characters and contain at least one uppercase letter
 
 #### `GET /api/v1/auth/me`
 
-Returns the currently authenticated user.
+Returns the full profile of the currently authenticated user including their subscription status and linked social providers.
 
 **Headers**
 ```
@@ -731,11 +746,87 @@ Authorization: Bearer <accessToken>
 
 **Response `200`**
 ```json
-{ "user": { "id": 1, "email": "jane@example.com" } }
+{
+  "user": {
+    "id": 1,
+    "name": "Jane Smith",
+    "email": "jane@example.com",
+    "emailVerified": true,
+    "photoUrl": null,
+    "subscription": {
+      "tier": "plus",
+      "status": "trialing",
+      "effectiveTier": "plus",
+      "trialEndsAt": "2026-08-29T00:00:00.000Z"
+    },
+    "providers": ["google.com"]
+  }
+}
 ```
+
+- `effectiveTier` is the computed tier — always use this to gate features, not `tier` directly. A trialing user with an expired `trialEndsAt` will have `effectiveTier: "free"` even if `tier` is `"plus"`.
+- `providers` is an empty array for email/password-only accounts.
 
 **Errors**
 - `401` — missing, malformed, or expired access token
+- `404` — user not found
+
+---
+
+#### `POST /api/v1/auth/change-password`
+
+Allows an authenticated user to change their password by verifying their current password first. Social-only accounts (no password set) receive a `400`. Other active sessions are **not** invalidated — only the password is updated.
+
+**Headers**
+```
+Authorization: Bearer <accessToken>
+```
+
+**Body**
+```json
+{
+  "currentPassword": "OldPassword123!",
+  "newPassword": "NewPassword456!"
+}
+```
+
+Password rules apply to `newPassword` (min 8 chars, uppercase, lowercase, number, special character).
+
+**Response `200`**
+```json
+{ "message": "Password updated successfully" }
+```
+
+A security notification email is sent to the user after a successful change.
+
+**Errors**
+- `400` — validation failure or social-only account
+- `401` — current password incorrect
+
+---
+
+#### `DELETE /api/v1/auth/account`
+
+Permanently deletes the authenticated user's account and all associated data — reading list, preferences, interactions, subscription, and linked social providers. A goodbye email is sent after deletion. The client should discard the access token on receipt of `200`.
+
+**Headers**
+```
+Authorization: Bearer <accessToken>
+```
+
+**Body**
+```json
+{ "password": "YourPassword123!" }
+```
+
+**Response `200`**
+```json
+{ "message": "Account deleted successfully" }
+```
+
+**Errors**
+- `400` — missing password or social-only account
+- `401` — incorrect password
 
 ---
 
@@ -930,13 +1021,6 @@ Saves the 5 books the user chose from the recommendations screen. Must be called
 |-------|------|-------|
 | `chosenBookIds` | number[] | 1–5 book IDs from the recommendation results |
 
-**Example**
-```bash
-curl -X POST http://localhost:3000/api/v1/guest-sessions/f47ac10b-58cc-4372-a567-0e02b2c3d479/selections \
-  -H "Content-Type: application/json" \
-  -d '{ "chosenBookIds": [42, 7, 103, 56, 88] }'
-```
-
 **Response `200`**
 ```json
 { "ok": true }
@@ -952,11 +1036,6 @@ curl -X POST http://localhost:3000/api/v1/guest-sessions/f47ac10b-58cc-4372-a567
 
 Checks whether a stored `guestSessionId` is still alive. Useful on app resume to decide whether to prompt the user to re-do the flow or proceed to registration.
 
-**Example**
-```bash
-curl http://localhost:3000/api/v1/guest-sessions/f47ac10b-58cc-4372-a567-0e02b2c3d479
-```
-
 **Response `200`**
 ```json
 {
@@ -969,6 +1048,94 @@ curl http://localhost:3000/api/v1/guest-sessions/f47ac10b-58cc-4372-a567-0e02b2c
 **Errors**
 - `400` — invalid UUID format
 - `404` — session not found or expired
+
+---
+
+### User Books
+
+All user book endpoints require a valid Bearer token.
+
+#### `POST /api/v1/user-books/reset`
+
+Clears the user's entire reading list after verifying their password. Irreversible.
+
+**Headers**
+```
+Authorization: Bearer <accessToken>
+```
+
+**Body**
+```json
+{ "password": "YourPassword123!" }
+```
+
+**Response `200`**
+```json
+{ "deleted": 12 }
+```
+
+**Errors**
+- `400` — missing password or social-only account
+- `401` — incorrect password
+
+---
+
+### User Settings
+
+All user settings endpoints require a valid Bearer token.
+
+#### `GET /api/v1/user/settings`
+
+Returns all settings for the authenticated user.
+
+**Headers**
+```
+Authorization: Bearer <accessToken>
+```
+
+**Response `200`**
+```json
+{
+  "settings": {
+    "shelfVisibility": "private"
+  }
+}
+```
+
+**Errors**
+- `401` — unauthenticated
+- `404` — user not found
+
+---
+
+#### `PATCH /api/v1/user/settings/shelf-visibility`
+
+Controls who can view the user's reading list.
+
+**Headers**
+```
+Authorization: Bearer <accessToken>
+```
+
+**Body**
+```json
+{ "visibility": "public" }
+```
+
+| Value | Who can see the shelf |
+|-------|-----------------------|
+| `public` | All Kinkane users |
+| `friends` | Mutual friends/followers only |
+| `private` | Only the user themselves (default) |
+
+**Response `200`**
+```json
+{ "shelfVisibility": "public" }
+```
+
+**Errors**
+- `400` — invalid visibility value
+- `401` — unauthenticated
 
 ---
 
@@ -1080,6 +1247,8 @@ All outgoing emails are processed through a **BullMQ** queue backed by Redis. Em
 | Job type | Priority |
 |----------|----------|
 | `password-reset` | 1 — user is blocked without this |
+| `password-changed` | 1 — security notification |
+| `account-deleted` | 1 — security notification |
 | `welcome` | 5 |
 | `trial-ending` | 5 |
 | `new-recommendation` | 7 |
@@ -1119,6 +1288,8 @@ All emails are sent via **SendGrid** and routed through the BullMQ queue. Email 
 |------|------|---------|
 | Welcome | `transactional/welcome.ts` | New account created (email/password or social) |
 | Password reset | `transactional/password-reset.ts` | `POST /auth/forgot-password` |
+| Password changed | `transactional/password-changed.ts` | `POST /auth/change-password` |
+| Account deleted | `transactional/account-deleted.ts` | `DELETE /auth/account` |
 | Trial ending | `notifications/trial-ending.ts` | Manually enqueued when trial nears expiry |
 | New recommendation | `notifications/new-recommendation.ts` | Manually enqueued after recommendation generation |
 | Newsletter | `marketing/newsletter.ts` | Manually enqueued per campaign |

@@ -3,6 +3,8 @@ import { bullConnection, EmailJobMap, EmailJobName } from '../lib/email-queue';
 import {
   sendWelcomeEmail,
   sendPasswordResetEmail,
+  sendPasswordChangedEmail,
+  sendAccountDeletedEmail,
   sendTrialEndingEmail,
   sendNewRecommendationEmail,
   sendNewsletterEmail,
@@ -24,6 +26,16 @@ async function processEmailJob(job: Job): Promise<void> {
     case 'password-reset': {
       const { to, name: userName, resetUrl } = job.data as EmailJobMap['password-reset'];
       await sendPasswordResetEmail(to, userName, resetUrl);
+      break;
+    }
+    case 'password-changed': {
+      const { to, name: userName } = job.data as EmailJobMap['password-changed'];
+      await sendPasswordChangedEmail(to, userName);
+      break;
+    }
+    case 'account-deleted': {
+      const { to, name: userName } = job.data as EmailJobMap['account-deleted'];
+      await sendAccountDeletedEmail(to, userName);
       break;
     }
     case 'trial-ending': {

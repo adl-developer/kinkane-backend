@@ -38,6 +38,22 @@ const socialSchema = z.object({
   guestSessionId: z.string().uuid().optional(),
 });
 
+const deleteAccountSchema = z.object({
+  password: z.string().min(1, 'Password is required'),
+});
+
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1),
+  newPassword: z
+    .string()
+    .min(8, 'Password must be at least 8 characters')
+    .max(128, 'Password must be at most 128 characters')
+    .regex(/[A-Z]/, 'Password must contain at least one uppercase letter')
+    .regex(/[a-z]/, 'Password must contain at least one lowercase letter')
+    .regex(/[0-9]/, 'Password must contain at least one number')
+    .regex(/[!@#$%^&*()\-_+=\[\]{}|;:,.<>?`~]/, 'Password must contain at least one special character'),
+});
+
 const forgotPasswordSchema = z.object({
   email: z.string().email(),
 });
@@ -193,9 +209,70 @@ export const authController = {
     }
   },
 
+  async deleteAccount(req: Request, res: Response): Promise<void> {
+    const parsed = deleteAccountSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+
+    const { id } = (req as AuthenticatedRequest).user;
+
+    try {
+      await authService.deleteAccount(id, parsed.data.password);
+      res.status(200).json({ message: 'Account deleted successfully' });
+    } catch (err: unknown) {
+      const e = err as Error & { statusCode?: number };
+      const status = e.statusCode ?? 500;
+      if (status >= 500) {
+        logger.error('Unexpected error during account deletion', { error: e.message });
+        res.status(500).json({ error: 'An unexpected error occurred' });
+      } else {
+        res.status(status).json({ error: e.message });
+      }
+    }
+  },
+
+  async changePassword(req: Request, res: Response): Promise<void> {
+    const parsed = changePasswordSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+
+    const { id } = (req as AuthenticatedRequest).user;
+    const { currentPassword, newPassword } = parsed.data;
+
+    try {
+      await authService.changePassword(id, currentPassword, newPassword);
+      res.status(200).json({ message: 'Password updated successfully' });
+    } catch (err: unknown) {
+      const e = err as Error & { statusCode?: number };
+      const status = e.statusCode ?? 500;
+      if (status >= 500) {
+        logger.error('Unexpected error during password change', { error: e.message });
+        res.status(500).json({ error: 'An unexpected error occurred' });
+      } else {
+        res.status(status).json({ error: e.message });
+      }
+    }
+  },
+
   async me(req: Request, res: Response): Promise<void> {
-    // req.user is guaranteed by requireAuth middleware
-    res.status(200).json({ user: (req as AuthenticatedRequest).user });
+    const { id } = (req as AuthenticatedRequest).user;
+    try {
+      const user = await authService.getMe(id);
+      res.status(200).json({ user });
+    } catch (err: unknown) {
+      const e = err as Error & { statusCode?: number };
+      const status = e.statusCode ?? 500;
+      if (status >= 500) {
+        logger.error('Unexpected error fetching current user', { error: e.message });
+        res.status(500).json({ error: 'An unexpected error occurred' });
+      } else {
+        res.status(status).json({ error: e.message });
+      }
+    }
   },
 
   async socialLogin(req: Request, res: Response): Promise<void> {
