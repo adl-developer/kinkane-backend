@@ -6,6 +6,8 @@ import {
   real,
   uuid,
   jsonb,
+  text,
+  boolean,
   timestamp,
   index,
   uniqueIndex,
@@ -117,10 +119,15 @@ export const userBooks = pgTable(
     status: varchar('status', { length: 20 }).notNull().default('want_to_read'),
     // 'chosen_from_onboarding' | 'manual' | 'recommended'
     source: varchar('source', { length: 50 }).notNull().default('manual'),
+    // Optional note the user writes about the book (max 1000 chars enforced at API layer)
+    note: text('note'),
+    // When true the note is visible to all users on the book detail page
+    noteIsPublic: boolean('note_is_public').notNull().default(false),
     addedAt: timestamp('added_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({
     userIdIdx: index('idx_user_books_user_id').on(t.userId),
+    bookIdIdx: index('idx_user_books_book_id').on(t.bookId),
     uniqueUserBook: uniqueIndex('idx_user_books_user_book').on(t.userId, t.bookId),
   }),
 );
