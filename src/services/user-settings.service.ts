@@ -4,13 +4,19 @@ import { users } from '../db/schema';
 import type { ShelfVisibility } from '../db/schema/users';
 
 export interface UserSettings {
+  name: string;
+  photoUrl: string | null;
   shelfVisibility: ShelfVisibility;
 }
 
 export const userSettingsService = {
   async getUserSettings(userId: number): Promise<UserSettings> {
     const [user] = await db
-      .select({ shelfVisibility: users.shelfVisibility })
+      .select({
+        name: users.name,
+        photoUrl: users.photoUrl,
+        shelfVisibility: users.shelfVisibility,
+      })
       .from(users)
       .where(eq(users.id, userId))
       .limit(1);
@@ -19,7 +25,7 @@ export const userSettingsService = {
       throw Object.assign(new Error('User not found'), { statusCode: 404 });
     }
 
-    return { shelfVisibility: user.shelfVisibility };
+    return { name: user.name, photoUrl: user.photoUrl ?? null, shelfVisibility: user.shelfVisibility };
   },
 
   async updateShelfVisibility(userId: number, visibility: ShelfVisibility): Promise<void> {
@@ -27,5 +33,22 @@ export const userSettingsService = {
       .update(users)
       .set({ shelfVisibility: visibility, updatedAt: new Date() })
       .where(eq(users.id, userId));
+  },
+
+  async updateProfile(
+    userId: number,
+    data: { name?: string; photoUrl?: string | null },
+  ): Promise<{ name: string; photoUrl: string | null }> {
+    const [updated] = await db
+      .update(users)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(users.id, userId))
+      .returning({ name: users.name, photoUrl: users.photoUrl });
+
+    if (!updated) {
+      throw Object.assign(new Error('User not found'), { statusCode: 404 });
+    }
+
+    return { name: updated.name, photoUrl: updated.photoUrl ?? null };
   },
 };
