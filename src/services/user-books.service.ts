@@ -57,7 +57,7 @@ export interface ListUserBooksOptions {
   userId: number;
   q?: string;
   status?: 'want_to_read' | 'reading' | 'read';
-  sort: 'asc' | 'desc';
+  sort: 'title_asc' | 'title_desc' | 'date_asc' | 'date_desc';
   limit: number;
   offset: number;
 }
@@ -147,7 +147,11 @@ export const userBooksService = {
     }
 
     const where = and(...conditions);
-    const titleOrder = opts.sort === 'desc' ? desc(books.title) : asc(books.title);
+    const order =
+      opts.sort === 'title_asc' ? asc(books.title)
+      : opts.sort === 'title_desc' ? desc(books.title)
+      : opts.sort === 'date_asc' ? asc(userBooks.addedAt)
+      : desc(userBooks.addedAt); // date_desc
 
     const [rows, [countRow]] = await Promise.all([
       db
@@ -175,7 +179,7 @@ export const userBooksService = {
         .from(userBooks)
         .innerJoin(books, eq(books.id, userBooks.bookId))
         .where(where)
-        .orderBy(titleOrder)
+        .orderBy(order)
         .limit(opts.limit)
         .offset(opts.offset),
 

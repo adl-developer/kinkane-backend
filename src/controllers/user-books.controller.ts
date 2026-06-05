@@ -6,7 +6,7 @@ import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 const listSchema = z.object({
   q: z.string().min(1).max(200).optional(),
   status: z.enum(['want_to_read', 'reading', 'read']).optional(),
-  sort: z.enum(['asc', 'desc']).default('asc'),
+  sort: z.enum(['title_asc', 'title_desc', 'date_asc', 'date_desc']).default('date_desc'),
   limit: z.coerce.number().int().min(1).max(50).default(20),
   offset: z.coerce.number().int().min(0).default(0),
 });
