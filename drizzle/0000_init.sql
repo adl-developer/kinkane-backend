@@ -1,3 +1,4 @@
+CREATE EXTENSION IF NOT EXISTS vector;--> statement-breakpoint
 CREATE TYPE "public"."chunk_status" AS ENUM('pending', 'processing', 'completed', 'failed');--> statement-breakpoint
 CREATE TYPE "public"."ingestion_status" AS ENUM('pending', 'processing', 'enqueued', 'completed', 'failed');--> statement-breakpoint
 CREATE TYPE "public"."subscription_status" AS ENUM('active', 'trialing', 'cancelled');--> statement-breakpoint
