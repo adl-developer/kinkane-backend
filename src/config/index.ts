@@ -39,6 +39,10 @@ const envSchema = z.object({
   // Secret token for accessing the Bull Board admin dashboard (/admin/queues).
   // Must be at least 32 characters. Generate with: openssl rand -hex 32
   ADMIN_TOKEN: z.string().min(32),
+
+  // Cloudinary cloud name — used to validate that uploaded photo URLs belong
+  // to this project's Cloudinary account, not an arbitrary third-party account.
+  CLOUDINARY_CLOUD_NAME: z.string().min(1),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -86,6 +90,9 @@ export const config = {
   },
   appUrl: env.APP_URL,
   adminToken: env.ADMIN_TOKEN,
+  cloudinary: {
+    cloudName: env.CLOUDINARY_CLOUD_NAME,
+  },
 } as const;
 
 export type Config = typeof config;

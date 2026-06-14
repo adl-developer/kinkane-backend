@@ -57,16 +57,29 @@ export const emailChangeService = {
     const rawCancelToken = crypto.randomBytes(40).toString('hex');
     const expiresAt = new Date(Date.now() + OTP_TTL_MS);
 
-    // Overwrite any existing pending request — one per user at a time
-    await db.delete(emailChangeRequests).where(eq(emailChangeRequests.userId, userId));
-
-    await db.insert(emailChangeRequests).values({
-      userId,
-      newEmail: normalizedEmail,
-      otpHash: hashValue(otp),
-      cancelTokenHash: hashValue(rawCancelToken),
-      expiresAt,
-    });
+    // Atomic: delete any existing request then insert the new one in a single
+    // transaction. The unique constraint on (user_id) in email_change_requests
+    // is the authoritative race guard — if two concurrent requests slip through
+    // the availability check above, the second insert will throw a unique
+    // violation which we surface as a clean 409.
+    try {
+      await db.transaction(async (tx) => {
+        await tx.delete(emailChangeRequests).where(eq(emailChangeRequests.userId, userId));
+        await tx.insert(emailChangeRequests).values({
+          userId,
+          newEmail: normalizedEmail,
+          otpHash: hashValue(otp),
+          cancelTokenHash: hashValue(rawCancelToken),
+          expiresAt,
+        });
+      });
+    } catch (err: unknown) {
+      const e = err as Error & { code?: string };
+      if (e.code === '23505') {
+        throw Object.assign(new Error('That email address is already in use'), { statusCode: 409 });
+      }
+      throw err;
+    }
 
     const cancelUrl = `${config.appUrl}/cancel-email-change?token=${rawCancelToken}`;
 

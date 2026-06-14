@@ -2,7 +2,7 @@ import { Response } from 'express';
 import { z } from 'zod';
 import { AuthenticatedRequest } from '../middleware/auth.middleware';
 import { userSettingsService } from '../services/user-settings.service';
-
+import { config } from '../config';
 import { logger } from '../lib/logger';
 
 const shelfVisibilitySchema = z.object({
@@ -13,13 +13,22 @@ const CLOUDINARY_HOSTNAME = 'res.cloudinary.com';
 
 const updateProfileSchema = z
   .object({
-    name: z.string().min(1).max(500).optional(),
+    name: z.string().min(1).max(100).optional(),
     photoUrl: z
       .string()
       .url()
       .refine(
-        (url) => new URL(url).hostname === CLOUDINARY_HOSTNAME,
-        { message: `photoUrl must be a ${CLOUDINARY_HOSTNAME} URL` },
+        (url) => {
+          const parsed = new URL(url);
+          // Must be from our Cloudinary account — validate both the hostname and
+          // that the path starts with /<our-cloud-name>/ so users can't hotlink
+          // arbitrary content from other Cloudinary accounts.
+          return (
+            parsed.hostname === CLOUDINARY_HOSTNAME &&
+            parsed.pathname.startsWith(`/${config.cloudinary.cloudName}/`)
+          );
+        },
+        { message: `photoUrl must be a ${CLOUDINARY_HOSTNAME}/<cloud-name>/ URL` },
       )
       .nullable()
       .optional(),

@@ -11,9 +11,16 @@ const listSchema = z.object({
   offset: z.coerce.number().int().min(0).default(0),
 });
 
-const resetLibrarySchema = z.object({
-  password: z.string().min(1, 'Password is required'),
-});
+// Either a password (email/password accounts) or a Firebase ID token (social accounts).
+// Exactly one must be provided.
+const resetLibrarySchema = z
+  .object({
+    password: z.string().min(1).optional(),
+    idToken: z.string().min(1).optional(),
+  })
+  .refine((d) => (d.password !== undefined) !== (d.idToken !== undefined), {
+    message: 'Provide either password or idToken, not both and not neither',
+  });
 
 const upsertSchema = z
   .object({
@@ -76,12 +83,16 @@ export const userBooksController = {
   async resetLibrary(req: AuthenticatedRequest, res: Response): Promise<void> {
     const parsed = resetLibrarySchema.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      res.status(400).json({ error: parsed.error.flatten() });
       return;
     }
 
+    const credential = parsed.data.idToken
+      ? { idToken: parsed.data.idToken }
+      : { password: parsed.data.password! };
+
     try {
-      const { deleted } = await userBooksService.resetLibrary(req.user.id, parsed.data.password);
+      const { deleted } = await userBooksService.resetLibrary(req.user.id, credential);
       res.status(200).json({ deleted });
     } catch (err: unknown) {
       const e = err as Error & { statusCode?: number };

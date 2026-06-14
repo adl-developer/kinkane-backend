@@ -1,5 +1,22 @@
 import { Router } from 'express';
+import rateLimit from 'express-rate-limit';
+import { RedisStore } from 'rate-limit-redis';
+import { redis } from '../lib/redis';
 import { guestController } from '../controllers/guest.controller';
+
+const sendCommand = (...args: string[]) =>
+  (redis as unknown as { call: (...a: string[]) => Promise<unknown> }).call(...args) as Promise<import('rate-limit-redis').RedisReply>;
+
+// 60 lookups per 15 minutes — enough for normal client polling on app resume,
+// tight enough to prevent enumeration of valid session UUIDs.
+const guestSessionLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (_req, res) => res.status(429).json({ error: 'Too many requests — please try again later' }),
+  store: new RedisStore({ prefix: 'rl:guest:', sendCommand }),
+});
 
 const router = Router();
 
@@ -17,7 +34,7 @@ const router = Router();
  * Returns 200: { ok: true }
  * Errors: 400 invalid UUID or validation failure | 404 session not found or expired
  */
-router.post('/:id/selections', guestController.saveSelections);
+router.post('/:id/selections', guestSessionLimiter, guestController.saveSelections);
 
 /**
  * GET /api/v1/guest-sessions/:id
@@ -30,6 +47,6 @@ router.post('/:id/selections', guestController.saveSelections);
  * Returns 200: { guestSessionId, displayName, expiresAt }
  * Errors: 400 invalid UUID format | 404 session not found or expired
  */
-router.get('/:id', guestController.getById);
+router.get('/:id', guestSessionLimiter, guestController.getById);
 
 export default router;
