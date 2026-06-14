@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { eq, sql, and, ilike, inArray, asc, desc, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
@@ -304,7 +305,7 @@ export const booksService = {
   },
 
   async suggestions(q: string, limit: number): Promise<SuggestionItem[]> {
-    const cacheKey = `suggestions:${q}:${limit}`;
+    const cacheKey = `suggestions:${createHash('sha256').update(`${q}:${limit}`).digest('hex')}`;
     const cached = await redis.get(cacheKey);
     if (cached) return JSON.parse(cached) as SuggestionItem[];
 
@@ -342,8 +343,10 @@ export const booksService = {
       })
       .from(bookContributors)
       .where(
-        sql`${bookContributors.bookId} = ANY(${sql.raw(`ARRAY[${ids.join(',')}]::int[]`)})
-            AND ${bookContributors.role} = 'A01'`,
+        and(
+          inArray(bookContributors.bookId, ids),
+          eq(bookContributors.role, 'A01'),
+        ),
       )
       .orderBy(bookContributors.sequenceNumber);
 

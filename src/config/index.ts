@@ -35,6 +35,10 @@ const envSchema = z.object({
 
   // Frontend base URL — used to build links in emails (e.g. password reset)
   APP_URL: z.string().url().default('https://kinkane.com'),
+
+  // Secret token for accessing the Bull Board admin dashboard (/admin/queues).
+  // Must be at least 32 characters. Generate with: openssl rand -hex 32
+  ADMIN_TOKEN: z.string().min(32),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -81,6 +85,7 @@ export const config = {
     fromName: env.EMAIL_FROM_NAME,
   },
   appUrl: env.APP_URL,
+  adminToken: env.ADMIN_TOKEN,
 } as const;
 
 export type Config = typeof config;

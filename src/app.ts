@@ -1,24 +1,47 @@
 import express, { Request, Response, NextFunction } from 'express';
+import helmet from 'helmet';
+import cors from 'cors';
 import { createBullBoard } from '@bull-board/api';
 import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
 import { ExpressAdapter } from '@bull-board/express';
 import { logger } from './lib/logger';
 import { emailQueue } from './lib/email-queue';
+import { config } from './config';
 import apiRoutes from './routes';
 
 const app = express();
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
+// Trust one proxy hop (Render load balancer) so req.ip reflects the real client
+// IP rather than the balancer's IP — required for rate limiting to work correctly.
+app.set('trust proxy', 1);
+
+app.use(helmet());
+app.use(cors({
+  origin: [config.appUrl],
+  credentials: true,
+  exposedHeaders: ['X-New-Access-Token'],
+}));
+
+app.use(express.json({ limit: '50kb' }));
+app.use(express.urlencoded({ extended: false, limit: '50kb' }));
 
 // ── Bull Board ────────────────────────────────────────────────────────────────
 // Visual dashboard for monitoring email job queue — view pending, active,
 // completed and failed jobs at /admin/queues.
-// TODO: Protect this route with admin auth before going to production.
+// Protected by a static bearer token (ADMIN_TOKEN env var).
+function requireAdminToken(req: Request, res: Response, next: NextFunction): void {
+  const header = req.headers.authorization;
+  if (!header?.startsWith('Bearer ') || header.slice(7) !== config.adminToken) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+  next();
+}
+
 const bullBoardAdapter = new ExpressAdapter();
 bullBoardAdapter.setBasePath('/admin/queues');
 createBullBoard({ queues: [new BullMQAdapter(emailQueue)], serverAdapter: bullBoardAdapter });
-app.use('/admin/queues', bullBoardAdapter.getRouter());
+app.use('/admin/queues', requireAdminToken, bullBoardAdapter.getRouter());
 
 app.use('/api', apiRoutes);
 

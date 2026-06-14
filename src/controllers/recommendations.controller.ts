@@ -34,7 +34,7 @@ const GENRE_VALUES = [
 ] as const;
 
 const recommendationsSchema = z.object({
-  displayName: z.string().min(1, 'Name is required').max(200),
+  displayName: z.string().min(1, 'Name is required').max(100),
 
   feelings: z
     .array(feelingSchema)

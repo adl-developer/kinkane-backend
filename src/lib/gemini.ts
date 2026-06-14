@@ -1,4 +1,5 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import pLimit from 'p-limit';
 import { config } from '../config';
 import { logger } from './logger';
 
@@ -15,7 +16,11 @@ const genai = new GoogleGenerativeAI(config.gemini.apiKey);
 export async function generateEmbedding(text: string): Promise<number[]> {
   const model = genai.getGenerativeModel({ model: config.gemini.embeddingModel });
   const result = await model.embedContent(text);
-  return result.embedding.values;
+  const values = result.embedding.values;
+  if (values.some((v) => !Number.isFinite(v))) {
+    throw new Error('Gemini returned an invalid embedding vector (NaN or Infinity)');
+  }
+  return values;
 }
 
 // ── Explanations ──────────────────────────────────────────────────────────────
@@ -35,6 +40,10 @@ export interface ExplanationResult {
 // Books per Gemini call — small enough to stay within output-token limits,
 // large enough to keep the number of parallel calls reasonable (250 / 25 = 10).
 const EXPLANATION_CHUNK_SIZE = 25;
+
+// Max concurrent Gemini calls — prevents hitting the API's rate limit when
+// many cache misses happen simultaneously.
+const geminiConcurrencyLimit = pLimit(3);
 
 function chunkArray<T>(arr: T[], size: number): T[][] {
   const chunks: T[][] = [];
@@ -126,7 +135,9 @@ export async function generateExplanations(
 ): Promise<ExplanationResult[]> {
   const chunks = chunkArray(books, EXPLANATION_CHUNK_SIZE);
   const chunkResults = await Promise.all(
-    chunks.map((chunk) => generateExplanationsChunk(preferenceText, chunk)),
+    chunks.map((chunk) =>
+      geminiConcurrencyLimit(() => generateExplanationsChunk(preferenceText, chunk)),
+    ),
   );
   return chunkResults.flat();
 }
