@@ -68,3 +68,13 @@ export const passwordResetLimiter = rateLimit({
   handler: json429,
   store: new RedisStore({ prefix: 'rl:password-reset:', sendCommand }),
 });
+
+// Email change: 5 per hour — prevents OTP email bombing to arbitrary addresses
+export const emailChangeLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: json429,
+  store: new RedisStore({ prefix: 'rl:email-change:', sendCommand }),
+});

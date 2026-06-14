@@ -8,7 +8,14 @@ import {
   index,
   uniqueIndex,
   pgEnum,
+  customType,
 } from 'drizzle-orm/pg-core';
+
+const tsvector = customType<{ data: string }>({
+  dataType() {
+    return 'tsvector';
+  },
+});
 
 export const shelfVisibilityEnum = pgEnum('shelf_visibility', ['public', 'friends', 'private']);
 
@@ -22,11 +29,13 @@ export const users = pgTable(
     photoUrl: varchar('photo_url', { length: 1000 }),
     emailVerified: boolean('email_verified').default(false).notNull(),
     shelfVisibility: shelfVisibilityEnum('shelf_visibility').notNull().default('private'),
+    searchVector: tsvector('search_vector'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({
     emailIdx: index('idx_users_email').on(t.email),
+    searchVectorIdx: index('idx_users_search_vector').on(t.searchVector),
   }),
 );
 
@@ -66,8 +75,33 @@ export const userProviders = pgTable(
   }),
 );
 
+export const followRequestStatusEnum = pgEnum('follow_request_status', ['pending', 'accepted', 'declined']);
+
+export const followRequests = pgTable(
+  'follow_requests',
+  {
+    id: serial('id').primaryKey(),
+    senderId: integer('sender_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    receiverId: integer('receiver_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    status: followRequestStatusEnum('status').notNull().default('pending'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    senderReceiverUniq: uniqueIndex('idx_follow_requests_sender_receiver').on(t.senderId, t.receiverId),
+    receiverIdx: index('idx_follow_requests_receiver_id').on(t.receiverId),
+    senderIdx: index('idx_follow_requests_sender_id').on(t.senderId),
+  }),
+);
+
 export type ShelfVisibility = 'public' | 'friends' | 'private';
+export type FollowRequestStatus = 'pending' | 'accepted' | 'declined';
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type RefreshToken = typeof refreshTokens.$inferSelect;
 export type UserProvider = typeof userProviders.$inferSelect;
+export type FollowRequest = typeof followRequests.$inferSelect;

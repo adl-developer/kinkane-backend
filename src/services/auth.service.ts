@@ -43,7 +43,7 @@ function generateRefreshToken(): string {
   return crypto.randomBytes(40).toString('hex');
 }
 
-function signAccessToken(userId: number, email: string): string {
+export function signAccessToken(userId: number, email: string): string {
   return jwt.sign({ sub: userId, email }, config.jwt.accessSecret, {
     expiresIn: config.jwt.accessTtl,
   });

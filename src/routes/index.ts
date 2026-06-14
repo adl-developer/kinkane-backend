@@ -7,6 +7,9 @@ import guestRoutes from './guest.routes';
 import genresRoutes from './genres.routes';
 import userBooksRoutes from './user-books.routes';
 import userSettingsRoutes from './user-settings.routes';
+import emailChangeRoutes from './email-change.routes';
+import communityRoutes from './community.routes';
+import usersRoutes from './users.routes';
 
 const router = Router();
 
@@ -25,6 +28,9 @@ v1.use('/recommendations', recommendationsRoutes);
 v1.use('/guest-sessions', guestRoutes);
 v1.use('/user-books', userBooksRoutes);
 v1.use('/user/settings', userSettingsRoutes);
+v1.use('/user/email-change', emailChangeRoutes);
+v1.use('/community', communityRoutes);
+v1.use('/users', usersRoutes);
 
 router.use('/v1', v1);
 

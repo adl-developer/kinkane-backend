@@ -5,3 +5,5 @@ export * from './recommendations';
 export * from './onboarding';
 export * from './subscriptions';
 export * from './password-reset-tokens';
+export * from './email-change-requests';
+export * from './community';

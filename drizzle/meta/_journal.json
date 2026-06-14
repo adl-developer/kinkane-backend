@@ -29,6 +29,27 @@
       "when": 1780347668738,
       "tag": "0003_white_meltdown",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1781128626620,
+      "tag": "0004_cultured_flatman",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1781133892483,
+      "tag": "0005_fluffy_aaron_stack",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1781267251066,
+      "tag": "0006_colorful_tarantula",
+      "breakpoints": true
     }
   ]
 }

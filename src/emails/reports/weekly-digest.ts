@@ -2,32 +2,33 @@ import { sgMail, FROM } from '../../lib/sendgrid';
 
 export interface WeeklyDigestPayload {
   name: string;
-  booksRead: number;
-  topGenre: string;
-  newRecommendationsCount: number;
+  booksAdded: number;
+  newRecommendations: number;
+  trendingBook: string;
+  featuredBook: string;
+  featuredAuthor: string;
 }
 
-/**
- * Weekly reading digest sent to active users every Monday morning.
- * Triggered by the weekly-digest cron job.
- */
 export async function sendWeeklyDigestEmail(to: string, payload: WeeklyDigestPayload): Promise<void> {
-  const { name, booksRead, topGenre, newRecommendationsCount } = payload;
+  const { name, booksAdded, newRecommendations, trendingBook, featuredBook, featuredAuthor } = payload;
 
   await sgMail.send({
     to,
     from: FROM,
-    subject: `Your Kinkane week in review 📚`,
+    subject: 'Your week in books 📚',
     html: `
-      <p>Hi ${name}, here's your week on Kinkane:</p>
+      <p>Hi ${name},</p>
+      <p>Here's your reading summary for the week:</p>
       <ul>
-        <li>📖 <strong>${booksRead}</strong> book${booksRead === 1 ? '' : 's'} tracked</li>
-        <li>🏷️ Top genre this week: <strong>${topGenre}</strong></li>
-        <li>✨ <strong>${newRecommendationsCount}</strong> new recommendations waiting for you</li>
+        <li>📖 Books added to your shelf: <strong>${booksAdded}</strong></li>
+        <li>📖 New recommendations waiting: <strong>${newRecommendations}</strong></li>
+        <li>📖 Trending among readers: <strong>${trendingBook}</strong></li>
+        <li>📖 Recommended for you this week: <strong>${featuredBook}</strong> by ${featuredAuthor}</li>
       </ul>
-      <p><a href="https://kinkane.com/recommendations" style="background:#1a1a1a;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;display:inline-block;">See Your Picks</a></p>
-      <p>The Kinkane Team</p>
+      <p>Keep exploring, saving, and discovering stories you'll love.</p>
+      <p><a href="https://kinkane.com" style="background:#1a1a1a;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;display:inline-block;">Open Kinkané</a></p>
+      <p>Happy reading,<br/>The Kinkané Team</p>
     `,
-    text: `Hi ${name},\n\nYour week on Kinkane:\n- ${booksRead} book${booksRead === 1 ? '' : 's'} tracked\n- Top genre: ${topGenre}\n- ${newRecommendationsCount} new recommendations\n\nSee your picks: https://kinkane.com/recommendations\n\nThe Kinkane Team`,
+    text: `Hi ${name},\n\nHere's your reading summary for the week:\n\n📖 Books added to your shelf: ${booksAdded}\n📖 New recommendations waiting: ${newRecommendations}\n📖 Trending among readers: ${trendingBook}\n📖 Recommended for you this week: ${featuredBook} by ${featuredAuthor}\n\nKeep exploring, saving, and discovering stories you'll love.\n\nhttps://kinkane.com\n\nHappy reading,\nThe Kinkané Team`,
   });
 }

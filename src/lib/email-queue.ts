@@ -18,9 +18,13 @@ export interface EmailJobMap {
   'password-changed':   { to: string; name: string };
   'account-deleted':    { to: string; name: string };
   'trial-ending':       { to: string; name: string; daysLeft: number };
-  'new-recommendation': { to: string; name: string; books: RecommendedBook[] };
+  'new-recommendation': { to: string; name: string; book: RecommendedBook };
   'newsletter':         { to: string; payload: NewsletterPayload };
   'weekly-digest':      { to: string; payload: WeeklyDigestPayload };
+  'email-change-otp':   { to: string; name: string; otp: string; expiryMinutes?: number };
+  'email-change-notify':{ to: string; name: string };
+  'follow-request':     { to: string; receiverName: string; senderName: string };
+  'follow-accepted':    { to: string; senderName: string; accepterName: string };
 }
 
 export type EmailJobName = keyof EmailJobMap;
@@ -37,6 +41,10 @@ export const EMAIL_PRIORITY: Record<EmailJobName, number> = {
   'new-recommendation': 7,
   'weekly-digest':      8,
   'newsletter':         10,
+  'email-change-otp':   1,
+  'email-change-notify':1,
+  'follow-request':     7,
+  'follow-accepted':    7,
 };
 
 // ── Queue ─────────────────────────────────────────────────────────────────────

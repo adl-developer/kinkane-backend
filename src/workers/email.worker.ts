@@ -9,6 +9,10 @@ import {
   sendNewRecommendationEmail,
   sendNewsletterEmail,
   sendWeeklyDigestEmail,
+  sendEmailChangeOtpEmail,
+  sendEmailChangeNotifyEmail,
+  sendFollowRequestEmail,
+  sendFollowAcceptedEmail,
 } from '../emails';
 import { logger } from '../lib/logger';
 
@@ -44,8 +48,8 @@ async function processEmailJob(job: Job): Promise<void> {
       break;
     }
     case 'new-recommendation': {
-      const { to, name: userName, books } = job.data as EmailJobMap['new-recommendation'];
-      await sendNewRecommendationEmail(to, userName, books);
+      const { to, name: userName, book } = job.data as EmailJobMap['new-recommendation'];
+      await sendNewRecommendationEmail(to, userName, book);
       break;
     }
     case 'newsletter': {
@@ -56,6 +60,26 @@ async function processEmailJob(job: Job): Promise<void> {
     case 'weekly-digest': {
       const { to, payload } = job.data as EmailJobMap['weekly-digest'];
       await sendWeeklyDigestEmail(to, payload);
+      break;
+    }
+    case 'email-change-otp': {
+      const { to, name: userName, otp, expiryMinutes } = job.data as EmailJobMap['email-change-otp'];
+      await sendEmailChangeOtpEmail(to, userName, otp, expiryMinutes);
+      break;
+    }
+    case 'email-change-notify': {
+      const { to, name: userName } = job.data as EmailJobMap['email-change-notify'];
+      await sendEmailChangeNotifyEmail(to, userName);
+      break;
+    }
+    case 'follow-request': {
+      const { to, receiverName, senderName } = job.data as EmailJobMap['follow-request'];
+      await sendFollowRequestEmail(to, receiverName, senderName);
+      break;
+    }
+    case 'follow-accepted': {
+      const { to, senderName, accepterName } = job.data as EmailJobMap['follow-accepted'];
+      await sendFollowAcceptedEmail(to, senderName, accepterName);
       break;
     }
     default: {

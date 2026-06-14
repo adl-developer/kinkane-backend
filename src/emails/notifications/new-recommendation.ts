@@ -3,37 +3,28 @@ import { sgMail, FROM } from '../../lib/sendgrid';
 export interface RecommendedBook {
   title: string;
   author: string;
-  coverUrl?: string;
+  reason: string;
+  url: string;
 }
 
-/**
- * Notifies a user that fresh recommendations are waiting for them.
- * @param books - A short list of recommended titles to preview (typically 3).
- */
 export async function sendNewRecommendationEmail(
   to: string,
   name: string,
-  books: RecommendedBook[],
+  book: RecommendedBook,
 ): Promise<void> {
-  const bookList = books
-    .map(
-      (b) => `<li><strong>${b.title}</strong> by ${b.author}</li>`,
-    )
-    .join('');
-
-  const bookListText = books.map((b) => `- ${b.title} by ${b.author}`).join('\n');
-
   await sgMail.send({
     to,
     from: FROM,
-    subject: `${name}, your new book picks are ready 📖`,
+    subject: 'We found a book for you',
     html: `
       <p>Hi ${name},</p>
-      <p>We've put together some new picks based on your reading taste:</p>
-      <ul>${bookList}</ul>
-      <p><a href="https://kinkane.com/recommendations" style="background:#1a1a1a;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;display:inline-block;">See All Recommendations</a></p>
-      <p>The Kinkane Team</p>
+      <p>Based on your reading preferences, we think you might enjoy:</p>
+      <p><strong>${book.title}</strong><br/>by ${book.author}</p>
+      <p>${book.reason}</p>
+      <p>Add it to your bookshelf, explore similar titles, or start reading today.</p>
+      <p><a href="${book.url}" style="background:#1a1a1a;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;display:inline-block;">View Recommendation</a></p>
+      <p>Until your next great read,<br/>The Kinkané Team</p>
     `,
-    text: `Hi ${name},\n\nYour new picks:\n${bookListText}\n\nSee all: https://kinkane.com/recommendations\n\nThe Kinkane Team`,
+    text: `Hi ${name},\n\nBased on your reading preferences, we think you might enjoy:\n\n${book.title}\nby ${book.author}\n\n${book.reason}\n\nAdd it to your bookshelf, explore similar titles, or start reading today.\n${book.url}\n\nUntil your next great read,\nThe Kinkané Team`,
   });
 }

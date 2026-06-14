@@ -1,5 +1,7 @@
+import jwt from 'jsonwebtoken';
 import { Request, Response, NextFunction } from 'express';
-import { authService } from '../services/auth.service';
+import { authService, signAccessToken } from '../services/auth.service';
+import { config } from '../config';
 
 export interface AuthenticatedRequest extends Request {
   user: {
@@ -7,6 +9,8 @@ export interface AuthenticatedRequest extends Request {
     email: string;
   };
 }
+
+const REFRESH_THRESHOLD_SECS = 5 * 60; // silently refresh when < 5 min remain
 
 export function requireAuth(req: Request, res: Response, next: NextFunction): void {
   const header = req.headers.authorization;
@@ -21,6 +25,18 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
   try {
     const payload = authService.verifyAccessToken(token);
     (req as AuthenticatedRequest).user = { id: payload.sub, email: payload.email };
+
+    // Piggyback a fresh access token if the current one is close to expiry.
+    // jwt.decode is safe here — we already verified the token above.
+    const decoded = jwt.decode(token) as { exp?: number } | null;
+    if (decoded?.exp !== undefined) {
+      const secsRemaining = decoded.exp - Math.floor(Date.now() / 1000);
+      if (secsRemaining < REFRESH_THRESHOLD_SECS) {
+        res.setHeader('X-New-Access-Token', signAccessToken(payload.sub, payload.email));
+        res.setHeader('Access-Control-Expose-Headers', 'X-New-Access-Token');
+      }
+    }
+
     next();
   } catch (err: unknown) {
     const e = err as Error & { statusCode?: number };

@@ -4,6 +4,9 @@ export { sendVerifyEmail } from './transactional/verify-email';
 export { sendPasswordResetEmail } from './transactional/password-reset';
 export { sendPasswordChangedEmail } from './transactional/password-changed';
 export { sendAccountDeletedEmail } from './transactional/account-deleted';
+export { sendEmailChangeOtpEmail } from './transactional/email-change-otp';
+export { sendEmailChangeNotifyEmail } from './transactional/email-change-notify';
+export { sendFollowRequestEmail, sendFollowAcceptedEmail } from './transactional/follow-request';
 
 // Notifications
 export { sendTrialEndingEmail } from './notifications/trial-ending';
