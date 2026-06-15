@@ -1,6 +1,6 @@
 import { eq, and, asc, desc, sql, inArray } from 'drizzle-orm';
 import { db } from '../db';
-import { posts, postLikes, comments, commentLikes, users, books, userBooks, bookContributors } from '../db/schema';
+import { posts, postLikes, comments, commentLikes, users, books, userBooks, bookContributors, followRequests } from '../db/schema';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -478,7 +478,25 @@ export const communityService = {
   async getFriendBookDetail(
     friendId: number,
     bookId: number,
+    requesterId: number,
   ): Promise<FriendBookDetail> {
+    // Verify the requester is an accepted follower before exposing friend data
+    const [followRow] = await db
+      .select({ id: followRequests.id })
+      .from(followRequests)
+      .where(
+        and(
+          eq(followRequests.senderId, requesterId),
+          eq(followRequests.receiverId, friendId),
+          eq(followRequests.status, 'accepted'),
+        ),
+      )
+      .limit(1);
+
+    if (!followRow) {
+      throw Object.assign(new Error('User not found'), { statusCode: 404 });
+    }
+
     const [[bookRow], [postRow], [userBookRow]] = await Promise.all([
       db
         .select({

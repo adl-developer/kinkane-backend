@@ -1,5 +1,6 @@
 import bcrypt from 'bcryptjs';
 import { eq, and, asc, desc, ilike, sql, inArray, type SQL } from 'drizzle-orm';
+import { admin } from '../lib/firebase';
 import { db } from '../db';
 import {
   userBooks,
@@ -204,6 +205,16 @@ export const userBooksService = {
    * on update, or set to their column defaults on first insert.
    */
   async upsert(userId: number, bookId: number, fields: UpsertUserBookFields): Promise<void> {
+    const [book] = await db
+      .select({ id: books.id })
+      .from(books)
+      .where(eq(books.id, bookId))
+      .limit(1);
+
+    if (!book) {
+      throw Object.assign(new Error('Book not found'), { statusCode: 404 });
+    }
+
     // Build the update set — only include keys that were explicitly provided
     const updateSet: Record<string, unknown> = {
       // C5 fix: always mark the row as manually managed when the user acts on it
@@ -256,23 +267,48 @@ export const userBooksService = {
    * Deletes every book from the user's reading list and clears any cached
    * public notes for the affected books.
    */
-  async resetLibrary(userId: number, password: string): Promise<{ deleted: number }> {
+  async resetLibrary(
+    userId: number,
+    credential: { password: string } | { idToken: string },
+  ): Promise<{ deleted: number }> {
     const [user] = await db
       .select({ passwordHash: users.passwordHash })
       .from(users)
       .where(eq(users.id, userId))
       .limit(1);
 
-    if (!user?.passwordHash) {
-      throw Object.assign(
-        new Error('This account uses social login and has no password'),
-        { statusCode: 400 },
-      );
+    if (!user) {
+      throw Object.assign(new Error('User not found'), { statusCode: 404 });
     }
 
-    const valid = await bcrypt.compare(password, user.passwordHash);
-    if (!valid) {
-      throw Object.assign(new Error('Incorrect password'), { statusCode: 401 });
+    if ('idToken' in credential) {
+      // Social-login path: verify a fresh Firebase ID token and enforce a
+      // 5-minute auth_time window so the user must have just authenticated.
+      let decoded: admin.auth.DecodedIdToken;
+      try {
+        decoded = await admin.auth().verifyIdToken(credential.idToken);
+      } catch {
+        throw Object.assign(new Error('Invalid Firebase ID token'), { statusCode: 401 });
+      }
+      const authAge = Math.floor(Date.now() / 1000) - decoded.auth_time;
+      if (authAge > 5 * 60) {
+        throw Object.assign(
+          new Error('Re-authentication required — please sign in again before resetting your library'),
+          { statusCode: 401 },
+        );
+      }
+    } else {
+      // Password path: standard bcrypt comparison
+      if (!user.passwordHash) {
+        throw Object.assign(
+          new Error('This account uses social login — provide a Firebase ID token instead of a password'),
+          { statusCode: 400 },
+        );
+      }
+      const valid = await bcrypt.compare(credential.password, user.passwordHash);
+      if (!valid) {
+        throw Object.assign(new Error('Incorrect password'), { statusCode: 401 });
+      }
     }
 
     const deleted = await db

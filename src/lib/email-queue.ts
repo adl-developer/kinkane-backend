@@ -22,7 +22,7 @@ export interface EmailJobMap {
   'newsletter':         { to: string; payload: NewsletterPayload };
   'weekly-digest':      { to: string; payload: WeeklyDigestPayload };
   'email-change-otp':   { to: string; name: string; otp: string; expiryMinutes?: number };
-  'email-change-notify':{ to: string; name: string };
+  'email-change-notify':{ to: string; name: string; cancelUrl: string };
   'follow-request':     { to: string; receiverName: string; senderName: string };
   'follow-accepted':    { to: string; senderName: string; accepterName: string };
 }

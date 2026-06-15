@@ -57,19 +57,33 @@ export const emailChangeService = {
     const rawCancelToken = crypto.randomBytes(40).toString('hex');
     const expiresAt = new Date(Date.now() + OTP_TTL_MS);
 
-    // Overwrite any existing pending request — one per user at a time
-    await db.delete(emailChangeRequests).where(eq(emailChangeRequests.userId, userId));
-
-    await db.insert(emailChangeRequests).values({
-      userId,
-      newEmail: normalizedEmail,
-      otpHash: hashValue(otp),
-      cancelTokenHash: hashValue(rawCancelToken),
-      expiresAt,
-    });
+    // Atomic: delete any existing request then insert the new one in a single
+    // transaction. The unique constraint on (user_id) in email_change_requests
+    // is the authoritative race guard — if two concurrent requests slip through
+    // the availability check above, the second insert will throw a unique
+    // violation which we surface as a clean 409.
+    try {
+      await db.transaction(async (tx) => {
+        await tx.delete(emailChangeRequests).where(eq(emailChangeRequests.userId, userId));
+        await tx.insert(emailChangeRequests).values({
+          userId,
+          newEmail: normalizedEmail,
+          otpHash: hashValue(otp),
+          cancelTokenHash: hashValue(rawCancelToken),
+          expiresAt,
+        });
+      });
+    } catch (err: unknown) {
+      const e = err as Error & { code?: string };
+      if (e.code === '23505') {
+        throw Object.assign(new Error('That email address is already in use'), { statusCode: 409 });
+      }
+      throw err;
+    }
 
     const cancelUrl = `${config.appUrl}/cancel-email-change?token=${rawCancelToken}`;
 
+    // OTP goes to the new email so the user can verify they own it
     enqueueEmail('email-change-otp', { to: normalizedEmail, name: user.name, otp }).catch((err) => {
       logger.error('Failed to enqueue email-change OTP email', {
         userId,
@@ -77,9 +91,12 @@ export const emailChangeService = {
       });
     });
 
+    // Security notice + cancel link goes to the CURRENT (old) email so the
+    // real owner can cancel if they didn't initiate this change
     enqueueEmail('email-change-notify', {
-      to: normalizedEmail,
+      to: user.email,
       name: user.name,
+      cancelUrl,
     }).catch((err) => {
       logger.error('Failed to enqueue email-change notify email', {
         userId,
@@ -184,12 +201,17 @@ export const emailChangeService = {
     const [pending] = await db
       .select()
       .from(emailChangeRequests)
-      .where(eq(emailChangeRequests.userId, userId))
+      .where(
+        and(
+          eq(emailChangeRequests.userId, userId),
+          gt(emailChangeRequests.expiresAt, new Date()),
+        ),
+      )
       .limit(1);
 
     if (!pending) {
       throw Object.assign(
-        new Error('No pending email change request found'),
+        new Error('No active email change request found, or it has expired'),
         { statusCode: 400 },
       );
     }
@@ -216,9 +238,11 @@ export const emailChangeService = {
       });
     });
 
+    // Security notice + fresh cancel link goes to the CURRENT (old) email
     enqueueEmail('email-change-notify', {
-      to: pending.newEmail,
+      to: user.email,
       name: user.name,
+      cancelUrl,
     }).catch((err) => {
       logger.error('Failed to enqueue resend notify email', {
         userId,

@@ -68,8 +68,8 @@ async function processEmailJob(job: Job): Promise<void> {
       break;
     }
     case 'email-change-notify': {
-      const { to, name: userName } = job.data as EmailJobMap['email-change-notify'];
-      await sendEmailChangeNotifyEmail(to, userName);
+      const { to, name: userName, cancelUrl } = job.data as EmailJobMap['email-change-notify'];
+      await sendEmailChangeNotifyEmail(to, userName, cancelUrl);
       break;
     }
     case 'follow-request': {

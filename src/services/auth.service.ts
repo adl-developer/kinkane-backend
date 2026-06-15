@@ -235,35 +235,34 @@ export const authService = {
   async refresh(rawToken: string): Promise<TokenPair> {
     const tokenHash = hashToken(rawToken);
 
-    const [stored] = await db
-      .select({ id: refreshTokens.id, userId: refreshTokens.userId, expiresAt: refreshTokens.expiresAt })
-      .from(refreshTokens)
+    // Atomically consume the token: DELETE returns the row only if it exists and
+    // hasn't expired. Two concurrent requests with the same token race on this
+    // DELETE — only one wins and receives the userId; the other gets an empty array
+    // and falls through to the 401, preventing double-issuance.
+    const [consumed] = await db
+      .delete(refreshTokens)
       .where(
         and(
           eq(refreshTokens.tokenHash, tokenHash),
           gt(refreshTokens.expiresAt, new Date()),
         ),
       )
-      .limit(1);
+      .returning({ userId: refreshTokens.userId });
 
-    if (!stored) {
+    if (!consumed) {
       throw Object.assign(new Error('Invalid or expired refresh token'), { statusCode: 401 });
     }
 
     const [user] = await db
       .select({ id: users.id, email: users.email })
       .from(users)
-      .where(eq(users.id, stored.userId))
+      .where(eq(users.id, consumed.userId))
       .limit(1);
 
     if (!user) {
       throw Object.assign(new Error('User not found'), { statusCode: 401 });
     }
 
-    // Rotate — delete the consumed token before issuing the new pair.
-    // If a stolen token is replayed after the legitimate client already rotated,
-    // the delete returns 0 rows and the 401 above fires on the next request.
-    await db.delete(refreshTokens).where(eq(refreshTokens.id, stored.id));
     return issueTokenPair(user.id, user.email);
   },
 
@@ -372,10 +371,18 @@ export const authService = {
     }
 
     const newHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
-    await db
-      .update(users)
-      .set({ passwordHash: newHash, updatedAt: new Date() })
-      .where(eq(users.id, userId));
+
+    // Atomic: update password and revoke all active sessions so other devices
+    // (including any attacker holding a stolen token) are forced to re-authenticate.
+    await db.transaction(async (tx) => {
+      await tx
+        .update(users)
+        .set({ passwordHash: newHash, updatedAt: new Date() })
+        .where(eq(users.id, userId));
+      await tx
+        .delete(refreshTokens)
+        .where(eq(refreshTokens.userId, userId));
+    });
 
     enqueueEmail('password-changed', { to: user.email, name: user.name }).catch((err) => {
       logger.error('Failed to enqueue password-changed email', {
@@ -408,7 +415,13 @@ export const authService = {
       throw Object.assign(new Error('Incorrect password'), { statusCode: 401 });
     }
 
-    await db.delete(users).where(eq(users.id, userId));
+    // Explicitly revoke tokens before deleting the user row so there is no
+    // window where a valid token exists for a non-existent account (regardless
+    // of whether the FK has ON DELETE CASCADE configured).
+    await db.transaction(async (tx) => {
+      await tx.delete(refreshTokens).where(eq(refreshTokens.userId, userId));
+      await tx.delete(users).where(eq(users.id, userId));
+    });
 
     enqueueEmail('account-deleted', { to: user.email, name: user.name }).catch((err) => {
       logger.error('Failed to enqueue account-deleted email', {

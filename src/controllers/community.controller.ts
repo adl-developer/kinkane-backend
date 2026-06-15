@@ -263,7 +263,7 @@ export const communityController = {
     try {
       const friendId = parseId(req.params.friendId, 'friend ID');
       const bookId = parseId(req.params.bookId, 'book ID');
-      const result = await communityService.getFriendBookDetail(friendId, bookId);
+      const result = await communityService.getFriendBookDetail(friendId, bookId, req.user.id);
       res.status(200).json(result);
     } catch (err: unknown) {
       const e = err as Error & { statusCode?: number };
