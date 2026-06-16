@@ -12,7 +12,7 @@ import {
   index,
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
-import { users } from './users';
+import { users, readerTypeEnum } from './users';
 import { books } from './books';
 
 // Shared shape for the dislikes object used in both guest sessions and user preferences.
@@ -43,6 +43,7 @@ export const guestSessions = pgTable(
     // The 5 books the user chose from the recommendation results.
     // Null until the client calls POST /guest-sessions/:id/selections.
     chosenBookIds: jsonb('chosen_book_ids').$type<number[]>(),
+    readerType: readerTypeEnum('reader_type'),
     // Ties back to recommendation_cache.input_hash so we can retrieve the result if needed
     recommendationHash: varchar('recommendation_hash', { length: 64 }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),

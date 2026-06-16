@@ -50,6 +50,13 @@
       "when": 1781267251066,
       "tag": "0006_colorful_tarantula",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1781552976236,
+      "tag": "0007_reader_type",
+      "breakpoints": true
     }
   ]
 }

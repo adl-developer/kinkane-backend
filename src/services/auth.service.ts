@@ -111,6 +111,11 @@ async function migrateGuestSession(userId: number, sessionId: string): Promise<v
       dislikes: session.dislikes,
     });
 
+    // Copy reader type inferred during onboarding selections
+    if (session.readerType) {
+      await tx.update(users).set({ readerType: session.readerType }).where(eq(users.id, userId));
+    }
+
     // 2 + 3. Seed reading list and interaction signals for each chosen book
     if ((session.chosenBookIds ?? []).length > 0) {
       await tx
