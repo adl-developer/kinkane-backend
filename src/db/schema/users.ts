@@ -19,6 +19,17 @@ const tsvector = customType<{ data: string }>({
 
 export const shelfVisibilityEnum = pgEnum('shelf_visibility', ['public', 'friends', 'private']);
 
+export const readerTypeEnum = pgEnum('reader_type', [
+  'The Open Door',
+  'The Seeker',
+  'The Book-ist',
+  'The Story Circler',
+  'The Mirror Within',
+  'The Echo Collector',
+  'The High Summiter',
+  'The Cloud Illusionist',
+]);
+
 export const users = pgTable(
   'users',
   {
@@ -29,6 +40,7 @@ export const users = pgTable(
     photoUrl: varchar('photo_url', { length: 1000 }),
     emailVerified: boolean('email_verified').default(false).notNull(),
     shelfVisibility: shelfVisibilityEnum('shelf_visibility').notNull().default('private'),
+    readerType: readerTypeEnum('reader_type'),
     searchVector: tsvector('search_vector'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -99,6 +111,7 @@ export const followRequests = pgTable(
 );
 
 export type ShelfVisibility = 'public' | 'friends' | 'private';
+export type ReaderType = typeof readerTypeEnum.enumValues[number];
 export type FollowRequestStatus = 'pending' | 'accepted' | 'declined';
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;

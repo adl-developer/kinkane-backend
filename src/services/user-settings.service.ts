@@ -1,12 +1,13 @@
 import { eq } from 'drizzle-orm';
 import { db } from '../db';
 import { users } from '../db/schema';
-import type { ShelfVisibility } from '../db/schema/users';
+import type { ShelfVisibility, ReaderType } from '../db/schema/users';
 
 export interface UserSettings {
   name: string;
   photoUrl: string | null;
   shelfVisibility: ShelfVisibility;
+  readerType: ReaderType | null;
 }
 
 export const userSettingsService = {
@@ -16,6 +17,7 @@ export const userSettingsService = {
         name: users.name,
         photoUrl: users.photoUrl,
         shelfVisibility: users.shelfVisibility,
+        readerType: users.readerType,
       })
       .from(users)
       .where(eq(users.id, userId))
@@ -25,7 +27,7 @@ export const userSettingsService = {
       throw Object.assign(new Error('User not found'), { statusCode: 404 });
     }
 
-    return { name: user.name, photoUrl: user.photoUrl ?? null, shelfVisibility: user.shelfVisibility };
+    return { name: user.name, photoUrl: user.photoUrl ?? null, shelfVisibility: user.shelfVisibility, readerType: user.readerType ?? null };
   },
 
   async updateShelfVisibility(userId: number, visibility: ShelfVisibility): Promise<void> {

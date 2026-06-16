@@ -32,12 +32,12 @@ export const guestController = {
     }
 
     try {
-      const found = await guestService.saveSelections(id, parsed.data.chosenBookIds);
-      if (!found) {
+      const result = await guestService.saveSelections(id, parsed.data.chosenBookIds);
+      if (!result) {
         res.status(404).json({ error: 'Session not found or expired' });
         return;
       }
-      res.status(200).json({ ok: true });
+      res.status(200).json({ readerType: result.readerType, books: result.books });
     } catch (err: unknown) {
       logger.error('Unexpected error saving selections', { error: (err as Error).message });
       res.status(500).json({ error: 'An unexpected error occurred' });
