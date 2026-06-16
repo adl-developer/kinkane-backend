@@ -8,8 +8,14 @@ import { guestService } from './guest.service';
 import { logger } from '../lib/logger';
 import { redis } from '../lib/redis';
 
-// Max books returned per recommendation request — balances quality vs Gemini cost
-const CANDIDATE_LIMIT = 250;
+// How many results we aim to return to the client
+const TARGET_RESULTS = 250;
+// How large a pool to fetch from the DB before applying the threshold cut.
+// Larger than TARGET_RESULTS so the threshold filter still leaves us with 250.
+const FETCH_POOL = 2000;
+// Cosine distance upper bound — books further than this from the preference
+// vector are excluded. Lower = stricter (0 = identical, 1 = orthogonal).
+const SIMILARITY_THRESHOLD = 0.5;
 const CACHE_TTL_HOURS = 48;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -229,16 +235,20 @@ export const recommendationsService = {
     // Passed as a parameterised value; postgres driver sends it as $1, cast to vector
     const vectorLiteral = `[${queryVector.join(',')}]`;
 
-    // 4. pgvector cosine similarity search (closest books first) with dislike filters
+    // 4. pgvector cosine similarity search — fetch a large pool, apply the
+    //    similarity threshold to exclude poor fits, then keep the top TARGET_RESULTS.
     const dislikeConditions = buildDislikeConditions(input.dislikes);
-    const whereClause = dislikeConditions.length > 0 ? and(...dislikeConditions) : undefined;
+    const thresholdCondition = sql`(${books.embedding} <=> ${vectorLiteral}::vector) < ${SIMILARITY_THRESHOLD}`;
+    const whereClause = and(thresholdCondition, ...dislikeConditions);
 
-    const candidateRows = await db
+    const poolRows = await db
       .select({ id: books.id, title: books.title })
       .from(books)
       .where(whereClause)
       .orderBy(sql`${books.embedding} <=> ${vectorLiteral}::vector`)
-      .limit(CANDIDATE_LIMIT);
+      .limit(FETCH_POOL);
+
+    const candidateRows = poolRows.slice(0, TARGET_RESULTS);
 
     if (candidateRows.length === 0) {
       // Cache the empty result so identical preferences don't re-run the vector search
