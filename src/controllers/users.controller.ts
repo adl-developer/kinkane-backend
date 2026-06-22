@@ -11,12 +11,33 @@ const shelfQuerySchema = z.object({
   offset: z.coerce.number().int().min(0).default(0),
 });
 
+const followGraphQuerySchema = z.object({
+  limit:  z.coerce.number().int().min(1).max(50).default(20),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
 export const usersController = {
   async getUserProfile(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const targetId = parseId(req.params.userId, 'user ID');
       const profile = await usersService.getUserProfile(targetId, req.user.id);
       res.status(200).json(profile);
+    } catch (err: unknown) {
+      const e = err as Error & { statusCode?: number };
+      res.status(e.statusCode ?? 500).json({ error: e.message });
+    }
+  },
+
+  async listPendingFollowRequests(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const parsed = followGraphQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+    try {
+      const { limit, offset } = parsed.data;
+      const result = await usersService.listPendingFollowRequests(req.user.id, limit, offset);
+      res.status(200).json({ ...result, limit, offset });
     } catch (err: unknown) {
       const e = err as Error & { statusCode?: number };
       res.status(e.statusCode ?? 500).json({ error: e.message });
@@ -61,6 +82,40 @@ export const usersController = {
       const requestId = parseId(req.params.requestId, 'request ID');
       await usersService.declineFollowRequest(requestId, req.user.id);
       res.status(200).json({ success: true });
+    } catch (err: unknown) {
+      const e = err as Error & { statusCode?: number };
+      res.status(e.statusCode ?? 500).json({ error: e.message });
+    }
+  },
+
+  async listFollowers(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const parsed = followGraphQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+    try {
+      const targetId = parseId(req.params.userId, 'user ID');
+      const { limit, offset } = parsed.data;
+      const result = await usersService.listFollowers(targetId, req.user.id, limit, offset);
+      res.status(200).json({ ...result, limit, offset });
+    } catch (err: unknown) {
+      const e = err as Error & { statusCode?: number };
+      res.status(e.statusCode ?? 500).json({ error: e.message });
+    }
+  },
+
+  async listFollowing(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const parsed = followGraphQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+    try {
+      const targetId = parseId(req.params.userId, 'user ID');
+      const { limit, offset } = parsed.data;
+      const result = await usersService.listFollowing(targetId, req.user.id, limit, offset);
+      res.status(200).json({ ...result, limit, offset });
     } catch (err: unknown) {
       const e = err as Error & { statusCode?: number };
       res.status(e.statusCode ?? 500).json({ error: e.message });

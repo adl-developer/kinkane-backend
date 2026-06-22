@@ -10,6 +10,8 @@ import userSettingsRoutes from './user-settings.routes';
 import emailChangeRoutes from './email-change.routes';
 import communityRoutes from './community.routes';
 import usersRoutes from './users.routes';
+import exploreRoutes from './explore.routes';
+import userSubscriptionRoutes from './user-subscription.routes';
 
 const router = Router();
 
@@ -31,6 +33,8 @@ v1.use('/user/settings', userSettingsRoutes);
 v1.use('/user/email-change', emailChangeRoutes);
 v1.use('/community', communityRoutes);
 v1.use('/users', usersRoutes);
+v1.use('/explore', exploreRoutes);
+v1.use('/user/subscription', userSubscriptionRoutes);
 
 router.use('/v1', v1);
 

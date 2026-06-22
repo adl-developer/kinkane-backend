@@ -16,7 +16,13 @@ const genai = new GoogleGenerativeAI(config.gemini.apiKey);
  */
 export async function generateEmbedding(text: string): Promise<number[]> {
   const model = genai.getGenerativeModel({ model: config.gemini.embeddingModel });
-  const result = await model.embedContent(text);
+  // outputDimensionality isn't in this SDK version's types but is accepted by the API —
+  // must match the books.embedding column (vector(768)).
+  const request = {
+    content: { parts: [{ text }], role: 'user' },
+    outputDimensionality: 768,
+  };
+  const result = await withRetry(() => model.embedContent(request));
   const values = result.embedding.values;
   if (values.some((v) => !Number.isFinite(v))) {
     throw new Error('Gemini returned an invalid embedding vector (NaN or Infinity)');
@@ -52,6 +58,56 @@ function chunkArray<T>(arr: T[], size: number): T[][] {
     chunks.push(arr.slice(i, i + size));
   }
   return chunks;
+}
+
+// Status codes worth retrying: 429 (rate limit) and 5xx (server-side, including
+// the 503 "high demand" errors the API returns under load). Anything else —
+// 400 bad request, 401/403 auth, 404 model not found — is a permanent failure
+// that will fail identically on every retry, so don't waste time/quota on it.
+function isRetryableStatus(status: number | undefined): boolean {
+  if (status === undefined) return true; // network error / no HTTP response — assume transient
+  return status === 429 || status >= 500;
+}
+
+/**
+ * Retries a Gemini call with exponential backoff (1s, 2s, 4s, 8s …) — covers
+ * transient failures like the 503 "high demand" errors the API returns under load.
+ * If the error carries a retryDelay hint (rate-limit responses), that takes priority.
+ * Permanent failures (4xx other than 429) are surfaced immediately without retrying.
+ */
+async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 4): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      const status = (err as { status?: number }).status;
+
+      if (!isRetryableStatus(status)) {
+        logger.error('Gemini call failed with non-retryable status', {
+          status,
+          error: (err as Error).message,
+        });
+        throw err;
+      }
+
+      if (attempt < maxAttempts) {
+        const retryAfterMatch = String(err).match(/retryDelay["\s:]+(\d+)s/);
+        const delay = retryAfterMatch
+          ? (parseInt(retryAfterMatch[1], 10) + 1) * 1000
+          : 1000 * 2 ** (attempt - 1);
+        logger.warn('Gemini call failed, retrying with backoff', {
+          attempt,
+          status,
+          delayMs: delay,
+          error: (err as Error).message,
+        });
+        await new Promise((res) => setTimeout(res, delay));
+      }
+    }
+  }
+  throw lastError;
 }
 
 /**
@@ -94,10 +150,12 @@ ${preferenceText}
 ${bookList}
 </books>`;
 
-  const result = await model.generateContent({
-    contents: [{ role: 'user', parts: [{ text: prompt }] }],
-    generationConfig: { responseMimeType: 'application/json' },
-  });
+  const result = await withRetry(() =>
+    model.generateContent({
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: { responseMimeType: 'application/json' },
+    }),
+  );
 
   const raw = result.response.text().trim();
 
@@ -175,10 +233,12 @@ Return ONLY a valid JSON object with no markdown, no code fences, no extra text:
 {"readerType": "<one of the exact type names listed above>"}`;
 
   try {
-    const result = await model.generateContent({
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: { responseMimeType: 'application/json' },
-    });
+    const result = await withRetry(() =>
+      model.generateContent({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: { responseMimeType: 'application/json' },
+      }),
+    );
 
     const raw = result.response.text().trim();
     const parsed = JSON.parse(raw) as { readerType?: string };
@@ -205,8 +265,17 @@ Return ONLY a valid JSON object with no markdown, no code fences, no extra text:
  * model's output-token limit while still completing the full list in one
  * round-trip wall-clock time.
  *
+ * The model occasionally omits a book or returns a blank explanation within
+ * an otherwise-valid chunk response — even on a retry of just the missing
+ * ones. So missing books get re-requested in a backoff loop (up to
+ * MAX_MISSING_RETRY_ROUNDS rounds) until every book has a non-empty
+ * explanation or the rounds run out, at which point any still-missing books
+ * fall back to an empty string.
+ *
  * Returns one explanation per book in the same order as the input.
  */
+const MAX_MISSING_RETRY_ROUNDS = 3;
+
 export async function generateExplanations(
   preferenceText: string,
   books: BookContext[],
@@ -217,5 +286,43 @@ export async function generateExplanations(
       geminiConcurrencyLimit(() => generateExplanationsChunk(preferenceText, chunk)),
     ),
   );
-  return chunkResults.flat();
+  const results = chunkResults.flat();
+
+  const explanationMap = new Map(results.map((r) => [r.bookId, r.explanation]));
+
+  for (let round = 1; round <= MAX_MISSING_RETRY_ROUNDS; round++) {
+    const missingBooks = books.filter((b) => !explanationMap.get(b.bookId)?.trim());
+    if (missingBooks.length === 0) break;
+
+    logger.warn('Retrying books with missing/empty explanations', {
+      round,
+      bookIds: missingBooks.map((b) => b.bookId),
+    });
+
+    if (round > 1) {
+      // Back off between rounds (not just within a single call) — the model
+      // dropping the same books repeatedly is usually a sign of load, same
+      // as the transient-error case withRetry already handles.
+      await new Promise((res) => setTimeout(res, 1000 * 2 ** (round - 1)));
+    }
+
+    const retryResults = await geminiConcurrencyLimit(() =>
+      generateExplanationsChunk(preferenceText, missingBooks),
+    );
+    for (const r of retryResults) {
+      if (r.explanation.trim()) {
+        explanationMap.set(r.bookId, r.explanation);
+      }
+    }
+  }
+
+  const stillMissing = books.filter((b) => !explanationMap.get(b.bookId)?.trim());
+  if (stillMissing.length > 0) {
+    logger.error('Gemini explanations still missing after all retry rounds — falling back to empty string', {
+      bookIds: stillMissing.map((b) => b.bookId),
+      rounds: MAX_MISSING_RETRY_ROUNDS,
+    });
+  }
+
+  return books.map((b) => ({ bookId: b.bookId, explanation: explanationMap.get(b.bookId) ?? '' }));
 }

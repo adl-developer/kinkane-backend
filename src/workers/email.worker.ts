@@ -2,6 +2,7 @@ import { Worker, Job } from 'bullmq';
 import { bullConnection, EmailJobMap, EmailJobName } from '../lib/email-queue';
 import {
   sendWelcomeEmail,
+  sendVerifyEmail,
   sendPasswordResetEmail,
   sendPasswordChangedEmail,
   sendAccountDeletedEmail,
@@ -25,6 +26,11 @@ async function processEmailJob(job: Job): Promise<void> {
     case 'welcome': {
       const { to, name: userName } = job.data as EmailJobMap['welcome'];
       await sendWelcomeEmail(to, userName);
+      break;
+    }
+    case 'verify-email': {
+      const { to, name: userName, verificationUrl } = job.data as EmailJobMap['verify-email'];
+      await sendVerifyEmail(to, userName, verificationUrl);
       break;
     }
     case 'password-reset': {

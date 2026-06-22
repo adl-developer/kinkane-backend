@@ -1,6 +1,8 @@
 import rateLimit from 'express-rate-limit';
 import { RedisStore } from 'rate-limit-redis';
+import type { Request } from 'express';
 import { redis } from '../lib/redis';
+import type { AuthenticatedRequest } from './auth.middleware';
 
 const json429 = (_req: unknown, res: { status: (n: number) => { json: (b: unknown) => void } }) =>
   res.status(429).json({ error: 'Too many requests — please try again later' });
@@ -69,6 +71,31 @@ export const passwordResetLimiter = rateLimit({
   store: new RedisStore({ prefix: 'rl:password-reset:', sendCommand }),
 });
 
+// Verify-email link: 20 per hour per IP — the token itself is a 40-byte random
+// value (unguessable), so this limiter only needs to absorb shared-IP traffic
+// (NAT/CGNAT) and accidental double-clicks, not slow down a brute-force attempt.
+export const verifyEmailLinkLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: json429,
+  store: new RedisStore({ prefix: 'rl:email-verify-link:', sendCommand }),
+});
+
+// Resend verification email: 5 per hour per user — authenticated route, so key
+// by user ID rather than IP. Prevents a single account from triggering unbounded
+// SendGrid sends regardless of how many IPs they call from.
+export const resendVerificationEmailLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: json429,
+  keyGenerator: (req: Request) => String((req as AuthenticatedRequest).user.id),
+  store: new RedisStore({ prefix: 'rl:email-verify-resend:', sendCommand }),
+});
+
 // Email change: 5 per hour — prevents OTP email bombing to arbitrary addresses
 export const emailChangeLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
@@ -77,4 +104,18 @@ export const emailChangeLimiter = rateLimit({
   legacyHeaders: false,
   handler: json429,
   store: new RedisStore({ prefix: 'rl:email-change:', sendCommand }),
+});
+
+// Follow requests: 30 per hour per sender — each one emails the target user,
+// so this is the same "don't let one account email-bomb arbitrary third
+// parties" concern as emailChangeLimiter/passwordResetLimiter, just keyed by
+// the authenticated sender instead of IP.
+export const followRequestLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: json429,
+  keyGenerator: (req: Request) => String((req as AuthenticatedRequest).user.id),
+  store: new RedisStore({ prefix: 'rl:follow-request:', sendCommand }),
 });

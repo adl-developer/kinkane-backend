@@ -1,14 +1,16 @@
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { eq, and, gt } from 'drizzle-orm';
+import { eq, and, gt, inArray } from 'drizzle-orm';
 import { db } from '../db';
-import { users, refreshTokens, userProviders, guestSessions, userPreferences, userInteractions, userBooks, userSubscriptions, passwordResetTokens } from '../db/schema';
+import { users, refreshTokens, userProviders, guestSessions, userPreferences, userInteractions, userBooks, userSubscriptions, passwordResetTokens, emailVerificationTokens, books, bookContributors } from '../db/schema';
 import { getEffectiveTier } from '../db/schema/subscriptions';
 import { config } from '../config';
 import { admin } from '../lib/firebase';
 import { logger } from '../lib/logger';
 import { enqueueEmail } from '../lib/email-queue';
+import { generateEmbedding } from '../lib/gemini';
+import { buildPreferenceText } from './recommendations.service';
 
 const BCRYPT_ROUNDS = 12;
 
@@ -66,6 +68,48 @@ async function issueTokenPair(userId: number, email: string): Promise<TokenPair>
 
 // ── Guest session migration ───────────────────────────────────────────────────
 
+async function generatePreferenceEmbedding(
+  userId: number,
+  session: { feelings: string[]; bookIds: number[]; genres: string[]; dislikes: import('../db/schema/onboarding').Dislikes },
+): Promise<void> {
+  const likedBooks: { id: number; title: string; authors: string[] }[] = [];
+
+  if (session.bookIds.length > 0) {
+    const bookRows = await db
+      .select({ id: books.id, title: books.title })
+      .from(books)
+      .where(inArray(books.id, session.bookIds));
+
+    const contributorRows = await db
+      .select({ bookId: bookContributors.bookId, personName: bookContributors.personName })
+      .from(bookContributors)
+      .where(and(inArray(bookContributors.bookId, session.bookIds), eq(bookContributors.role, 'A01')))
+      .orderBy(bookContributors.sequenceNumber);
+
+    const authorMap = new Map<number, string[]>();
+    for (const c of contributorRows) {
+      if (!authorMap.has(c.bookId)) authorMap.set(c.bookId, []);
+      if (c.personName) authorMap.get(c.bookId)!.push(c.personName);
+    }
+
+    for (const b of bookRows) {
+      likedBooks.push({ id: b.id, title: b.title, authors: authorMap.get(b.id) ?? [] });
+    }
+  }
+
+  const text = buildPreferenceText(
+    { feelings: session.feelings, genres: session.genres, dislikes: session.dislikes },
+    likedBooks,
+  );
+
+  const embedding = await generateEmbedding(text);
+
+  await db
+    .update(userPreferences)
+    .set({ preferenceEmbedding: embedding })
+    .where(eq(userPreferences.userId, userId));
+}
+
 /**
  * Copies onboarding data from a guest session to the newly created user record.
  * Runs after the user row already exists. Non-transactional by design —
@@ -111,6 +155,15 @@ async function migrateGuestSession(userId: number, sessionId: string): Promise<v
       dislikes: session.dislikes,
     });
 
+    // Generate and store the preference embedding outside the transaction
+    // (Gemini call — non-blocking, failure is logged but does not affect signup).
+    generatePreferenceEmbedding(userId, session).catch((err) => {
+      logger.error('Failed to generate preference embedding after migration', {
+        userId,
+        error: (err as Error).message,
+      });
+    });
+
     // Copy reader type inferred during onboarding selections
     if (session.readerType) {
       await tx.update(users).set({ readerType: session.readerType }).where(eq(users.id, userId));
@@ -147,6 +200,38 @@ async function migrateGuestSession(userId: number, sessionId: string): Promise<v
 // ── Subscription ──────────────────────────────────────────────────────────────
 
 const TRIAL_DAYS = 90; // 3 months
+
+// ── Email verification ──────────────────────────────────────────────────────────
+
+const EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+/**
+ * Issues a fresh email-verification token for the user (replacing any
+ * existing one) and enqueues the verification email. Errors enqueuing the
+ * email are logged but not thrown — same fire-and-forget pattern as the
+ * other post-signup side effects.
+ */
+async function issueEmailVerification(userId: number, email: string, name: string): Promise<void> {
+  await db.delete(emailVerificationTokens).where(eq(emailVerificationTokens.userId, userId));
+
+  const rawToken = crypto.randomBytes(40).toString('hex');
+  const expiresAt = new Date(Date.now() + EMAIL_VERIFICATION_TTL_MS);
+
+  await db.insert(emailVerificationTokens).values({
+    userId,
+    tokenHash: hashToken(rawToken),
+    expiresAt,
+  });
+
+  const verificationUrl = `${config.appUrl}/verify-email?token=${rawToken}`;
+
+  enqueueEmail('verify-email', { to: email, name, verificationUrl }).catch((err) => {
+    logger.error('Failed to enqueue verification email', {
+      userId,
+      error: (err as Error).message,
+    });
+  });
+}
 
 // ── Auth service ──────────────────────────────────────────────────────────────
 
@@ -197,6 +282,13 @@ export const authService = {
 
     enqueueEmail('welcome', { to: user.email, name: user.name }).catch((err) => {
       logger.error('Failed to enqueue welcome email after signup', {
+        userId: user.id,
+        error: (err as Error).message,
+      });
+    });
+
+    issueEmailVerification(user.id, user.email, user.name).catch((err) => {
+      logger.error('Failed to issue email verification after signup', {
         userId: user.id,
         error: (err as Error).message,
       });
@@ -350,6 +442,61 @@ export const authService = {
         .delete(refreshTokens)
         .where(eq(refreshTokens.userId, stored.userId));
     });
+  },
+
+  /**
+   * Validates the email-verification token and marks the user's email as verified.
+   * The token is single-use — deleted on success.
+   */
+  async verifyEmail(rawToken: string): Promise<void> {
+    const tokenHash = hashToken(rawToken);
+
+    const [stored] = await db
+      .select({
+        id: emailVerificationTokens.id,
+        userId: emailVerificationTokens.userId,
+        expiresAt: emailVerificationTokens.expiresAt,
+      })
+      .from(emailVerificationTokens)
+      .where(eq(emailVerificationTokens.tokenHash, tokenHash))
+      .limit(1);
+
+    if (!stored || stored.expiresAt < new Date()) {
+      throw Object.assign(new Error('Invalid or expired verification link'), { statusCode: 400 });
+    }
+
+    await db.transaction(async (tx) => {
+      await tx
+        .update(users)
+        .set({ emailVerified: true, updatedAt: new Date() })
+        .where(eq(users.id, stored.userId));
+      await tx
+        .delete(emailVerificationTokens)
+        .where(eq(emailVerificationTokens.id, stored.id));
+    });
+  },
+
+  /**
+   * Resends the verification email for the authenticated user. No-op (but
+   * still 200) if the email is already verified — issues a fresh token and
+   * resets the 24-hour expiry otherwise.
+   */
+  async resendVerificationEmail(userId: number): Promise<void> {
+    const [user] = await db
+      .select({ id: users.id, name: users.name, email: users.email, emailVerified: users.emailVerified })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+
+    if (!user) {
+      throw Object.assign(new Error('User not found'), { statusCode: 404 });
+    }
+
+    if (user.emailVerified) {
+      return;
+    }
+
+    await issueEmailVerification(user.id, user.email, user.name);
   },
 
   async changePassword(userId: number, currentPassword: string, newPassword: string): Promise<void> {

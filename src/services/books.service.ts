@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { eq, sql, and, ilike, inArray, asc, desc, type SQL } from 'drizzle-orm';
+import { eq, sql, and, ilike, inArray, asc, desc, gt, notInArray, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   books,
@@ -8,6 +8,9 @@ import {
   bookPrices,
   bookSubjects,
   genres,
+  userInteractions,
+  userPreferences,
+  userBooks,
   type Book,
   type BookContributor,
   type Genre,
@@ -16,8 +19,13 @@ import {
 } from '../db/schema';
 import { redis } from '../lib/redis';
 
-const BOOK_DETAIL_TTL = 60 * 60;       // 1 hour
-const SUGGESTIONS_TTL = 5 * 60;        // 5 minutes
+const BOOK_DETAIL_TTL    = 60 * 60;    // 1 hour
+const SUGGESTIONS_TTL    = 5 * 60;     // 5 minutes
+const TRENDING_TTL       = 60 * 60;    // 1 hour
+const PERSONALIZED_TTL   = 60 * 60;    // 1 hour
+const PERSONALIZED_SIMILARITY_THRESHOLD = 0.5;
+const TRENDING_WINDOW_DAYS = 30;
+const TRENDING_INTERACTION_TYPES = ['view', 'wishlist', 'chosen_from_recommendation'] as const;
 
 export interface ListBooksOptions {
   q?: string;
@@ -82,6 +90,16 @@ export interface SuggestionItem {
   productForm: string | null;
   coverUrl: string | null;
   authors: string[];
+}
+
+export interface TrendingBookItem {
+  id: number;
+  title: string;
+  coverUrl: string | null;
+  isbn13: string | null;
+  publicationDate: string | null;
+  contributors: Pick<BookContributor, 'role' | 'personName' | 'sequenceNumber'>[];
+  genres: Pick<Genre, 'name' | 'slug'>[];
 }
 
 export interface BookDetail extends BookListItem {
@@ -450,5 +468,180 @@ export const booksService = {
 
     await redis.set(cacheKey, JSON.stringify(detail), 'EX', BOOK_DETAIL_TTL);
     return detail;
+  },
+
+  async trending(limit: number): Promise<TrendingBookItem[]> {
+    const cacheKey = `trending:v1:${limit}`;
+    const cached = await redis.get(cacheKey);
+    if (cached) return JSON.parse(cached) as TrendingBookItem[];
+
+    const since = new Date();
+    since.setDate(since.getDate() - TRENDING_WINDOW_DAYS);
+
+    // Aggregate interaction signals over the last 30 days into a ranked list of book IDs
+    const scored = await db
+      .select({
+        bookId: userInteractions.bookId,
+        score: sql<number>`SUM(${userInteractions.weight})::float`,
+      })
+      .from(userInteractions)
+      .where(
+        and(
+          gt(userInteractions.createdAt, since),
+          inArray(userInteractions.type, [...TRENDING_INTERACTION_TYPES]),
+        ),
+      )
+      .groupBy(userInteractions.bookId)
+      .orderBy(sql`SUM(${userInteractions.weight}) DESC`)
+      .limit(limit);
+
+    let bookIds = scored.map((r) => r.bookId);
+
+    // Fallback: top up with recently published books if interactions haven't filled the list
+    if (bookIds.length < limit) {
+      const exclude = bookIds.length > 0 ? bookIds : [-1];
+      const fallback = await db
+        .select({ id: books.id })
+        .from(books)
+        .where(
+          and(
+            sql`${books.id} NOT IN (${sql.join(exclude.map((id) => sql`${id}`), sql`, `)})`,
+            sql`${books.publicationDate} IS NOT NULL`,
+          ),
+        )
+        .orderBy(desc(books.publicationDate))
+        .limit(limit - bookIds.length);
+
+      bookIds = [...bookIds, ...fallback.map((r) => r.id)];
+    }
+
+    if (bookIds.length === 0) {
+      await redis.set(cacheKey, '[]', 'EX', TRENDING_TTL);
+      return [];
+    }
+
+    const [bookRows, contributors, genreRows] = await Promise.all([
+      db
+        .select({
+          id: books.id,
+          title: books.title,
+          coverUrl: books.coverUrl,
+          isbn13: books.isbn13,
+          publicationDate: books.publicationDate,
+        })
+        .from(books)
+        .where(inArray(books.id, bookIds)),
+
+      db
+        .select({
+          bookId: bookContributors.bookId,
+          role: bookContributors.role,
+          personName: bookContributors.personName,
+          sequenceNumber: bookContributors.sequenceNumber,
+        })
+        .from(bookContributors)
+        .where(inArray(bookContributors.bookId, bookIds))
+        .orderBy(bookContributors.sequenceNumber),
+
+      db
+        .select({
+          bookId: bookGenres.bookId,
+          name: genres.name,
+          slug: genres.slug,
+        })
+        .from(bookGenres)
+        .innerJoin(genres, eq(genres.id, bookGenres.genreId))
+        .where(inArray(bookGenres.bookId, bookIds)),
+    ]);
+
+    const bookMap = new Map(bookRows.map((b) => [b.id, { ...b, contributors: [] as TrendingBookItem['contributors'], genres: [] as TrendingBookItem['genres'] }]));
+    for (const c of contributors) bookMap.get(c.bookId)?.contributors.push({ role: c.role, personName: c.personName, sequenceNumber: c.sequenceNumber });
+    for (const g of genreRows) bookMap.get(g.bookId)?.genres.push({ name: g.name, slug: g.slug });
+
+    // Preserve the score-ordered sequence from bookIds
+    const results = bookIds.map((id) => bookMap.get(id)).filter((b): b is TrendingBookItem => b !== undefined);
+
+    await redis.set(cacheKey, JSON.stringify(results), 'EX', TRENDING_TTL);
+    return results;
+  },
+
+  async personalized(userId: number, limit: number): Promise<TrendingBookItem[]> {
+    const cacheKey = `personalized:v1:${userId}:${limit}`;
+    const cached = await redis.get(cacheKey);
+    if (cached) return JSON.parse(cached) as TrendingBookItem[];
+
+    // Fetch the user's stored preference embedding
+    const [prefs] = await db
+      .select({ preferenceEmbedding: userPreferences.preferenceEmbedding })
+      .from(userPreferences)
+      .where(eq(userPreferences.userId, userId))
+      .limit(1);
+
+    // No embedding yet (migration still in progress or user has no preferences)
+    if (!prefs?.preferenceEmbedding) return [];
+
+    // Books already on the user's shelf — exclude from results
+    const shelfRows = await db
+      .select({ bookId: userBooks.bookId })
+      .from(userBooks)
+      .where(eq(userBooks.userId, userId));
+    const shelfIds = shelfRows.map((r) => r.bookId);
+
+    const vectorLiteral = `[${prefs.preferenceEmbedding.join(',')}]`;
+
+    const whereClause = and(
+      sql`(${books.embedding} <=> ${vectorLiteral}::vector) < ${PERSONALIZED_SIMILARITY_THRESHOLD}`,
+      shelfIds.length > 0 ? notInArray(books.id, shelfIds) : undefined,
+    );
+
+    const rows = await db
+      .select({
+        id: books.id,
+        title: books.title,
+        coverUrl: books.coverUrl,
+        isbn13: books.isbn13,
+        publicationDate: books.publicationDate,
+      })
+      .from(books)
+      .where(whereClause)
+      .orderBy(sql`${books.embedding} <=> ${vectorLiteral}::vector`)
+      .limit(limit);
+
+    if (rows.length === 0) {
+      await redis.set(cacheKey, '[]', 'EX', PERSONALIZED_TTL);
+      return [];
+    }
+
+    const ids = rows.map((r) => r.id);
+    const [contributors, genreRows] = await Promise.all([
+      db
+        .select({
+          bookId: bookContributors.bookId,
+          role: bookContributors.role,
+          personName: bookContributors.personName,
+          sequenceNumber: bookContributors.sequenceNumber,
+        })
+        .from(bookContributors)
+        .where(inArray(bookContributors.bookId, ids))
+        .orderBy(bookContributors.sequenceNumber),
+
+      db
+        .select({ bookId: bookGenres.bookId, name: genres.name, slug: genres.slug })
+        .from(bookGenres)
+        .innerJoin(genres, eq(genres.id, bookGenres.genreId))
+        .where(inArray(bookGenres.bookId, ids)),
+    ]);
+
+    const bookMap = new Map(
+      rows.map((b) => [b.id, { ...b, contributors: [] as TrendingBookItem['contributors'], genres: [] as TrendingBookItem['genres'] }]),
+    );
+    for (const c of contributors) bookMap.get(c.bookId)?.contributors.push({ role: c.role, personName: c.personName, sequenceNumber: c.sequenceNumber });
+    for (const g of genreRows) bookMap.get(g.bookId)?.genres.push({ name: g.name, slug: g.slug });
+
+    // Preserve cosine similarity order from rows
+    const results = rows.map((r) => bookMap.get(r.id)).filter((b): b is TrendingBookItem => b !== undefined);
+
+    await redis.set(cacheKey, JSON.stringify(results), 'EX', PERSONALIZED_TTL);
+    return results;
   },
 };
