@@ -19,6 +19,18 @@ export interface ShelfItem {
   addedAt: Date;
 }
 
+export interface PendingFollowRequest {
+  id: number;
+  name: string;
+  photoUrl: string | null;
+}
+
+export interface FollowListItem {
+  id: number;
+  name: string;
+  photoUrl: string | null;
+}
+
 export interface UserProfile {
   id: number;
   name: string;
@@ -43,6 +55,29 @@ function toFollowStatus(status: string | null | undefined): FollowStatus {
   if (status === 'pending') return 'pending';
   if (status === 'declined') return 'declined';
   return 'none';
+}
+
+/**
+ * Guards access to a user's follower/following list with the same rule as
+ * their follower/following counts on the profile: visible to themselves or
+ * to anyone who is already an accepted follower of them. 404 (not 403) to
+ * avoid revealing the account exists to someone who can't see it.
+ */
+async function assertCanViewFollowGraph(targetId: number, requesterId: number): Promise<void> {
+  if (targetId === requesterId) return;
+
+  const [[targetUser], [followRow]] = await Promise.all([
+    db.select({ id: users.id }).from(users).where(eq(users.id, targetId)).limit(1),
+    db
+      .select({ status: followRequests.status })
+      .from(followRequests)
+      .where(and(eq(followRequests.senderId, requesterId), eq(followRequests.receiverId, targetId)))
+      .limit(1),
+  ]);
+
+  if (!targetUser || followRow?.status !== 'accepted') {
+    throw Object.assign(new Error('User not found'), { statusCode: 404 });
+  }
 }
 
 // ── Service ───────────────────────────────────────────────────────────────────
@@ -110,6 +145,96 @@ export const usersService = {
       followingCount: followCounts?.followingCount ?? 0,
       postCount: postCountRow?.count ?? 0,
     };
+  },
+
+  /**
+   * Lists pending incoming follow requests for the authenticated user —
+   * i.e. people who have requested to follow them, newest first. Paginated
+   * since a spammed account could otherwise accumulate an unbounded number
+   * of pending requests.
+   */
+  async listPendingFollowRequests(
+    receiverId: number,
+    limit: number,
+    offset: number,
+  ): Promise<{ items: PendingFollowRequest[]; total: number }> {
+    const [rows, [countRow]] = await Promise.all([
+      db
+        .select({ id: followRequests.id, name: users.name, photoUrl: users.photoUrl })
+        .from(followRequests)
+        .innerJoin(users, eq(users.id, followRequests.senderId))
+        .where(and(eq(followRequests.receiverId, receiverId), eq(followRequests.status, 'pending')))
+        .orderBy(desc(followRequests.createdAt))
+        .limit(limit)
+        .offset(offset),
+      db
+        .select({ count: sql<number>`COUNT(*)::int` })
+        .from(followRequests)
+        .where(and(eq(followRequests.receiverId, receiverId), eq(followRequests.status, 'pending'))),
+    ]);
+
+    return { items: rows, total: countRow?.count ?? 0 };
+  },
+
+  /**
+   * Lists a user's accepted followers (people following them), newest first.
+   * Same visibility gating as getUserProfile's follower count — the requester
+   * must be viewing their own list or already be an accepted follower of the target.
+   */
+  async listFollowers(
+    targetId: number,
+    requesterId: number,
+    limit: number,
+    offset: number,
+  ): Promise<{ items: FollowListItem[]; total: number }> {
+    await assertCanViewFollowGraph(targetId, requesterId);
+
+    const [rows, [countRow]] = await Promise.all([
+      db
+        .select({ id: users.id, name: users.name, photoUrl: users.photoUrl })
+        .from(followRequests)
+        .innerJoin(users, eq(users.id, followRequests.senderId))
+        .where(and(eq(followRequests.receiverId, targetId), eq(followRequests.status, 'accepted')))
+        .orderBy(desc(followRequests.updatedAt))
+        .limit(limit)
+        .offset(offset),
+      db
+        .select({ count: sql<number>`COUNT(*)::int` })
+        .from(followRequests)
+        .where(and(eq(followRequests.receiverId, targetId), eq(followRequests.status, 'accepted'))),
+    ]);
+
+    return { items: rows, total: countRow?.count ?? 0 };
+  },
+
+  /**
+   * Lists the users a given user is following (accepted), newest first.
+   * Same visibility gating as listFollowers.
+   */
+  async listFollowing(
+    targetId: number,
+    requesterId: number,
+    limit: number,
+    offset: number,
+  ): Promise<{ items: FollowListItem[]; total: number }> {
+    await assertCanViewFollowGraph(targetId, requesterId);
+
+    const [rows, [countRow]] = await Promise.all([
+      db
+        .select({ id: users.id, name: users.name, photoUrl: users.photoUrl })
+        .from(followRequests)
+        .innerJoin(users, eq(users.id, followRequests.receiverId))
+        .where(and(eq(followRequests.senderId, targetId), eq(followRequests.status, 'accepted')))
+        .orderBy(desc(followRequests.updatedAt))
+        .limit(limit)
+        .offset(offset),
+      db
+        .select({ count: sql<number>`COUNT(*)::int` })
+        .from(followRequests)
+        .where(and(eq(followRequests.senderId, targetId), eq(followRequests.status, 'accepted'))),
+    ]);
+
+    return { items: rows, total: countRow?.count ?? 0 };
   },
 
   async sendFollowRequest(senderId: number, receiverId: number): Promise<void> {

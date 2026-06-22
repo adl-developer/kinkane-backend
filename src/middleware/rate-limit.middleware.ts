@@ -105,3 +105,17 @@ export const emailChangeLimiter = rateLimit({
   handler: json429,
   store: new RedisStore({ prefix: 'rl:email-change:', sendCommand }),
 });
+
+// Follow requests: 30 per hour per sender — each one emails the target user,
+// so this is the same "don't let one account email-bomb arbitrary third
+// parties" concern as emailChangeLimiter/passwordResetLimiter, just keyed by
+// the authenticated sender instead of IP.
+export const followRequestLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: json429,
+  keyGenerator: (req: Request) => String((req as AuthenticatedRequest).user.id),
+  store: new RedisStore({ prefix: 'rl:follow-request:', sendCommand }),
+});
