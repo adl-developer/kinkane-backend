@@ -1,7 +1,14 @@
 import { Router } from 'express';
 import { authController } from '../controllers/auth.controller';
 import { requireAuth } from '../middleware/auth.middleware';
-import { signupLimiter, loginLimiter, refreshLimiter, passwordResetLimiter } from '../middleware/rate-limit.middleware';
+import {
+  signupLimiter,
+  loginLimiter,
+  refreshLimiter,
+  passwordResetLimiter,
+  verifyEmailLinkLimiter,
+  resendVerificationEmailLimiter,
+} from '../middleware/rate-limit.middleware';
 
 const router = Router();
 
@@ -100,6 +107,34 @@ router.post('/forgot-password', passwordResetLimiter, authController.forgotPassw
  * Errors: 400 invalid/expired token | 400 password validation failure
  */
 router.post('/reset-password', passwordResetLimiter, authController.resetPassword);
+
+/**
+ * POST /api/v1/auth/verify-email
+ *
+ * Validates the email-verification token sent at signup and marks the
+ * account's email as verified. The token expires after 24 hours and is single-use.
+ *
+ * Body: { token }
+ * Returns 200: { message }
+ * Errors: 400 invalid/expired token
+ */
+router.post('/verify-email', verifyEmailLinkLimiter, authController.verifyEmail);
+
+/**
+ * POST /api/v1/auth/resend-verification-email
+ *
+ * Issues a fresh verification link for the authenticated user and resets
+ * the 24-hour expiry. No-op (still 200) if the email is already verified —
+ * the response is identical either way so a client can't probe verification status.
+ *
+ * Returns 200: { message }
+ */
+router.post(
+  '/resend-verification-email',
+  requireAuth,
+  resendVerificationEmailLimiter,
+  authController.resendVerificationEmail,
+);
 
 /**
  * DELETE /api/v1/auth/account

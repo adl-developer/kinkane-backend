@@ -71,6 +71,13 @@
       "when": 1781741063257,
       "tag": "0009_breezy_greymalkin",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1782153647450,
+      "tag": "0010_email_verification_tokens",
+      "breakpoints": true
     }
   ]
 }

@@ -58,6 +58,10 @@ const forgotPasswordSchema = z.object({
   email: z.string().email(),
 });
 
+const verifyEmailSchema = z.object({
+  token: z.string().min(1, 'Verification token is required'),
+});
+
 const resetPasswordSchema = z.object({
   token: z.string().min(1),
   password: z
@@ -202,6 +206,46 @@ export const authController = {
       const status = e.statusCode ?? 500;
       if (status >= 500) {
         logger.error('Unexpected error during password reset', { error: e.message });
+        res.status(500).json({ error: 'An unexpected error occurred' });
+      } else {
+        res.status(status).json({ error: e.message });
+      }
+    }
+  },
+
+  async verifyEmail(req: Request, res: Response): Promise<void> {
+    const parsed = verifyEmailSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+
+    try {
+      await authService.verifyEmail(parsed.data.token);
+      res.status(200).json({ message: 'Email verified successfully' });
+    } catch (err: unknown) {
+      const e = err as Error & { statusCode?: number };
+      const status = e.statusCode ?? 500;
+      if (status >= 500) {
+        logger.error('Unexpected error during email verification', { error: e.message });
+        res.status(500).json({ error: 'An unexpected error occurred' });
+      } else {
+        res.status(status).json({ error: e.message });
+      }
+    }
+  },
+
+  async resendVerificationEmail(req: Request, res: Response): Promise<void> {
+    const { id } = (req as AuthenticatedRequest).user;
+
+    try {
+      await authService.resendVerificationEmail(id);
+      res.status(200).json({ message: 'If your email is not yet verified, a new link has been sent' });
+    } catch (err: unknown) {
+      const e = err as Error & { statusCode?: number };
+      const status = e.statusCode ?? 500;
+      if (status >= 500) {
+        logger.error('Unexpected error during verification email resend', { error: e.message });
         res.status(500).json({ error: 'An unexpected error occurred' });
       } else {
         res.status(status).json({ error: e.message });
