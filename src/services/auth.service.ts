@@ -1,14 +1,16 @@
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { eq, and, gt } from 'drizzle-orm';
+import { eq, and, gt, inArray } from 'drizzle-orm';
 import { db } from '../db';
-import { users, refreshTokens, userProviders, guestSessions, userPreferences, userInteractions, userBooks, userSubscriptions, passwordResetTokens } from '../db/schema';
+import { users, refreshTokens, userProviders, guestSessions, userPreferences, userInteractions, userBooks, userSubscriptions, passwordResetTokens, books, bookContributors } from '../db/schema';
 import { getEffectiveTier } from '../db/schema/subscriptions';
 import { config } from '../config';
 import { admin } from '../lib/firebase';
 import { logger } from '../lib/logger';
 import { enqueueEmail } from '../lib/email-queue';
+import { generateEmbedding } from '../lib/gemini';
+import { buildPreferenceText } from './recommendations.service';
 
 const BCRYPT_ROUNDS = 12;
 
@@ -66,6 +68,48 @@ async function issueTokenPair(userId: number, email: string): Promise<TokenPair>
 
 // ── Guest session migration ───────────────────────────────────────────────────
 
+async function generatePreferenceEmbedding(
+  userId: number,
+  session: { feelings: string[]; bookIds: number[]; genres: string[]; dislikes: import('../db/schema/onboarding').Dislikes },
+): Promise<void> {
+  const likedBooks: { id: number; title: string; authors: string[] }[] = [];
+
+  if (session.bookIds.length > 0) {
+    const bookRows = await db
+      .select({ id: books.id, title: books.title })
+      .from(books)
+      .where(inArray(books.id, session.bookIds));
+
+    const contributorRows = await db
+      .select({ bookId: bookContributors.bookId, personName: bookContributors.personName })
+      .from(bookContributors)
+      .where(and(inArray(bookContributors.bookId, session.bookIds), eq(bookContributors.role, 'A01')))
+      .orderBy(bookContributors.sequenceNumber);
+
+    const authorMap = new Map<number, string[]>();
+    for (const c of contributorRows) {
+      if (!authorMap.has(c.bookId)) authorMap.set(c.bookId, []);
+      if (c.personName) authorMap.get(c.bookId)!.push(c.personName);
+    }
+
+    for (const b of bookRows) {
+      likedBooks.push({ id: b.id, title: b.title, authors: authorMap.get(b.id) ?? [] });
+    }
+  }
+
+  const text = buildPreferenceText(
+    { feelings: session.feelings, genres: session.genres, dislikes: session.dislikes },
+    likedBooks,
+  );
+
+  const embedding = await generateEmbedding(text);
+
+  await db
+    .update(userPreferences)
+    .set({ preferenceEmbedding: embedding })
+    .where(eq(userPreferences.userId, userId));
+}
+
 /**
  * Copies onboarding data from a guest session to the newly created user record.
  * Runs after the user row already exists. Non-transactional by design —
@@ -109,6 +153,15 @@ async function migrateGuestSession(userId: number, sessionId: string): Promise<v
       bookIds: session.bookIds,
       genres: session.genres,
       dislikes: session.dislikes,
+    });
+
+    // Generate and store the preference embedding outside the transaction
+    // (Gemini call — non-blocking, failure is logged but does not affect signup).
+    generatePreferenceEmbedding(userId, session).catch((err) => {
+      logger.error('Failed to generate preference embedding after migration', {
+        userId,
+        error: (err as Error).message,
+      });
     });
 
     // Copy reader type inferred during onboarding selections

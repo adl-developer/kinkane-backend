@@ -19,8 +19,8 @@ import {
   index,
 } from 'drizzle-orm/pg-core';
 
-// pgvector type — mirrors onix_ingester definition
-const vector = customType<{
+// pgvector type — mirrors onix_ingester definition. Exported for use in other schema files.
+export const vector = customType<{
   data: number[];
   driverData: string;
   config: { dimensions: number };

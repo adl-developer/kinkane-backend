@@ -11,9 +11,10 @@ import {
   timestamp,
   index,
   uniqueIndex,
+  customType,
 } from 'drizzle-orm/pg-core';
 import { users, readerTypeEnum } from './users';
-import { books } from './books';
+import { books, vector } from './books';
 
 // Shared shape for the dislikes object used in both guest sessions and user preferences.
 // Exported so recommendations.service.ts can import the canonical type.
@@ -71,6 +72,9 @@ export const userPreferences = pgTable(
     bookIds: jsonb('book_ids').$type<number[]>().notNull(),
     genres: jsonb('genres').$type<string[]>().notNull(),
     dislikes: jsonb('dislikes').$type<Dislikes>().notNull(),
+    // 768-dim Gemini text-embedding-004 vector built from preference text.
+    // Null until migrateGuestSession completes the async embedding call.
+    preferenceEmbedding: vector('preference_embedding', { dimensions: 768 }),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
   // No extra index needed — the .unique() on userId already creates a B-tree index.
@@ -100,6 +104,8 @@ export const userInteractions = pgTable(
     userIdIdx: index('idx_user_interactions_user_id').on(t.userId),
     bookIdIdx: index('idx_user_interactions_book_id').on(t.bookId),
     typeIdx: index('idx_user_interactions_type').on(t.type),
+    // Supports the trending query: WHERE created_at > NOW()-30d GROUP BY book_id ORDER BY SUM(weight)
+    trendingIdx: index('idx_user_interactions_trending').on(t.createdAt, t.bookId),
   }),
 );
 

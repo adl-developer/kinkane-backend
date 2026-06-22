@@ -1,0 +1,1 @@
+CREATE INDEX IF NOT EXISTS "idx_user_interactions_trending" ON "user_interactions" USING btree ("created_at","book_id");

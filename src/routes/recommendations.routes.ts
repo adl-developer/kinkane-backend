@@ -1,4 +1,6 @@
-import { Router } from 'express';
+import { Router, Request, Response } from 'express';
+import { requireAuth } from '../middleware/auth.middleware';
+import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 import { recommendationsController } from '../controllers/recommendations.controller';
 import { recommendationsLimiter } from '../middleware/rate-limit.middleware';
 
@@ -40,5 +42,27 @@ const router = Router();
  * Errors: 400 validation | 429 rate limit (20 req/hour — each uncached request calls Gemini)
  */
 router.post('/', recommendationsLimiter, recommendationsController.getRecommendations);
+
+/**
+ * POST /api/v1/recommendations/refresh
+ *
+ * Re-runs the book recommendation quiz for an authenticated user. Updates their
+ * stored preferences and preference embedding in place, then invalidates their
+ * personalized feed cache. Shares the same recommendation cache as the guest
+ * flow — identical inputs return instantly without a Gemini call.
+ *
+ * Body: {
+ *   feelings: string[3],
+ *   bookIds?: number[],
+ *   genres: string[3],
+ *   dislikes?: { emotionalTone?, pacingStructure?, writingStyle?, genreFocus?, commitmentLevel? }
+ * }
+ *
+ * Returns 200: { recommendations: [{ bookId, rank, explanation }] }
+ * Errors: 400 validation | 401 unauthenticated | 429 rate limit
+ */
+router.post('/refresh', requireAuth, recommendationsLimiter, (req: Request, res: Response) =>
+  recommendationsController.refresh(req as AuthenticatedRequest, res),
+);
 
 export default router;

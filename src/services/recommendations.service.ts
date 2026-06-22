@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import { eq, sql, and, inArray, gt } from 'drizzle-orm';
 import { db } from '../db';
-import { books, bookContributors, bookGenres, genres } from '../db/schema';
+import { books, bookContributors, bookGenres, genres, userPreferences, users } from '../db/schema';
 import { recommendationCache, type RecommendationItem } from '../db/schema/recommendations';
 import { generateEmbedding, generateExplanations, type BookContext } from '../lib/gemini';
 import { guestService } from './guest.service';
@@ -103,8 +103,8 @@ async function fetchLikedBooks(
  * Converts the structured user input into a single natural-language paragraph
  * that gets embedded by gemini-embedding — richer text produces a better vector.
  */
-function buildPreferenceText(
-  input: RecommendationInput,
+export function buildPreferenceText(
+  input: { feelings: string[]; genres: string[]; dislikes: { emotionalTone?: string[]; pacingStructure?: string[]; writingStyle?: string[]; genreFocus?: string[]; commitmentLevel?: string[] } },
   likedBooks: { id: number; title: string; authors: string[] }[],
 ): string {
   const parts: string[] = [];
@@ -352,4 +352,164 @@ export const recommendationsService = {
 
     return { recommendations: results, guestSessionId, expiresAt };
   },
+
+  async refresh(userId: number, input: Omit<RecommendationInput, 'displayName'>): Promise<RecommendationItem[]> {
+    // Re-use the full recommendation pipeline with a placeholder displayName
+    // (name is excluded from the cache hash anyway)
+    const [userRow] = await db
+      .select({ name: users.name })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+
+    const displayName = userRow?.name ?? 'User';
+
+    const hash = hashInput({ displayName, ...input });
+    const now = new Date();
+    const redisCacheKey = `recommendations:hash:${hash}`;
+
+    // Check recommendation cache first — no need to re-run Gemini for identical inputs
+    const redisHit = await redis.get(redisCacheKey);
+    let results: RecommendationItem[];
+
+    if (redisHit) {
+      results = JSON.parse(redisHit) as RecommendationItem[];
+    } else {
+      const [cached] = await db
+        .select()
+        .from(recommendationCache)
+        .where(and(eq(recommendationCache.inputHash, hash), gt(recommendationCache.expiresAt, now)))
+        .limit(1);
+
+      if (cached) {
+        const ttlSeconds = Math.floor((cached.expiresAt.getTime() - now.getTime()) / 1000);
+        await redis.set(redisCacheKey, JSON.stringify(cached.results), 'EX', ttlSeconds);
+        results = cached.results;
+      } else {
+        // Full pipeline — embedding + pgvector + Gemini explanations
+        const likedBooks = await fetchLikedBooks(input.bookIds);
+        const preferenceText = buildPreferenceText(input, likedBooks);
+        const queryVector = await generateEmbedding(preferenceText);
+        const vectorLiteral = `[${queryVector.join(',')}]`;
+
+        const dislikeConditions = buildDislikeConditions(input.dislikes);
+        const whereClause = and(
+          sql`(${books.embedding} <=> ${vectorLiteral}::vector) < ${SIMILARITY_THRESHOLD}`,
+          ...dislikeConditions,
+        );
+
+        const poolRows = await db
+          .select({ id: books.id, title: books.title })
+          .from(books)
+          .where(whereClause)
+          .orderBy(sql`${books.embedding} <=> ${vectorLiteral}::vector`)
+          .limit(FETCH_POOL);
+
+        const candidateRows = poolRows.slice(0, TARGET_RESULTS);
+
+        if (candidateRows.length === 0) {
+          results = [];
+        } else {
+          const candidateIds = candidateRows.map((r) => r.id);
+
+          const [contributorRows, genreRows] = await Promise.all([
+            db
+              .select({ bookId: bookContributors.bookId, personName: bookContributors.personName })
+              .from(bookContributors)
+              .where(and(inArray(bookContributors.bookId, candidateIds), eq(bookContributors.role, 'A01')))
+              .orderBy(bookContributors.sequenceNumber),
+            db
+              .select({ bookId: bookGenres.bookId, name: genres.name })
+              .from(bookGenres)
+              .innerJoin(genres, eq(genres.id, bookGenres.genreId))
+              .where(inArray(bookGenres.bookId, candidateIds)),
+          ]);
+
+          const authorMap = new Map<number, string[]>();
+          for (const c of contributorRows) {
+            if (!authorMap.has(c.bookId)) authorMap.set(c.bookId, []);
+            if (c.personName) authorMap.get(c.bookId)!.push(c.personName);
+          }
+
+          const genreMap = new Map<number, string[]>();
+          for (const g of genreRows) {
+            if (!genreMap.has(g.bookId)) genreMap.set(g.bookId, []);
+            genreMap.get(g.bookId)!.push(g.name);
+          }
+
+          const bookContexts: BookContext[] = candidateRows.map((r) => ({
+            bookId: r.id,
+            title: r.title,
+            authors: authorMap.get(r.id) ?? [],
+            genres: genreMap.get(r.id) ?? [],
+          }));
+
+          const explanations = await generateExplanations(preferenceText, bookContexts);
+          const explanationMap = new Map(explanations.map((e) => [e.bookId, e.explanation]));
+
+          results = candidateRows.map((row, index) => ({
+            bookId: row.id,
+            rank: index + 1,
+            explanation: explanationMap.get(row.id) ?? '',
+          }));
+        }
+
+        const cacheExpiresAt = new Date(now.getTime() + CACHE_TTL_HOURS * 60 * 60 * 1000);
+        await Promise.all([
+          db
+            .insert(recommendationCache)
+            .values({ inputHash: hash, results, expiresAt: cacheExpiresAt })
+            .onConflictDoUpdate({
+              target: recommendationCache.inputHash,
+              set: { results, expiresAt: cacheExpiresAt },
+            }),
+          redis.set(redisCacheKey, JSON.stringify(results), 'EX', CACHE_TTL_HOURS * 60 * 60),
+        ]);
+      }
+    }
+
+    // Update preferences and re-generate embedding — fire-and-forget so the
+    // response returns immediately while the vector write happens in the background
+    updateUserPreferences(userId, input).catch((err) => {
+      logger.error('Failed to update user preferences after refresh', {
+        userId,
+        error: (err as Error).message,
+      });
+    });
+
+    return results;
+  },
 };
+
+async function updateUserPreferences(
+  userId: number,
+  input: Omit<RecommendationInput, 'displayName'>,
+): Promise<void> {
+  const likedBooks = await fetchLikedBooks(input.bookIds);
+  const preferenceText = buildPreferenceText(input, likedBooks);
+  const embedding = await generateEmbedding(preferenceText);
+
+  await db
+    .update(userPreferences)
+    .set({
+      feelings: input.feelings,
+      bookIds: input.bookIds,
+      genres: input.genres,
+      dislikes: input.dislikes,
+      preferenceEmbedding: embedding,
+      updatedAt: new Date(),
+    })
+    .where(eq(userPreferences.userId, userId));
+
+  // Bust personalized feed cache for all limit variants. `limit` is bounded to
+  // 1-20 by explore.controller's limitSchema, so we delete the exact bounded
+  // key set directly rather than scanning the keyspace with KEYS — KEYS is an
+  // O(N) blocking operation over the *entire* Redis instance and must never
+  // run on every preference refresh in production.
+  const PERSONALIZED_CACHE_MAX_LIMIT = 20;
+  const keys = Array.from(
+    { length: PERSONALIZED_CACHE_MAX_LIMIT },
+    (_, i) => `personalized:v1:${userId}:${i + 1}`,
+  );
+  await redis.del(...keys);
+}

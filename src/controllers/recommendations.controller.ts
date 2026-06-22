@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { z } from 'zod';
 import { recommendationsService } from '../services/recommendations.service';
 import { logger } from '../lib/logger';
+import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 
 // ── Validation schemas ────────────────────────────────────────────────────────
 
@@ -70,6 +71,9 @@ const recommendationsSchema = z.object({
     .default({}),
 });
 
+// Refresh uses the same shape minus displayName
+const refreshSchema = recommendationsSchema.omit({ displayName: true });
+
 // ── Controller ────────────────────────────────────────────────────────────────
 
 export const recommendationsController = {
@@ -86,6 +90,24 @@ export const recommendationsController = {
       res.status(200).json({ recommendations, guestSessionId, expiresAt });
     } catch (err: unknown) {
       logger.error('Unexpected error generating recommendations', { error: (err as Error).message });
+      res.status(500).json({ error: 'An unexpected error occurred' });
+    }
+  },
+
+  async refresh(req: Request, res: Response): Promise<void> {
+    const parsed = refreshSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+
+    const { user } = req as AuthenticatedRequest;
+
+    try {
+      const recommendations = await recommendationsService.refresh(user.id, parsed.data);
+      res.status(200).json({ recommendations });
+    } catch (err: unknown) {
+      logger.error('Unexpected error refreshing recommendations', { error: (err as Error).message });
       res.status(500).json({ error: 'An unexpected error occurred' });
     }
   },
