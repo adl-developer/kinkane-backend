@@ -150,12 +150,22 @@ ${preferenceText}
 ${bookList}
 </books>`;
 
-  const result = await withRetry(() =>
-    model.generateContent({
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: { responseMimeType: 'application/json' },
-    }),
-  );
+  let result: Awaited<ReturnType<typeof model.generateContent>>;
+  try {
+    result = await withRetry(() =>
+      model.generateContent({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: { responseMimeType: 'application/json' },
+      }),
+    );
+  } catch (err) {
+    // Gemini stayed down through all retry attempts — degrade to empty
+    // explanations for this chunk rather than failing the whole request.
+    logger.error('Gemini explanations chunk failed after retries', {
+      error: (err as Error).message,
+    });
+    return books.map((b) => ({ bookId: b.bookId, explanation: '' }));
+  }
 
   const raw = result.response.text().trim();
 
@@ -273,8 +283,15 @@ Return ONLY a valid JSON object with no markdown, no code fences, no extra text:
  * fall back to an empty string.
  *
  * Returns one explanation per book in the same order as the input.
+ *
+ * Bounded by MISSING_RETRY_BUDGET_MS overall — during a sustained Gemini
+ * outage, every round's withRetry backoff adds up fast, and a user-facing
+ * request shouldn't hang for minutes waiting on explanations that are likely
+ * to come back empty anyway. Once the budget is spent, remaining books fall
+ * back to an empty string immediately rather than starting another round.
  */
 const MAX_MISSING_RETRY_ROUNDS = 3;
+const MISSING_RETRY_BUDGET_MS = 20_000;
 
 export async function generateExplanations(
   preferenceText: string,
@@ -290,9 +307,19 @@ export async function generateExplanations(
 
   const explanationMap = new Map(results.map((r) => [r.bookId, r.explanation]));
 
+  const retryDeadline = Date.now() + MISSING_RETRY_BUDGET_MS;
+
   for (let round = 1; round <= MAX_MISSING_RETRY_ROUNDS; round++) {
     const missingBooks = books.filter((b) => !explanationMap.get(b.bookId)?.trim());
     if (missingBooks.length === 0) break;
+
+    if (Date.now() >= retryDeadline) {
+      logger.warn('Missing-explanation retry budget exhausted — giving up early', {
+        round,
+        bookIds: missingBooks.map((b) => b.bookId),
+      });
+      break;
+    }
 
     logger.warn('Retrying books with missing/empty explanations', {
       round,
@@ -303,7 +330,15 @@ export async function generateExplanations(
       // Back off between rounds (not just within a single call) — the model
       // dropping the same books repeatedly is usually a sign of load, same
       // as the transient-error case withRetry already handles.
-      await new Promise((res) => setTimeout(res, 1000 * 2 ** (round - 1)));
+      const backoffMs = 1000 * 2 ** (round - 1);
+      if (Date.now() + backoffMs >= retryDeadline) {
+        logger.warn('Missing-explanation retry budget would be exceeded by backoff — giving up early', {
+          round,
+          bookIds: missingBooks.map((b) => b.bookId),
+        });
+        break;
+      }
+      await new Promise((res) => setTimeout(res, backoffMs));
     }
 
     const retryResults = await geminiConcurrencyLimit(() =>
