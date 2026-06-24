@@ -15,6 +15,7 @@ import {
   type BookPrice,
 } from '../db/schema';
 import { redis } from '../lib/redis';
+import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-excerpts.service';
 
 const PUBLIC_NOTES_TTL = 2 * 60; // 2 minutes
 
@@ -43,6 +44,7 @@ export interface UserBookItem {
   contributors: Pick<BookContributor, 'role' | 'personName' | 'sequenceNumber'>[];
   genres: Pick<Genre, 'name' | 'slug'>[];
   prices: Pick<BookPrice, 'priceType' | 'priceAmount' | 'currencyCode'>[];
+  excerpt: BookExcerptInfo | null;
 }
 
 export interface PublicNote {
@@ -191,10 +193,17 @@ export const userBooksService = {
         .where(where),
     ]);
 
-    const relations = await attachRelations(rows.map((r) => r.bookId));
+    const [relations, excerptMap] = await Promise.all([
+      attachRelations(rows.map((r) => r.bookId)),
+      getExcerptsByIsbns(rows.map((r) => r.isbn13)),
+    ]);
 
     return {
-      books: rows.map((r) => ({ ...r, ...relations.get(r.bookId)! })),
+      books: rows.map((r) => ({
+        ...r,
+        ...relations.get(r.bookId)!,
+        excerpt: pickExcerpt(r.isbn13, excerptMap),
+      })),
       total: countRow?.count ?? 0,
     };
   },

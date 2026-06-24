@@ -1,6 +1,7 @@
 import { eq, and, asc, desc, sql, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { posts, postLikes, comments, commentLikes, users, books, userBooks, bookContributors, followRequests } from '../db/schema';
+import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-excerpts.service';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -20,6 +21,7 @@ export interface PostItem {
   bookId: number;
   bookTitle: string;
   bookCoverUrl: string | null;
+  bookExcerpt: BookExcerptInfo | null;
   rating: number;
   status: 'reading' | 'read';
   body: string | null;
@@ -35,6 +37,7 @@ export interface FriendBookDetail {
   bookId: number;
   bookTitle: string;
   bookCoverUrl: string | null;
+  bookExcerpt: BookExcerptInfo | null;
   contributors: { personName: string | null; role: string | null }[];
   friendName: string;
   friendPhotoUrl: string | null;
@@ -123,6 +126,7 @@ const POST_SELECT_COLUMNS = {
   bookId: posts.bookId,
   bookTitle: books.title,
   bookCoverUrl: books.coverUrl,
+  bookIsbn13: books.isbn13,
   rating: posts.rating,
   status: posts.status,
   body: posts.body,
@@ -177,7 +181,9 @@ export const communityService = {
     assertFound(row, 'Post');
     assertPostVisible(row, requesterId);
 
-    const [[likeRow], [commentRow], likedRow] = await Promise.all([
+    const { bookIsbn13, ...postFields } = row;
+
+    const [[likeRow], [commentRow], likedRow, excerptMap] = await Promise.all([
       db
         .select({ count: sql<number>`COUNT(*)::int` })
         .from(postLikes)
@@ -191,10 +197,12 @@ export const communityService = {
         .from(postLikes)
         .where(and(eq(postLikes.postId, postId), eq(postLikes.userId, requesterId)))
         .limit(1),
+      getExcerptsByIsbns([bookIsbn13]),
     ]);
 
     return {
-      ...row,
+      ...postFields,
+      bookExcerpt: pickExcerpt(bookIsbn13, excerptMap),
       likeCount: likeRow?.count ?? 0,
       commentCount: commentRow?.count ?? 0,
       likedByMe: likedRow.length > 0,
@@ -256,8 +264,16 @@ export const communityService = {
       db.select({ count: sql<number>`COUNT(*)::int` }).from(posts).where(where),
     ]);
 
+    const excerptMap = await getExcerptsByIsbns(rows.map((r) => r.bookIsbn13));
+
     const enriched = await enrichPosts(
-      rows.map((r) => ({ ...r, likeCount: 0, commentCount: 0, likedByMe: false })),
+      rows.map(({ bookIsbn13, ...r }) => ({
+        ...r,
+        bookExcerpt: pickExcerpt(bookIsbn13, excerptMap),
+        likeCount: 0,
+        commentCount: 0,
+        likedByMe: false,
+      })),
       requesterId,
     );
 
@@ -287,8 +303,16 @@ export const communityService = {
       db.select({ count: sql<number>`COUNT(*)::int` }).from(posts).where(where),
     ]);
 
+    const excerptMap = await getExcerptsByIsbns(rows.map((r) => r.bookIsbn13));
+
     const enriched = await enrichPosts(
-      rows.map((r) => ({ ...r, likeCount: 0, commentCount: 0, likedByMe: false })),
+      rows.map(({ bookIsbn13, ...r }) => ({
+        ...r,
+        bookExcerpt: pickExcerpt(bookIsbn13, excerptMap),
+        likeCount: 0,
+        commentCount: 0,
+        likedByMe: false,
+      })),
       requesterId,
     );
 
@@ -503,6 +527,7 @@ export const communityService = {
           id: books.id,
           title: books.title,
           coverUrl: books.coverUrl,
+          isbn13: books.isbn13,
         })
         .from(books)
         .where(eq(books.id, bookId))
@@ -533,16 +558,20 @@ export const communityService = {
     assertFound(bookRow, 'Book');
     assertFound(userBookRow, 'User book');
 
-    const contributorRows = await db
-      .select({ personName: bookContributors.personName, role: bookContributors.role })
-      .from(bookContributors)
-      .where(eq(bookContributors.bookId, bookId))
-      .orderBy(bookContributors.sequenceNumber);
+    const [contributorRows, excerptMap] = await Promise.all([
+      db
+        .select({ personName: bookContributors.personName, role: bookContributors.role })
+        .from(bookContributors)
+        .where(eq(bookContributors.bookId, bookId))
+        .orderBy(bookContributors.sequenceNumber),
+      getExcerptsByIsbns([bookRow.isbn13]),
+    ]);
 
     return {
       bookId: bookRow.id,
       bookTitle: bookRow.title,
       bookCoverUrl: bookRow.coverUrl,
+      bookExcerpt: pickExcerpt(bookRow.isbn13, excerptMap),
       contributors: contributorRows,
       friendName: userBookRow.friendName,
       friendPhotoUrl: userBookRow.friendPhotoUrl,
