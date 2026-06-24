@@ -3,6 +3,7 @@ import { db } from '../db';
 import { users, posts, books, postLikes, comments } from '../db/schema';
 import { enrichPosts } from './community.service';
 import type { PostItem } from './community.service';
+import { getExcerptsByIsbns, pickExcerpt } from './book-excerpts.service';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -123,6 +124,7 @@ async function searchPosts(
         bookId: posts.bookId,
         bookTitle: books.title,
         bookCoverUrl: books.coverUrl,
+        bookIsbn13: books.isbn13,
         rating: posts.rating,
         status: posts.status,
         body: posts.body,
@@ -145,8 +147,16 @@ async function searchPosts(
       .where(where),
   ]);
 
+  const excerptMap = await getExcerptsByIsbns(rows.map((r) => r.bookIsbn13));
+
   const enriched = await enrichPosts(
-    rows.map((r) => ({ ...r, likeCount: 0, commentCount: 0, likedByMe: false })),
+    rows.map(({ bookIsbn13, ...r }) => ({
+      ...r,
+      bookExcerpt: pickExcerpt(bookIsbn13, excerptMap),
+      likeCount: 0,
+      commentCount: 0,
+      likedByMe: false,
+    })),
     requesterId,
   );
 

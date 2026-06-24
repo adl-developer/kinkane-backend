@@ -18,6 +18,7 @@ import {
   type BookPrice,
 } from '../db/schema';
 import { redis } from '../lib/redis';
+import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-excerpts.service';
 
 const BOOK_DETAIL_TTL    = 60 * 60;    // 1 hour
 const SUGGESTIONS_TTL    = 5 * 60;     // 5 minutes
@@ -80,6 +81,7 @@ export interface BookListItem {
   contributors: Pick<BookContributor, 'role' | 'personName' | 'sequenceNumber'>[];
   genres: Pick<Genre, 'name' | 'slug'>[];
   prices: Pick<BookPrice, 'priceType' | 'priceAmount' | 'currencyCode'>[];
+  excerpt: BookExcerptInfo | null;
 }
 
 export interface SuggestionItem {
@@ -90,6 +92,7 @@ export interface SuggestionItem {
   productForm: string | null;
   coverUrl: string | null;
   authors: string[];
+  excerpt: BookExcerptInfo | null;
 }
 
 export interface TrendingBookItem {
@@ -100,6 +103,7 @@ export interface TrendingBookItem {
   publicationDate: string | null;
   contributors: Pick<BookContributor, 'role' | 'personName' | 'sequenceNumber'>[];
   genres: Pick<Genre, 'name' | 'slug'>[];
+  excerpt: BookExcerptInfo | null;
 }
 
 export interface BookDetail extends BookListItem {
@@ -315,9 +319,16 @@ export const booksService = {
         .where(where),
     ]);
 
-    const relations = await attachRelationsToList(rows);
+    const [relations, excerptMap] = await Promise.all([
+      attachRelationsToList(rows),
+      getExcerptsByIsbns(rows.map((r) => r.isbn13)),
+    ]);
     return {
-      books: rows.map((r) => ({ ...r, ...relations.get(r.id)! })),
+      books: rows.map((r) => ({
+        ...r,
+        ...relations.get(r.id)!,
+        excerpt: pickExcerpt(r.isbn13, excerptMap),
+      })),
       total: countRow?.count ?? 0,
     };
   },
@@ -374,9 +385,12 @@ export const booksService = {
       if (c.personName) authorMap.get(c.bookId)!.push(c.personName);
     }
 
+    const excerptMap = await getExcerptsByIsbns(rows.map((r) => r.isbn13));
+
     const results = rows.map((r) => ({
       ...r,
       authors: authorMap.get(r.id) ?? [],
+      excerpt: pickExcerpt(r.isbn13, excerptMap),
     }));
 
     await redis.set(cacheKey, JSON.stringify(results), 'EX', SUGGESTIONS_TTL);
@@ -396,7 +410,7 @@ export const booksService = {
     const [book] = await db.select().from(books).where(eq(books.id, id)).limit(1);
     if (!book) return null;
 
-    const [contributors, genreRows, priceRows, subjects] = await Promise.all([
+    const [contributors, genreRows, priceRows, subjects, excerptMap] = await Promise.all([
       db
         .select({
           role: bookContributors.role,
@@ -431,6 +445,8 @@ export const booksService = {
         })
         .from(bookSubjects)
         .where(eq(bookSubjects.bookId, id)),
+
+      getExcerptsByIsbns([book.isbn13]),
     ]);
 
     const detail: BookDetail = {
@@ -464,6 +480,7 @@ export const booksService = {
       genres: genreRows,
       prices: priceRows,
       subjects,
+      excerpt: pickExcerpt(book.isbn13, excerptMap),
     };
 
     await redis.set(cacheKey, JSON.stringify(detail), 'EX', BOOK_DETAIL_TTL);
@@ -554,7 +571,9 @@ export const booksService = {
         .where(inArray(bookGenres.bookId, bookIds)),
     ]);
 
-    const bookMap = new Map(bookRows.map((b) => [b.id, { ...b, contributors: [] as TrendingBookItem['contributors'], genres: [] as TrendingBookItem['genres'] }]));
+    const excerptMap = await getExcerptsByIsbns(bookRows.map((b) => b.isbn13));
+
+    const bookMap = new Map(bookRows.map((b) => [b.id, { ...b, contributors: [] as TrendingBookItem['contributors'], genres: [] as TrendingBookItem['genres'], excerpt: pickExcerpt(b.isbn13, excerptMap) }]));
     for (const c of contributors) bookMap.get(c.bookId)?.contributors.push({ role: c.role, personName: c.personName, sequenceNumber: c.sequenceNumber });
     for (const g of genreRows) bookMap.get(g.bookId)?.genres.push({ name: g.name, slug: g.slug });
 
@@ -613,7 +632,7 @@ export const booksService = {
     }
 
     const ids = rows.map((r) => r.id);
-    const [contributors, genreRows] = await Promise.all([
+    const [contributors, genreRows, excerptMap] = await Promise.all([
       db
         .select({
           bookId: bookContributors.bookId,
@@ -630,10 +649,12 @@ export const booksService = {
         .from(bookGenres)
         .innerJoin(genres, eq(genres.id, bookGenres.genreId))
         .where(inArray(bookGenres.bookId, ids)),
+
+      getExcerptsByIsbns(rows.map((r) => r.isbn13)),
     ]);
 
     const bookMap = new Map(
-      rows.map((b) => [b.id, { ...b, contributors: [] as TrendingBookItem['contributors'], genres: [] as TrendingBookItem['genres'] }]),
+      rows.map((b) => [b.id, { ...b, contributors: [] as TrendingBookItem['contributors'], genres: [] as TrendingBookItem['genres'], excerpt: pickExcerpt(b.isbn13, excerptMap) }]),
     );
     for (const c of contributors) bookMap.get(c.bookId)?.contributors.push({ role: c.role, personName: c.personName, sequenceNumber: c.sequenceNumber });
     for (const g of genreRows) bookMap.get(g.bookId)?.genres.push({ name: g.name, slug: g.slug });

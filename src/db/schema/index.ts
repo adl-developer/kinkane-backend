@@ -1,5 +1,6 @@
 export * from './users';
 export * from './books';
+export * from './book-excerpts';
 export * from './ingestion';
 export * from './recommendations';
 export * from './onboarding';
