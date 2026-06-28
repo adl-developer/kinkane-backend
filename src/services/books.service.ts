@@ -30,7 +30,6 @@ const TRENDING_INTERACTION_TYPES = ['view', 'wishlist', 'chosen_from_recommendat
 
 export interface ListBooksOptions {
   q?: string;
-  author?: string;
   genre?: string;
   availability?: string;
   productForm?: string;
@@ -95,6 +94,11 @@ export interface SuggestionItem {
   excerpt: BookExcerptInfo | null;
 }
 
+export interface AuthorSuggestion {
+  personName: string;
+  bookCount: number;
+}
+
 export interface TrendingBookItem {
   id: number;
   title: string;
@@ -156,40 +160,47 @@ function buildSearchOrderBy(q: string): SQL[] {
   ];
 }
 
-function buildAuthorSearchCondition(author: string): SQL {
-  const prefix = author + '%';
-  const wordPrefix = '% ' + author + '%';
-  const fts = author.length >= 3
-    ? sql` OR to_tsvector('simple', COALESCE(${bookContributors.personName}, '')) @@ plainto_tsquery('simple', ${author})`
+// Same four-tier matching scheme as buildSearchCondition, applied to author
+// name instead of title, scoped down to a set of matching book IDs.
+function buildAuthorBookSearchCondition(q: string): SQL {
+  const prefix = q + '%';
+  const wordPrefix = '% ' + q + '%';
+  const fts = q.length >= 3
+    ? sql` OR to_tsvector('simple', bc.person_name) @@ plainto_tsquery('simple', ${q})`
     : sql``;
 
   return sql`${books.id} IN (
     SELECT bc.book_id FROM book_contributors bc
-    WHERE (
-      bc.person_name ILIKE ${prefix}
-      OR bc.person_name ILIKE ${wordPrefix}
-      OR word_similarity(${author}, bc.person_name) > 0.3
-      ${fts}
-    )
+    WHERE bc.role = 'A01'
+      AND bc.person_name IS NOT NULL
+      AND (
+        bc.person_name ILIKE ${prefix}
+        OR bc.person_name ILIKE ${wordPrefix}
+        OR word_similarity(${q}, bc.person_name) > 0.3
+        ${fts}
+      )
   )`;
 }
 
-function buildAuthorSearchOrderBy(author: string): SQL[] {
+function buildAuthorBookSearchOrderBy(q: string): SQL[] {
+  const prefix = q + '%';
+  const wordPrefix = '% ' + q + '%';
+
   return [
     sql`(
       SELECT MIN(CASE
-        WHEN bc.person_name ILIKE ${author + '%'}     THEN 0
-        WHEN bc.person_name ILIKE ${'% ' + author + '%'} THEN 1
-        WHEN word_similarity(${author}, bc.person_name) > 0.3 THEN 2
+        WHEN bc.person_name ILIKE ${prefix}     THEN 0
+        WHEN bc.person_name ILIKE ${wordPrefix} THEN 1
+        WHEN word_similarity(${q}, bc.person_name) > 0.3 THEN 2
         ELSE 3
       END)
       FROM book_contributors bc
-      WHERE bc.book_id = ${books.id}
+      WHERE bc.book_id = ${books.id} AND bc.role = 'A01'
     )`,
     sql`(
-      SELECT MAX(word_similarity(${author}, bc.person_name))
+      SELECT MAX(word_similarity(${q}, bc.person_name))
       FROM book_contributors bc
-      WHERE bc.book_id = ${books.id}
+      WHERE bc.book_id = ${books.id} AND bc.role = 'A01'
     ) DESC`,
   ];
 }
@@ -199,10 +210,6 @@ function buildWhereClause(opts: ListBooksOptions): SQL | undefined {
 
   if (opts.q) {
     conditions.push(buildSearchCondition(opts.q));
-  }
-
-  if (opts.author) {
-    conditions.push(buildAuthorSearchCondition(opts.author));
   }
 
   if (opts.genre) {
@@ -298,11 +305,9 @@ export const booksService = {
     // Otherwise sort by title (asc/desc) when specified, falling back to updatedAt.
     const orderBy = opts.q
       ? buildSearchOrderBy(opts.q)
-      : opts.author
-        ? buildAuthorSearchOrderBy(opts.author)
-        : opts.sort
-          ? [opts.sort === 'desc' ? desc(books.title) : asc(books.title)]
-          : [books.updatedAt];
+      : opts.sort
+        ? [opts.sort === 'desc' ? desc(books.title) : asc(books.title)]
+        : [books.updatedAt];
 
     const [rows, [countRow]] = await Promise.all([
       db
@@ -333,17 +338,21 @@ export const booksService = {
     };
   },
 
-  async suggestions(q: string, limit: number): Promise<SuggestionItem[]> {
-    const cacheKey = `suggestions:${createHash('sha256').update(`${q}:${limit}`).digest('hex')}`;
+  async suggestions(q: string, limit: number, type: 'title' | 'author' = 'title'): Promise<SuggestionItem[]> {
+    const cacheKey = `suggestions:${type}:${createHash('sha256').update(`${q}:${limit}`).digest('hex')}`;
     const cached = await redis.get(cacheKey);
     if (cached) return JSON.parse(cached) as SuggestionItem[];
 
-    // Four-tier match on title (tiers 0–2) with FTS description fallback (tier 3):
-    //   0 — title starts with q              (e.g. "Harr"        → "Harry Potter...")
-    //   1 — a word in title starts with q    (e.g. "Pot"         → "Harry Potter...")
-    //   2 — word_similarity > 0.3            (e.g. "Haary"       → "Harry Potter...")
-    //   3 — FTS hit in description/subtitle  (e.g. "magic school" → matched via description)
+    // Four-tier match (tiers 0–2 prefix/word-prefix/trigram, tier 3 FTS fallback),
+    // applied to either the title or the author's name depending on `type`:
+    //   0 — starts with q              (e.g. "Harr"  → "Harry Potter..." / "Harriet Beecher")
+    //   1 — a word starts with q       (e.g. "Pot"   → "Harry Potter..." / "Pottinger")
+    //   2 — word_similarity > 0.3      (e.g. "Haary" → "Harry Potter..." / "Harry Styles")
+    //   3 — FTS hit                    (title: description/subtitle; author: full name)
     // Within each tier, ranked by word_similarity then ts_rank descending.
+    const where = type === 'author' ? buildAuthorBookSearchCondition(q) : buildSearchCondition(q);
+    const orderBy = type === 'author' ? buildAuthorBookSearchOrderBy(q) : buildSearchOrderBy(q);
+
     const rows = await db
       .select({
         id: books.id,
@@ -354,8 +363,8 @@ export const booksService = {
         coverUrl: books.coverUrl,
       })
       .from(books)
-      .where(buildSearchCondition(q))
-      .orderBy(...buildSearchOrderBy(q))
+      .where(where)
+      .orderBy(...orderBy)
       .limit(limit);
 
     if (rows.length === 0) {
@@ -392,6 +401,53 @@ export const booksService = {
       authors: authorMap.get(r.id) ?? [],
       excerpt: pickExcerpt(r.isbn13, excerptMap),
     }));
+
+    await redis.set(cacheKey, JSON.stringify(results), 'EX', SUGGESTIONS_TTL);
+    return results;
+  },
+
+  async authorSuggestions(q: string, limit: number): Promise<AuthorSuggestion[]> {
+    const cacheKey = `author-suggestions:${createHash('sha256').update(`${q}:${limit}`).digest('hex')}`;
+    const cached = await redis.get(cacheKey);
+    if (cached) return JSON.parse(cached) as AuthorSuggestion[];
+
+    const prefix = q + '%';
+    const wordPrefix = '% ' + q + '%';
+    const fts = q.length >= 3
+      ? sql` OR to_tsvector('simple', ${bookContributors.personName}) @@ plainto_tsquery('simple', ${q})`
+      : sql``;
+
+    const rows = await db
+      .select({
+        personName: bookContributors.personName,
+        bookCount: sql<number>`COUNT(DISTINCT ${bookContributors.bookId})::int`,
+      })
+      .from(bookContributors)
+      .where(
+        and(
+          eq(bookContributors.role, 'A01'),
+          sql`${bookContributors.personName} IS NOT NULL`,
+          sql`(
+            ${bookContributors.personName} ILIKE ${prefix}
+            OR ${bookContributors.personName} ILIKE ${wordPrefix}
+            OR word_similarity(${q}, ${bookContributors.personName}) > 0.3
+            ${fts}
+          )`,
+        ),
+      )
+      .groupBy(bookContributors.personName)
+      .orderBy(
+        sql`CASE
+          WHEN ${bookContributors.personName} ILIKE ${prefix}     THEN 0
+          WHEN ${bookContributors.personName} ILIKE ${wordPrefix} THEN 1
+          WHEN word_similarity(${q}, ${bookContributors.personName}) > 0.3 THEN 2
+          ELSE 3
+        END`,
+        sql`word_similarity(${q}, ${bookContributors.personName}) DESC`,
+      )
+      .limit(limit);
+
+    const results = rows.map((r) => ({ personName: r.personName as string, bookCount: r.bookCount }));
 
     await redis.set(cacheKey, JSON.stringify(results), 'EX', SUGGESTIONS_TTL);
     return results;
@@ -623,6 +679,80 @@ export const booksService = {
       })
       .from(books)
       .where(whereClause)
+      .orderBy(sql`${books.embedding} <=> ${vectorLiteral}::vector`)
+      .limit(limit);
+
+    if (rows.length === 0) {
+      await redis.set(cacheKey, '[]', 'EX', PERSONALIZED_TTL);
+      return [];
+    }
+
+    const ids = rows.map((r) => r.id);
+    const [contributors, genreRows, excerptMap] = await Promise.all([
+      db
+        .select({
+          bookId: bookContributors.bookId,
+          role: bookContributors.role,
+          personName: bookContributors.personName,
+          sequenceNumber: bookContributors.sequenceNumber,
+        })
+        .from(bookContributors)
+        .where(inArray(bookContributors.bookId, ids))
+        .orderBy(bookContributors.sequenceNumber),
+
+      db
+        .select({ bookId: bookGenres.bookId, name: genres.name, slug: genres.slug })
+        .from(bookGenres)
+        .innerJoin(genres, eq(genres.id, bookGenres.genreId))
+        .where(inArray(bookGenres.bookId, ids)),
+
+      getExcerptsByIsbns(rows.map((r) => r.isbn13)),
+    ]);
+
+    const bookMap = new Map(
+      rows.map((b) => [b.id, { ...b, contributors: [] as TrendingBookItem['contributors'], genres: [] as TrendingBookItem['genres'], excerpt: pickExcerpt(b.isbn13, excerptMap) }]),
+    );
+    for (const c of contributors) bookMap.get(c.bookId)?.contributors.push({ role: c.role, personName: c.personName, sequenceNumber: c.sequenceNumber });
+    for (const g of genreRows) bookMap.get(g.bookId)?.genres.push({ name: g.name, slug: g.slug });
+
+    // Preserve cosine similarity order from rows
+    const results = rows.map((r) => bookMap.get(r.id)).filter((b): b is TrendingBookItem => b !== undefined);
+
+    await redis.set(cacheKey, JSON.stringify(results), 'EX', PERSONALIZED_TTL);
+    return results;
+  },
+
+  async similar(bookId: number, limit: number): Promise<TrendingBookItem[]> {
+    const cacheKey = `similar:v1:${bookId}:${limit}`;
+    const cached = await redis.get(cacheKey);
+    if (cached) return JSON.parse(cached) as TrendingBookItem[];
+
+    const [target] = await db
+      .select({ embedding: books.embedding })
+      .from(books)
+      .where(eq(books.id, bookId))
+      .limit(1);
+
+    // No embedding yet (migration still in progress)
+    if (!target?.embedding) return [];
+
+    const vectorLiteral = `[${target.embedding.join(',')}]`;
+
+    const rows = await db
+      .select({
+        id: books.id,
+        title: books.title,
+        coverUrl: books.coverUrl,
+        isbn13: books.isbn13,
+        publicationDate: books.publicationDate,
+      })
+      .from(books)
+      .where(
+        and(
+          sql`(${books.embedding} <=> ${vectorLiteral}::vector) < ${PERSONALIZED_SIMILARITY_THRESHOLD}`,
+          notInArray(books.id, [bookId]),
+        ),
+      )
       .orderBy(sql`${books.embedding} <=> ${vectorLiteral}::vector`)
       .limit(limit);
 

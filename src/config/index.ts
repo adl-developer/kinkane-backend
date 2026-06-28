@@ -24,6 +24,10 @@ const envSchema = z.object({
   // Must match the model used by onix_ingester to embed books (default: text-embedding-004)
   GEMINI_EMBEDDING_MODEL: z.string().default('text-embedding-004'),
   GEMINI_FLASH_MODEL: z.string().default('gemini-2.5-flash-lite'),
+  // Used only if the primary flash model fails after exhausting retries (e.g.
+  // deprecated/unavailable) — never used for embeddings, which must stay in
+  // the same vector space as the books already indexed.
+  GEMINI_FLASH_MODEL_FALLBACK: z.string().default('gemini-2.0-flash'),
 
   // How long a guest session lives before the cleanup cron removes it.
   // Default: 24 * 3 = 72 hours (3 days). Set to e.g. 168 for a full week.
@@ -79,6 +83,7 @@ export const config = {
     apiKey: env.GEMINI_API_KEY,
     embeddingModel: env.GEMINI_EMBEDDING_MODEL,
     flashModel: env.GEMINI_FLASH_MODEL,
+    flashModelFallback: env.GEMINI_FLASH_MODEL_FALLBACK,
   },
   guestSession: {
     ttlHours: env.GUEST_SESSION_TTL_HOURS,

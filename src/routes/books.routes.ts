@@ -4,10 +4,12 @@ import { booksController } from '../controllers/books.controller';
 const router = Router();
 
 /**
- * GET /books/search?q=harr&limit=8
+ * GET /books/search?q=harr&limit=8&type=title|author
  * Typeahead suggestions — returns up to 15 ranked matches as the user types.
- * Minimum 2 characters. Ranked by: prefix match > word prefix > trigram similarity.
- * Public — no auth required.
+ * `type` toggles whether `q` matches against the book title (default) or the
+ * author's name — both return books, ranked by: prefix match > word prefix >
+ * trigram similarity > full-text search fallback.
+ * Minimum 2 characters. Public — no auth required.
  *
  * NOTE: must be defined before /:id so Express does not treat "search" as an ID.
  */
@@ -26,5 +28,13 @@ router.get('/', booksController.list);
  * Public — no auth required.
  */
 router.get('/:id', booksController.getById);
+
+/**
+ * GET /books/:id/similar?limit=10
+ * Returns books ranked by cosine similarity to the given book's embedding
+ * ("You May Also Like"). Excludes the book itself. Empty list if the book
+ * has no embedding yet. Public — no auth required.
+ */
+router.get('/:id/similar', booksController.similar);
 
 export default router;

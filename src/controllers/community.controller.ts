@@ -121,6 +121,26 @@ export const communityController = {
     }
   },
 
+  async listOwnPosts(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const parsed = listPostsSchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+    try {
+      const result = await communityService.listOwnPosts(
+        req.user.id,
+        parsed.data.sort,
+        parsed.data.limit,
+        parsed.data.offset,
+      );
+      res.status(200).json({ ...result, sort: parsed.data.sort, limit: parsed.data.limit, offset: parsed.data.offset });
+    } catch (err: unknown) {
+      const e = err as Error & { statusCode?: number };
+      res.status(e.statusCode ?? 500).json({ error: e.message });
+    }
+  },
+
   async listPostsForBook(req: AuthenticatedRequest, res: Response): Promise<void> {
     const parsed = listPostsSchema.safeParse(req.query);
     if (!parsed.success) {

@@ -34,6 +34,25 @@ const GENRE_VALUES = [
   'travel',
 ] as const;
 
+const dislikesSchema = z
+  .object({
+    emotionalTone: z
+      .array(z.enum(['too dark or heavy', 'sad or tragic ending', 'emotionally intense']))
+      .optional(),
+    pacingStructure: z
+      .array(z.enum(['slow paced', 'complex or layered plot', 'multiple POVs']))
+      .optional(),
+    writingStyle: z
+      .array(z.enum(['academic or dense', 'experimental writing style']))
+      .optional(),
+    genreFocus: z
+      .array(z.enum(['romance-heavy', 'fantasy-heavy', 'faith-based themes']))
+      .optional(),
+    commitmentLevel: z
+      .array(z.enum(['long book (500+ pages)', 'series commitment']))
+      .optional(),
+  });
+
 const recommendationsSchema = z.object({
   displayName: z.string().min(1, 'Name is required').max(100),
 
@@ -50,29 +69,24 @@ const recommendationsSchema = z.object({
     .array(z.enum(GENRE_VALUES))
     .length(3, 'Exactly 3 genres are required'),
 
-  dislikes: z
-    .object({
-      emotionalTone: z
-        .array(z.enum(['too dark or heavy', 'sad or tragic ending', 'emotionally intense']))
-        .optional(),
-      pacingStructure: z
-        .array(z.enum(['slow paced', 'complex or layered plot', 'multiple POVs']))
-        .optional(),
-      writingStyle: z
-        .array(z.enum(['academic or dense', 'experimental writing style']))
-        .optional(),
-      genreFocus: z
-        .array(z.enum(['romance-heavy', 'fantasy-heavy', 'faith-based themes']))
-        .optional(),
-      commitmentLevel: z
-        .array(z.enum(['long book (500+ pages)', 'series commitment']))
-        .optional(),
-    })
-    .default({}),
+  dislikes: dislikesSchema.default({}),
 });
 
 // Refresh uses the same shape minus displayName
 const refreshSchema = recommendationsSchema.omit({ displayName: true });
+
+// Opt-in flag on /refresh — by default no recommendations are computed or
+// returned (just a preference update), since that's an expensive Gemini-backed
+// pipeline most preference edits don't need. Pass ?includeRecommendations=true
+// to run the full pipeline and get a recommendation list back.
+// NOTE: z.coerce.boolean() would treat the literal string "false" as truthy
+// (any non-empty string coerces to true), so the accepted values are explicit.
+const refreshQuerySchema = z.object({
+  includeRecommendations: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+});
 
 // ── Controller ────────────────────────────────────────────────────────────────
 
@@ -95,17 +109,34 @@ export const recommendationsController = {
   },
 
   async refresh(req: Request, res: Response): Promise<void> {
-    const parsed = refreshSchema.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+    const parsedBody = refreshSchema.safeParse(req.body);
+    if (!parsedBody.success) {
+      res.status(400).json({ error: parsedBody.error.flatten().fieldErrors });
+      return;
+    }
+
+    const parsedQuery = refreshQuerySchema.safeParse(req.query);
+    if (!parsedQuery.success) {
+      res.status(400).json({ error: parsedQuery.error.flatten().fieldErrors });
       return;
     }
 
     const { user } = req as AuthenticatedRequest;
 
     try {
-      const recommendations = await recommendationsService.refresh(user.id, parsed.data);
-      res.status(200).json({ recommendations });
+      const result = await recommendationsService.refresh(
+        user.id,
+        parsedBody.data,
+        parsedQuery.data.includeRecommendations,
+      );
+
+      if (parsedQuery.data.includeRecommendations) {
+        res.status(200).json({ recommendations: result.recommendations });
+      } else {
+        res.status(200).json({
+          preferences: { feelings: result.feelings, genres: result.genres, dislikes: result.dislikes, bookIds: result.bookIds },
+        });
+      }
     } catch (err: unknown) {
       logger.error('Unexpected error refreshing recommendations', { error: (err as Error).message });
       res.status(500).json({ error: 'An unexpected error occurred' });

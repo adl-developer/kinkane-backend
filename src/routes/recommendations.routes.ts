@@ -44,12 +44,20 @@ const router = Router();
 router.post('/', recommendationsLimiter, recommendationsController.getRecommendations);
 
 /**
- * POST /api/v1/recommendations/refresh
+ * PATCH /api/v1/recommendations/refresh?includeRecommendations=true
  *
- * Re-runs the book recommendation quiz for an authenticated user. Updates their
- * stored preferences and preference embedding in place, then invalidates their
- * personalized feed cache. Shares the same recommendation cache as the guest
- * flow — identical inputs return instantly without a Gemini call.
+ * Updates an authenticated user's stored preferences/embedding from the full
+ * quiz payload (feelings + genres + dislikes + bookIds together — unlike a
+ * granular single-field patch, this always requires the whole shape).
+ * Invalidates the personalized feed cache.
+ *
+ * By default, no recommendation list is computed or returned — this keeps a
+ * plain preference save fast and cheap (skips the pgvector search + Gemini
+ * explanation pipeline entirely). Pass ?includeRecommendations=true to
+ * additionally run that full pipeline and get a ranked list back — this is
+ * what "Find your next read" on the Home tab relies on. Shares the same
+ * recommendation cache as the guest flow — identical inputs return instantly
+ * without a Gemini call.
  *
  * Body: {
  *   feelings: string[3],
@@ -58,10 +66,12 @@ router.post('/', recommendationsLimiter, recommendationsController.getRecommenda
  *   dislikes?: { emotionalTone?, pacingStructure?, writingStyle?, genreFocus?, commitmentLevel? }
  * }
  *
- * Returns 200: { recommendations: [{ bookId, rank, explanation }] }
+ * Returns 200: { preferences: { feelings, genres, dislikes, bookIds } }
+ *      or, with ?includeRecommendations=true:
+ *         { recommendations: [{ bookId, rank, explanation }] }
  * Errors: 400 validation | 401 unauthenticated | 429 rate limit
  */
-router.post('/refresh', requireAuth, recommendationsLimiter, (req: Request, res: Response) =>
+router.patch('/refresh', requireAuth, recommendationsLimiter, (req: Request, res: Response) =>
   recommendationsController.refresh(req as AuthenticatedRequest, res),
 );
 
