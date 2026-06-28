@@ -6,11 +6,15 @@ import { userBooksService } from '../services/user-books.service';
 const suggestionsSchema = z.object({
   q: z.string().min(2, 'Query must be at least 2 characters').max(100),
   limit: z.coerce.number().int().min(1).max(15).default(8),
+  type: z.enum(['title', 'author']).default('title'),
+});
+
+const similarSchema = z.object({
+  limit: z.coerce.number().int().min(1).max(20).default(10),
 });
 
 const listSchema = z.object({
   q: z.string().min(1).max(200).optional(),
-  author: z.string().min(1).max(200).optional(),
   genre: z.string().min(1).max(300).optional(),
   availability: z.string().length(2).optional(),
   productForm: z.string().min(1).max(10).optional(),
@@ -30,8 +34,24 @@ export const booksController = {
     }
 
     try {
-      const results = await booksService.suggestions(parsed.data.q, parsed.data.limit);
-      res.status(200).json({ suggestions: results });
+      const results = await booksService.suggestions(parsed.data.q, parsed.data.limit, parsed.data.type);
+      res.status(200).json({ suggestions: results, type: parsed.data.type });
+    } catch (err: unknown) {
+      const e = err as Error;
+      res.status(500).json({ error: e.message });
+    }
+  },
+
+  async authorSuggestions(req: Request, res: Response): Promise<void> {
+    const parsed = suggestionsSchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+
+    try {
+      const results = await booksService.authorSuggestions(parsed.data.q, parsed.data.limit);
+      res.status(200).json({ authors: results });
     } catch (err: unknown) {
       const e = err as Error;
       res.status(500).json({ error: e.message });
@@ -86,6 +106,34 @@ export const booksController = {
       }
 
       res.status(200).json({ book, publicNotes });
+    } catch (err: unknown) {
+      const e = err as Error;
+      res.status(500).json({ error: e.message });
+    }
+  },
+
+  async similar(req: Request, res: Response): Promise<void> {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) {
+      res.status(400).json({ error: 'Invalid book ID' });
+      return;
+    }
+
+    const parsed = similarSchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+
+    try {
+      const book = await booksService.getById(id);
+      if (!book) {
+        res.status(404).json({ error: 'Book not found' });
+        return;
+      }
+
+      const results = await booksService.similar(id, parsed.data.limit);
+      res.status(200).json({ books: results });
     } catch (err: unknown) {
       const e = err as Error;
       res.status(500).json({ error: e.message });

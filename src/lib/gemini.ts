@@ -111,6 +111,40 @@ async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 4): Promise<T> {
 }
 
 /**
+ * Calls `generateContent` on the primary flash model, retrying transient
+ * failures via `withRetry`. If the primary model fails even after exhausting
+ * retries (e.g. it's deprecated or unavailable), falls back to
+ * GEMINI_FLASH_MODEL_FALLBACK once before giving up. Never used for
+ * embeddings — those must stay in the same vector space as the books already
+ * indexed, so there is no safe fallback model for them.
+ */
+async function generateContentWithFallback(
+  request: Parameters<ReturnType<typeof genai.getGenerativeModel>['generateContent']>[0],
+): ReturnType<ReturnType<typeof genai.getGenerativeModel>['generateContent']> {
+  const primaryModel = genai.getGenerativeModel({ model: config.gemini.flashModel });
+
+  try {
+    return await withRetry(() => primaryModel.generateContent(request));
+  } catch (err) {
+    if (
+      !config.gemini.flashModelFallback ||
+      config.gemini.flashModelFallback === config.gemini.flashModel
+    ) {
+      throw err;
+    }
+
+    logger.warn('Primary Gemini flash model failed after retries, trying fallback model', {
+      primaryModel: config.gemini.flashModel,
+      fallbackModel: config.gemini.flashModelFallback,
+      error: (err as Error).message,
+    });
+
+    const fallbackModel = genai.getGenerativeModel({ model: config.gemini.flashModelFallback });
+    return await withRetry(() => fallbackModel.generateContent(request));
+  }
+}
+
+/**
  * Single-chunk helper. Calls the model for one batch of books and returns
  * explanations for that batch. Falls back to empty strings for the whole
  * chunk if the model response can't be parsed — so one bad chunk never
@@ -120,8 +154,6 @@ async function generateExplanationsChunk(
   preferenceText: string,
   books: BookContext[],
 ): Promise<ExplanationResult[]> {
-  const model = genai.getGenerativeModel({ model: config.gemini.flashModel });
-
   const bookList = books
     .map((b) => {
       const authorPart = b.authors.length ? ` by ${b.authors.join(', ')}` : '';
@@ -150,14 +182,12 @@ ${preferenceText}
 ${bookList}
 </books>`;
 
-  let result: Awaited<ReturnType<typeof model.generateContent>>;
+  let result: Awaited<ReturnType<typeof generateContentWithFallback>>;
   try {
-    result = await withRetry(() =>
-      model.generateContent({
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: { responseMimeType: 'application/json' },
-      }),
-    );
+    result = await generateContentWithFallback({
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: { responseMimeType: 'application/json' },
+    });
   } catch (err) {
     // Gemini stayed down through all retry attempts — degrade to empty
     // explanations for this chunk rather than failing the whole request.
@@ -219,8 +249,6 @@ const READER_TYPE_DESCRIPTIONS = `
  * can't be parsed or doesn't match a known type — callers treat null as "unknown".
  */
 export async function inferReaderType(books: BookContext[]): Promise<ReaderType | null> {
-  const model = genai.getGenerativeModel({ model: config.gemini.flashModel });
-
   const bookList = books
     .map((b) => {
       const authorPart = b.authors.length ? ` by ${b.authors.join(', ')}` : '';
@@ -243,12 +271,10 @@ Return ONLY a valid JSON object with no markdown, no code fences, no extra text:
 {"readerType": "<one of the exact type names listed above>"}`;
 
   try {
-    const result = await withRetry(() =>
-      model.generateContent({
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: { responseMimeType: 'application/json' },
-      }),
-    );
+    const result = await generateContentWithFallback({
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: { responseMimeType: 'application/json' },
+    });
 
     const raw = result.response.text().trim();
     const parsed = JSON.parse(raw) as { readerType?: string };

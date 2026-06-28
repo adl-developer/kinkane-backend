@@ -16,6 +16,7 @@ router.get('/users/:friendId/books/:bookId', wrap(communityController.getFriendB
 // Posts
 router.get('/posts', wrap(communityController.listPosts));
 router.post('/posts', wrap(communityController.createPost));
+router.get('/posts/mine', wrap(communityController.listOwnPosts));
 router.get('/books/:bookId/posts', wrap(communityController.listPostsForBook));
 router.get('/posts/:postId', wrap(communityController.getPost));
 router.patch('/posts/:postId', wrap(communityController.updatePost));

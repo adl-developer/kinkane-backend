@@ -280,6 +280,44 @@ export const communityService = {
     return { posts: enriched, total: countRow?.count ?? 0 };
   },
 
+  async listOwnPosts(
+    userId: number,
+    sort: 'date_asc' | 'date_desc',
+    limit: number,
+    offset: number,
+  ): Promise<{ posts: PostItem[]; total: number }> {
+    const where = eq(posts.userId, userId);
+    const order = sort === 'date_asc' ? asc(posts.createdAt) : desc(posts.createdAt);
+
+    const [rows, [countRow]] = await Promise.all([
+      db
+        .select(POST_SELECT_COLUMNS)
+        .from(posts)
+        .innerJoin(users, eq(users.id, posts.userId))
+        .innerJoin(books, eq(books.id, posts.bookId))
+        .where(where)
+        .orderBy(order)
+        .limit(limit)
+        .offset(offset),
+      db.select({ count: sql<number>`COUNT(*)::int` }).from(posts).where(where),
+    ]);
+
+    const excerptMap = await getExcerptsByIsbns(rows.map((r) => r.bookIsbn13));
+
+    const enriched = await enrichPosts(
+      rows.map(({ bookIsbn13, ...r }) => ({
+        ...r,
+        bookExcerpt: pickExcerpt(bookIsbn13, excerptMap),
+        likeCount: 0,
+        commentCount: 0,
+        likedByMe: false,
+      })),
+      userId,
+    );
+
+    return { posts: enriched, total: countRow?.count ?? 0 };
+  },
+
   async listPostsForBook(
     bookId: number,
     requesterId: number,
