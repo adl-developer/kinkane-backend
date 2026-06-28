@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Regenerates CHANGELOG.md from Conventional Commits and folds the update
+# into the commit that was just made, so CHANGELOG.md never trails HEAD.
+set -euo pipefail
+
+# Avoid recursing into ourselves when we amend below.
+if [ -n "${CHANGELOG_HOOK_RUNNING:-}" ]; then
+  exit 0
+fi
+export CHANGELOG_HOOK_RUNNING=1
+
+cd "$(git rev-parse --show-toplevel)"
+
+# -r 0 regenerates the whole file from scratch and overwrites it, rather
+# than prepending "since last tag" entries — there are no version tags
+# yet, so "since last tag" would mean "since the beginning" every time
+# and CHANGELOG.md would duplicate its entire contents on every commit.
+npx --no-install conventional-changelog -p angular -i CHANGELOG.md -s -r 0
+
+if ! git diff --quiet -- CHANGELOG.md; then
+  git add CHANGELOG.md
+  git commit --amend --no-edit --no-verify
+fi

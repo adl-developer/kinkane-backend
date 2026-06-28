@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Kinkane main API server",
   "scripts": {
+    "prepare": "git config core.hooksPath .githooks",
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
@@ -41,6 +42,7 @@
     "@types/jsonwebtoken": "^9.0.7",
     "@types/node": "^22.10.0",
     "@types/node-cron": "^3.0.11",
+    "conventional-changelog-cli": "^5.0.0",
     "drizzle-kit": "^0.27.2",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
