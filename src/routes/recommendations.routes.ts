@@ -46,18 +46,22 @@ router.post('/', recommendationsLimiter, recommendationsController.getRecommenda
 /**
  * PATCH /api/v1/recommendations/refresh?includeRecommendations=true
  *
- * Updates an authenticated user's stored preferences/embedding from the full
- * quiz payload (feelings + genres + dislikes + bookIds together — unlike a
+ * Updates an authenticated user's stored preferences from the full quiz
+ * payload (feelings + genres + dislikes + bookIds together — unlike a
  * granular single-field patch, this always requires the whole shape).
- * Invalidates the personalized feed cache.
+ * The preference fields are saved synchronously; the embedding used by the
+ * personalized feed is regenerated in the background afterward (a live
+ * Gemini call) so this save doesn't hang or fail if Gemini is slow or down —
+ * the personalized feed just keeps serving on the old embedding until the
+ * regeneration completes, then the cache is invalidated.
  *
- * By default, no recommendation list is computed or returned — this keeps a
- * plain preference save fast and cheap (skips the pgvector search + Gemini
- * explanation pipeline entirely). Pass ?includeRecommendations=true to
- * additionally run that full pipeline and get a ranked list back — this is
- * what "Find your next read" on the Home tab relies on. Shares the same
- * recommendation cache as the guest flow — identical inputs return instantly
- * without a Gemini call.
+ * By default, no recommendation list is computed or returned — this skips
+ * the pgvector search + Gemini explanation pipeline entirely, which is the
+ * expensive part most preference edits don't need. Pass
+ * ?includeRecommendations=true to additionally run that full pipeline and
+ * get a ranked list back — this is what "Find your next read" on the Home
+ * tab relies on. Shares the same recommendation cache as the guest flow —
+ * identical inputs return instantly without a Gemini call.
  *
  * Body: {
  *   feelings: string[3],
