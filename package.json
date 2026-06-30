@@ -11,7 +11,7 @@
     "db:migrate": "drizzle-kit migrate",
     "db:init": "tsx src/db/install-extensions.ts && npm run db:migrate && tsx src/db/setup.ts",
     "db:reset": "tsx src/db/reset.ts",
-    "changelog": "conventional-changelog -p angular -i CHANGELOG.md -s -r 0"
+    "changelog": "node scripts/generate-changelog.mjs"
   },
   "dependencies": {
     "@bull-board/api": "^7.1.5",
