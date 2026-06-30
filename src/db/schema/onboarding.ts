@@ -122,14 +122,17 @@ export const userBooks = pgTable(
     bookId: integer('book_id')
       .notNull()
       .references(() => books.id, { onDelete: 'cascade' }),
-    // 'want_to_read' | 'reading' | 'read'
-    status: varchar('status', { length: 20 }).notNull().default('want_to_read'),
+    // 'want_to_read' | 'reading' | 'read' — null means no reading status has been set
+    status: varchar('status', { length: 20 }),
     // 'chosen_from_onboarding' | 'manual' | 'recommended'
     source: varchar('source', { length: 50 }).notNull().default('manual'),
     // Optional note the user writes about the book (max 1000 chars enforced at API layer)
     note: text('note'),
     // When true the note is visible to all users on the book detail page
     noteIsPublic: boolean('note_is_public').notNull().default(false),
+    // User has explicitly liked this book (independent of reading status)
+    liked: boolean('liked').notNull().default(false),
+    likedAt: timestamp('liked_at', { withTimezone: true }),
     addedAt: timestamp('added_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({

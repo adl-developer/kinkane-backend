@@ -4,6 +4,7 @@
 ### Bug Fixes
 
 * make AI-generated explanations and reader-type results consistent ([0c3d299](https://adl.github.com/adl-developer/kinkane-backend/commit/0c3d299982c0fb2a9ced5e4b51bb7aa2f2f6c6bc))
+* stop preference refresh from hanging when Gemini is slow ([03f3b4d](https://adl.github.com/adl-developer/kinkane-backend/commit/03f3b4d5468e0e7f56db884f765146a152a8cb8e))
 
 
 ### Features

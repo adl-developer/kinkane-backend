@@ -177,8 +177,10 @@ async function migrateGuestSession(userId: number, sessionId: string): Promise<v
           (session.chosenBookIds ?? []).map((bookId) => ({
             userId,
             bookId,
-            status: 'want_to_read',
+            status: null,
             source: 'chosen_from_onboarding',
+            liked: true,
+            likedAt: new Date(),
           })),
         )
         .onConflictDoNothing();
