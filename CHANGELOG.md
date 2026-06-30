@@ -1,0 +1,22 @@
+# 1.0.0 (2026-06-30)
+
+
+### Bug Fixes
+
+* make AI-generated explanations and reader-type results consistent ([0c3d299](https://adl.github.com/adl-developer/kinkane-backend/commit/0c3d299982c0fb2a9ced5e4b51bb7aa2f2f6c6bc))
+
+
+### Features
+
+* add author filter to books list endpoint ([f66f1c6](https://adl.github.com/adl-developer/kinkane-backend/commit/f66f1c6ca7edb67b7fd0b420bc51ab1c7df7f9f5))
+* add date-added sort options to user books list ([d856160](https://adl.github.com/adl-developer/kinkane-backend/commit/d856160d9b99dfa3ce3dd923216f7dc01fe37612))
+* add email verification flow ([7283bfe](https://adl.github.com/adl-developer/kinkane-backend/commit/7283bfef99784afdaa7d523265ae4f534f37cb70))
+* add explore discovery feed and recommendation refresh ([3923c8b](https://adl.github.com/adl-developer/kinkane-backend/commit/3923c8b26c271834696a4e99e103825c4f57e215))
+* add follower/following list endpoints with pagination ([74e4208](https://adl.github.com/adl-developer/kinkane-backend/commit/74e4208a60494fc02259ce4e6e9b51fdbdee1848))
+* add subscription upgrade stub endpoint ([dcbe75f](https://adl.github.com/adl-developer/kinkane-backend/commit/dcbe75f2e9357b4c5e5d8c2f1730c17b8c135126))
+* add update profile endpoint and expand get settings response ([5a4ee6d](https://adl.github.com/adl-developer/kinkane-backend/commit/5a4ee6d8f376345ac1d38f7e46ed461bb0ca81e2))
+* filter recommendations by similarity threshold before ranking ([fce929f](https://adl.github.com/adl-developer/kinkane-backend/commit/fce929fdded645e0920a3ee60d6abd1dfa79a28f))
+* infer and persist reader type during onboarding ([b9faf67](https://adl.github.com/adl-developer/kinkane-backend/commit/b9faf676b47ded9c12e98ecd8de2cb87d05a955d))
+* transactional email system with SendGrid, BullMQ queue, and password reset ([06d31ff](https://adl.github.com/adl-developer/kinkane-backend/commit/06d31ffcb804d72f6629e57989973913fda0c9f3))
+* user books reading list with notes, status filtering, and sort ([9c6173c](https://adl.github.com/adl-developer/kinkane-backend/commit/9c6173c130b09b41b36675a28c48184e25c49962))
+* user profile, account management, and settings endpoints ([b781bb4](https://adl.github.com/adl-developer/kinkane-backend/commit/b781bb4b18801a8dd09721a2b706f0a986829738))

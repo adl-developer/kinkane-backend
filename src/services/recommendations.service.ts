@@ -360,31 +360,33 @@ export const recommendationsService = {
    * most preference edits don't need. Pass includeRecommendations=true to
    * additionally run the full pipeline and get a ranked list back (this is
    * what "Find your next read" on the Home tab relies on).
+   *
+   * Either way, the response only waits on the plain DB write
+   * (`saveUserPreferenceFields`) — the embedding regeneration is always
+   * fire-and-forget, since it's a live Gemini call and a "save my
+   * preferences" action shouldn't hang or fail because Gemini is slow or
+   * down. The personalized feed will pick up the new embedding once that
+   * background call completes; until then it keeps serving on the old one.
    */
   async refresh(
     userId: number,
     input: Omit<RecommendationInput, 'displayName'>,
     includeRecommendations = false,
   ): Promise<Omit<RecommendationInput, 'displayName'> & { recommendations?: RecommendationItem[] }> {
-    if (!includeRecommendations) {
-      // Only the preference write matters here, so await it directly rather
-      // than firing it off in the background — the caller needs confirmation
-      // the save (and embedding regeneration) actually completed.
-      await updateUserPreferences(userId, input);
-      return input;
-    }
+    await saveUserPreferenceFields(userId, input);
 
-    const results = await computeRecommendations(userId, input);
-
-    // Update preferences and re-generate embedding — fire-and-forget so the
-    // response returns immediately while the vector write happens in the background
-    updateUserPreferences(userId, input).catch((err) => {
-      logger.error('Failed to update user preferences after refresh', {
+    regeneratePreferenceEmbedding(userId, input).catch((err) => {
+      logger.error('Failed to regenerate preference embedding after refresh', {
         userId,
         error: (err as Error).message,
       });
     });
 
+    if (!includeRecommendations) {
+      return input;
+    }
+
+    const results = await computeRecommendations(userId, input);
     return { ...input, recommendations: results };
   },
 };
@@ -532,7 +534,35 @@ async function bustPersonalizedCache(userId: number): Promise<void> {
   await redis.del(...keys);
 }
 
-async function updateUserPreferences(
+/**
+ * Writes the structured preference fields only — no Gemini call. This is the
+ * part callers need to wait on for a "your save succeeded" confirmation;
+ * the embedding regeneration is a separate, slower step (see
+ * `regeneratePreferenceEmbedding`) that callers can choose to await or not.
+ */
+async function saveUserPreferenceFields(
+  userId: number,
+  input: Omit<RecommendationInput, 'displayName'>,
+): Promise<void> {
+  await db
+    .update(userPreferences)
+    .set({
+      feelings: input.feelings,
+      bookIds: input.bookIds,
+      genres: input.genres,
+      dislikes: input.dislikes,
+      updatedAt: new Date(),
+    })
+    .where(eq(userPreferences.userId, userId));
+}
+
+/**
+ * Regenerates the stored preference embedding from the given input — a real
+ * Gemini embedContent call. Callers that don't need to block the response on
+ * Gemini's availability/latency should fire this off and .catch() it rather
+ * than awaiting it directly.
+ */
+async function regeneratePreferenceEmbedding(
   userId: number,
   input: Omit<RecommendationInput, 'displayName'>,
 ): Promise<void> {
@@ -542,14 +572,7 @@ async function updateUserPreferences(
 
   await db
     .update(userPreferences)
-    .set({
-      feelings: input.feelings,
-      bookIds: input.bookIds,
-      genres: input.genres,
-      dislikes: input.dislikes,
-      preferenceEmbedding: embedding,
-      updatedAt: new Date(),
-    })
+    .set({ preferenceEmbedding: embedding, updatedAt: new Date() })
     .where(eq(userPreferences.userId, userId));
 
   await bustPersonalizedCache(userId);

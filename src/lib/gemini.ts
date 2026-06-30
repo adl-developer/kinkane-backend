@@ -186,7 +186,7 @@ ${bookList}
   try {
     result = await generateContentWithFallback({
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: { responseMimeType: 'application/json' },
+      generationConfig: { responseMimeType: 'application/json', temperature: 0 },
     });
   } catch (err) {
     // Gemini stayed down through all retry attempts — degrade to empty
@@ -273,7 +273,7 @@ Return ONLY a valid JSON object with no markdown, no code fences, no extra text:
   try {
     const result = await generateContentWithFallback({
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: { responseMimeType: 'application/json' },
+      generationConfig: { responseMimeType: 'application/json', temperature: 0 },
     });
 
     const raw = result.response.text().trim();
