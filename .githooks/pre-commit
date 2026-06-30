@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Regenerates CHANGELOG.md from Conventional Commits before each commit, and
+# stages it if it changed — so it's part of the commit you're about to make
+# rather than needing a separate amend step afterward.
+#
+# Note: this reads `git log` as of HEAD, which doesn't include the commit
+# you're currently making (it doesn't exist yet at pre-commit time) — so
+# CHANGELOG.md always reflects everything up to and including the *previous*
+# commit. That's expected, not a bug.
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+npm run --silent changelog
+
+if ! git diff --quiet -- CHANGELOG.md; then
+  git add CHANGELOG.md
+fi
