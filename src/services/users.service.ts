@@ -15,7 +15,7 @@ export interface ShelfItem {
   bookId: number;
   title: string;
   coverUrl: string | null;
-  status: string;
+  status: string | null;
   addedAt: Date;
 }
 

@@ -46,4 +46,25 @@ router.delete('/:bookId', requireAuth, (req: Request, res: Response) =>
   userBooksController.remove(req as AuthenticatedRequest, res),
 );
 
+/**
+ * POST /user-books/:bookId/like
+ * Like a book. Creates a shelf entry if one doesn't exist yet (with no reading
+ * status — just the liked flag). Idempotent.
+ * Returns 200: { success: true }
+ * Errors: 404 book not found
+ */
+router.post('/:bookId/like', requireAuth, (req: Request, res: Response) =>
+  userBooksController.like(req as AuthenticatedRequest, res),
+);
+
+/**
+ * DELETE /user-books/:bookId/like
+ * Unlike a book. If the book has no reading status the shelf entry is removed
+ * entirely; otherwise only the liked flag is cleared.
+ * Returns 200: { success: true }
+ */
+router.delete('/:bookId/like', requireAuth, (req: Request, res: Response) =>
+  userBooksController.unlike(req as AuthenticatedRequest, res),
+);
+
 export default router;

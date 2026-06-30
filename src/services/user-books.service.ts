@@ -24,7 +24,9 @@ const PUBLIC_NOTES_TTL = 2 * 60; // 2 minutes
 export interface UserBookItem {
   id: number;
   bookId: number;
-  status: string;
+  status: string | null;
+  liked: boolean;
+  likedAt: Date | null;
   source: string;
   note: string | null;
   noteIsPublic: boolean;
@@ -52,7 +54,7 @@ export interface PublicNote {
   userName: string;
   userPhotoUrl: string | null;
   note: string;
-  status: string;
+  status: string | null;
   addedAt: Date;
 }
 
@@ -60,16 +62,17 @@ export interface ListUserBooksOptions {
   userId: number;
   q?: string;
   status?: 'want_to_read' | 'reading' | 'read';
+  liked?: boolean;
   sort: 'title_asc' | 'title_desc' | 'date_asc' | 'date_desc';
   limit: number;
   offset: number;
 }
 
 export interface UpsertUserBookFields {
-  // C7 fix: use the enum union so internal callers can't pass arbitrary strings
   status?: 'want_to_read' | 'reading' | 'read';
   note?: string | null;
   noteIsPublic?: boolean;
+  liked?: boolean;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -144,6 +147,10 @@ export const userBooksService = {
       conditions.push(eq(userBooks.status, opts.status));
     }
 
+    if (opts.liked !== undefined) {
+      conditions.push(eq(userBooks.liked, opts.liked));
+    }
+
     if (opts.q) {
       // C8 fix: escape metacharacters so _ and % in the query are treated as literals
       conditions.push(ilike(books.title, `%${escapeLike(opts.q)}%`));
@@ -162,6 +169,8 @@ export const userBooksService = {
           id: userBooks.id,
           bookId: userBooks.bookId,
           status: userBooks.status,
+          liked: userBooks.liked,
+          likedAt: userBooks.likedAt,
           source: userBooks.source,
           note: userBooks.note,
           noteIsPublic: userBooks.noteIsPublic,
@@ -226,12 +235,15 @@ export const userBooksService = {
 
     // Build the update set — only include keys that were explicitly provided
     const updateSet: Record<string, unknown> = {
-      // C5 fix: always mark the row as manually managed when the user acts on it
       source: 'manual',
     };
     if (fields.status !== undefined) updateSet.status = fields.status;
     if (fields.note !== undefined) updateSet.note = fields.note;
     if (fields.noteIsPublic !== undefined) updateSet.noteIsPublic = fields.noteIsPublic;
+    if (fields.liked !== undefined) {
+      updateSet.liked = fields.liked;
+      updateSet.likedAt = fields.liked ? new Date() : null;
+    }
 
     // C3 fix: Drizzle throws 'No values to set' when the set object is empty.
     // source is always present now so this guard is a safety net for future refactors.
@@ -250,14 +262,65 @@ export const userBooksService = {
         userId,
         bookId,
         source: 'manual',
-        status: fields.status ?? 'want_to_read',
+        status: fields.status ?? null,
         note: fields.note ?? null,
         noteIsPublic: fields.noteIsPublic ?? false,
+        liked: fields.liked ?? false,
+        likedAt: fields.liked ? new Date() : null,
       })
       .onConflictDoUpdate({
         target: [userBooks.userId, userBooks.bookId],
         set: updateSet,
       });
+  },
+
+  /**
+   * Likes a book. If the user has no existing entry for it, one is created
+   * with no reading status — just the liked flag. Idempotent.
+   */
+  async like(userId: number, bookId: number): Promise<void> {
+    const [book] = await db.select({ id: books.id }).from(books).where(eq(books.id, bookId)).limit(1);
+    if (!book) {
+      throw Object.assign(new Error('Book not found'), { statusCode: 404 });
+    }
+
+    await db
+      .insert(userBooks)
+      .values({
+        userId,
+        bookId,
+        source: 'manual',
+        status: null,
+        liked: true,
+        likedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: [userBooks.userId, userBooks.bookId],
+        set: { liked: true, likedAt: new Date(), source: 'manual' },
+      });
+  },
+
+  /**
+   * Unlikes a book. If the row has no reading status, it is deleted entirely
+   * (nothing left to keep it). Otherwise only the liked flag is cleared.
+   */
+  async unlike(userId: number, bookId: number): Promise<void> {
+    const [row] = await db
+      .select({ id: userBooks.id, status: userBooks.status })
+      .from(userBooks)
+      .where(and(eq(userBooks.userId, userId), eq(userBooks.bookId, bookId)))
+      .limit(1);
+
+    if (!row) return; // nothing to do
+
+    if (row.status === null) {
+      await db.delete(userBooks).where(eq(userBooks.id, row.id));
+    } else {
+      await db
+        .update(userBooks)
+        .set({ liked: false, likedAt: null })
+        .where(eq(userBooks.id, row.id));
+    }
   },
 
   /**
