@@ -2,6 +2,7 @@ import { eq, and, sql, asc, desc } from 'drizzle-orm';
 import { db } from '../db';
 import { users, posts, followRequests, userBooks, books } from '../db/schema';
 import { enqueueEmail } from '../lib/email-queue';
+import { notificationPreferencesService } from './notification-preferences.service';
 import { logger } from '../lib/logger';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -296,11 +297,14 @@ export const usersService = {
       }
     }
 
-    enqueueEmail('follow-request', {
-      to: target.email,
-      receiverName: target.name,
-      senderName: sender.name,
-    }).catch((err) => logger.error('Failed to enqueue follow-request email', { err }));
+    notificationPreferencesService.isEnabled(receiverId, 'friendRequests').then((enabled) => {
+      if (!enabled) return;
+      enqueueEmail('follow-request', {
+        to: target.email,
+        receiverName: target.name,
+        senderName: sender.name,
+      }).catch((err) => logger.error('Failed to enqueue follow-request email', { err }));
+    }).catch((err) => logger.error('Failed to check follow-request notification preference', { err }));
   },
 
   async withdrawFollowRequest(senderId: number, receiverId: number): Promise<void> {
@@ -348,11 +352,14 @@ export const usersService = {
     ]);
 
     if (sender && receiver) {
-      enqueueEmail('follow-accepted', {
-        to: sender.email,
-        senderName: sender.name,
-        accepterName: receiver.name,
-      }).catch((err) => logger.error('Failed to enqueue follow-accepted email', { err }));
+      notificationPreferencesService.isEnabled(existing.senderId, 'friendRequests').then((enabled) => {
+        if (!enabled) return;
+        enqueueEmail('follow-accepted', {
+          to: sender.email,
+          senderName: sender.name,
+          accepterName: receiver.name,
+        }).catch((err) => logger.error('Failed to enqueue follow-accepted email', { err }));
+      }).catch((err) => logger.error('Failed to check follow-accepted notification preference', { err }));
     } else {
       logger.warn('Skipped follow-accepted email — user(s) not found after accept', {
         requestId,

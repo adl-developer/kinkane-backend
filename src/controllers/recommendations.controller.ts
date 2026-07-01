@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
 import { recommendationsService } from '../services/recommendations.service';
+import { maybeSendRecommendationAfterRefresh } from '../services/recommendation-notifications.service';
 import { logger } from '../lib/logger';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 
@@ -137,6 +138,13 @@ export const recommendationsController = {
           preferences: { feelings: result.feelings, genres: result.genres, dislikes: result.dislikes, bookIds: result.bookIds },
         });
       }
+
+      maybeSendRecommendationAfterRefresh(user.id).catch((err) => {
+        logger.error('Failed to dispatch recommendation email after refresh', {
+          userId: user.id,
+          error: (err as Error).message,
+        });
+      });
     } catch (err: unknown) {
       logger.error('Unexpected error refreshing recommendations', { error: (err as Error).message });
       res.status(500).json({ error: 'An unexpected error occurred' });

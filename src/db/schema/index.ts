@@ -9,3 +9,5 @@ export * from './password-reset-tokens';
 export * from './email-verification-tokens';
 export * from './email-change-requests';
 export * from './community';
+export * from './notification-preferences';
+export * from './recommendation-email-log';
