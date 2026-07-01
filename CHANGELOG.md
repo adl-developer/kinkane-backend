@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-07-01
+
+### Features
+
+* let users manage notification preferences and receive personalised book recommendations by email ([2942995](https://adl.github.com/adl-developer/kinkane-backend/commit/29429951e86a981514c2e37e5a65af04f0080d5f))
+
+
 ## 2026-06-30
 
 ### Features
