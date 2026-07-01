@@ -7,6 +7,9 @@ export { sendAccountDeletedEmail } from './transactional/account-deleted';
 export { sendEmailChangeOtpEmail } from './transactional/email-change-otp';
 export { sendEmailChangeNotifyEmail } from './transactional/email-change-notify';
 export { sendFollowRequestEmail, sendFollowAcceptedEmail } from './transactional/follow-request';
+export { sendRateReviewReminderEmail } from './transactional/rate-review-reminder';
+export { sendPostCommentEmail } from './transactional/post-comment';
+export { sendPostLikeEmail } from './transactional/post-like';
 
 // Notifications
 export { sendTrialEndingEmail } from './notifications/trial-ending';

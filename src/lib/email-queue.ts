@@ -24,8 +24,11 @@ export interface EmailJobMap {
   'weekly-digest':      { to: string; payload: WeeklyDigestPayload };
   'email-change-otp':   { to: string; name: string; otp: string; expiryMinutes?: number };
   'email-change-notify':{ to: string; name: string; cancelUrl: string };
-  'follow-request':     { to: string; receiverName: string; senderName: string };
-  'follow-accepted':    { to: string; senderName: string; accepterName: string };
+  'follow-request':       { to: string; receiverName: string; senderName: string };
+  'follow-accepted':      { to: string; senderName: string; accepterName: string };
+  'rate-review-reminder': { to: string; name: string; book: { title: string; author: string; url: string } };
+  'post-comment':         { to: string; name: string; commenterName: string; bookTitle: string; commentPreview: string };
+  'post-like':            { to: string; name: string; likerName: string; bookTitle: string };
 }
 
 export type EmailJobName = keyof EmailJobMap;
@@ -45,8 +48,11 @@ export const EMAIL_PRIORITY: Record<EmailJobName, number> = {
   'newsletter':         10,
   'email-change-otp':   1,
   'email-change-notify':1,
-  'follow-request':     7,
-  'follow-accepted':    7,
+  'follow-request':       7,
+  'follow-accepted':      7,
+  'rate-review-reminder': 7,
+  'post-comment':         7,
+  'post-like':            8,
 };
 
 // ── Queue ─────────────────────────────────────────────────────────────────────

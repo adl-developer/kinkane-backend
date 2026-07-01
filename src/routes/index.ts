@@ -13,6 +13,7 @@ import communityRoutes from './community.routes';
 import usersRoutes from './users.routes';
 import exploreRoutes from './explore.routes';
 import userSubscriptionRoutes from './user-subscription.routes';
+import notificationPreferencesRoutes from './notification-preferences.routes';
 
 const router = Router();
 
@@ -37,6 +38,7 @@ v1.use('/community', communityRoutes);
 v1.use('/users', usersRoutes);
 v1.use('/explore', exploreRoutes);
 v1.use('/user/subscription', userSubscriptionRoutes);
+v1.use('/user/notification-preferences', notificationPreferencesRoutes);
 
 router.use('/v1', v1);
 

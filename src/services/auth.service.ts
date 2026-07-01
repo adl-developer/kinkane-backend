@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { eq, and, gt, inArray } from 'drizzle-orm';
 import { db } from '../db';
-import { users, refreshTokens, userProviders, guestSessions, userPreferences, userInteractions, userBooks, userSubscriptions, passwordResetTokens, emailVerificationTokens, books, bookContributors } from '../db/schema';
+import { users, refreshTokens, userProviders, guestSessions, userPreferences, userInteractions, userBooks, userSubscriptions, passwordResetTokens, emailVerificationTokens, books, bookContributors, notificationPreferences } from '../db/schema';
 import { getEffectiveTier } from '../db/schema/subscriptions';
 import { config } from '../config';
 import { admin } from '../lib/firebase';
@@ -269,6 +269,7 @@ export const authService = {
         .values({ name: name.trim(), email: email.toLowerCase().trim(), passwordHash })
         .returning({ id: users.id, name: users.name, email: users.email, emailVerified: users.emailVerified });
       await tx.insert(userSubscriptions).values({ userId: u.id, tier: 'plus', status: 'trialing', trialEndsAt });
+      await tx.insert(notificationPreferences).values({ userId: u.id });
       return u;
     });
 
@@ -722,6 +723,7 @@ export const authService = {
         .returning({ id: users.id, name: users.name, email: users.email, emailVerified: users.emailVerified });
       await tx.insert(userProviders).values({ userId: u.id, provider, providerUid });
       await tx.insert(userSubscriptions).values({ userId: u.id, tier: 'plus', status: 'trialing', trialEndsAt });
+      await tx.insert(notificationPreferences).values({ userId: u.id });
       return u;
     });
 

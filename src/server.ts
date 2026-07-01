@@ -4,6 +4,7 @@ import { logger } from './lib/logger';
 import { connectRedis, disconnectRedis } from './lib/redis';
 import { startGuestCleanupCron, stopGuestCleanupCron } from './jobs/guest-cleanup.cron';
 import { startWeeklyDigestCron, stopWeeklyDigestCron } from './jobs/weekly-digest.cron';
+import { startRecommendationCron, stopRecommendationCron } from './jobs/recommendation.cron';
 import { startEmailWorker, stopEmailWorker } from './workers/email.worker';
 import { emailQueue, bullConnection } from './lib/email-queue';
 
@@ -12,6 +13,7 @@ async function main(): Promise<void> {
 
   const cronTask = startGuestCleanupCron();
   const weeklyDigestTask = startWeeklyDigestCron();
+  const recommendationCronTask = startRecommendationCron();
   const emailWorker = startEmailWorker();
 
   const server = app.listen(config.port, () => {
@@ -22,6 +24,7 @@ async function main(): Promise<void> {
     logger.info('Shutting down gracefully', { signal });
     stopGuestCleanupCron(cronTask);
     stopWeeklyDigestCron(weeklyDigestTask);
+    stopRecommendationCron(recommendationCronTask);
     // server.close() stops accepting new connections and waits for in-flight
     // requests to finish — disconnect Redis only after they drain so that any
     // in-flight cache/rate-limit call can still reach Redis.

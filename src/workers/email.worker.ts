@@ -14,6 +14,9 @@ import {
   sendEmailChangeNotifyEmail,
   sendFollowRequestEmail,
   sendFollowAcceptedEmail,
+  sendRateReviewReminderEmail,
+  sendPostCommentEmail,
+  sendPostLikeEmail,
 } from '../emails';
 import { logger } from '../lib/logger';
 
@@ -86,6 +89,21 @@ async function processEmailJob(job: Job): Promise<void> {
     case 'follow-accepted': {
       const { to, senderName, accepterName } = job.data as EmailJobMap['follow-accepted'];
       await sendFollowAcceptedEmail(to, senderName, accepterName);
+      break;
+    }
+    case 'rate-review-reminder': {
+      const { to, name: userName, book } = job.data as EmailJobMap['rate-review-reminder'];
+      await sendRateReviewReminderEmail(to, userName, book);
+      break;
+    }
+    case 'post-comment': {
+      const { to, name: userName, commenterName, bookTitle, commentPreview } = job.data as EmailJobMap['post-comment'];
+      await sendPostCommentEmail(to, userName, commenterName, bookTitle, commentPreview);
+      break;
+    }
+    case 'post-like': {
+      const { to, name: userName, likerName, bookTitle } = job.data as EmailJobMap['post-like'];
+      await sendPostLikeEmail(to, userName, likerName, bookTitle);
       break;
     }
     default: {
