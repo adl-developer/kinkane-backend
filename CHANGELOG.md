@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-07-07
+
+### Bug Fixes
+
+* stop the recommendation fallback from failing on a retired Gemini model ([d875c53](https://adl.github.com/adl-developer/kinkane-backend/commit/d875c5301d402384976550d0c61088144226f6f9))
+
+
 ## 2026-07-01
 
 ### Features

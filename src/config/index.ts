@@ -27,7 +27,7 @@ const envSchema = z.object({
   // Used only if the primary flash model fails after exhausting retries (e.g.
   // deprecated/unavailable) — never used for embeddings, which must stay in
   // the same vector space as the books already indexed.
-  GEMINI_FLASH_MODEL_FALLBACK: z.string().default('gemini-2.0-flash'),
+  GEMINI_FLASH_MODEL_FALLBACK: z.string().default('gemini-2.5-flash'),
 
   // How long a guest session lives before the cleanup cron removes it.
   // Default: 24 * 3 = 72 hours (3 days). Set to e.g. 168 for a full week.

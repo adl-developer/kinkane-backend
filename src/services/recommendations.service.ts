@@ -8,10 +8,12 @@ import { guestService } from './guest.service';
 import { logger } from '../lib/logger';
 import { redis } from '../lib/redis';
 
-// How many results we aim to return to the client
-const TARGET_RESULTS = 250;
+// How many results we aim to return to the client. Kept well below the old
+// 250 because each result gets its own synchronous Gemini explanation call —
+// fewer results means fewer explanation chunks and a faster response.
+const TARGET_RESULTS = 100;
 // How large a pool to fetch from the DB before applying the threshold cut.
-// Larger than TARGET_RESULTS so the threshold filter still leaves us with 250.
+// Larger than TARGET_RESULTS so the threshold filter still leaves us with 100.
 const FETCH_POOL = 2000;
 // Cosine distance upper bound — books further than this from the preference
 // vector are excluded. Lower = stricter (0 = identical, 1 = orthogonal).

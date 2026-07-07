@@ -314,13 +314,12 @@ export const usersService = {
         and(
           eq(followRequests.senderId, senderId),
           eq(followRequests.receiverId, receiverId),
-          eq(followRequests.status, 'pending'),
         ),
       )
       .returning({ id: followRequests.id });
 
     if (result.length === 0) {
-      throw Object.assign(new Error('No pending follow request found'), { statusCode: 404 });
+      throw Object.assign(new Error('No follow relationship found'), { statusCode: 404 });
     }
   },
 

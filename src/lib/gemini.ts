@@ -45,7 +45,7 @@ export interface ExplanationResult {
 }
 
 // Books per Gemini call — small enough to stay within output-token limits,
-// large enough to keep the number of parallel calls reasonable (250 / 25 = 10).
+// large enough to keep the number of parallel calls reasonable (100 / 25 = 4).
 const EXPLANATION_CHUNK_SIZE = 25;
 
 // Max concurrent Gemini calls — prevents hitting the API's rate limit when
