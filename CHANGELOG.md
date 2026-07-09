@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-07-09
+
+### Features
+
+* let users fetch their saved reading preferences ([2891f4a](https://adl.github.com/adl-developer/kinkane-backend/commit/2891f4ae1c88b330c3f68e2a5b3971d89565f66d))
+
+
 ## 2026-07-07
 
 ### Bug Fixes

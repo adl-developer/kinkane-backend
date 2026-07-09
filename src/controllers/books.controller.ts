@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { z } from 'zod';
 import { booksService } from '../services/books.service';
 import { userBooksService } from '../services/user-books.service';
+import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 
 const suggestionsSchema = z.object({
   q: z.string().min(2, 'Query must be at least 2 characters').max(100),
@@ -105,7 +106,12 @@ export const booksController = {
         // degrade gracefully: return empty notes rather than a 500
       }
 
-      res.status(200).json({ book, publicNotes });
+      // optionalAuth sets req.user only when a valid token was presented —
+      // anonymous callers get userStatus: null rather than a 401.
+      const userId = (req as Partial<AuthenticatedRequest>).user?.id;
+      const userStatus = userId ? await userBooksService.getStatus(userId, id) : null;
+
+      res.status(200).json({ book, publicNotes, userStatus });
     } catch (err: unknown) {
       const e = err as Error;
       res.status(500).json({ error: e.message });

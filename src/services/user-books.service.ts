@@ -49,6 +49,13 @@ export interface UserBookItem {
   excerpt: BookExcerptInfo | null;
 }
 
+export interface UserBookStatus {
+  status: string | null;
+  liked: boolean;
+  note: string | null;
+  noteIsPublic: boolean;
+}
+
 export interface PublicNote {
   userId: number;
   userName: string;
@@ -397,6 +404,26 @@ export const userBooksService = {
     }
 
     return { deleted: deleted.length };
+  },
+
+  /**
+   * Returns the calling user's shelf entry for a single book (status, liked,
+   * note), or null if they've never added it. Powers the "your status on
+   * this book" field on the book detail page.
+   */
+  async getStatus(userId: number, bookId: number): Promise<UserBookStatus | null> {
+    const [row] = await db
+      .select({
+        status: userBooks.status,
+        liked: userBooks.liked,
+        note: userBooks.note,
+        noteIsPublic: userBooks.noteIsPublic,
+      })
+      .from(userBooks)
+      .where(and(eq(userBooks.userId, userId), eq(userBooks.bookId, bookId)))
+      .limit(1);
+
+    return row ?? null;
   },
 
   /**

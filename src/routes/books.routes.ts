@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { booksController } from '../controllers/books.controller';
+import { optionalAuth } from '../middleware/auth.middleware';
 
 const router = Router();
 
@@ -25,9 +26,12 @@ router.get('/', booksController.list);
 /**
  * GET /books/:id
  * Returns full book detail including descriptions, subjects, contributors, genres, prices.
- * Public — no auth required.
+ * Public — no auth required. If a valid access token is supplied, the response
+ * also includes `userStatus` (the caller's shelf entry for this book: reading
+ * status, liked flag, note) — null if they have no entry, or if the request
+ * is unauthenticated.
  */
-router.get('/:id', booksController.getById);
+router.get('/:id', optionalAuth, booksController.getById);
 
 /**
  * GET /books/:id/similar?limit=10

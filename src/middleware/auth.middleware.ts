@@ -43,3 +43,29 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
     res.status(e.statusCode ?? 401).json({ error: e.message });
   }
 }
+
+/**
+ * Like requireAuth, but for routes that stay public for anonymous callers
+ * and only add personalized data when a valid token is present. Missing or
+ * invalid tokens are treated as "anonymous" rather than a 401 — req.user is
+ * simply left unset and the request proceeds. Does not piggyback a refreshed
+ * access token, since that's only meaningful for an already-authenticated call.
+ */
+export function optionalAuth(req: Request, _res: Response, next: NextFunction): void {
+  const header = req.headers.authorization;
+
+  if (!header?.startsWith('Bearer ')) {
+    next();
+    return;
+  }
+
+  try {
+    const payload = authService.verifyAccessToken(header.slice(7));
+    (req as AuthenticatedRequest).user = { id: payload.sub, email: payload.email };
+  } catch {
+    // Invalid/expired token on an optional-auth route — proceed anonymously
+    // rather than failing the request.
+  }
+
+  next();
+}
