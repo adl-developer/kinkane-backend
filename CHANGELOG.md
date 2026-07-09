@@ -5,6 +5,7 @@
 
 ### Bug Fixes
 
+* let users unfollow someone even after the request was accepted ([983618a](https://adl.github.com/adl-developer/kinkane-backend/commit/983618a64b37361762c4b181804485c7cd75165f))
 * stop the recommendation fallback from failing on a retired Gemini model ([d875c53](https://adl.github.com/adl-developer/kinkane-backend/commit/d875c5301d402384976550d0c61088144226f6f9))
 
 

@@ -356,6 +356,31 @@ export const recommendationsService = {
   },
 
   /**
+   * Fetches an authenticated user's stored preferences exactly as saved by
+   * onboarding (migrateGuestSession) or the most recent `/refresh` call.
+   * Read-only — does not touch the embedding or run the recommendation
+   * pipeline, unlike `refresh`.
+   */
+  async getPreferences(userId: number): Promise<Omit<RecommendationInput, 'displayName'>> {
+    const [row] = await db
+      .select({
+        feelings: userPreferences.feelings,
+        genres: userPreferences.genres,
+        dislikes: userPreferences.dislikes,
+        bookIds: userPreferences.bookIds,
+      })
+      .from(userPreferences)
+      .where(eq(userPreferences.userId, userId))
+      .limit(1);
+
+    if (!row) {
+      throw Object.assign(new Error('Preferences not found'), { statusCode: 404 });
+    }
+
+    return row;
+  },
+
+  /**
    * Updates a user's stored preferences/embedding from the full quiz payload.
    * By default this is a lightweight save — no recommendation list is
    * computed or returned, since that's an expensive Gemini-backed pipeline

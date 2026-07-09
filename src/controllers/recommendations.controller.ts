@@ -109,6 +109,22 @@ export const recommendationsController = {
     }
   },
 
+  async getPreferences(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const preferences = await recommendationsService.getPreferences(req.user.id);
+      res.status(200).json({ preferences });
+    } catch (err: unknown) {
+      const e = err as Error & { statusCode?: number };
+      const status = e.statusCode ?? 500;
+      if (status >= 500) {
+        logger.error('Unexpected error fetching user preferences', { error: e.message });
+        res.status(500).json({ error: 'An unexpected error occurred' });
+      } else {
+        res.status(status).json({ error: e.message });
+      }
+    }
+  },
+
   async refresh(req: Request, res: Response): Promise<void> {
     const parsedBody = refreshSchema.safeParse(req.body);
     if (!parsedBody.success) {

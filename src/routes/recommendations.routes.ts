@@ -44,6 +44,23 @@ const router = Router();
 router.post('/', recommendationsLimiter, recommendationsController.getRecommendations);
 
 /**
+ * GET /api/v1/recommendations/preferences
+ *
+ * Returns the authenticated user's stored reading preferences, as last saved
+ * by onboarding or a previous PATCH /refresh call. Read-only — does not
+ * touch the embedding or run the recommendation pipeline.
+ *
+ * Note: the data model currently has no "region" preference — only
+ * feelings (mood), genres, dislikes (avoid), and bookIds are stored.
+ *
+ * Returns 200: { preferences: { feelings, genres, dislikes, bookIds } }
+ * Errors: 401 unauthenticated | 404 no preferences saved yet (e.g. never completed onboarding)
+ */
+router.get('/preferences', requireAuth, (req: Request, res: Response) =>
+  recommendationsController.getPreferences(req as AuthenticatedRequest, res),
+);
+
+/**
  * PATCH /api/v1/recommendations/refresh?includeRecommendations=true
  *
  * Updates an authenticated user's stored preferences from the full quiz
