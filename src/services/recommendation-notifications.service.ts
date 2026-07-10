@@ -10,6 +10,7 @@ import {
   recommendationEmailLog,
 } from '../db/schema';
 import { enqueueEmail } from '../lib/email-queue';
+import { enqueuePush } from '../lib/push-queue';
 import { config } from '../config';
 import { logger } from '../lib/logger';
 
@@ -105,6 +106,12 @@ export async function sendRecommendationEmail(
       url: `${config.appUrl}/books/${pick.bookId}`,
     },
   });
+
+  enqueuePush('new-recommendation', {
+    userId,
+    bookId: pick.bookId,
+    bookTitle: pick.title,
+  }).catch((err) => logger.error('Failed to enqueue recommendation push', { err, userId }));
 
   const now = new Date();
 

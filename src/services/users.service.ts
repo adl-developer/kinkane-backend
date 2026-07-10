@@ -2,6 +2,7 @@ import { eq, and, sql, asc, desc } from 'drizzle-orm';
 import { db } from '../db';
 import { users, posts, followRequests, userBooks, books } from '../db/schema';
 import { enqueueEmail } from '../lib/email-queue';
+import { enqueuePush } from '../lib/push-queue';
 import { notificationPreferencesService } from './notification-preferences.service';
 import { logger } from '../lib/logger';
 
@@ -304,6 +305,11 @@ export const usersService = {
         receiverName: target.name,
         senderName: sender.name,
       }).catch((err) => logger.error('Failed to enqueue follow-request email', { err }));
+      enqueuePush('friend-request-sent', {
+        userId: receiverId,
+        senderId,
+        senderName: sender.name,
+      }).catch((err) => logger.error('Failed to enqueue follow-request push', { err }));
     }).catch((err) => logger.error('Failed to check follow-request notification preference', { err }));
   },
 
@@ -358,6 +364,11 @@ export const usersService = {
           senderName: sender.name,
           accepterName: receiver.name,
         }).catch((err) => logger.error('Failed to enqueue follow-accepted email', { err }));
+        enqueuePush('friend-request-accepted', {
+          userId: existing.senderId,
+          accepterId: receiverId,
+          accepterName: receiver.name,
+        }).catch((err) => logger.error('Failed to enqueue follow-accepted push', { err }));
       }).catch((err) => logger.error('Failed to check follow-accepted notification preference', { err }));
     } else {
       logger.warn('Skipped follow-accepted email — user(s) not found after accept', {
