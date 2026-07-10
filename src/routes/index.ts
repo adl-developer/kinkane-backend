@@ -14,6 +14,7 @@ import usersRoutes from './users.routes';
 import exploreRoutes from './explore.routes';
 import userSubscriptionRoutes from './user-subscription.routes';
 import notificationPreferencesRoutes from './notification-preferences.routes';
+import deviceTokensRoutes from './device-tokens.routes';
 
 const router = Router();
 
@@ -39,6 +40,7 @@ v1.use('/users', usersRoutes);
 v1.use('/explore', exploreRoutes);
 v1.use('/user/subscription', userSubscriptionRoutes);
 v1.use('/user/notification-preferences', notificationPreferencesRoutes);
+v1.use('/user/device-tokens', deviceTokensRoutes);
 
 router.use('/v1', v1);
 

@@ -5,6 +5,7 @@
 
 ### Features
 
+* show a reader's shelf status on the book detail page ([62d0f7a](https://adl.github.com/adl-developer/kinkane-backend/commit/62d0f7a7789bd7743b4d4af4de0ee22a23ed0f68))
 * let users fetch their saved reading preferences ([2891f4a](https://adl.github.com/adl-developer/kinkane-backend/commit/2891f4ae1c88b330c3f68e2a5b3971d89565f66d))
 
 

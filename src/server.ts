@@ -6,7 +6,9 @@ import { startGuestCleanupCron, stopGuestCleanupCron } from './jobs/guest-cleanu
 import { startWeeklyDigestCron, stopWeeklyDigestCron } from './jobs/weekly-digest.cron';
 import { startRecommendationCron, stopRecommendationCron } from './jobs/recommendation.cron';
 import { startEmailWorker, stopEmailWorker } from './workers/email.worker';
+import { startPushWorker, stopPushWorker } from './workers/push.worker';
 import { emailQueue, bullConnection } from './lib/email-queue';
+import { pushQueue } from './lib/push-queue';
 
 async function main(): Promise<void> {
   await connectRedis();
@@ -15,6 +17,7 @@ async function main(): Promise<void> {
   const weeklyDigestTask = startWeeklyDigestCron();
   const recommendationCronTask = startRecommendationCron();
   const emailWorker = startEmailWorker();
+  const pushWorker = startPushWorker();
 
   const server = app.listen(config.port, () => {
     logger.info('kinkane-server started', { port: config.port, env: config.nodeEnv });
@@ -32,6 +35,8 @@ async function main(): Promise<void> {
       logger.info('HTTP server closed');
       await stopEmailWorker(emailWorker); // waits for the active job to finish
       await emailQueue.close();
+      await stopPushWorker(pushWorker);
+      await pushQueue.close();
       await bullConnection.quit();
       await disconnectRedis();
       process.exit(0);

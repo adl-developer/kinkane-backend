@@ -6,6 +6,7 @@ import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
 import { ExpressAdapter } from '@bull-board/express';
 import { logger } from './lib/logger';
 import { emailQueue } from './lib/email-queue';
+import { pushQueue } from './lib/push-queue';
 import { config } from './config';
 import apiRoutes from './routes';
 
@@ -26,7 +27,7 @@ app.use(express.json({ limit: '50kb' }));
 app.use(express.urlencoded({ extended: false, limit: '50kb' }));
 
 // ── Bull Board ────────────────────────────────────────────────────────────────
-// Visual dashboard for monitoring email job queue — view pending, active,
+// Visual dashboard for monitoring email/push job queues — view pending, active,
 // completed and failed jobs at /admin/queues.
 // Protected by a static bearer token (ADMIN_TOKEN env var).
 function requireAdminToken(req: Request, res: Response, next: NextFunction): void {
@@ -40,7 +41,10 @@ function requireAdminToken(req: Request, res: Response, next: NextFunction): voi
 
 const bullBoardAdapter = new ExpressAdapter();
 bullBoardAdapter.setBasePath('/admin/queues');
-createBullBoard({ queues: [new BullMQAdapter(emailQueue)], serverAdapter: bullBoardAdapter });
+createBullBoard({
+  queues: [new BullMQAdapter(emailQueue), new BullMQAdapter(pushQueue)],
+  serverAdapter: bullBoardAdapter,
+});
 app.use('/admin/queues', requireAdminToken, bullBoardAdapter.getRouter());
 
 app.use('/api', apiRoutes);
