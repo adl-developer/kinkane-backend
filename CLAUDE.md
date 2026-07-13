@@ -32,3 +32,24 @@ Concretely:
 
 When in doubt, write the message as if it's the only thing the reader will
 ever see about this change — because in `CHANGELOG.md`, it is.
+
+## Detailed write-ups in changelog/
+
+`CHANGELOG.md` stays a terse, one-line-per-commit running history — don't
+expand that. For anything more than a trivial change (new endpoint, schema
+change, behavior change worth explaining), also add a detailed write-up as
+its own file in `changelog/`, named `<date>-<slug>.md` (e.g.
+`changelog/2026-07-13-report-user.md`), matching the commit's date.
+
+`scripts/generate-changelog.mjs` auto-links a `CHANGELOG.md` entry to a
+matching `changelog/*.md` file with the same date prefix — no manual wiring
+needed, and no need to edit `CHANGELOG.md` by hand (it's regenerated on
+every commit and any hand edit would be overwritten). If two features land
+on the same date, name the slugs so they share words with their commit
+descriptions — the matcher scores by word overlap to disambiguate.
+
+Each write-up should cover, in plain enough language for someone who wasn't
+in the room: what changed, why, the data/API shape if relevant, the
+non-obvious decisions and why they were made, what was explicitly left out
+of scope, and how it was verified. See `changelog/2026-07-13-report-user.md`
+for the reference shape.
