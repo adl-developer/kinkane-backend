@@ -7,6 +7,10 @@
 
 * send push notifications for likes, comments, follows, and recommendations ([f92a75f](https://adl.github.com/adl-developer/kinkane-backend/commit/f92a75f30ac8c5a7088e67729ca8ca89ae6904ab))
 
+### Bug Fixes
+
+* prevent duplicate recommendation emails and reduce unnecessary database queries on likes and comments ([ebabf60](https://adl.github.com/adl-developer/kinkane-backend/commit/ebabf60090f40fc9e5a78794b6df0be4c267fa70))
+
 
 ## 2026-07-09
 

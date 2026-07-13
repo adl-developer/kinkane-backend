@@ -12,3 +12,4 @@ export * from './community';
 export * from './notification-preferences';
 export * from './recommendation-email-log';
 export * from './device-tokens';
+export * from './reports';
