@@ -1,11 +1,22 @@
 # Changelog
 
 
+## 2026-07-13
+
+### Features
+
+* let users report other users ([b12544f](https://adl.github.com/adl-developer/kinkane-backend/commit/b12544f93a793142a3c63cd0bd7537e1ac560419)) — [details](changelog/2026-07-13-report-user.md)
+
+
 ## 2026-07-10
 
 ### Features
 
 * send push notifications for likes, comments, follows, and recommendations ([f92a75f](https://adl.github.com/adl-developer/kinkane-backend/commit/f92a75f30ac8c5a7088e67729ca8ca89ae6904ab))
+
+### Bug Fixes
+
+* prevent duplicate recommendation emails and reduce unnecessary database queries on likes and comments ([ebabf60](https://adl.github.com/adl-developer/kinkane-backend/commit/ebabf60090f40fc9e5a78794b6df0be4c267fa70))
 
 
 ## 2026-07-09
