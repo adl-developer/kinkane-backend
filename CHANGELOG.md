@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-07-13
+
+### Features
+
+* let users report other users ([b12544f](https://adl.github.com/adl-developer/kinkane-backend/commit/b12544f93a793142a3c63cd0bd7537e1ac560419))
+
+
 ## 2026-07-10
 
 ### Features
