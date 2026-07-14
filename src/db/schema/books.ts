@@ -1,8 +1,11 @@
 /**
- * Read-only schema definitions for book-related tables.
- * These tables are owned and migrated by onix_ingester.
- * This file exists only so the server can query them via Drizzle.
- * Never add migrations here.
+ * Book-related tables — owned by the server (migrations run here).
+ * The onix_ingester service reads/writes these tables but does NOT migrate
+ * them. (This comment previously said the opposite — that was stale
+ * documentation left over from before migration ownership moved to the
+ * server in May 2026; see ingestion.ts, render.yaml's db:init
+ * preDeployCommand, and onix_ingester's own removed drizzle.config.ts for
+ * the actual convention.)
  */
 import {
   pgTable,
