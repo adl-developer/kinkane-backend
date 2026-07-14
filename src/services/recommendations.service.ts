@@ -3,6 +3,7 @@ import { eq, sql, and, inArray, gt } from 'drizzle-orm';
 import { db } from '../db';
 import { books, bookContributors, bookGenres, genres, userPreferences, users } from '../db/schema';
 import { recommendationCache, type RecommendationItem } from '../db/schema/recommendations';
+import { dedupeByTitle } from '../lib/dedupe';
 import { generateEmbedding, generateExplanations, type BookContext } from '../lib/gemini';
 import { guestService } from './guest.service';
 import { logger } from '../lib/logger';
@@ -250,7 +251,7 @@ export const recommendationsService = {
       .orderBy(sql`${books.embedding} <=> ${vectorLiteral}::vector`)
       .limit(FETCH_POOL);
 
-    const candidateRows = poolRows.slice(0, TARGET_RESULTS);
+    const candidateRows = dedupeByTitle(poolRows).slice(0, TARGET_RESULTS);
 
     if (candidateRows.length === 0) {
       // Cache the empty result so identical preferences don't re-run the vector search

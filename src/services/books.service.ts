@@ -17,6 +17,7 @@ import {
   type BookSubject,
   type BookPrice,
 } from '../db/schema';
+import { dedupeByTitle } from '../lib/dedupe';
 import { redis } from '../lib/redis';
 import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-excerpts.service';
 
@@ -27,6 +28,11 @@ const PERSONALIZED_TTL   = 60 * 60;    // 1 hour
 const PERSONALIZED_SIMILARITY_THRESHOLD = 0.5;
 const TRENDING_WINDOW_DAYS = 30;
 const TRENDING_INTERACTION_TYPES = ['view', 'wishlist', 'chosen_from_recommendation'] as const;
+// Feeds (trending/personalized/similar) over-fetch a candidate pool larger than the
+// requested `limit` so that deduping same-titled editions (see dedupeByTitle) still
+// leaves enough distinct titles to fill the requested count.
+const FEED_POOL_MULTIPLIER = 3;
+const FEED_POOL_MAX = 100;
 
 export interface ListBooksOptions {
   q?: string;
@@ -102,8 +108,10 @@ export interface AuthorSuggestion {
 export interface TrendingBookItem {
   id: number;
   title: string;
+  subtitle: string | null;
   coverUrl: string | null;
   isbn13: string | null;
+  productForm: string | null;
   publicationDate: string | null;
   contributors: Pick<BookContributor, 'role' | 'personName' | 'sequenceNumber'>[];
   genres: Pick<Genre, 'name' | 'slug'>[];
@@ -551,6 +559,8 @@ export const booksService = {
     const since = new Date();
     since.setDate(since.getDate() - TRENDING_WINDOW_DAYS);
 
+    const poolSize = Math.min(limit * FEED_POOL_MULTIPLIER, FEED_POOL_MAX);
+
     // Aggregate interaction signals over the last 30 days into a ranked list of book IDs
     const scored = await db
       .select({
@@ -566,12 +576,12 @@ export const booksService = {
       )
       .groupBy(userInteractions.bookId)
       .orderBy(sql`SUM(${userInteractions.weight}) DESC`)
-      .limit(limit);
+      .limit(poolSize);
 
     let bookIds = scored.map((r) => r.bookId);
 
-    // Fallback: top up with recently published books if interactions haven't filled the list
-    if (bookIds.length < limit) {
+    // Fallback: top up the pool with recently published books if interactions haven't filled it
+    if (bookIds.length < poolSize) {
       const exclude = bookIds.length > 0 ? bookIds : [-1];
       const fallback = await db
         .select({ id: books.id })
@@ -583,7 +593,7 @@ export const booksService = {
           ),
         )
         .orderBy(desc(books.publicationDate))
-        .limit(limit - bookIds.length);
+        .limit(poolSize - bookIds.length);
 
       bookIds = [...bookIds, ...fallback.map((r) => r.id)];
     }
@@ -598,8 +608,10 @@ export const booksService = {
         .select({
           id: books.id,
           title: books.title,
+          subtitle: books.subtitle,
           coverUrl: books.coverUrl,
           isbn13: books.isbn13,
+          productForm: books.productForm,
           publicationDate: books.publicationDate,
         })
         .from(books)
@@ -634,7 +646,8 @@ export const booksService = {
     for (const g of genreRows) bookMap.get(g.bookId)?.genres.push({ name: g.name, slug: g.slug });
 
     // Preserve the score-ordered sequence from bookIds
-    const results = bookIds.map((id) => bookMap.get(id)).filter((b): b is TrendingBookItem => b !== undefined);
+    const ordered = bookIds.map((id) => bookMap.get(id)).filter((b): b is TrendingBookItem => b !== undefined);
+    const results = dedupeByTitle(ordered).slice(0, limit);
 
     await redis.set(cacheKey, JSON.stringify(results), 'EX', TRENDING_TTL);
     return results;
@@ -669,18 +682,22 @@ export const booksService = {
       shelfIds.length > 0 ? notInArray(books.id, shelfIds) : undefined,
     );
 
+    const poolSize = Math.min(limit * FEED_POOL_MULTIPLIER, FEED_POOL_MAX);
+
     const rows = await db
       .select({
         id: books.id,
         title: books.title,
+        subtitle: books.subtitle,
         coverUrl: books.coverUrl,
         isbn13: books.isbn13,
+        productForm: books.productForm,
         publicationDate: books.publicationDate,
       })
       .from(books)
       .where(whereClause)
       .orderBy(sql`${books.embedding} <=> ${vectorLiteral}::vector`)
-      .limit(limit);
+      .limit(poolSize);
 
     if (rows.length === 0) {
       await redis.set(cacheKey, '[]', 'EX', PERSONALIZED_TTL);
@@ -716,7 +733,8 @@ export const booksService = {
     for (const g of genreRows) bookMap.get(g.bookId)?.genres.push({ name: g.name, slug: g.slug });
 
     // Preserve cosine similarity order from rows
-    const results = rows.map((r) => bookMap.get(r.id)).filter((b): b is TrendingBookItem => b !== undefined);
+    const ordered = rows.map((r) => bookMap.get(r.id)).filter((b): b is TrendingBookItem => b !== undefined);
+    const results = dedupeByTitle(ordered).slice(0, limit);
 
     await redis.set(cacheKey, JSON.stringify(results), 'EX', PERSONALIZED_TTL);
     return results;
@@ -738,12 +756,16 @@ export const booksService = {
 
     const vectorLiteral = `[${target.embedding.join(',')}]`;
 
+    const poolSize = Math.min(limit * FEED_POOL_MULTIPLIER, FEED_POOL_MAX);
+
     const rows = await db
       .select({
         id: books.id,
         title: books.title,
+        subtitle: books.subtitle,
         coverUrl: books.coverUrl,
         isbn13: books.isbn13,
+        productForm: books.productForm,
         publicationDate: books.publicationDate,
       })
       .from(books)
@@ -754,7 +776,7 @@ export const booksService = {
         ),
       )
       .orderBy(sql`${books.embedding} <=> ${vectorLiteral}::vector`)
-      .limit(limit);
+      .limit(poolSize);
 
     if (rows.length === 0) {
       await redis.set(cacheKey, '[]', 'EX', PERSONALIZED_TTL);
@@ -790,7 +812,8 @@ export const booksService = {
     for (const g of genreRows) bookMap.get(g.bookId)?.genres.push({ name: g.name, slug: g.slug });
 
     // Preserve cosine similarity order from rows
-    const results = rows.map((r) => bookMap.get(r.id)).filter((b): b is TrendingBookItem => b !== undefined);
+    const ordered = rows.map((r) => bookMap.get(r.id)).filter((b): b is TrendingBookItem => b !== undefined);
+    const results = dedupeByTitle(ordered).slice(0, limit);
 
     await redis.set(cacheKey, JSON.stringify(results), 'EX', PERSONALIZED_TTL);
     return results;
