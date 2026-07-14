@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-07-14
+
+### Features
+
+* add database tables for the Gardners wholesaler feed pipeline ([f42cc51](https://adl.github.com/adl-developer/kinkane-backend/commit/f42cc51aeeb13e728911e3e7a2da0409f9869b7f)) — [details](changelog/2026-07-14-gardners-feed-tables.md)
+
+
 ## 2026-07-13
 
 ### Features

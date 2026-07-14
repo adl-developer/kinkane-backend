@@ -1,7 +1,7 @@
 # Add database tables for the Gardners Books wholesaler feed ingestion
 
 **Date:** 2026-07-14
-**Commit:** _pending — added in a follow-up commit once the hash is known_
+**Commit:** [f42cc51](https://adl.github.com/adl-developer/kinkane-backend/commit/f42cc51)
 
 ## What changed
 
