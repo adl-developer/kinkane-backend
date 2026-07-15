@@ -80,6 +80,11 @@ export const books = pgTable(
     embeddedAt: timestamp('embedded_at', { withTimezone: true }),
     coverUrl: varchar('cover_url', { length: 500 }),
     coverFetchedAt: timestamp('cover_fetched_at', { withTimezone: true }),
+    // Set only by Gardners' cover full-catalogue probe (gardners-cover-sync.service.ts
+    // in onix_ingester), independent of coverFetchedAt (which the Google Books
+    // fallback owns) — lets Google Books act as a true last resort: it only
+    // considers a book once Gardners has already checked and found nothing.
+    gardnersCoverCheckedAt: timestamp('gardners_cover_checked_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },

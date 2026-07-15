@@ -7,6 +7,10 @@
 
 * add database tables for the Gardners wholesaler feed pipeline ([f42cc51](https://adl.github.com/adl-developer/kinkane-backend/commit/f42cc51aeeb13e728911e3e7a2da0409f9869b7f)) — [details](changelog/2026-07-14-gardners-feed-tables.md)
 
+### Bug Fixes
+
+* stop showing duplicate book titles in recommendations and feeds ([9ffec59](https://adl.github.com/adl-developer/kinkane-backend/commit/9ffec595a48753e665bb0ac8860974203112d1c0)) — [details](changelog/2026-07-14-dedupe-book-titles.md)
+
 
 ## 2026-07-13
 
