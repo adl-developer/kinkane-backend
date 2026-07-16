@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-07-16
+
+### Features
+
+* add is_removed/removed_at columns so withdrawn books aren't deleted ([7b1229b](https://adl.github.com/adl-developer/kinkane-backend/commit/7b1229bc1d15423f72ace269f22c4433e4645461)) — [details](changelog/2026-07-16-books-soft-delete.md)
+
+
 ## 2026-07-15
 
 ### Features
