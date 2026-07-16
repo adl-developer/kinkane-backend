@@ -1,0 +1,1 @@
+ALTER TABLE "books" ADD COLUMN "gardners_cover_checked_at" timestamp with time zone;

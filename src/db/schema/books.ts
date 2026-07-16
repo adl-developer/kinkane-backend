@@ -80,6 +80,20 @@ export const books = pgTable(
     embeddedAt: timestamp('embedded_at', { withTimezone: true }),
     coverUrl: varchar('cover_url', { length: 500 }),
     coverFetchedAt: timestamp('cover_fetched_at', { withTimezone: true }),
+    // Set only by Gardners' cover full-catalogue probe (gardners-cover-sync.service.ts
+    // in onix_ingester), independent of coverFetchedAt (which the Google Books
+    // fallback owns) — lets Google Books act as a true last resort: it only
+    // considers a book once Gardners has already checked and found nothing.
+    gardnersCoverCheckedAt: timestamp('gardners_cover_checked_at', { withTimezone: true }),
+    // Set when Gardners sends an ONIX "delete" notification (notificationType
+    // '05') for this recordReference — a title withdrawn from their
+    // catalogue. The ingestion pipeline used to hard-delete the row for
+    // this, which cascaded to a user's posts/reviews, reading-list entries,
+    // and interaction history for that book; this flag lets those survive.
+    // Cleared automatically if a normal (non-delete) notification for the
+    // same recordReference arrives later (e.g. the title is reissued).
+    isRemoved: boolean('is_removed').notNull().default(false),
+    removedAt: timestamp('removed_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
@@ -88,6 +102,7 @@ export const books = pgTable(
     titleIdx: index('idx_books_title').on(t.title),
     publisherIdx: index('idx_books_publisher').on(t.publisherName),
     availabilityIdx: index('idx_books_availability').on(t.availabilityCode),
+    isRemovedIdx: index('idx_books_is_removed').on(t.isRemoved),
   }),
 );
 

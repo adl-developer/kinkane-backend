@@ -1,11 +1,29 @@
 # Changelog
 
 
+## 2026-07-16
+
+### Features
+
+* add is_removed/removed_at columns so withdrawn books aren't deleted ([7b1229b](https://adl.github.com/adl-developer/kinkane-backend/commit/7b1229bc1d15423f72ace269f22c4433e4645461)) — [details](changelog/2026-07-16-books-soft-delete.md)
+
+
+## 2026-07-15
+
+### Features
+
+* make Google Books cover fallback a true last resort ([5c829d4](https://adl.github.com/adl-developer/kinkane-backend/commit/5c829d44e2efbfcdd3ab593b2e68dceffaf6930f)) — [details](changelog/2026-07-15-gardners-cover-checked-column.md)
+
+
 ## 2026-07-14
 
 ### Features
 
 * add database tables for the Gardners wholesaler feed pipeline ([f42cc51](https://adl.github.com/adl-developer/kinkane-backend/commit/f42cc51aeeb13e728911e3e7a2da0409f9869b7f)) — [details](changelog/2026-07-14-gardners-feed-tables.md)
+
+### Bug Fixes
+
+* stop showing duplicate book titles in recommendations and feeds ([9ffec59](https://adl.github.com/adl-developer/kinkane-backend/commit/9ffec595a48753e665bb0ac8860974203112d1c0)) — [details](changelog/2026-07-14-dedupe-book-titles.md)
 
 
 ## 2026-07-13
