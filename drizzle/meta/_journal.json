@@ -134,6 +134,13 @@
       "when": 1784149715714,
       "tag": "0018_supreme_pixie",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1784187536923,
+      "tag": "0019_wakeful_bushwacker",
+      "breakpoints": true
     }
   ]
 }

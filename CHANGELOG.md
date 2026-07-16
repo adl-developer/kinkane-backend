@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-07-15
+
+### Features
+
+* make Google Books cover fallback a true last resort ([5c829d4](https://adl.github.com/adl-developer/kinkane-backend/commit/5c829d44e2efbfcdd3ab593b2e68dceffaf6930f)) — [details](changelog/2026-07-15-gardners-cover-checked-column.md)
+
+
 ## 2026-07-14
 
 ### Features
