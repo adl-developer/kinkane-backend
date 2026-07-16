@@ -10,7 +10,6 @@ import {
   varchar,
   text,
   timestamp,
-  jsonb,
   index,
 } from 'drizzle-orm/pg-core';
 
@@ -53,7 +52,8 @@ export const ingestionJobs = pgTable(
   }),
 );
 
-// One record per 500-book chunk within a job
+// One record per chunk within a job — lightweight metadata only.
+// The parsed book payload is stored in R2 at dataKey and deleted after processing.
 export const ingestionChunks = pgTable(
   'ingestion_chunks',
   {
@@ -66,9 +66,9 @@ export const ingestionChunks = pgTable(
     bookCount: integer('book_count'),
     processedBooks: integer('processed_books').default(0),
     bullJobId: varchar('bull_job_id', { length: 200 }),
-    // Parsed book data stored here temporarily; cleared after chunk is processed.
-    // Keeps large payloads out of Redis.
-    data: jsonb('data'),
+    // R2 key for the JSON file holding the parsed OnixProduct[] for this chunk.
+    // Null after the chunk has been processed and the R2 file deleted.
+    dataKey: varchar('data_key', { length: 500 }),
     errorMessage: text('error_message'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
