@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-07-18
+
+### Bug Fixes
+
+* detect SSL requirement from the connection string, not NODE_ENV ([62148fe](https://adl.github.com/adl-developer/kinkane-backend/commit/62148fe10aeaeab305d2a1f1226190345fe17370))
+
+
 ## 2026-07-16
 
 ### Features
