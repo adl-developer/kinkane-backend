@@ -71,16 +71,18 @@ export const passwordResetLimiter = rateLimit({
   store: new RedisStore({ prefix: 'rl:password-reset:', sendCommand }),
 });
 
-// Verify-email link: 20 per hour per IP — the token itself is a 40-byte random
-// value (unguessable), so this limiter only needs to absorb shared-IP traffic
-// (NAT/CGNAT) and accidental double-clicks, not slow down a brute-force attempt.
-export const verifyEmailLinkLimiter = rateLimit({
+// Verify-email OTP: 10 attempts per hour per user — authenticated route, so
+// key by user ID. A 6-digit OTP is a 1e6-value space, materially guessable
+// with enough attempts, so (unlike the old unguessable-token design) this
+// limiter is the actual brute-force guard, not just shared-IP absorption.
+export const verifyEmailOtpLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
-  max: 20,
+  max: 10,
   standardHeaders: true,
   legacyHeaders: false,
   handler: json429,
-  store: new RedisStore({ prefix: 'rl:email-verify-link:', sendCommand }),
+  keyGenerator: (req: Request) => String((req as AuthenticatedRequest).user.id),
+  store: new RedisStore({ prefix: 'rl:email-verify-otp:', sendCommand }),
 });
 
 // Resend verification email: 5 per hour per user — authenticated route, so key

@@ -1,0 +1,2 @@
+ALTER TABLE "email_verification_tokens" RENAME COLUMN "token_hash" TO "otp_hash";--> statement-breakpoint
+ALTER TABLE "email_verification_tokens" DROP CONSTRAINT "email_verification_tokens_token_hash_unique";

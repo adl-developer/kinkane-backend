@@ -59,7 +59,7 @@ const forgotPasswordSchema = z.object({
 });
 
 const verifyEmailSchema = z.object({
-  token: z.string().min(1, 'Verification token is required'),
+  otp: z.string().length(6, 'OTP must be exactly 6 digits').regex(/^\d{6}$/, 'OTP must be numeric'),
 });
 
 const resetPasswordSchema = z.object({
@@ -220,8 +220,10 @@ export const authController = {
       return;
     }
 
+    const { id } = (req as AuthenticatedRequest).user;
+
     try {
-      await authService.verifyEmail(parsed.data.token);
+      await authService.verifyEmail(id, parsed.data.otp);
       res.status(200).json({ message: 'Email verified successfully' });
     } catch (err: unknown) {
       const e = err as Error & { statusCode?: number };
