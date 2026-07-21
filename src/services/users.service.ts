@@ -1,6 +1,6 @@
 import { eq, and, sql, asc, desc } from 'drizzle-orm';
 import { db } from '../db';
-import { users, posts, followRequests, userBooks, books } from '../db/schema';
+import { users, posts, followRequests, userBooks, books, ShelfVisibility } from '../db/schema';
 import { enqueueEmail } from '../lib/email-queue';
 import { enqueuePush } from '../lib/push-queue';
 import { notificationPreferencesService } from './notification-preferences.service';
@@ -43,6 +43,7 @@ export interface UserProfile {
   followerCount?: number;
   followingCount?: number;
   postCount?: number;
+  shelfVisibility?: ShelfVisibility;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -93,7 +94,7 @@ export const usersService = {
     // Fetch user row and requester's follow status in parallel
     const [[userRow], [followRow]] = await Promise.all([
       db
-        .select({ id: users.id, name: users.name, photoUrl: users.photoUrl, createdAt: users.createdAt })
+        .select({ id: users.id, name: users.name, photoUrl: users.photoUrl, createdAt: users.createdAt, shelfVisibility: users.shelfVisibility })
         .from(users)
         .where(eq(users.id, targetId))
         .limit(1),
@@ -114,6 +115,7 @@ export const usersService = {
       photoUrl: userRow.photoUrl ?? null,
       yearJoined: new Date(userRow.createdAt).getFullYear(),
       followStatus,
+      shelfVisibility: userRow.shelfVisibility,
     };
 
     // Non-followers see only the base profile (name, photo, year joined, follow status)

@@ -5,6 +5,7 @@
 
 ### Bug Fixes
 
+* run db:migrate against a database missing required extensions ([1a99ecf](https://adl.github.com/adl-developer/kinkane-backend/commit/1a99ecff9af97f5d82b36031147b7dd3835961ba))
 * detect SSL requirement from the connection string, not NODE_ENV ([62148fe](https://adl.github.com/adl-developer/kinkane-backend/commit/62148fe10aeaeab305d2a1f1226190345fe17370))
 
 
