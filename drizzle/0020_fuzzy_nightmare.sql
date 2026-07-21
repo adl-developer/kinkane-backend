@@ -1,0 +1,1 @@
+ALTER TABLE "users" ALTER COLUMN "shelf_visibility" SET DEFAULT 'public';
