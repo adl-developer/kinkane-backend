@@ -39,7 +39,7 @@ export const users = pgTable(
     passwordHash: varchar('password_hash', { length: 500 }),
     photoUrl: varchar('photo_url', { length: 1000 }),
     emailVerified: boolean('email_verified').default(false).notNull(),
-    shelfVisibility: shelfVisibilityEnum('shelf_visibility').notNull().default('private'),
+    shelfVisibility: shelfVisibilityEnum('shelf_visibility').notNull().default('public'),
     readerType: readerTypeEnum('reader_type'),
     searchVector: tsvector('search_vector'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
