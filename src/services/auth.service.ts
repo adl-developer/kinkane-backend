@@ -205,7 +205,12 @@ const TRIAL_DAYS = 90; // 3 months
 
 // ── Email verification ──────────────────────────────────────────────────────────
 
-const EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const EMAIL_VERIFICATION_TTL_MS = 15 * 60 * 1000; // 15 minutes
+
+function generateOtp(): string {
+  // Cryptographically random 6-digit code, zero-padded
+  return String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
+}
 
 /**
  * Issues a fresh email-verification token for the user (replacing any
@@ -216,18 +221,21 @@ const EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 async function issueEmailVerification(userId: number, email: string, name: string): Promise<void> {
   await db.delete(emailVerificationTokens).where(eq(emailVerificationTokens.userId, userId));
 
-  const rawToken = crypto.randomBytes(40).toString('hex');
+  const otp = generateOtp();
   const expiresAt = new Date(Date.now() + EMAIL_VERIFICATION_TTL_MS);
 
   await db.insert(emailVerificationTokens).values({
     userId,
-    tokenHash: hashToken(rawToken),
+    otpHash: hashToken(otp),
     expiresAt,
   });
 
-  const verificationUrl = `${config.appUrl}/verify-email?token=${rawToken}`;
-
-  enqueueEmail('verify-email', { to: email, name, verificationUrl }).catch((err) => {
+  enqueueEmail('verify-email', {
+    to: email,
+    name,
+    otp,
+    expiryMinutes: EMAIL_VERIFICATION_TTL_MS / 60_000,
+  }).catch((err) => {
     logger.error('Failed to enqueue verification email', {
       userId,
       error: (err as Error).message,
@@ -448,31 +456,36 @@ export const authService = {
   },
 
   /**
-   * Validates the email-verification token and marks the user's email as verified.
-   * The token is single-use — deleted on success.
+   * Validates the 6-digit OTP for the authenticated user and marks their
+   * email as verified. Scoped to userId so the OTP alone (a 1e6-value space)
+   * is never sufficient to verify an arbitrary account. The OTP is
+   * single-use — deleted on success.
    */
-  async verifyEmail(rawToken: string): Promise<void> {
-    const tokenHash = hashToken(rawToken);
-
+  async verifyEmail(userId: number, otp: string): Promise<void> {
     const [stored] = await db
       .select({
         id: emailVerificationTokens.id,
-        userId: emailVerificationTokens.userId,
+        otpHash: emailVerificationTokens.otpHash,
         expiresAt: emailVerificationTokens.expiresAt,
       })
       .from(emailVerificationTokens)
-      .where(eq(emailVerificationTokens.tokenHash, tokenHash))
+      .where(
+        and(
+          eq(emailVerificationTokens.userId, userId),
+          gt(emailVerificationTokens.expiresAt, new Date()),
+        ),
+      )
       .limit(1);
 
-    if (!stored || stored.expiresAt < new Date()) {
-      throw Object.assign(new Error('Invalid or expired verification link'), { statusCode: 400 });
+    if (!stored || stored.otpHash !== hashToken(otp.trim())) {
+      throw Object.assign(new Error('Invalid or expired verification code'), { statusCode: 400 });
     }
 
     await db.transaction(async (tx) => {
       await tx
         .update(users)
         .set({ emailVerified: true, updatedAt: new Date() })
-        .where(eq(users.id, stored.userId));
+        .where(eq(users.id, userId));
       await tx
         .delete(emailVerificationTokens)
         .where(eq(emailVerificationTokens.id, stored.id));
@@ -481,8 +494,8 @@ export const authService = {
 
   /**
    * Resends the verification email for the authenticated user. No-op (but
-   * still 200) if the email is already verified — issues a fresh token and
-   * resets the 24-hour expiry otherwise.
+   * still 200) if the email is already verified — issues a fresh OTP and
+   * resets the 15-minute expiry otherwise.
    */
   async resendVerificationEmail(userId: number): Promise<void> {
     const [user] = await db

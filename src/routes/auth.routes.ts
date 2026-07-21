@@ -6,7 +6,7 @@ import {
   loginLimiter,
   refreshLimiter,
   passwordResetLimiter,
-  verifyEmailLinkLimiter,
+  verifyEmailOtpLimiter,
   resendVerificationEmailLimiter,
 } from '../middleware/rate-limit.middleware';
 
@@ -111,20 +111,23 @@ router.post('/reset-password', passwordResetLimiter, authController.resetPasswor
 /**
  * POST /api/v1/auth/verify-email
  *
- * Validates the email-verification token sent at signup and marks the
- * account's email as verified. The token expires after 24 hours and is single-use.
+ * Validates the 6-digit OTP sent at signup and marks the authenticated
+ * user's email as verified. The OTP expires after 15 minutes and is single-use.
+ * Requires a valid access token — the OTP is looked up scoped to the caller,
+ * never by value alone.
  *
- * Body: { token }
+ * Headers: Authorization: Bearer <accessToken>
+ * Body: { otp }
  * Returns 200: { message }
- * Errors: 400 invalid/expired token
+ * Errors: 400 invalid/expired code
  */
-router.post('/verify-email', verifyEmailLinkLimiter, authController.verifyEmail);
+router.post('/verify-email', requireAuth, verifyEmailOtpLimiter, authController.verifyEmail);
 
 /**
  * POST /api/v1/auth/resend-verification-email
  *
- * Issues a fresh verification link for the authenticated user and resets
- * the 24-hour expiry. No-op (still 200) if the email is already verified —
+ * Issues a fresh verification code for the authenticated user and resets
+ * the 15-minute expiry. No-op (still 200) if the email is already verified —
  * the response is identical either way so a client can't probe verification status.
  *
  * Returns 200: { message }

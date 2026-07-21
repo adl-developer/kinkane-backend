@@ -14,7 +14,7 @@ export const bullConnection = new IORedis(config.redis.url, {
 
 export interface EmailJobMap {
   'welcome':            { to: string; name: string };
-  'verify-email':       { to: string; name: string; verificationUrl: string };
+  'verify-email':       { to: string; name: string; otp: string; expiryMinutes?: number };
   'password-reset':     { to: string; name: string; resetUrl: string };
   'password-changed':   { to: string; name: string };
   'account-deleted':    { to: string; name: string };

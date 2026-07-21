@@ -258,7 +258,7 @@ server/
 │   │   ├── index.ts                 # Re-exports all email senders
 │   │   ├── transactional/
 │   │   │   ├── welcome.ts           # New user welcome
-│   │   │   ├── verify-email.ts      # Email verification link
+│   │   │   ├── verify-email.ts      # Email verification OTP
 │   │   │   ├── password-reset.ts    # Password reset link (forgot password flow)
 │   │   │   ├── password-changed.ts  # Security notice after password change
 │   │   │   └── account-deleted.ts   # Goodbye email after account deletion

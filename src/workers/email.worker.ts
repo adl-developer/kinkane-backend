@@ -32,8 +32,8 @@ async function processEmailJob(job: Job): Promise<void> {
       break;
     }
     case 'verify-email': {
-      const { to, name: userName, verificationUrl } = job.data as EmailJobMap['verify-email'];
-      await sendVerifyEmail(to, userName, verificationUrl);
+      const { to, name: userName, otp, expiryMinutes } = job.data as EmailJobMap['verify-email'];
+      await sendVerifyEmail(to, userName, otp, expiryMinutes);
       break;
     }
     case 'password-reset': {
