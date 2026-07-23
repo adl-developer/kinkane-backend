@@ -12,6 +12,7 @@
 
 ### Bug Fixes
 
+* stop emailing users when someone likes or comments on their post ([3047387](https://adl.github.com/adl-developer/kinkane-backend/commit/30473872844f77b60f7cdd6265f5830ae22cbf9b)) — [details](changelog/2026-07-23-stop-like-comment-emails.md)
 * nest plan status fields back under subscription in account info response ([3c712f4](https://adl.github.com/adl-developer/kinkane-backend/commit/3c712f49c6719cead996559a5ea9875d0cfeb7a3)) — [details](changelog/2026-07-23-subscription-trial-audit-trail.md)
 
 

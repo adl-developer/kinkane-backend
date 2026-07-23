@@ -162,6 +162,13 @@
       "when": 1784830168458,
       "tag": "0022_shiny_gateway",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1784846539025,
+      "tag": "0023_absurd_toxin",
+      "breakpoints": true
     }
   ]
 }
