@@ -3,7 +3,6 @@ import { db } from '../db';
 import { posts, postLikes, comments, commentLikes, users, books, userBooks, bookContributors, followRequests, notifications } from '../db/schema';
 import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-excerpts.service';
 import { notificationPreferencesService } from './notification-preferences.service';
-import { enqueueEmail } from '../lib/email-queue';
 import { enqueuePush } from '../lib/push-queue';
 import { logger } from '../lib/logger';
 
@@ -114,22 +113,9 @@ async function notifyPostLike(
   const enabled = await notificationPreferencesService.isEnabled(recipientId, 'likes');
   if (!enabled) return;
 
-  const [recipient] = await db
-    .select({ email: users.email, name: users.name })
-    .from(users)
-    .where(eq(users.id, recipientId))
-    .limit(1);
-  if (!recipient) return;
-
   const bookAuthor = await getPrimaryAuthor(bookId);
 
   await Promise.all([
-    enqueueEmail('post-like', {
-      to: recipient.email,
-      name: recipient.name,
-      likerName,
-      bookTitle,
-    }),
     enqueuePush('post-like', {
       userId: recipientId,
       postId,
@@ -163,13 +149,6 @@ async function notifyPostComment(
   const enabled = await notificationPreferencesService.isEnabled(recipientId, 'comments');
   if (!enabled) return;
 
-  const [recipient] = await db
-    .select({ email: users.email, name: users.name })
-    .from(users)
-    .where(eq(users.id, recipientId))
-    .limit(1);
-  if (!recipient) return;
-
   const commentPreview =
     commentBody.length > COMMENT_PREVIEW_LENGTH
       ? `${commentBody.slice(0, COMMENT_PREVIEW_LENGTH)}…`
@@ -178,13 +157,6 @@ async function notifyPostComment(
   const bookAuthor = await getPrimaryAuthor(bookId);
 
   await Promise.all([
-    enqueueEmail('post-comment', {
-      to: recipient.email,
-      name: recipient.name,
-      commenterName,
-      bookTitle,
-      commentPreview,
-    }),
     enqueuePush('post-comment', {
       userId: recipientId,
       postId,
