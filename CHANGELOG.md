@@ -5,6 +5,7 @@
 
 ### Features
 
+* verify email with a 6-digit code instead of a link ([71e5392](https://adl.github.com/adl-developer/kinkane-backend/commit/71e539286452b24467a74edfc73f10e44a8bf2a8)) — [details](changelog/2026-07-21-email-verification-otp.md)
 * make new users' shelves public by default ([00b355f](https://adl.github.com/adl-developer/kinkane-backend/commit/00b355ff190507157c7a42a16114c2e5afbc44d0)) — [details](changelog/2026-07-21-shelf-visibility-default-public.md)
 
 

@@ -174,7 +174,7 @@ router.post('/change-password', requireAuth, authController.changePassword);
  * Returns 200: {
  *   user: {
  *     id, name, email, emailVerified, photoUrl,
- *     subscription: { tier, status, effectiveTier, trialEndsAt },
+ *     joinedYear, tier, status, trialDaysLeft, trialEndsAt,
  *     providers: string[]   // e.g. ['google.com', 'password']
  *   }
  * }
