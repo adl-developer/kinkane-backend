@@ -1,6 +1,6 @@
 import { eq, and, asc, desc, sql, inArray } from 'drizzle-orm';
 import { db } from '../db';
-import { posts, postLikes, comments, commentLikes, users, books, userBooks, bookContributors, followRequests } from '../db/schema';
+import { posts, postLikes, comments, commentLikes, users, books, userBooks, bookContributors, followRequests, notifications } from '../db/schema';
 import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-excerpts.service';
 import { notificationPreferencesService } from './notification-preferences.service';
 import { enqueueEmail } from '../lib/email-queue';
@@ -85,15 +85,31 @@ function assertPostVisible(post: { isPublic: boolean; userId: number }, requeste
   }
 }
 
+// Looks up the primary (A01) contributor for a book, matching the pattern in
+// recommendation-notifications.service.ts.
+async function getPrimaryAuthor(bookId: number): Promise<string | null> {
+  const [contributor] = await db
+    .select({ personName: bookContributors.personName })
+    .from(bookContributors)
+    .where(and(eq(bookContributors.bookId, bookId), eq(bookContributors.role, 'A01')))
+    .orderBy(bookContributors.sequenceNumber)
+    .limit(1);
+  return contributor?.personName ?? null;
+}
+
 // Notifies the post owner that someone liked their post. Never notifies on a
 // self-like (caller is expected to check `post.userId !== userId` first).
-// bookTitle and likerName are passed in from the caller to avoid extra DB fetches.
+// bookTitle, bookId, bookCoverUrl, likerName, and likerPhotoUrl are passed in
+// from the caller to avoid extra DB fetches.
 async function notifyPostLike(
   recipientId: number,
   likerId: number,
   postId: number,
+  bookId: number,
   bookTitle: string,
+  bookCoverUrl: string | null,
   likerName: string,
+  likerPhotoUrl: string | null,
 ): Promise<void> {
   const enabled = await notificationPreferencesService.isEnabled(recipientId, 'likes');
   if (!enabled) return;
@@ -104,6 +120,8 @@ async function notifyPostLike(
     .where(eq(users.id, recipientId))
     .limit(1);
   if (!recipient) return;
+
+  const bookAuthor = await getPrimaryAuthor(bookId);
 
   await Promise.all([
     enqueueEmail('post-like', {
@@ -118,17 +136,27 @@ async function notifyPostLike(
       likerName,
       bookTitle,
     }),
+    db.insert(notifications).values({
+      userId: recipientId,
+      type: 'post_like',
+      data: { postId, likerId, likerName, likerPhotoUrl, bookId, bookTitle, bookAuthor, bookCoverUrl },
+    }),
   ]);
 }
 
 // Notifies the post owner that someone commented on their post. Never notifies
 // on a self-comment (caller is expected to check `post.userId !== userId` first).
-// bookTitle and commenterName are passed in from the caller to avoid extra DB fetches.
+// bookTitle, bookId, bookCoverUrl, commenterName, and commenterPhotoUrl are
+// passed in from the caller to avoid extra DB fetches.
 async function notifyPostComment(
   recipientId: number,
+  commenterId: number,
   postId: number,
+  bookId: number,
   bookTitle: string,
+  bookCoverUrl: string | null,
   commenterName: string,
+  commenterPhotoUrl: string | null,
   commentId: number,
   commentBody: string,
 ): Promise<void> {
@@ -147,6 +175,8 @@ async function notifyPostComment(
       ? `${commentBody.slice(0, COMMENT_PREVIEW_LENGTH)}…`
       : commentBody;
 
+  const bookAuthor = await getPrimaryAuthor(bookId);
+
   await Promise.all([
     enqueueEmail('post-comment', {
       to: recipient.email,
@@ -162,6 +192,22 @@ async function notifyPostComment(
       commenterName,
       bookTitle,
       commentPreview,
+    }),
+    db.insert(notifications).values({
+      userId: recipientId,
+      type: 'post_comment',
+      data: {
+        postId,
+        commentId,
+        commenterId,
+        commenterName,
+        commenterPhotoUrl,
+        commentPreview,
+        bookId,
+        bookTitle,
+        bookAuthor,
+        bookCoverUrl,
+      },
     }),
   ]);
 }
@@ -452,13 +498,15 @@ export const communityService = {
         .select({
           isPublic: posts.isPublic,
           userId: posts.userId,
+          bookId: posts.bookId,
           bookTitle: books.title,
+          bookCoverUrl: books.coverUrl,
         })
         .from(posts)
         .innerJoin(books, eq(books.id, posts.bookId))
         .where(eq(posts.id, postId))
         .limit(1),
-      db.select({ name: users.name }).from(users).where(eq(users.id, userId)).limit(1),
+      db.select({ name: users.name, photoUrl: users.photoUrl }).from(users).where(eq(users.id, userId)).limit(1),
     ]);
 
     assertFound(post, 'Post');
@@ -473,9 +521,16 @@ export const communityService = {
     // Only notify on a genuinely new like — onConflictDoNothing no-ops on a
     // repeat like — and never notify the post owner about their own like.
     if (inserted && post.userId !== userId && actor) {
-      notifyPostLike(post.userId, userId, postId, post.bookTitle, actor.name).catch((err) =>
-        logger.error('Failed to dispatch post-like notification', { err, postId }),
-      );
+      notifyPostLike(
+        post.userId,
+        userId,
+        postId,
+        post.bookId,
+        post.bookTitle,
+        post.bookCoverUrl,
+        actor.name,
+        actor.photoUrl,
+      ).catch((err) => logger.error('Failed to dispatch post-like notification', { err, postId }));
     }
   },
 
@@ -502,13 +557,15 @@ export const communityService = {
         .select({
           isPublic: posts.isPublic,
           userId: posts.userId,
+          bookId: posts.bookId,
           bookTitle: books.title,
+          bookCoverUrl: books.coverUrl,
         })
         .from(posts)
         .innerJoin(books, eq(books.id, posts.bookId))
         .where(eq(posts.id, postId))
         .limit(1),
-      db.select({ name: users.name }).from(users).where(eq(users.id, userId)).limit(1),
+      db.select({ name: users.name, photoUrl: users.photoUrl }).from(users).where(eq(users.id, userId)).limit(1),
     ]);
 
     assertFound(post, 'Post');
@@ -521,9 +578,18 @@ export const communityService = {
 
     // Never notify the post owner about their own comment.
     if (post.userId !== userId && actor) {
-      notifyPostComment(post.userId, postId, post.bookTitle, actor.name, row.id, body).catch((err) =>
-        logger.error('Failed to dispatch post-comment notification', { err, postId }),
-      );
+      notifyPostComment(
+        post.userId,
+        userId,
+        postId,
+        post.bookId,
+        post.bookTitle,
+        post.bookCoverUrl,
+        actor.name,
+        actor.photoUrl,
+        row.id,
+        body,
+      ).catch((err) => logger.error('Failed to dispatch post-comment notification', { err, postId }));
     }
 
     return { id: row.id };
