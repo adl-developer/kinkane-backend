@@ -4,7 +4,6 @@ import jwt from 'jsonwebtoken';
 import { eq, and, gt, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { users, refreshTokens, userProviders, guestSessions, userPreferences, userInteractions, userBooks, userSubscriptions, passwordResetTokens, emailVerificationTokens, books, bookContributors, notificationPreferences } from '../db/schema';
-import { getEffectiveTier } from '../db/schema/subscriptions';
 import { config } from '../config';
 import { admin } from '../lib/firebase';
 import { logger } from '../lib/logger';
@@ -28,10 +27,11 @@ export interface AuthUser {
 
 export interface MeUser extends AuthUser {
   photoUrl: string | null;
+  joinedYear: number;
   subscription: {
     tier: 'free' | 'plus';
     status: 'active' | 'trialing' | 'cancelled';
-    effectiveTier: 'free' | 'plus';
+    trialDaysLeft: number | null;
     trialEndsAt: Date | null;
   };
   providers: string[];
@@ -607,6 +607,7 @@ export const authService = {
         email: users.email,
         emailVerified: users.emailVerified,
         photoUrl: users.photoUrl,
+        createdAt: users.createdAt,
       })
       .from(users)
       .where(eq(users.id, userId))
@@ -631,12 +632,21 @@ export const authService = {
       .from(userProviders)
       .where(eq(userProviders.userId, userId));
 
+    let trialDaysLeft: number | null = null;
+    if (sub.status === 'trialing' && sub.trialEndsAt) {
+      const msLeft = sub.trialEndsAt.getTime() - Date.now();
+      trialDaysLeft = Math.max(0, Math.ceil(msLeft / (1000 * 60 * 60 * 24)));
+    }
+
+    const { createdAt, ...userFields } = user;
+
     return {
-      ...user,
+      ...userFields,
+      joinedYear: createdAt.getFullYear(),
       subscription: {
         tier: sub.tier,
         status: sub.status,
-        effectiveTier: getEffectiveTier(sub),
+        trialDaysLeft,
         trialEndsAt: sub.trialEndsAt,
       },
       providers: providerRows.map((r) => r.provider),
