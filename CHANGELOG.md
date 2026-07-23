@@ -5,8 +5,12 @@
 
 ### Features
 
-* allow partial feelings/genres in recommendation requests and avoid repeat picks ([25458b4](https://adl.github.com/adl-developer/kinkane-backend/commit/25458b44f67e62ed0782fa4181838597dadfbdf8))
-* add profile details and trial status to the account info endpoint ([5459c80](https://adl.github.com/adl-developer/kinkane-backend/commit/5459c8080297ba74baaceabb454c74af190c5a13))
+* allow partial feelings/genres in recommendation requests and avoid repeat picks ([25458b4](https://adl.github.com/adl-developer/kinkane-backend/commit/25458b44f67e62ed0782fa4181838597dadfbdf8)) — [details](changelog/2026-07-23-dedupe-search-results.md)
+* add profile details and trial status to the account info endpoint ([5459c80](https://adl.github.com/adl-developer/kinkane-backend/commit/5459c8080297ba74baaceabb454c74af190c5a13)) — [details](changelog/2026-07-23-dedupe-search-results.md)
+
+### Bug Fixes
+
+* nest plan status fields back under subscription in account info response ([3c712f4](https://adl.github.com/adl-developer/kinkane-backend/commit/3c712f49c6719cead996559a5ea9875d0cfeb7a3)) — [details](changelog/2026-07-23-dedupe-search-results.md)
 
 
 ## 2026-07-21

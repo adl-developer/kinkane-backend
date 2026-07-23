@@ -17,7 +17,7 @@ import {
   type BookSubject,
   type BookPrice,
 } from '../db/schema';
-import { dedupeByTitle } from '../lib/dedupe';
+import { dedupeByTitle, dedupeByTitleAndSubtitle } from '../lib/dedupe';
 import { redis } from '../lib/redis';
 import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-excerpts.service';
 
@@ -361,7 +361,12 @@ export const booksService = {
     const where = type === 'author' ? buildAuthorBookSearchCondition(q) : buildSearchCondition(q);
     const orderBy = type === 'author' ? buildAuthorBookSearchOrderBy(q) : buildSearchOrderBy(q);
 
-    const rows = await db
+    // Over-fetch a candidate pool so deduping same title+subtitle editions
+    // (see dedupeByTitleAndSubtitle) still leaves enough distinct results to
+    // fill the requested limit.
+    const poolSize = Math.min(limit * FEED_POOL_MULTIPLIER, FEED_POOL_MAX);
+
+    const pool = await db
       .select({
         id: books.id,
         title: books.title,
@@ -373,7 +378,9 @@ export const booksService = {
       .from(books)
       .where(where)
       .orderBy(...orderBy)
-      .limit(limit);
+      .limit(poolSize);
+
+    const rows = dedupeByTitleAndSubtitle(pool).slice(0, limit);
 
     if (rows.length === 0) {
       await redis.set(cacheKey, '[]', 'EX', SUGGESTIONS_TTL);

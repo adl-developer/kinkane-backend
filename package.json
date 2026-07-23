@@ -11,7 +11,9 @@
     "db:migrate": "tsx src/db/install-extensions.ts && drizzle-kit migrate",
     "db:init": "npm run db:migrate && tsx src/db/setup.ts",
     "db:reset": "tsx src/db/reset.ts",
-    "changelog": "node scripts/generate-changelog.mjs"
+    "changelog": "node scripts/generate-changelog.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@bull-board/api": "^7.1.5",
@@ -46,6 +48,7 @@
     "conventional-changelog-cli": "^5.0.0",
     "drizzle-kit": "^0.27.2",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.10"
   }
 }
