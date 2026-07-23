@@ -28,10 +28,12 @@ export interface AuthUser {
 export interface MeUser extends AuthUser {
   photoUrl: string | null;
   joinedYear: number;
-  tier: 'free' | 'plus';
-  status: 'active' | 'trialing' | 'cancelled';
-  trialDaysLeft: number | null;
-  trialEndsAt: Date | null;
+  subscription: {
+    tier: 'free' | 'plus';
+    status: 'active' | 'trialing' | 'cancelled';
+    trialDaysLeft: number | null;
+    trialEndsAt: Date | null;
+  };
   providers: string[];
 }
 
@@ -641,10 +643,12 @@ export const authService = {
     return {
       ...userFields,
       joinedYear: createdAt.getFullYear(),
-      tier: sub.tier,
-      status: sub.status,
-      trialDaysLeft,
-      trialEndsAt: sub.trialEndsAt,
+      subscription: {
+        tier: sub.tier,
+        status: sub.status,
+        trialDaysLeft,
+        trialEndsAt: sub.trialEndsAt,
+      },
       providers: providerRows.map((r) => r.provider),
     };
   },

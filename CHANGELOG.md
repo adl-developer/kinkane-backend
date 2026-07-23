@@ -5,6 +5,7 @@
 
 ### Features
 
+* allow partial feelings/genres in recommendation requests and avoid repeat picks ([25458b4](https://adl.github.com/adl-developer/kinkane-backend/commit/25458b44f67e62ed0782fa4181838597dadfbdf8))
 * add profile details and trial status to the account info endpoint ([5459c80](https://adl.github.com/adl-developer/kinkane-backend/commit/5459c8080297ba74baaceabb454c74af190c5a13))
 
 
