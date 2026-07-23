@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-07-23
+
+### Features
+
+* add profile details and trial status to the account info endpoint ([5459c80](https://adl.github.com/adl-developer/kinkane-backend/commit/5459c8080297ba74baaceabb454c74af190c5a13))
+
+
 ## 2026-07-21
 
 ### Features

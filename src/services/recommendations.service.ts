@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { eq, sql, and, inArray, gt } from 'drizzle-orm';
+import { eq, sql, and, inArray, notInArray, gt } from 'drizzle-orm';
 import { db } from '../db';
 import { books, bookContributors, bookGenres, genres, userPreferences, users } from '../db/schema';
 import { recommendationCache, type RecommendationItem } from '../db/schema/recommendations';
@@ -242,7 +242,11 @@ export const recommendationsService = {
     //    similarity threshold to exclude poor fits, then keep the top TARGET_RESULTS.
     const dislikeConditions = buildDislikeConditions(input.dislikes);
     const thresholdCondition = sql`(${books.embedding} <=> ${vectorLiteral}::vector) < ${SIMILARITY_THRESHOLD}`;
-    const whereClause = and(thresholdCondition, ...dislikeConditions);
+    const whereClause = and(
+      thresholdCondition,
+      ...dislikeConditions,
+      ...(input.bookIds.length > 0 ? [notInArray(books.id, input.bookIds)] : []),
+    );
 
     const poolRows = await db
       .select({ id: books.id, title: books.title })
@@ -473,6 +477,7 @@ async function computeRecommendations(
   const whereClause = and(
     sql`(${books.embedding} <=> ${vectorLiteral}::vector) < ${SIMILARITY_THRESHOLD}`,
     ...dislikeConditions,
+    ...(input.bookIds.length > 0 ? [notInArray(books.id, input.bookIds)] : []),
   );
 
   const poolRows = await db

@@ -59,7 +59,7 @@ const recommendationsSchema = z.object({
 
   feelings: z
     .array(feelingSchema)
-    .length(3, 'Exactly 3 feelings are required'),
+    .min(1, 'At least 1 feeling is required'),
 
   bookIds: z
     .array(z.number().int().positive())
@@ -68,7 +68,7 @@ const recommendationsSchema = z.object({
 
   genres: z
     .array(z.enum(GENRE_VALUES))
-    .length(3, 'Exactly 3 genres are required'),
+    .min(1, 'At least 1 genre is required'),
 
   dislikes: dislikesSchema.default({}),
 });
