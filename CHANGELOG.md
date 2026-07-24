@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-07-24
+
+### Bug Fixes
+
+* stop non-fiction books from crowding out fiction recommendations ([2985a2c](https://adl.github.com/adl-developer/kinkane-backend/commit/2985a2c223ff987a78fc8504d5953c61efc66b9b)) — [details](changelog/2026-07-24-fiction-format-filter.md)
+
+
 ## 2026-07-23
 
 ### Features
