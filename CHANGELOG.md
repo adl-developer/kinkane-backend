@@ -5,6 +5,7 @@
 
 ### Bug Fixes
 
+* stop reader-type quiz from defaulting to "The Seeker" on mixed picks ([bac167b](https://adl.github.com/adl-developer/kinkane-backend/commit/bac167b9e0f6461c21546fdeb9470a0188aca6d4)) — [details](changelog/2026-07-24-reader-type-prompt-tuning.md)
 * stop non-fiction books from crowding out fiction recommendations ([2985a2c](https://adl.github.com/adl-developer/kinkane-backend/commit/2985a2c223ff987a78fc8504d5953c61efc66b9b)) — [details](changelog/2026-07-24-fiction-format-filter.md)
 
 

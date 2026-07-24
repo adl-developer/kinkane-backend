@@ -20,3 +20,4 @@ export * from './gardners-promotions';
 export * from './gardners-firm-sale';
 export * from './gardners-isbn-slips';
 export * from './gardners-market-restrictions';
+export * from './gardners-dropship-orders';

@@ -47,6 +47,25 @@ const envSchema = z.object({
   // Cloudinary cloud name — used to validate that uploaded photo URLs belong
   // to this project's Cloudinary account, not an arbitrary third-party account.
   CLOUDINARY_CLOUD_NAME: z.string().min(1),
+
+  // Gardners Books — I12 Home Delivery (dropship) ordering account. This is
+  // a separate FTP account/directory set (HOMEORD/HOMEACK/etc.) from the
+  // read-only catalogue feeds ingested by onix_ingester — confirm with
+  // Gardners whether it shares a host with the Bespoke Inventory account or
+  // needs its own credentials before pointing this at production.
+  GARDNERS_DROPSHIP_SFTP_HOST: z.string().min(1).optional(),
+  GARDNERS_DROPSHIP_SFTP_PORT: z.coerce.number().default(22),
+  GARDNERS_DROPSHIP_SFTP_USERNAME: z.string().min(1).optional(),
+  GARDNERS_DROPSHIP_SFTP_PASSWORD: z.string().min(1).optional(),
+  // Your 6-character Gardners account code, quoted in every HEADER record.
+  GARDNERS_DROPSHIP_ACCOUNT_CODE: z.string().length(6).optional(),
+  // Default value for the HEADER TESTING flag on newly created orders.
+  // Gardners acknowledges test orders normally but never creates the order
+  // lines — keep this true until you deliberately want a real order placed.
+  GARDNERS_DROPSHIP_DEFAULT_TESTING: z
+    .string()
+    .default('true')
+    .transform((v) => v === 'true'),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -97,6 +116,16 @@ export const config = {
   adminToken: env.ADMIN_TOKEN,
   cloudinary: {
     cloudName: env.CLOUDINARY_CLOUD_NAME,
+  },
+  gardnersDropship: {
+    sftp: {
+      host: env.GARDNERS_DROPSHIP_SFTP_HOST,
+      port: env.GARDNERS_DROPSHIP_SFTP_PORT,
+      username: env.GARDNERS_DROPSHIP_SFTP_USERNAME,
+      password: env.GARDNERS_DROPSHIP_SFTP_PASSWORD,
+    },
+    accountCode: env.GARDNERS_DROPSHIP_ACCOUNT_CODE,
+    defaultTesting: env.GARDNERS_DROPSHIP_DEFAULT_TESTING,
   },
 } as const;
 

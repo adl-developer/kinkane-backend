@@ -169,6 +169,13 @@
       "when": 1784846539025,
       "tag": "0023_absurd_toxin",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1784901825243,
+      "tag": "0024_romantic_karnak",
+      "breakpoints": true
     }
   ]
 }

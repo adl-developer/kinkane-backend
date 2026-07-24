@@ -9,6 +9,7 @@ import { emailQueue } from './lib/email-queue';
 import { pushQueue } from './lib/push-queue';
 import { config } from './config';
 import apiRoutes from './routes';
+import gardnersDropshipRoutes from './routes/gardners-dropship.routes';
 
 const app = express();
 
@@ -46,6 +47,12 @@ createBullBoard({
   serverAdapter: bullBoardAdapter,
 });
 app.use('/admin/queues', requireAdminToken, bullBoardAdapter.getRouter());
+
+// ── Gardners dropship (I12 Home Delivery) ─────────────────────────────────────
+// Admin-only surface for submitting/polling wholesale fulfillment orders —
+// not part of the customer-facing checkout flow yet, so it isn't versioned
+// under /api/v1. Protected by the same static bearer token as Bull Board.
+app.use('/admin/gardners/dropship', requireAdminToken, gardnersDropshipRoutes);
 
 app.use('/api', apiRoutes);
 
