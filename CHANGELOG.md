@@ -5,6 +5,7 @@
 
 ### Features
 
+* record trial history and persist trial expiry instead of computing it on the fly ([a9cbab8](https://adl.github.com/adl-developer/kinkane-backend/commit/a9cbab8c0e21a157412271e96f3ac79458ba358d)) — [details](changelog/2026-07-23-subscription-trial-audit-trail.md)
 * add an in-app notifications feed ([d9f1d66](https://adl.github.com/adl-developer/kinkane-backend/commit/d9f1d66defbae7b6da2e6eed1eaacc9e33fc331a)) — [details](changelog/2026-07-23-notifications-feed.md)
 * stop search suggestions from showing the same book twice ([10cfe28](https://adl.github.com/adl-developer/kinkane-backend/commit/10cfe2821aa954d890df5930c7544994f19f08fd)) — [details](changelog/2026-07-23-dedupe-search-results.md)
 * allow partial feelings/genres in recommendation requests and avoid repeat picks ([25458b4](https://adl.github.com/adl-developer/kinkane-backend/commit/25458b44f67e62ed0782fa4181838597dadfbdf8))
