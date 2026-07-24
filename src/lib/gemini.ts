@@ -232,15 +232,22 @@ const READER_TYPES = [
   'The Cloud Illusionist',
 ] as const;
 
+// Descriptions are deliberately anchored to signals the model can actually
+// see (title/author/genre of 5 books) rather than reading behaviour it has
+// no visibility into (TBR pile size, abandon rate, reading multiple books at
+// once). Without that anchoring, types like The Open Door and The Book-ist
+// were never being selected in practice — the model had nothing concrete to
+// match them against and fell back to The Seeker or the nearest genre-based
+// type instead.
 const READER_TYPE_DESCRIPTIONS = `
-- The Open Door: Embraces all genres but gravitates to a few favourites. Enjoys easy reads and is open to different writing styles and non-linear storylines.
-- The Seeker: Primarily non-fiction. Reads to accumulate facts and meaning. Sticks to known genres but will explore if a topic interests them.
-- The Book-ist: Organised, list-driven reader. Reads any genre once committed. Follows prize lists, maintains large TBR piles, often reads multiple books at once.
-- The Story Circler: Reads what their social circle reads or what's trending. Prefers clear plots and active storylines. Will abandon books they don't connect with quickly.
-- The Mirror Within: Connects emotionally. Gravitates to books that engage feelings and empathy. Will over-connect with certain genres and may avoid topics that deeply affect them.
-- The Echo Collector: Reflective, introverted reader. Seeks books that linger and encourage contemplation. Appreciates literary and challenging texts. Rarely abandons a book.
-- The High Summiter: Purposeful, competitive reader. Tracks statistics. Reads fiction and non-fiction; likely has a niche genre (e.g. sci-fi). Reads long and short books deliberately.
-- The Cloud Illusionist: Light, comfort-driven reader. Mainly fiction — romance, drama, light fantasy. Avoids overly literary styles. Reads for escape, not self-improvement.
+- The Open Door: Selection spans several different genres with no single genre dominating. Picks tend to be accessible, easy reads rather than dense or literary.
+- The Seeker: Primarily non-fiction — reads to accumulate facts and understanding. Only choose this when non-fiction clearly dominates the selection; do not use it as a default for a mixed or ambiguous set.
+- The Book-ist: An unusually wide, almost curated spread — translated fiction, graphic novels, prize-list staples, a mix of fiction and non-fiction — as if worked through a reading list rather than a single taste.
+- The Story Circler: Recognisable, culturally prominent, or bestselling titles with a strong, fast-moving plot — books that get talked about widely.
+- The Mirror Within: Character-driven, emotionally resonant fiction centred on grief, identity, relationships, or empathy.
+- The Echo Collector: Reflective, literary fiction that rewards close reading — classic or "serious" literary titles, valued for craft as much as story.
+- The High Summiter: A distinct niche genre (e.g. hard sci-fi, military history) paired with non-fiction on the same subject — deliberate, purposeful reading rather than casual browsing.
+- The Cloud Illusionist: Romance, light fantasy, or comfort fiction read for escape — avoids anything literary or self-improvement-oriented.
 `.trim();
 
 /**
@@ -262,13 +269,18 @@ export async function inferReaderType(books: BookContext[]): Promise<ReaderType 
 Reader types and their descriptions:
 ${READER_TYPE_DESCRIPTIONS}
 
+Guidance:
+- Base your judgement only on the titles, authors, and genres given — not on outside assumptions.
+- Do not default to "The Seeker" just because a selection is mixed or hard to classify. Only choose it when non-fiction clearly dominates. For an ambiguous or genre-spanning set, prefer "The Open Door" or "The Book-ist" instead.
+- State which specific signal (title, genre, or pattern across the 5 books) drove your choice.
+
 The user's 5 chosen books:
 <books>
 ${bookList}
 </books>
 
 Return ONLY a valid JSON object with no markdown, no code fences, no extra text:
-{"readerType": "<one of the exact type names listed above>"}`;
+{"reasoning": "<one short sentence citing the specific signal that drove your choice>", "readerType": "<one of the exact type names listed above>"}`;
 
   try {
     const result = await generateContentWithFallback({
@@ -277,14 +289,14 @@ Return ONLY a valid JSON object with no markdown, no code fences, no extra text:
     });
 
     const raw = result.response.text().trim();
-    const parsed = JSON.parse(raw) as { readerType?: string };
+    const parsed = JSON.parse(raw) as { reasoning?: string; readerType?: string };
     const candidate = parsed?.readerType;
 
     if (typeof candidate === 'string' && (READER_TYPES as readonly string[]).includes(candidate)) {
       return candidate as ReaderType;
     }
 
-    logger.warn('Gemini returned an unrecognised reader type', { candidate });
+    logger.warn('Gemini returned an unrecognised reader type', { candidate, reasoning: parsed?.reasoning });
     return null;
   } catch (err) {
     logger.error('Failed to infer reader type via Gemini', { error: (err as Error).message });

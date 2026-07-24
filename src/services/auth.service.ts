@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { eq, and, gt, inArray } from 'drizzle-orm';
 import { db } from '../db';
-import { users, refreshTokens, userProviders, guestSessions, userPreferences, userInteractions, userBooks, userSubscriptions, passwordResetTokens, emailVerificationTokens, books, bookContributors, notificationPreferences } from '../db/schema';
+import { users, refreshTokens, userProviders, guestSessions, userPreferences, userInteractions, userBooks, userSubscriptions, subscriptionEvents, passwordResetTokens, emailVerificationTokens, books, bookContributors, notificationPreferences } from '../db/schema';
 import { config } from '../config';
 import { admin } from '../lib/firebase';
 import { logger } from '../lib/logger';
@@ -30,7 +30,7 @@ export interface MeUser extends AuthUser {
   joinedYear: number;
   subscription: {
     tier: 'free' | 'plus';
-    status: 'active' | 'trialing' | 'cancelled';
+    status: 'active' | 'trialing' | 'expired' | 'cancelled';
     trialDaysLeft: number | null;
     trialEndsAt: Date | null;
   };
@@ -277,6 +277,7 @@ export const authService = {
         .values({ name: name.trim(), email: email.toLowerCase().trim(), passwordHash })
         .returning({ id: users.id, name: users.name, email: users.email, emailVerified: users.emailVerified });
       await tx.insert(userSubscriptions).values({ userId: u.id, tier: 'plus', status: 'trialing', trialEndsAt });
+      await tx.insert(subscriptionEvents).values({ userId: u.id, event: 'started', newTrialEndsAt: trialEndsAt });
       await tx.insert(notificationPreferences).values({ userId: u.id });
       return u;
     });
@@ -617,7 +618,7 @@ export const authService = {
       throw Object.assign(new Error('User not found'), { statusCode: 404 });
     }
 
-    const [sub] = await db
+    let [sub] = await db
       .select()
       .from(userSubscriptions)
       .where(eq(userSubscriptions.userId, userId))
@@ -625,6 +626,27 @@ export const authService = {
 
     if (!sub) {
       throw Object.assign(new Error('Subscription not found'), { statusCode: 404 });
+    }
+
+    // Lazy write: if the trial deadline has passed but nothing has flipped the
+    // row yet (the cron sweep runs periodically, not instantly), do it now so
+    // status/tier reflect reality and the transition is recorded.
+    if (sub.status === 'trialing' && sub.trialEndsAt && sub.trialEndsAt < new Date()) {
+      const expiredAt = new Date();
+      const previousTrialEndsAt = sub.trialEndsAt;
+      await db.transaction(async (tx) => {
+        await tx
+          .update(userSubscriptions)
+          .set({ status: 'expired', tier: 'free', trialExpiredAt: expiredAt, updatedAt: expiredAt })
+          .where(eq(userSubscriptions.id, sub!.id));
+        await tx.insert(subscriptionEvents).values({
+          userId,
+          event: 'expired',
+          previousTrialEndsAt,
+          newTrialEndsAt: null,
+        });
+      });
+      sub = { ...sub, status: 'expired', tier: 'free', trialExpiredAt: expiredAt };
     }
 
     const providerRows = await db
@@ -746,6 +768,7 @@ export const authService = {
         .returning({ id: users.id, name: users.name, email: users.email, emailVerified: users.emailVerified });
       await tx.insert(userProviders).values({ userId: u.id, provider, providerUid });
       await tx.insert(userSubscriptions).values({ userId: u.id, tier: 'plus', status: 'trialing', trialEndsAt });
+      await tx.insert(subscriptionEvents).values({ userId: u.id, event: 'started', newTrialEndsAt: trialEndsAt });
       await tx.insert(notificationPreferences).values({ userId: u.id });
       return u;
     });

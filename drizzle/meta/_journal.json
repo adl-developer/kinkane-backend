@@ -155,6 +155,20 @@
       "when": 1784628202051,
       "tag": "0021_huge_blindfold",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1784830168458,
+      "tag": "0022_shiny_gateway",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1784846539025,
+      "tag": "0023_absurd_toxin",
+      "breakpoints": true
     }
   ]
 }

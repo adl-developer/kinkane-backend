@@ -175,6 +175,81 @@ function buildDislikeConditions(dislikes: RecommendationInput['dislikes']) {
   return conditions;
 }
 
+// Coarse fiction / non-fiction bucketing of the genre options exposed at
+// onboarding (see GENRE_VALUES in recommendations.controller.ts). pgvector
+// similarity alone doesn't enforce format — a self-help book can embed close
+// enough to "escapism, romance" to show up in the candidate pool — so this
+// backs the similarity search with an explicit format constraint.
+const FICTION_GENRES = new Set([
+  'literary fiction',
+  'mystery',
+  'romance',
+  'horror',
+  'sci-fi',
+  'historical fiction',
+  'fantasy',
+  'crime',
+  'young adult',
+  'classics',
+  'graphic novel',
+]);
+
+const NONFICTION_GENRES = new Set([
+  'self-help',
+  'business',
+  'biography',
+  'non-fiction',
+  'society & education',
+  'sport',
+  'politics',
+  'health & lifestyle',
+  'travel',
+]);
+// 'poetry' is deliberately left unbucketed — it spans both fiction and
+// non-fiction shelving conventions and shouldn't force a format filter either way.
+
+/**
+ * Returns 'fiction' or 'non-fiction' only when every genre the user picked
+ * falls unambiguously on one side. A mixed selection (or one made up entirely
+ * of unbucketed genres like poetry) returns null, meaning "don't filter by
+ * format" rather than guessing at intent.
+ */
+function resolveFormatIntent(genreSelections: string[]): 'fiction' | 'non-fiction' | null {
+  const sides = new Set(
+    genreSelections
+      .map((g) => (FICTION_GENRES.has(g) ? 'fiction' : NONFICTION_GENRES.has(g) ? 'non-fiction' : null))
+      .filter((side): side is 'fiction' | 'non-fiction' => side !== null),
+  );
+  return sides.size === 1 ? [...sides][0] : null;
+}
+
+/**
+ * Excludes books confidently tagged as the wrong format, while leaving
+ * untagged books alone — book_genres coverage has real gaps (real bestsellers
+ * like "Beach Read" and "Da Vinci Code" have zero genre rows in this catalog),
+ * so treating "no genre data" as "wrong format" would wrongly filter out
+ * genuinely matching books that just aren't tagged yet.
+ *
+ * Known limitation: only checks for a top-level Fiction ('F%') subject code,
+ * so children's fiction (tagged under the 'Y' top-level) isn't recognised as
+ * fiction here. Fine for now since onboarding's genre list doesn't include a
+ * children's-fiction option, but worth widening if that changes.
+ */
+function buildFormatCondition(intent: 'fiction' | 'non-fiction' | null) {
+  if (!intent) return undefined;
+
+  const hasAnyGenre = sql`EXISTS (SELECT 1 FROM book_genres bg2 WHERE bg2.book_id = ${books.id})`;
+  const hasFictionGenre = sql`EXISTS (
+    SELECT 1 FROM book_genres bg2
+    JOIN genres g2 ON g2.id = bg2.genre_id
+    WHERE bg2.book_id = ${books.id} AND g2.subject_code LIKE 'F%'
+  )`;
+
+  return intent === 'fiction'
+    ? sql`(NOT ${hasAnyGenre} OR ${hasFictionGenre})`
+    : sql`(NOT ${hasAnyGenre} OR NOT ${hasFictionGenre})`;
+}
+
 // ── Public service ────────────────────────────────────────────────────────────
 
 export const recommendationsService = {
@@ -241,10 +316,12 @@ export const recommendationsService = {
     // 4. pgvector cosine similarity search — fetch a large pool, apply the
     //    similarity threshold to exclude poor fits, then keep the top TARGET_RESULTS.
     const dislikeConditions = buildDislikeConditions(input.dislikes);
+    const formatCondition = buildFormatCondition(resolveFormatIntent(input.genres));
     const thresholdCondition = sql`(${books.embedding} <=> ${vectorLiteral}::vector) < ${SIMILARITY_THRESHOLD}`;
     const whereClause = and(
       thresholdCondition,
       ...dislikeConditions,
+      ...(formatCondition ? [formatCondition] : []),
       ...(input.bookIds.length > 0 ? [notInArray(books.id, input.bookIds)] : []),
     );
 
@@ -474,9 +551,11 @@ async function computeRecommendations(
   const vectorLiteral = `[${queryVector.join(',')}]`;
 
   const dislikeConditions = buildDislikeConditions(input.dislikes);
+  const formatCondition = buildFormatCondition(resolveFormatIntent(input.genres));
   const whereClause = and(
     sql`(${books.embedding} <=> ${vectorLiteral}::vector) < ${SIMILARITY_THRESHOLD}`,
     ...dislikeConditions,
+    ...(formatCondition ? [formatCondition] : []),
     ...(input.bookIds.length > 0 ? [notInArray(books.id, input.bookIds)] : []),
   );
 

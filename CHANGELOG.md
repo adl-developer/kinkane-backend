@@ -1,16 +1,27 @@
 # Changelog
 
 
+## 2026-07-24
+
+### Bug Fixes
+
+* stop non-fiction books from crowding out fiction recommendations ([2985a2c](https://adl.github.com/adl-developer/kinkane-backend/commit/2985a2c223ff987a78fc8504d5953c61efc66b9b)) — [details](changelog/2026-07-24-fiction-format-filter.md)
+
+
 ## 2026-07-23
 
 ### Features
 
-* allow partial feelings/genres in recommendation requests and avoid repeat picks ([25458b4](https://adl.github.com/adl-developer/kinkane-backend/commit/25458b44f67e62ed0782fa4181838597dadfbdf8)) — [details](changelog/2026-07-23-dedupe-search-results.md)
-* add profile details and trial status to the account info endpoint ([5459c80](https://adl.github.com/adl-developer/kinkane-backend/commit/5459c8080297ba74baaceabb454c74af190c5a13)) — [details](changelog/2026-07-23-dedupe-search-results.md)
+* record trial history and persist trial expiry instead of computing it on the fly ([a9cbab8](https://adl.github.com/adl-developer/kinkane-backend/commit/a9cbab8c0e21a157412271e96f3ac79458ba358d)) — [details](changelog/2026-07-23-subscription-trial-audit-trail.md)
+* add an in-app notifications feed ([d9f1d66](https://adl.github.com/adl-developer/kinkane-backend/commit/d9f1d66defbae7b6da2e6eed1eaacc9e33fc331a)) — [details](changelog/2026-07-23-notifications-feed.md)
+* stop search suggestions from showing the same book twice ([10cfe28](https://adl.github.com/adl-developer/kinkane-backend/commit/10cfe2821aa954d890df5930c7544994f19f08fd)) — [details](changelog/2026-07-23-dedupe-search-results.md)
+* allow partial feelings/genres in recommendation requests and avoid repeat picks ([25458b4](https://adl.github.com/adl-developer/kinkane-backend/commit/25458b44f67e62ed0782fa4181838597dadfbdf8))
+* add profile details and trial status to the account info endpoint ([5459c80](https://adl.github.com/adl-developer/kinkane-backend/commit/5459c8080297ba74baaceabb454c74af190c5a13)) — [details](changelog/2026-07-23-stop-like-comment-emails.md)
 
 ### Bug Fixes
 
-* nest plan status fields back under subscription in account info response ([3c712f4](https://adl.github.com/adl-developer/kinkane-backend/commit/3c712f49c6719cead996559a5ea9875d0cfeb7a3)) — [details](changelog/2026-07-23-dedupe-search-results.md)
+* stop emailing users when someone likes or comments on their post ([3047387](https://adl.github.com/adl-developer/kinkane-backend/commit/30473872844f77b60f7cdd6265f5830ae22cbf9b)) — [details](changelog/2026-07-23-stop-like-comment-emails.md)
+* nest plan status fields back under subscription in account info response ([3c712f4](https://adl.github.com/adl-developer/kinkane-backend/commit/3c712f49c6719cead996559a5ea9875d0cfeb7a3)) — [details](changelog/2026-07-23-subscription-trial-audit-trail.md)
 
 
 ## 2026-07-21
