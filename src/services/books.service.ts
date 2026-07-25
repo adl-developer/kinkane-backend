@@ -22,10 +22,14 @@ import { redis } from '../lib/redis';
 import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-excerpts.service';
 
 const BOOK_DETAIL_TTL    = 60 * 60;    // 1 hour
+const LIST_TTL           = 5 * 60;     // 5 minutes
 const SUGGESTIONS_TTL    = 5 * 60;     // 5 minutes
 const TRENDING_TTL       = 60 * 60;    // 1 hour
 const PERSONALIZED_TTL   = 60 * 60;    // 1 hour
 const PERSONALIZED_SIMILARITY_THRESHOLD = 0.5;
+// HNSW default ef_search (40) is below our pool sizes (up to FEED_POOL_MAX),
+// which would silently drop recall on the <=> ANN queries. Widen it per-query.
+const HNSW_EF_SEARCH = 150;
 const TRENDING_WINDOW_DAYS = 30;
 const TRENDING_INTERACTION_TYPES = ['view', 'wishlist', 'chosen_from_recommendation'] as const;
 // Feeds (trending/personalized/similar) over-fetch a candidate pool larger than the
@@ -144,10 +148,14 @@ function buildSearchCondition(q: string): SQL {
     ? sql` OR ${books.searchVector} @@ plainto_tsquery('english', ${q})`
     : sql``;
 
+  // Uses the <% operator, not word_similarity() as a plain function call —
+  // pg_trgm's GIN index only recognizes the operator form for word-similarity
+  // filtering. Its cutoff comes from the pg_trgm.word_similarity_threshold GUC
+  // (set to 0.3 database-wide in setup.ts) rather than a literal argument here.
   return sql`(
     ${books.title} ILIKE ${prefix}
     OR ${books.title} ILIKE ${wordPrefix}
-    OR word_similarity(${q}, ${books.title}) > 0.3
+    OR ${q} <% ${books.title}
     ${fts}
   )`;
 }
@@ -184,7 +192,7 @@ function buildAuthorBookSearchCondition(q: string): SQL {
       AND (
         bc.person_name ILIKE ${prefix}
         OR bc.person_name ILIKE ${wordPrefix}
-        OR word_similarity(${q}, bc.person_name) > 0.3
+        OR ${q} <% bc.person_name
         ${fts}
       )
   )`;
@@ -304,10 +312,35 @@ async function attachRelationsToList(
   return map;
 }
 
+// The `<%` word-similarity operator (buildSearchCondition, buildAuthorBookSearchCondition,
+// and authorSuggestions' inline condition) reads its cutoff from the
+// pg_trgm.word_similarity_threshold GUC rather than a literal argument — it
+// defaults to 0.6, stricter than the 0.3 these queries were written against.
+// SET LOCAL scopes the override to just the wrapped query, inside a
+// transaction — a bare SET would stick to the pooled connection and leak
+// into unrelated queries reusing it afterward.
+async function withWordSimilarityThreshold<T>(fn: (conn: Pick<typeof db, 'select'>) => Promise<T>): Promise<T> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql.raw('SET LOCAL pg_trgm.word_similarity_threshold = 0.3'));
+    return fn(tx);
+  });
+}
+
 // ── Public service ────────────────────────────────────────────────────────────
 
 export const booksService = {
   async list(opts: ListBooksOptions): Promise<{ books: BookListItem[]; total: number }> {
+    const cacheKey = `books:list:${createHash('sha256').update(JSON.stringify(opts)).digest('hex')}`;
+    const cached = await redis.get(cacheKey);
+    if (cached) {
+      const parsed = JSON.parse(cached) as { books: BookListItem[]; total: number };
+      for (const b of parsed.books) {
+        b.createdAt = new Date(b.createdAt);
+        b.updatedAt = new Date(b.updatedAt);
+      }
+      return parsed;
+    }
+
     const where = buildWhereClause(opts);
     // When a search query is present, relevance ranking takes priority and sort is ignored.
     // Otherwise sort by title (asc/desc) when specified, falling back to updatedAt.
@@ -317,26 +350,30 @@ export const booksService = {
         ? [opts.sort === 'desc' ? desc(books.title) : asc(books.title)]
         : [books.updatedAt];
 
-    const [rows, [countRow]] = await Promise.all([
-      db
+    const rowsQuery = (conn: Pick<typeof db, 'select'>) =>
+      conn
         .select(LIST_COLUMNS)
         .from(books)
         .where(where)
         .orderBy(...orderBy)
         .limit(opts.limit)
-        .offset(opts.offset),
+        .offset(opts.offset);
+    const countQuery = (conn: Pick<typeof db, 'select'>) =>
+      conn.select({ count: sql<number>`COUNT(*)::int` }).from(books).where(where);
 
-      db
-        .select({ count: sql<number>`COUNT(*)::int` })
-        .from(books)
-        .where(where),
+    // <% only appears in `where` when opts.q is set (buildSearchCondition) — skip
+    // the transaction wrapper otherwise so the common no-search browse path keeps
+    // its fully parallel dispatch.
+    const [rows, [countRow]] = await Promise.all([
+      opts.q ? withWordSimilarityThreshold(rowsQuery) : rowsQuery(db),
+      opts.q ? withWordSimilarityThreshold(countQuery) : countQuery(db),
     ]);
 
     const [relations, excerptMap] = await Promise.all([
       attachRelationsToList(rows),
       getExcerptsByIsbns(rows.map((r) => r.isbn13)),
     ]);
-    return {
+    const result = {
       books: rows.map((r) => ({
         ...r,
         ...relations.get(r.id)!,
@@ -344,6 +381,9 @@ export const booksService = {
       })),
       total: countRow?.count ?? 0,
     };
+
+    await redis.set(cacheKey, JSON.stringify(result), 'EX', LIST_TTL);
+    return result;
   },
 
   async suggestions(q: string, limit: number, type: 'title' | 'author' = 'title'): Promise<SuggestionItem[]> {
@@ -366,19 +406,21 @@ export const booksService = {
     // fill the requested limit.
     const poolSize = Math.min(limit * FEED_POOL_MULTIPLIER, FEED_POOL_MAX);
 
-    const pool = await db
-      .select({
-        id: books.id,
-        title: books.title,
-        subtitle: books.subtitle,
-        isbn13: books.isbn13,
-        productForm: books.productForm,
-        coverUrl: books.coverUrl,
-      })
-      .from(books)
-      .where(where)
-      .orderBy(...orderBy)
-      .limit(poolSize);
+    const pool = await withWordSimilarityThreshold((conn) =>
+      conn
+        .select({
+          id: books.id,
+          title: books.title,
+          subtitle: books.subtitle,
+          isbn13: books.isbn13,
+          productForm: books.productForm,
+          coverUrl: books.coverUrl,
+        })
+        .from(books)
+        .where(where)
+        .orderBy(...orderBy)
+        .limit(poolSize),
+    );
 
     const rows = dedupeByTitleAndSubtitle(pool).slice(0, limit);
 
@@ -432,35 +474,37 @@ export const booksService = {
       ? sql` OR to_tsvector('simple', ${bookContributors.personName}) @@ plainto_tsquery('simple', ${q})`
       : sql``;
 
-    const rows = await db
-      .select({
-        personName: bookContributors.personName,
-        bookCount: sql<number>`COUNT(DISTINCT ${bookContributors.bookId})::int`,
-      })
-      .from(bookContributors)
-      .where(
-        and(
-          eq(bookContributors.role, 'A01'),
-          sql`${bookContributors.personName} IS NOT NULL`,
-          sql`(
-            ${bookContributors.personName} ILIKE ${prefix}
-            OR ${bookContributors.personName} ILIKE ${wordPrefix}
-            OR word_similarity(${q}, ${bookContributors.personName}) > 0.3
-            ${fts}
-          )`,
-        ),
-      )
-      .groupBy(bookContributors.personName)
-      .orderBy(
-        sql`CASE
-          WHEN ${bookContributors.personName} ILIKE ${prefix}     THEN 0
-          WHEN ${bookContributors.personName} ILIKE ${wordPrefix} THEN 1
-          WHEN word_similarity(${q}, ${bookContributors.personName}) > 0.3 THEN 2
-          ELSE 3
-        END`,
-        sql`word_similarity(${q}, ${bookContributors.personName}) DESC`,
-      )
-      .limit(limit);
+    const rows = await withWordSimilarityThreshold((conn) =>
+      conn
+        .select({
+          personName: bookContributors.personName,
+          bookCount: sql<number>`COUNT(DISTINCT ${bookContributors.bookId})::int`,
+        })
+        .from(bookContributors)
+        .where(
+          and(
+            eq(bookContributors.role, 'A01'),
+            sql`${bookContributors.personName} IS NOT NULL`,
+            sql`(
+              ${bookContributors.personName} ILIKE ${prefix}
+              OR ${bookContributors.personName} ILIKE ${wordPrefix}
+              OR ${q} <% ${bookContributors.personName}
+              ${fts}
+            )`,
+          ),
+        )
+        .groupBy(bookContributors.personName)
+        .orderBy(
+          sql`CASE
+            WHEN ${bookContributors.personName} ILIKE ${prefix}     THEN 0
+            WHEN ${bookContributors.personName} ILIKE ${wordPrefix} THEN 1
+            WHEN word_similarity(${q}, ${bookContributors.personName}) > 0.3 THEN 2
+            ELSE 3
+          END`,
+          sql`word_similarity(${q}, ${bookContributors.personName}) DESC`,
+        )
+        .limit(limit),
+    );
 
     const results = rows.map((r) => ({ personName: r.personName as string, bookCount: r.bookCount }));
 
@@ -665,21 +709,24 @@ export const booksService = {
     const cached = await redis.get(cacheKey);
     if (cached) return JSON.parse(cached) as TrendingBookItem[];
 
-    // Fetch the user's stored preference embedding
-    const [prefs] = await db
-      .select({ preferenceEmbedding: userPreferences.preferenceEmbedding })
-      .from(userPreferences)
-      .where(eq(userPreferences.userId, userId))
-      .limit(1);
+    // Fetch the user's stored preference embedding and their shelf (to exclude
+    // from results) in parallel — independent queries, no need to serialize them.
+    const [[prefs], shelfRows] = await Promise.all([
+      db
+        .select({ preferenceEmbedding: userPreferences.preferenceEmbedding })
+        .from(userPreferences)
+        .where(eq(userPreferences.userId, userId))
+        .limit(1),
+
+      db
+        .select({ bookId: userBooks.bookId })
+        .from(userBooks)
+        .where(eq(userBooks.userId, userId)),
+    ]);
 
     // No embedding yet (migration still in progress or user has no preferences)
     if (!prefs?.preferenceEmbedding) return [];
 
-    // Books already on the user's shelf — exclude from results
-    const shelfRows = await db
-      .select({ bookId: userBooks.bookId })
-      .from(userBooks)
-      .where(eq(userBooks.userId, userId));
     const shelfIds = shelfRows.map((r) => r.bookId);
 
     const vectorLiteral = `[${prefs.preferenceEmbedding.join(',')}]`;
@@ -691,20 +738,26 @@ export const booksService = {
 
     const poolSize = Math.min(limit * FEED_POOL_MULTIPLIER, FEED_POOL_MAX);
 
-    const rows = await db
-      .select({
-        id: books.id,
-        title: books.title,
-        subtitle: books.subtitle,
-        coverUrl: books.coverUrl,
-        isbn13: books.isbn13,
-        productForm: books.productForm,
-        publicationDate: books.publicationDate,
-      })
-      .from(books)
-      .where(whereClause)
-      .orderBy(sql`${books.embedding} <=> ${vectorLiteral}::vector`)
-      .limit(poolSize);
+    // SET LOCAL scopes the raised ef_search to just this query, inside a
+    // transaction — a bare SET would stick to the pooled connection and leak
+    // into unrelated queries reusing it afterward.
+    const rows = await db.transaction(async (tx) => {
+      await tx.execute(sql.raw(`SET LOCAL hnsw.ef_search = ${HNSW_EF_SEARCH}`));
+      return tx
+        .select({
+          id: books.id,
+          title: books.title,
+          subtitle: books.subtitle,
+          coverUrl: books.coverUrl,
+          isbn13: books.isbn13,
+          productForm: books.productForm,
+          publicationDate: books.publicationDate,
+        })
+        .from(books)
+        .where(whereClause)
+        .orderBy(sql`${books.embedding} <=> ${vectorLiteral}::vector`)
+        .limit(poolSize);
+    });
 
     if (rows.length === 0) {
       await redis.set(cacheKey, '[]', 'EX', PERSONALIZED_TTL);
@@ -765,25 +818,31 @@ export const booksService = {
 
     const poolSize = Math.min(limit * FEED_POOL_MULTIPLIER, FEED_POOL_MAX);
 
-    const rows = await db
-      .select({
-        id: books.id,
-        title: books.title,
-        subtitle: books.subtitle,
-        coverUrl: books.coverUrl,
-        isbn13: books.isbn13,
-        productForm: books.productForm,
-        publicationDate: books.publicationDate,
-      })
-      .from(books)
-      .where(
-        and(
-          sql`(${books.embedding} <=> ${vectorLiteral}::vector) < ${PERSONALIZED_SIMILARITY_THRESHOLD}`,
-          notInArray(books.id, [bookId]),
-        ),
-      )
-      .orderBy(sql`${books.embedding} <=> ${vectorLiteral}::vector`)
-      .limit(poolSize);
+    // SET LOCAL scopes the raised ef_search to just this query, inside a
+    // transaction — a bare SET would stick to the pooled connection and leak
+    // into unrelated queries reusing it afterward.
+    const rows = await db.transaction(async (tx) => {
+      await tx.execute(sql.raw(`SET LOCAL hnsw.ef_search = ${HNSW_EF_SEARCH}`));
+      return tx
+        .select({
+          id: books.id,
+          title: books.title,
+          subtitle: books.subtitle,
+          coverUrl: books.coverUrl,
+          isbn13: books.isbn13,
+          productForm: books.productForm,
+          publicationDate: books.publicationDate,
+        })
+        .from(books)
+        .where(
+          and(
+            sql`(${books.embedding} <=> ${vectorLiteral}::vector) < ${PERSONALIZED_SIMILARITY_THRESHOLD}`,
+            notInArray(books.id, [bookId]),
+          ),
+        )
+        .orderBy(sql`${books.embedding} <=> ${vectorLiteral}::vector`)
+        .limit(poolSize);
+    });
 
     if (rows.length === 0) {
       await redis.set(cacheKey, '[]', 'EX', PERSONALIZED_TTL);

@@ -1,7 +1,18 @@
 # Changelog
 
 
+## 2026-07-25
+
+### Bug Fixes
+
+* stop book browsing and recommendations from loading slowly ([818e55f](https://adl.github.com/adl-developer/kinkane-backend/commit/818e55f2a45d333dbe53fd86227bee1214de27be)) — [details](changelog/2026-07-25-books-recommendations-performance.md)
+
+
 ## 2026-07-24
+
+### Features
+
+* add Gardners dropship order submission and ack polling ([ca7a130](https://adl.github.com/adl-developer/kinkane-backend/commit/ca7a130641bfa70ae134ea1f8927b3f2a6b13add)) — [details](changelog/2026-07-24-gardners-dropship-ordering.md)
 
 ### Bug Fixes
 

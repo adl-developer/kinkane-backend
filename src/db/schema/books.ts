@@ -103,6 +103,8 @@ export const books = pgTable(
     publisherIdx: index('idx_books_publisher').on(t.publisherName),
     availabilityIdx: index('idx_books_availability').on(t.availabilityCode),
     isRemovedIdx: index('idx_books_is_removed').on(t.isRemoved),
+    // Supports GET /books' default (no q/sort) ORDER BY updated_at LIMIT/OFFSET
+    updatedAtIdx: index('idx_books_updated_at').on(t.updatedAt),
   }),
 );
 
