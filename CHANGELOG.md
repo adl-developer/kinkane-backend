@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-07-25
+
+### Bug Fixes
+
+* stop book browsing and recommendations from loading slowly ([818e55f](https://adl.github.com/adl-developer/kinkane-backend/commit/818e55f2a45d333dbe53fd86227bee1214de27be)) — [details](changelog/2026-07-25-books-recommendations-performance.md)
+
+
 ## 2026-07-24
 
 ### Features
