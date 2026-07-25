@@ -23,6 +23,12 @@ import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-ex
 
 const BOOK_DETAIL_TTL    = 60 * 60;    // 1 hour
 const LIST_TTL           = 5 * 60;     // 5 minutes
+// COUNT(*) over the books table is the expensive part of a list query (full/near-full
+// scan on 1M+ rows) while the row-fetch itself is a cheap indexed lookup. The total only
+// depends on the filter fields (not limit/offset/sort), and barely changes minute to
+// minute, so it's cached far longer than the rows and under its own filter-only key —
+// see countCacheKey — instead of being recomputed on every LIST_TTL expiry.
+const COUNT_TTL          = 30 * 60;    // 30 minutes
 const SUGGESTIONS_TTL    = 5 * 60;     // 5 minutes
 const TRENDING_TTL       = 60 * 60;    // 1 hour
 const PERSONALIZED_TTL   = 60 * 60;    // 1 hour
@@ -330,16 +336,26 @@ async function withWordSimilarityThreshold<T>(fn: (conn: Pick<typeof db, 'select
 
 export const booksService = {
   async list(opts: ListBooksOptions): Promise<{ books: BookListItem[]; total: number }> {
-    const cacheKey = `books:list:${createHash('sha256').update(JSON.stringify(opts)).digest('hex')}`;
-    const cached = await redis.get(cacheKey);
-    if (cached) {
-      const parsed = JSON.parse(cached) as { books: BookListItem[]; total: number };
-      for (const b of parsed.books) {
-        b.createdAt = new Date(b.createdAt);
-        b.updatedAt = new Date(b.updatedAt);
-      }
-      return parsed;
-    }
+    const rowsCacheKey = `books:list:${createHash('sha256').update(JSON.stringify(opts)).digest('hex')}`;
+    // Keyed only on the fields that affect the count (not limit/offset/sort) so every
+    // page of the same filter — and every sort direction — shares one cached total.
+    const countCacheKey = `books:count:${createHash('sha256')
+      .update(
+        JSON.stringify({
+          q: opts.q,
+          genre: opts.genre,
+          availability: opts.availability,
+          productForm: opts.productForm,
+          publishingStatus: opts.publishingStatus,
+          publisher: opts.publisher,
+        }),
+      )
+      .digest('hex')}`;
+
+    const [cachedRows, cachedCount] = await Promise.all([
+      redis.get(rowsCacheKey),
+      redis.get(countCacheKey),
+    ]);
 
     const where = buildWhereClause(opts);
     // When a search query is present, relevance ranking takes priority and sort is ignored.
@@ -350,40 +366,60 @@ export const booksService = {
         ? [opts.sort === 'desc' ? desc(books.title) : asc(books.title)]
         : [books.updatedAt];
 
-    const rowsQuery = (conn: Pick<typeof db, 'select'>) =>
-      conn
-        .select(LIST_COLUMNS)
-        .from(books)
-        .where(where)
-        .orderBy(...orderBy)
-        .limit(opts.limit)
-        .offset(opts.offset);
-    const countQuery = (conn: Pick<typeof db, 'select'>) =>
-      conn.select({ count: sql<number>`COUNT(*)::int` }).from(books).where(where);
+    const booksPromise: Promise<BookListItem[]> = cachedRows
+      ? Promise.resolve(JSON.parse(cachedRows) as BookListItem[]).then((parsed) => {
+          for (const b of parsed) {
+            b.createdAt = new Date(b.createdAt);
+            b.updatedAt = new Date(b.updatedAt);
+          }
+          return parsed;
+        })
+      : (async () => {
+          const rowsQuery = (conn: Pick<typeof db, 'select'>) =>
+            conn
+              .select(LIST_COLUMNS)
+              .from(books)
+              .where(where)
+              .orderBy(...orderBy)
+              .limit(opts.limit)
+              .offset(opts.offset);
+          // <% only appears in `where` when opts.q is set (buildSearchCondition) — skip
+          // the transaction wrapper otherwise so the common no-search browse path keeps
+          // its fully parallel dispatch.
+          const rows = await (opts.q ? withWordSimilarityThreshold(rowsQuery) : rowsQuery(db));
 
-    // <% only appears in `where` when opts.q is set (buildSearchCondition) — skip
-    // the transaction wrapper otherwise so the common no-search browse path keeps
-    // its fully parallel dispatch.
-    const [rows, [countRow]] = await Promise.all([
-      opts.q ? withWordSimilarityThreshold(rowsQuery) : rowsQuery(db),
-      opts.q ? withWordSimilarityThreshold(countQuery) : countQuery(db),
-    ]);
+          const [relations, excerptMap] = await Promise.all([
+            attachRelationsToList(rows),
+            getExcerptsByIsbns(rows.map((r) => r.isbn13)),
+          ]);
+          const result = rows.map((r) => ({
+            ...r,
+            ...relations.get(r.id)!,
+            excerpt: pickExcerpt(r.isbn13, excerptMap),
+          }));
 
-    const [relations, excerptMap] = await Promise.all([
-      attachRelationsToList(rows),
-      getExcerptsByIsbns(rows.map((r) => r.isbn13)),
-    ]);
-    const result = {
-      books: rows.map((r) => ({
-        ...r,
-        ...relations.get(r.id)!,
-        excerpt: pickExcerpt(r.isbn13, excerptMap),
-      })),
-      total: countRow?.count ?? 0,
-    };
+          await redis.set(rowsCacheKey, JSON.stringify(result), 'EX', LIST_TTL);
+          return result;
+        })();
 
-    await redis.set(cacheKey, JSON.stringify(result), 'EX', LIST_TTL);
-    return result;
+    // COUNT(*) is the expensive part of this query — a full (or near-full) scan of a
+    // 1M+ row table — while the row fetch above is a cheap indexed lookup. The total
+    // barely changes minute to minute, so it's cached far longer than the rows and
+    // under the filter-only key above, instead of being recomputed on every LIST_TTL
+    // expiry (which previously happened on every distinct limit/offset/sort combo too).
+    const totalPromise: Promise<number> = cachedCount != null
+      ? Promise.resolve(parseInt(cachedCount, 10))
+      : (async () => {
+          const countQuery = (conn: Pick<typeof db, 'select'>) =>
+            conn.select({ count: sql<number>`COUNT(*)::int` }).from(books).where(where);
+          const [countRow] = await (opts.q ? withWordSimilarityThreshold(countQuery) : countQuery(db));
+          const total = countRow?.count ?? 0;
+          await redis.set(countCacheKey, String(total), 'EX', COUNT_TTL);
+          return total;
+        })();
+
+    const [resultBooks, total] = await Promise.all([booksPromise, totalPromise]);
+    return { books: resultBooks, total };
   },
 
   async suggestions(q: string, limit: number, type: 'title' | 'author' = 'title'): Promise<SuggestionItem[]> {

@@ -5,7 +5,8 @@
 
 ### Bug Fixes
 
-* make book and author search actually use their trigram index ([4a14d7b](https://adl.github.com/adl-developer/kinkane-backend/commit/4a14d7ba0a3a0119eb6bf118a3e6ac000eb4eb02)) — [details](changelog/2026-07-25-books-recommendations-performance.md)
+* speed up the vector search index build during deploys ([ab1768a](https://adl.github.com/adl-developer/kinkane-backend/commit/ab1768a38f6866ff1fae3f0f308790301b42450b)) — [details](changelog/2026-07-25-parallel-index-build-shared-memory.md)
+* make book and author search actually use their trigram index ([4a14d7b](https://adl.github.com/adl-developer/kinkane-backend/commit/4a14d7ba0a3a0119eb6bf118a3e6ac000eb4eb02)) — [details](changelog/2026-07-25-books-list-count-caching.md)
 * stop book browsing and recommendations from loading slowly ([818e55f](https://adl.github.com/adl-developer/kinkane-backend/commit/818e55f2a45d333dbe53fd86227bee1214de27be)) — [details](changelog/2026-07-25-books-recommendations-performance.md)
 
 
