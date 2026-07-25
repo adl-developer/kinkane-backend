@@ -176,6 +176,13 @@
       "when": 1784901825243,
       "tag": "0024_romantic_karnak",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1784977590512,
+      "tag": "0025_books_updated_at_index",
+      "breakpoints": true
     }
   ]
 }

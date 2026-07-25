@@ -3,6 +3,10 @@
 
 ## 2026-07-24
 
+### Features
+
+* add Gardners dropship order submission and ack polling ([ca7a130](https://adl.github.com/adl-developer/kinkane-backend/commit/ca7a130641bfa70ae134ea1f8927b3f2a6b13add)) — [details](changelog/2026-07-24-gardners-dropship-ordering.md)
+
 ### Bug Fixes
 
 * stop reader-type quiz from defaulting to "The Seeker" on mixed picks ([bac167b](https://adl.github.com/adl-developer/kinkane-backend/commit/bac167b9e0f6461c21546fdeb9470a0188aca6d4)) — [details](changelog/2026-07-24-reader-type-prompt-tuning.md)

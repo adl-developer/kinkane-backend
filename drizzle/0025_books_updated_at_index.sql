@@ -1,0 +1,1 @@
+CREATE INDEX IF NOT EXISTS "idx_books_updated_at" ON "books" USING btree ("updated_at");

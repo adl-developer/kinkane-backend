@@ -42,6 +42,18 @@ async function main() {
   await sql`CREATE INDEX IF NOT EXISTS idx_books_search_vector ON books USING GIN (search_vector)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_books_title_trgm  ON books USING GIN (title gin_trgm_ops)`;
 
+  // Author search/suggestions (buildAuthorBookSearchCondition, authorSuggestions)
+  // does ILIKE/word_similarity against book_contributors.person_name — same
+  // shape of query as book title search, so it needs the same trigram index.
+  await sql`CREATE INDEX IF NOT EXISTS idx_book_contributors_person_name_trgm ON book_contributors USING GIN (person_name gin_trgm_ops)`;
+
+  // ANN index for the "similar"/"personalized" cosine-distance (<=>) queries.
+  // Without this, ORDER BY embedding <=> vector is a brute-force scan that
+  // computes distance against every embedded row. HNSW needs no row-count
+  // tuning (unlike ivfflat's `lists` parameter) so it stays correct as the
+  // catalogue grows from ongoing Gardners ingestion.
+  await sql`CREATE INDEX IF NOT EXISTS idx_books_embedding_hnsw ON books USING hnsw (embedding vector_cosine_ops)`;
+
   console.log('Setup complete.');
   await sql.end();
 }
