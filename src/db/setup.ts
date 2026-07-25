@@ -8,9 +8,10 @@ import * as dotenv from 'dotenv';
 dotenv.config();
 
 import postgres from 'postgres';
+import { resolveSslMode } from './ssl';
 
 const sql = postgres(process.env.DATABASE_URL!, {
-  ssl: process.env.DATABASE_URL!.includes('sslmode=require') ? 'require' : false,
+  ssl: resolveSslMode(process.env.DATABASE_URL!),
 });
 
 async function main() {
@@ -62,6 +63,14 @@ async function main() {
   // shared_buffers and other concurrent connections — revisit if the plan
   // changes size.
   await sql`SET maintenance_work_mem = '256MB'`;
+  // Parallel index builds coordinate workers through a dynamic shared-memory
+  // segment sized roughly in proportion to maintenance_work_mem — on this
+  // managed instance that segment request exceeded available shared-memory
+  // space once maintenance_work_mem was raised (`could not resize shared
+  // memory segment ... No space left on device`). Disabling parallel workers
+  // for this one statement avoids needing that segment at all; the build
+  // runs single-threaded instead, still with the larger memory budget above.
+  await sql`SET max_parallel_maintenance_workers = 0`;
   await sql`CREATE INDEX IF NOT EXISTS idx_books_embedding_hnsw ON books USING hnsw (embedding vector_cosine_ops)`;
 
   console.log('Setup complete.');

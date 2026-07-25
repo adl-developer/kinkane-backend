@@ -7,9 +7,10 @@ import * as dotenv from 'dotenv';
 dotenv.config();
 
 import postgres from 'postgres';
+import { resolveSslMode } from './ssl';
 
 const sql = postgres(process.env.DATABASE_URL!, {
-  ssl: process.env.DATABASE_URL!.includes('sslmode=require') ? 'require' : false,
+  ssl: resolveSslMode(process.env.DATABASE_URL!),
 });
 
 async function main() {
