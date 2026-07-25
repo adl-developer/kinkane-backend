@@ -250,7 +250,7 @@ export const authService = {
     name: string,
     email: string,
     password: string,
-    guestSessionId: string,
+    guestSessionId: string | undefined,
   ): Promise<{ user: AuthUser; tokens: TokenPair }> {
     const existing = await db
       .select({ id: users.id })
@@ -284,13 +284,15 @@ export const authService = {
 
     const tokens = await issueTokenPair(user.id, user.email);
 
-    migrateGuestSession(user.id, guestSessionId).catch((err) => {
-      logger.error('Guest session migration failed after signup', {
-        guestSessionId,
-        userId: user.id,
-        error: (err as Error).message,
+    if (guestSessionId) {
+      migrateGuestSession(user.id, guestSessionId).catch((err) => {
+        logger.error('Guest session migration failed after signup', {
+          guestSessionId,
+          userId: user.id,
+          error: (err as Error).message,
+        });
       });
-    });
+    }
 
     enqueueEmail('welcome', { to: user.email, name: user.name }).catch((err) => {
       logger.error('Failed to enqueue welcome email after signup', {
@@ -749,14 +751,7 @@ export const authService = {
       };
     }
 
-    // 3. Brand new user — guestSessionId is required to migrate onboarding data
-    if (!guestSessionId) {
-      throw Object.assign(
-        new Error('guestSessionId is required when creating a new account via social login'),
-        { statusCode: 400 },
-      );
-    }
-
+    // 3. Brand new user — guestSessionId is optional and, if given, migrates onboarding data
     const trialEndsAt = new Date();
     trialEndsAt.setDate(trialEndsAt.getDate() + TRIAL_DAYS);
 
@@ -775,13 +770,15 @@ export const authService = {
 
     const tokens = await issueTokenPair(newUser.id, newUser.email);
 
-    migrateGuestSession(newUser.id, guestSessionId).catch((err) => {
-      logger.error('Guest session migration failed after social login', {
-        guestSessionId,
-        userId: newUser.id,
-        error: (err as Error).message,
+    if (guestSessionId) {
+      migrateGuestSession(newUser.id, guestSessionId).catch((err) => {
+        logger.error('Guest session migration failed after social login', {
+          guestSessionId,
+          userId: newUser.id,
+          error: (err as Error).message,
+        });
       });
-    });
+    }
 
     enqueueEmail('welcome', { to: newUser.email, name: newUser.name }).catch((err) => {
       logger.error('Failed to enqueue welcome email after social signup', {
