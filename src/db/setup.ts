@@ -52,6 +52,16 @@ async function main() {
   // computes distance against every embedded row. HNSW needs no row-count
   // tuning (unlike ivfflat's `lists` parameter) so it stays correct as the
   // catalogue grows from ongoing Gardners ingestion.
+  //
+  // maintenance_work_mem defaults to 64MB, which the in-progress HNSW graph
+  // outgrows well before the full `books` table is indexed — past that point
+  // Postgres falls back to a much slower disk-assisted build for every
+  // remaining row. Raised here for just this session/connection (setup.ts
+  // closes it right after, so nothing else is affected); 256MB comfortably
+  // fits the 2GB DigitalOcean "Basic" plan this runs against today alongside
+  // shared_buffers and other concurrent connections — revisit if the plan
+  // changes size.
+  await sql`SET maintenance_work_mem = '256MB'`;
   await sql`CREATE INDEX IF NOT EXISTS idx_books_embedding_hnsw ON books USING hnsw (embedding vector_cosine_ops)`;
 
   console.log('Setup complete.');
