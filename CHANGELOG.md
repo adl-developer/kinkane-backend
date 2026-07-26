@@ -5,6 +5,7 @@
 
 ### Features
 
+* add backfill pass to recommendations so niche readers always get a full list ([8a41bf0](https://adl.github.com/adl-developer/kinkane-backend/commit/8a41bf085086f370b332702dd12f1124235e07e9)) — [details](changelog/2026-07-26-database-plan-upgrade.md)
 * branded email layout, real logo, and one-click unsubscribe ([c34c01b](https://adl.github.com/adl-developer/kinkane-backend/commit/c34c01b3fdcfbd09c1dd6d93ab7278b0e97162e0))
 
 ### Bug Fixes

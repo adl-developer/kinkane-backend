@@ -4,7 +4,9 @@ const CURRENT_YEAR = new Date().getFullYear();
 const BASE_URL = config.appUrl;
 const LOGO_URL = 'https://res.cloudinary.com/dy0cthb0l/image/upload/v1785093900/Kinkane_Logo_jodvx0.svg';
 // System-UI stack — renders the platform's native sans-serif (SF Pro on Apple, Segoe UI on Windows, Roboto on Android/Chrome).
-const SANS = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif";
+// Inter is the app font. Most modern email clients (Apple Mail, Gmail app, Outlook on Mac)
+// will render it via the system stack; clients that don't will fall back gracefully.
+const SANS = "Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif";
 
 /**
  * Wraps email body HTML in the branded Kinkané shell:
@@ -48,7 +50,7 @@ export function emailLayout(title: string, body: string, unsubscribeUrl?: string
           <!-- Body -->
           <tr>
             <td style="background-color:#FFFFFF;padding:40px 48px;">
-              <div style="font-family:${SANS};font-size:15px;line-height:1.75;color:#1A1A1A;">
+              <div style="font-family:${SANS};font-size:14px;font-weight:400;line-height:22.75px;letter-spacing:-0.15px;color:#1A1A1A;">
                 ${body}
               </div>
             </td>
@@ -141,5 +143,5 @@ export function escapeHtml(str: string): string {
 
 /** Convenience: wraps a string in a styled <p> tag. Last item should use margin:0. */
 export function p(content: string, last = false): string {
-  return `<p style="margin:0${last ? '' : ' 0 16px'};">${content}</p>`;
+  return `<p style="margin:0${last ? '' : ' 0 16px'};font-size:14px;font-weight:400;line-height:22.75px;letter-spacing:-0.15px;">${content}</p>`;
 }
