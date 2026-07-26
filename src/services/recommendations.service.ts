@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { eq, sql, and, inArray, notInArray, gt } from 'drizzle-orm';
+import { eq, sql, and, inArray, notInArray, gt, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { books, bookContributors, bookGenres, genres, userPreferences, users } from '../db/schema';
 import { recommendationCache, type RecommendationItem } from '../db/schema/recommendations';
@@ -13,12 +13,19 @@ import { redis } from '../lib/redis';
 // 250 because each result gets its own synchronous Gemini explanation call —
 // fewer results means fewer explanation chunks and a faster response.
 const TARGET_RESULTS = 100;
-// How large a pool to fetch from the DB before applying the threshold cut.
-// Larger than TARGET_RESULTS so the threshold filter still leaves us with 100.
-const FETCH_POOL = 2000;
+// How large a pool to fetch per pass (both the strict and backfill passes
+// below use this same cap). Larger than TARGET_RESULTS so title dedup still
+// tends to leave us with 100.
+const FETCH_POOL = 1000;
 // Cosine distance upper bound — books further than this from the preference
 // vector are excluded. Lower = stricter (0 = identical, 1 = orthogonal).
 const SIMILARITY_THRESHOLD = 0.5;
+// For narrow/niche preference combinations, fewer than TARGET_RESULTS books
+// fall within SIMILARITY_THRESHOLD out of 1M+ in the catalogue. Rather than
+// return a short list, a second pass loosens the cutoff to this value and
+// fills the remainder — those backfilled books are always ranked after every
+// strict match (see fetchCandidateBooks).
+const BACKFILL_SIMILARITY_THRESHOLD = 0.7;
 const CACHE_TTL_HOURS = 48;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -250,6 +257,66 @@ function buildFormatCondition(intent: 'fiction' | 'non-fiction' | null) {
     : sql`(NOT ${hasAnyGenre} OR NOT ${hasFictionGenre})`;
 }
 
+/**
+ * Runs the pgvector similarity search for a preference vector and returns up
+ * to TARGET_RESULTS candidate books, ordered best-match-first.
+ *
+ * Two passes: a strict pass at SIMILARITY_THRESHOLD, then — only if that
+ * leaves fewer than TARGET_RESULTS after title dedup — a backfill pass at
+ * the looser BACKFILL_SIMILARITY_THRESHOLD to fill the remainder. Backfilled
+ * books always sort after every strict match, so overall rank still reflects
+ * match quality. `baseConditions` (dislikes, format, already-owned books)
+ * applies identically to both passes.
+ */
+async function fetchCandidateBooks(
+  vectorLiteral: string,
+  baseConditions: SQL[],
+): Promise<{ id: number; title: string }[]> {
+  const distanceExpr = sql`${books.embedding} <=> ${vectorLiteral}::vector`;
+
+  const primaryRows = await db
+    .select({ id: books.id, title: books.title })
+    .from(books)
+    .where(and(sql`${distanceExpr} < ${SIMILARITY_THRESHOLD}`, ...baseConditions))
+    .orderBy(distanceExpr)
+    .limit(FETCH_POOL);
+
+  const primaryCandidates = dedupeByTitle(primaryRows).slice(0, TARGET_RESULTS);
+
+  if (primaryCandidates.length >= TARGET_RESULTS) {
+    return primaryCandidates;
+  }
+
+  const stillNeeded = TARGET_RESULTS - primaryCandidates.length;
+  const excludeIds = primaryCandidates.map((r) => r.id);
+  const seenTitles = new Set(primaryCandidates.map((r) => r.title.trim().toLowerCase()));
+
+  const backfillRows = await db
+    .select({ id: books.id, title: books.title })
+    .from(books)
+    .where(
+      and(
+        sql`${distanceExpr} >= ${SIMILARITY_THRESHOLD}`,
+        sql`${distanceExpr} < ${BACKFILL_SIMILARITY_THRESHOLD}`,
+        ...baseConditions,
+        ...(excludeIds.length > 0 ? [notInArray(books.id, excludeIds)] : []),
+      ),
+    )
+    .orderBy(distanceExpr)
+    .limit(FETCH_POOL);
+
+  const backfillCandidates: { id: number; title: string }[] = [];
+  for (const row of backfillRows) {
+    const key = row.title.trim().toLowerCase();
+    if (seenTitles.has(key)) continue;
+    seenTitles.add(key);
+    backfillCandidates.push(row);
+    if (backfillCandidates.length >= stillNeeded) break;
+  }
+
+  return [...primaryCandidates, ...backfillCandidates];
+}
+
 // ── Public service ────────────────────────────────────────────────────────────
 
 export const recommendationsService = {
@@ -313,26 +380,17 @@ export const recommendationsService = {
     // Passed as a parameterised value; postgres driver sends it as $1, cast to vector
     const vectorLiteral = `[${queryVector.join(',')}]`;
 
-    // 4. pgvector cosine similarity search — fetch a large pool, apply the
-    //    similarity threshold to exclude poor fits, then keep the top TARGET_RESULTS.
+    // 4. pgvector cosine similarity search — strict pass first, backfilled
+    //    with a looser pass if that doesn't leave enough to hit TARGET_RESULTS.
     const dislikeConditions = buildDislikeConditions(input.dislikes);
     const formatCondition = buildFormatCondition(resolveFormatIntent(input.genres));
-    const thresholdCondition = sql`(${books.embedding} <=> ${vectorLiteral}::vector) < ${SIMILARITY_THRESHOLD}`;
-    const whereClause = and(
-      thresholdCondition,
+    const baseConditions: SQL[] = [
       ...dislikeConditions,
       ...(formatCondition ? [formatCondition] : []),
       ...(input.bookIds.length > 0 ? [notInArray(books.id, input.bookIds)] : []),
-    );
+    ];
 
-    const poolRows = await db
-      .select({ id: books.id, title: books.title })
-      .from(books)
-      .where(whereClause)
-      .orderBy(sql`${books.embedding} <=> ${vectorLiteral}::vector`)
-      .limit(FETCH_POOL);
-
-    const candidateRows = dedupeByTitle(poolRows).slice(0, TARGET_RESULTS);
+    const candidateRows = await fetchCandidateBooks(vectorLiteral, baseConditions);
 
     if (candidateRows.length === 0) {
       // Cache the empty result so identical preferences don't re-run the vector search
@@ -552,21 +610,13 @@ async function computeRecommendations(
 
   const dislikeConditions = buildDislikeConditions(input.dislikes);
   const formatCondition = buildFormatCondition(resolveFormatIntent(input.genres));
-  const whereClause = and(
-    sql`(${books.embedding} <=> ${vectorLiteral}::vector) < ${SIMILARITY_THRESHOLD}`,
+  const baseConditions: SQL[] = [
     ...dislikeConditions,
     ...(formatCondition ? [formatCondition] : []),
     ...(input.bookIds.length > 0 ? [notInArray(books.id, input.bookIds)] : []),
-  );
+  ];
 
-  const poolRows = await db
-    .select({ id: books.id, title: books.title })
-    .from(books)
-    .where(whereClause)
-    .orderBy(sql`${books.embedding} <=> ${vectorLiteral}::vector`)
-    .limit(FETCH_POOL);
-
-  const candidateRows = poolRows.slice(0, TARGET_RESULTS);
+  const candidateRows = await fetchCandidateBooks(vectorLiteral, baseConditions);
 
   let results: RecommendationItem[];
 
