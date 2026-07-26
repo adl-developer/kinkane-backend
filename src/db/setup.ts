@@ -43,6 +43,22 @@ async function main() {
   await sql`CREATE INDEX IF NOT EXISTS idx_books_search_vector ON books USING GIN (search_vector)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_books_title_trgm  ON books USING GIN (title gin_trgm_ops)`;
 
+  // Prefix search (title ILIKE 'q%') has no case-insensitive-friendly index today:
+  // idx_books_title is a plain (case-sensitive) btree, so ILIKE can't range-scan it —
+  // EXPLAIN ANALYZE showed it falling back to a full index-order scan filtering out
+  // 800k+ rows one at a time (70s+) for a common prefix. idx_books_title_trgm (GIN) is
+  // what actually serves ILIKE today, but for very common words (e.g. "the", matching
+  // ~30% of the 1.1M-row table) the index becomes a poor filter — Postgres gets a lossy
+  // bitmap back and has to reread and recheck hundreds of thousands of heap pages
+  // (~4.3s measured). This functional index lets `lower(title) LIKE lower(q) || '%'`
+  // (note: LIKE, not ILIKE — text_pattern_ops only matches the plain LIKE operator) do a
+  // genuine indexed range scan instead, independent of how common the prefix is.
+  //
+  // CONCURRENTLY avoids locking books against reads/writes while this builds against
+  // the live table (takes two passes instead of one, and can't run inside a
+  // transaction — must stay as its own top-level statement, not batched with others).
+  await sql`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_books_title_lower_pattern ON books (lower(title) text_pattern_ops)`;
+
   // Author search/suggestions (buildAuthorBookSearchCondition, authorSuggestions)
   // does ILIKE/word_similarity against book_contributors.person_name — same
   // shape of query as book title search, so it needs the same trigram index.

@@ -43,6 +43,12 @@ const TRENDING_INTERACTION_TYPES = ['view', 'wishlist', 'chosen_from_recommendat
 // leaves enough distinct titles to fill the requested count.
 const FEED_POOL_MULTIPLIER = 3;
 const FEED_POOL_MAX = 100;
+// Above this many cheap-tier (prefix) matches, list()'s search path reports the cheap
+// count as-is instead of paying for an exact broad-tier count — see the cheap-first
+// comment in list(). Comfortably above the max page size (50) so normal pagination
+// depth doesn't force a fallback, while still being small enough that reaching it
+// means the term is common enough for an exact count to be expensive.
+const SEARCH_COUNT_THRESHOLD = 500;
 
 export interface ListBooksOptions {
   q?: string;
@@ -245,6 +251,38 @@ function buildTitlePrefixOrderBy(q: string): SQL[] {
   return [sql`CASE WHEN ${books.title} ILIKE ${prefix} THEN 0 ELSE 1 END`, asc(books.title)];
 }
 
+// Backed by idx_books_title_lower_pattern (see setup.ts) — a functional btree on
+// lower(title) using text_pattern_ops. Unlike buildTitlePrefixCondition, this gives
+// Postgres a genuine indexed range scan for a prefix match, with cost independent of
+// how common the prefix is. buildTitlePrefixCondition's ILIKE (backed by the trigram
+// GIN index) degrades badly for very common prefixes — e.g. "the" matches ~30% of the
+// 1.1M-row table, and EXPLAIN ANALYZE showed Postgres falling back to a lossy bitmap
+// scan that rereads and rechecks hundreds of thousands of heap pages (~4.3s measured).
+// Must use plain LIKE (not ILIKE) with both sides lowercased — text_pattern_ops only
+// matches that exact operator/expression shape.
+//
+// Deliberately narrower than buildTitlePrefixCondition (prefix only, no word-prefix) —
+// see the tiered fetch in list()/suggestions() for why this can stand in for it when it
+// alone already has enough matches: its rows are exactly buildTitlePrefixCondition's
+// tier-0 case, which always sorts ahead of its tier-1 (word-prefix) rows, so if tier-0
+// alone already fills the requested window, no tier-1 row would have appeared in it
+// anyway.
+function buildFastTitlePrefixCondition(q: string): SQL {
+  const prefix = q + '%';
+  return sql`lower(${books.title}) LIKE lower(${prefix})`;
+}
+
+// Must order by lower(title) — the same expression the index is built on — not title
+// itself. EXPLAIN ANALYZE confirmed that ordering by plain title makes Postgres discard
+// idx_books_title_lower_pattern entirely (the index's order doesn't satisfy that ORDER
+// BY) in favor of idx_books_title, which is case-sensitive: matches for a common prefix
+// like "the" are scattered across its entire keyspace ("The", "the", "THE" sort nowhere
+// near each other), so it degenerates into scanning ~800k rows one at a time (70s+
+// measured) — the exact regression this index exists to avoid.
+function buildFastTitlePrefixOrderBy(): SQL[] {
+  return [sql`lower(${books.title})`];
+}
+
 // Same cheap-tier-only shape as buildTitlePrefixCondition, applied to author name.
 function buildAuthorPrefixCondition(q: string): SQL {
   const prefix = q + '%';
@@ -281,11 +319,15 @@ function buildPersonNamePrefixOrderBy(q: string): SQL[] {
   return [sql`CASE WHEN ${bookContributors.personName} ILIKE ${prefix} THEN 0 ELSE 1 END`];
 }
 
-function buildWhereClause(opts: ListBooksOptions): SQL | undefined {
+// `searchCondition` is threaded in separately (rather than built from opts.q here) so
+// callers can swap the cheap prefix-only tier in for the expensive full tier — see the
+// cheap-first strategy in list() — while still sharing the same genre/availability/etc.
+// filters.
+function buildWhereClause(opts: ListBooksOptions, searchCondition?: SQL): SQL | undefined {
   const conditions: SQL[] = [];
 
-  if (opts.q) {
-    conditions.push(buildSearchCondition(opts.q));
+  if (searchCondition) {
+    conditions.push(searchCondition);
   }
 
   if (opts.genre) {
@@ -411,11 +453,79 @@ export const booksService = {
       redis.get(countCacheKey),
     ]);
 
-    const where = buildWhereClause(opts);
+    // When a search query is present, probe increasingly broad tiers — cheapest first —
+    // stopping as soon as one has enough to answer the question at hand, since each
+    // broader tier costs meaningfully more:
+    //   1. fast  — buildFastTitlePrefixCondition: indexed range scan on
+    //      idx_books_title_lower_pattern, cost independent of how common the prefix is.
+    //   2. cheap — buildTitlePrefixCondition (prefix + word-prefix): trigram GIN, cheap
+    //      for most terms but degrades badly for very common ones (see its comment).
+    //   3. broad — buildSearchCondition (+ trigram-similarity + FTS): expensive, forces
+    //      materializing and ranking every fuzzy match before a LIMIT can apply.
+    // Neither the fast nor cheap tier uses the <% trigram-similarity operator, so neither
+    // probe needs withWordSimilarityThreshold — only the broad tier does.
+    //
+    // rows and count are decided independently, since they have different correctness
+    // requirements:
+    //   - rows: a tier is used only once it has enough matches to fill the requested page
+    //     (offset + limit); a request deep enough to outrun it still needs the next tier
+    //     to fetch the right rows.
+    //   - count: reported from the first tier that clears SEARCH_COUNT_THRESHOLD, rather
+    //     than paying for an exact broad-tier COUNT(*). This is a known approximation (a
+    //     lower bound — the true total may include additional matches from a broader
+    //     tier) accepted for search terms common enough to make an exact count expensive.
+    // Both checks are independent of the requested offset for the *count* decision (it's
+    // cached under a page-independent key — see countCacheKey), so every page of the same
+    // query agrees on the same total instead of it drifting by whichever page happened to
+    // trigger the computation first.
+    let fastCount = 0;
+    let cheapCount = 0;
+    if (opts.q && (!cachedRows || cachedCount == null)) {
+      const fastWhere = buildWhereClause(opts, buildFastTitlePrefixCondition(opts.q));
+      const [fastRow] = await db.select({ count: sql<number>`COUNT(*)::int` }).from(books).where(fastWhere);
+      fastCount = fastRow?.count ?? 0;
+
+      if (fastCount < opts.offset + opts.limit || fastCount < SEARCH_COUNT_THRESHOLD) {
+        const cheapWhere = buildWhereClause(opts, buildTitlePrefixCondition(opts.q));
+        const [cheapRow] = await db.select({ count: sql<number>`COUNT(*)::int` }).from(books).where(cheapWhere);
+        cheapCount = cheapRow?.count ?? 0;
+      }
+    }
+
+    type SearchTier = 'fast' | 'cheap' | 'broad';
+    const rowsTier: SearchTier = opts.q
+      ? fastCount >= opts.offset + opts.limit
+        ? 'fast'
+        : cheapCount >= opts.offset + opts.limit
+          ? 'cheap'
+          : 'broad'
+      : 'broad';
+    const countTier: SearchTier = opts.q
+      ? fastCount >= SEARCH_COUNT_THRESHOLD
+        ? 'fast'
+        : cheapCount >= SEARCH_COUNT_THRESHOLD
+          ? 'cheap'
+          : 'broad'
+      : 'broad';
+
     // When a search query is present, relevance ranking takes priority and sort is ignored.
     // Otherwise sort by title (asc/desc) when specified, falling back to updatedAt.
-    const orderBy = opts.q
-      ? buildSearchOrderBy(opts.q)
+    const rowsWhere = opts.q
+      ? buildWhereClause(
+          opts,
+          rowsTier === 'fast'
+            ? buildFastTitlePrefixCondition(opts.q)
+            : rowsTier === 'cheap'
+              ? buildTitlePrefixCondition(opts.q)
+              : buildSearchCondition(opts.q),
+        )
+      : buildWhereClause(opts);
+    const rowsOrderBy = opts.q
+      ? rowsTier === 'fast'
+        ? buildFastTitlePrefixOrderBy()
+        : rowsTier === 'cheap'
+          ? buildTitlePrefixOrderBy(opts.q)
+          : buildSearchOrderBy(opts.q)
       : opts.sort
         ? [opts.sort === 'desc' ? desc(books.title) : asc(books.title)]
         : [books.updatedAt];
@@ -433,14 +543,14 @@ export const booksService = {
             conn
               .select(LIST_COLUMNS)
               .from(books)
-              .where(where)
-              .orderBy(...orderBy)
+              .where(rowsWhere)
+              .orderBy(...rowsOrderBy)
               .limit(opts.limit)
               .offset(opts.offset);
-          // <% only appears in `where` when opts.q is set (buildSearchCondition) — skip
-          // the transaction wrapper otherwise so the common no-search browse path keeps
-          // its fully parallel dispatch.
-          const rows = await (opts.q ? withWordSimilarityThreshold(rowsQuery) : rowsQuery(db));
+          // <% only appears in `rowsWhere` when opts.q is set AND rowsTier resolved to
+          // 'broad' — skip the transaction wrapper otherwise so the fast/cheap tiers
+          // (and the common no-search browse path) keep their fully parallel dispatch.
+          const rows = await (opts.q && rowsTier === 'broad' ? withWordSimilarityThreshold(rowsQuery) : rowsQuery(db));
 
           const [relations, excerptMap] = await Promise.all([
             attachRelationsToList(rows),
@@ -456,16 +566,23 @@ export const booksService = {
           return result;
         })();
 
-    // COUNT(*) is the expensive part of this query — a full (or near-full) scan of a
-    // 1M+ row table — while the row fetch above is a cheap indexed lookup. The total
-    // barely changes minute to minute, so it's cached far longer than the rows and
-    // under the filter-only key above, instead of being recomputed on every LIST_TTL
-    // expiry (which previously happened on every distinct limit/offset/sort combo too).
+    // Without a search query, COUNT(*) is the expensive part of this query — a full (or
+    // near-full) scan of a 1M+ row table — while the row fetch above is a cheap indexed
+    // lookup. The total barely changes minute to minute, so it's cached far longer than
+    // the rows and under the filter-only key above, instead of being recomputed on every
+    // LIST_TTL expiry (which previously happened on every distinct limit/offset/sort combo
+    // too).
     const totalPromise: Promise<number> = cachedCount != null
       ? Promise.resolve(parseInt(cachedCount, 10))
       : (async () => {
+          if (opts.q && countTier !== 'broad') {
+            const total = countTier === 'fast' ? fastCount : cheapCount;
+            await redis.set(countCacheKey, String(total), 'EX', COUNT_TTL);
+            return total;
+          }
+          const countWhere = opts.q ? buildWhereClause(opts, buildSearchCondition(opts.q)) : rowsWhere;
           const countQuery = (conn: Pick<typeof db, 'select'>) =>
-            conn.select({ count: sql<number>`COUNT(*)::int` }).from(books).where(where);
+            conn.select({ count: sql<number>`COUNT(*)::int` }).from(books).where(countWhere);
           const [countRow] = await (opts.q ? withWordSimilarityThreshold(countQuery) : countQuery(db));
           const total = countRow?.count ?? 0;
           await redis.set(countCacheKey, String(total), 'EX', COUNT_TTL);
@@ -494,10 +611,14 @@ export const booksService = {
     // materialize and rank every tier-2 (word_similarity) match before
     // limiting (tens of thousands of rows for a common query like "harry",
     // ~28s of execution time). Tiers 0-1 alone are index scans on the trigram
-    // index (tens of ms). Since a real prefix match exists for the large
-    // majority of typeahead queries, this skips the expensive tiers entirely
-    // in the common case — they're only reached when tiers 0-1 don't already
-    // fill the pool.
+    // index (tens of ms) for most terms — but for `type === 'title'`, an even
+    // cheaper tier-0-only step runs first (see buildFastTitlePrefixCondition):
+    // for very common prefixes (e.g. "the", ~30% of the table) tiers 0-1's
+    // combined trigram scan itself degrades to seconds, while the fast tier's
+    // indexed range scan on idx_books_title_lower_pattern stays cheap regardless.
+    // There's no equivalent index for author names yet, so `type === 'author'`
+    // goes straight to tiers 0-1. Each step only reaches the next when the
+    // current one doesn't already fill the pool.
     const poolSize = Math.min(limit * FEED_POOL_MULTIPLIER, FEED_POOL_MAX);
     const selectColumns = {
       id: books.id,
@@ -511,9 +632,29 @@ export const booksService = {
     const cheapWhere = type === 'author' ? buildAuthorPrefixCondition(q) : buildTitlePrefixCondition(q);
     const cheapOrderBy = type === 'author' ? buildAuthorPrefixOrderBy(q) : buildTitlePrefixOrderBy(q);
 
-    let pool = await withWordSimilarityThreshold((conn) =>
-      conn.select(selectColumns).from(books).where(cheapWhere).orderBy(...cheapOrderBy).limit(poolSize),
-    );
+    let pool: { id: number; title: string; subtitle: string | null; isbn13: string | null; productForm: string | null; coverUrl: string | null }[] = [];
+    if (type === 'title') {
+      pool = await db
+        .select(selectColumns)
+        .from(books)
+        .where(buildFastTitlePrefixCondition(q))
+        .orderBy(...buildFastTitlePrefixOrderBy())
+        .limit(poolSize);
+    }
+
+    // Neither buildFastTitlePrefixCondition nor cheapWhere uses the <% trigram-similarity
+    // operator, so neither needs withWordSimilarityThreshold — only the broad tier below does.
+    if (pool.length < poolSize) {
+      const excludeIds = pool.map((r) => r.id);
+      const midWhere = excludeIds.length > 0 ? and(cheapWhere, notInArray(books.id, excludeIds)) : cheapWhere;
+      const midRows = await db
+        .select(selectColumns)
+        .from(books)
+        .where(midWhere)
+        .orderBy(...cheapOrderBy)
+        .limit(poolSize - pool.length);
+      pool = [...pool, ...midRows];
+    }
 
     if (pool.length < poolSize) {
       const broadWhere = type === 'author' ? buildAuthorBookSearchCondition(q) : buildSearchCondition(q);
