@@ -3,6 +3,10 @@
 
 ## 2026-07-26
 
+### Features
+
+* branded email layout, real logo, and one-click unsubscribe ([c34c01b](https://adl.github.com/adl-developer/kinkane-backend/commit/c34c01b3fdcfbd09c1dd6d93ab7278b0e97162e0))
+
 ### Bug Fixes
 
 * stop trending's fallback from scanning every book ([6d6b49a](https://adl.github.com/adl-developer/kinkane-backend/commit/6d6b49ae6efaf480a90f744691dce82781a77ea7)) — [details](changelog/2026-07-26-trending-fallback-missing-index.md)
