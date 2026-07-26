@@ -1,5 +1,5 @@
 import { sgMail, FROM } from '../../lib/sendgrid';
-import { emailLayout, ctaButton, quoteBlock, escapeHtml, p } from '../lib/layout';
+import { emailLayout, ctaButton, quoteBlock, greeting, signOff, escapeHtml, p } from '../lib/layout';
 import { unsubscribeUrl } from '../../lib/unsubscribe-token';
 
 const PREVIEW_MAX_LENGTH = 120;
@@ -22,11 +22,11 @@ export async function sendPostCommentEmail(
   const title = 'Someone commented on your review';
 
   const body = [
-    p(`Hi ${safeName},`),
+    greeting(safeName),
     p(`<strong>${safeCommenter}</strong> replied to your review of <em>${safeBook}</em>:`),
     quoteBlock(safePreview),
     ctaButton('View in App', 'https://kinkane.com'),
-    p('<strong>The Kinkané Team</strong>', true),
+    signOff(),
   ].join('\n');
 
   await sgMail.send({

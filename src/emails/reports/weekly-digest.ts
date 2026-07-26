@@ -1,6 +1,8 @@
 import { sgMail, FROM } from '../../lib/sendgrid';
-import { emailLayout, ctaButton, escapeHtml, p } from '../lib/layout';
+import { emailLayout, ctaButton, greeting, signOff, escapeHtml, p } from '../lib/layout';
 import { unsubscribeUrl } from '../../lib/unsubscribe-token';
+
+const SANS = "Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif";
 
 export interface WeeklyDigestPayload {
   name: string;
@@ -23,29 +25,28 @@ export async function sendWeeklyDigestEmail(to: string, payload: WeeklyDigestPay
     ['Books added to your shelf', String(booksAdded)],
     ['New recommendations waiting', String(newRecommendations)],
     ['Trending among readers', safeTrending],
-    [`Recommended for you this week`, `<strong>${safeFeatured}</strong> by ${safeAuthor}`],
+    ['Recommended for you this week', `<strong>${safeFeatured}</strong> by ${safeAuthor}`],
   ]
     .map(
       ([label, value]) =>
         `<tr>
-          <td style="padding:10px 16px;font-family:Georgia,'Times New Roman',serif;font-size:14px;color:#555555;border-bottom:1px solid #F0EAE0;">${label}</td>
-          <td style="padding:10px 16px;font-family:Georgia,'Times New Roman',serif;font-size:14px;color:#1A1A1A;border-bottom:1px solid #F0EAE0;text-align:right;">${value}</td>
+          <td style="padding:10px 16px;font-family:${SANS};font-size:14px;color:#52514E;border-bottom:1px solid #E8E8E7;line-height:22.75px;">${label}</td>
+          <td style="padding:10px 16px;font-family:${SANS};font-size:14px;color:#262626;border-bottom:1px solid #E8E8E7;text-align:right;line-height:22.75px;">${value}</td>
         </tr>`,
     )
     .join('');
 
-  const statsTable = `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width:100%;margin:16px 0 24px;border:1px solid #E8E0D0;border-radius:6px;border-collapse:separate;border-spacing:0;overflow:hidden;">
+  const statsTable = `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width:100%;margin:16px 0 8px;border:1px solid #E8E8E7;border-radius:6px;border-collapse:separate;border-spacing:0;overflow:hidden;">
     ${statRows}
   </table>`;
 
   const body = [
-    p(`Hi ${safeName},`),
+    greeting(safeName),
     p("Here's your reading summary for the week:"),
     statsTable,
     p("Keep exploring, saving, and discovering stories you'll love."),
     ctaButton('Open Kinkané', 'https://kinkane.com'),
-    p('Happy reading,'),
-    p('<strong>The Kinkané Team</strong>', true),
+    signOff('Happy reading,'),
   ].join('\n');
 
   await sgMail.send({

@@ -1,28 +1,29 @@
 import { sgMail, FROM } from '../../lib/sendgrid';
-import { emailLayout, ctaButton, escapeHtml, p } from '../lib/layout';
+import { emailLayout, ctaButton, greeting, signOff, escapeHtml, p } from '../lib/layout';
 import { unsubscribeUrl } from '../../lib/unsubscribe-token';
+
+const SANS = "Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif";
 
 export async function sendTrialEndingEmail(to: string, name: string, daysLeft: number): Promise<void> {
   const safeName = escapeHtml(name);
   const plural = daysLeft === 1 ? '' : 's';
   const title = `Your Kinkané Plus trial ends in ${daysLeft} day${plural}`;
 
-  const featureList = `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:16px 0 16px 8px;">
-    <tr><td style="padding:4px 0;font-family:Georgia,'Times New Roman',serif;font-size:15px;color:#1A1A1A;">&#8226;&nbsp; Personalised recommendations tailored to your reading tastes</td></tr>
-    <tr><td style="padding:4px 0;font-family:Georgia,'Times New Roman',serif;font-size:15px;color:#1A1A1A;">&#8226;&nbsp; Unlimited bookshelf saves</td></tr>
-    <tr><td style="padding:4px 0;font-family:Georgia,'Times New Roman',serif;font-size:15px;color:#1A1A1A;">&#8226;&nbsp; Community features</td></tr>
-    <tr><td style="padding:4px 0;font-family:Georgia,'Times New Roman',serif;font-size:15px;color:#1A1A1A;">&#8226;&nbsp; Curated reading collections</td></tr>
+  const featureList = `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:12px 0 0 4px;">
+    <tr><td style="padding:4px 0;font-family:${SANS};font-size:14px;color:#52514E;line-height:22.75px;">&#8226;&nbsp; Personalised recommendations tailored to your reading tastes</td></tr>
+    <tr><td style="padding:4px 0;font-family:${SANS};font-size:14px;color:#52514E;line-height:22.75px;">&#8226;&nbsp; Unlimited bookshelf saves</td></tr>
+    <tr><td style="padding:4px 0;font-family:${SANS};font-size:14px;color:#52514E;line-height:22.75px;">&#8226;&nbsp; Community features</td></tr>
+    <tr><td style="padding:4px 0;font-family:${SANS};font-size:14px;color:#52514E;line-height:22.75px;">&#8226;&nbsp; Curated reading collections</td></tr>
   </table>`;
 
   const body = [
-    p(`Hi ${safeName},`),
+    greeting(safeName),
     p(`Your Kinkané Plus trial will end in <strong>${daysLeft} day${plural}</strong>.`),
     p("During your trial, you've enjoyed:"),
     featureList,
     p('To continue discovering books chosen just for you, upgrade to Kinkané Plus before your trial expires.'),
     ctaButton('Upgrade to Plus', 'https://kinkane.com/subscribe'),
-    p('Your next great read is waiting.'),
-    p('<strong>The Kinkané Team</strong>', true),
+    signOff('Your next great read is waiting.'),
   ].join('\n');
 
   await sgMail.send({

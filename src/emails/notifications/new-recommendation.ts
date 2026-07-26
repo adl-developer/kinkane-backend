@@ -1,5 +1,5 @@
 import { sgMail, FROM } from '../../lib/sendgrid';
-import { emailLayout, ctaButton, escapeHtml, p } from '../lib/layout';
+import { emailLayout, ctaButton, greeting, signOff, escapeHtml, p } from '../lib/layout';
 import { unsubscribeUrl } from '../../lib/unsubscribe-token';
 
 export interface RecommendedBook {
@@ -21,14 +21,13 @@ export async function sendNewRecommendationEmail(
   const title = 'We found a book for you';
 
   const body = [
-    p(`Hi ${safeName},`),
+    greeting(safeName),
     p('Based on your reading preferences, we think you might enjoy:'),
-    `<p style="margin:0 0 16px;"><strong>${safeTitle}</strong><br /><span style="color:#555555;">by ${safeAuthor}</span></p>`,
+    `<p style="margin:0 0 20px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:14px;line-height:22.75px;color:#262626;"><strong>${safeTitle}</strong><br /><span style="color:#52514E;">by ${safeAuthor}</span></p>`,
     p(safeReason),
     p('Add it to your bookshelf, explore similar titles, or start reading today.'),
     ctaButton('View Recommendation', book.url),
-    p('Until your next great read,'),
-    p('<strong>The Kinkané Team</strong>', true),
+    signOff('Until your next great read,'),
   ].join('\n');
 
   await sgMail.send({

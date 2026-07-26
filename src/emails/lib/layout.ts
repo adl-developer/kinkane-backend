@@ -3,22 +3,26 @@ import { config } from '../../config';
 const CURRENT_YEAR = new Date().getFullYear();
 const BASE_URL = config.appUrl;
 const LOGO_URL = 'https://res.cloudinary.com/dy0cthb0l/image/upload/v1785093900/Kinkane_Logo_jodvx0.svg';
-// System-UI stack — renders the platform's native sans-serif (SF Pro on Apple, Segoe UI on Windows, Roboto on Android/Chrome).
-// Inter is the app font. Most modern email clients (Apple Mail, Gmail app, Outlook on Mac)
-// will render it via the system stack; clients that don't will fall back gracefully.
 const SANS = "Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif";
 
 /**
  * Wraps email body HTML in the branded Kinkané shell:
- * dark header → yellow hero band with title → white body → cream footer.
+ * dark header → yellow hero band → white body → cream footer.
  *
- * Pass `unsubscribeUrl` for emails sent to known users (welcome, notifications,
- * digests). Omit for pure security emails (OTP, password reset) where
- * unsubscribing doesn't apply — the footer still renders but the link points
- * to the generic unsubscribe landing page.
+ * Pass `unsubscribeUrl` for user-targeted emails. Omit for security emails
+ * (OTP, password reset) — the Unsubscribe link is hidden entirely in that case.
  */
 export function emailLayout(title: string, body: string, unsubscribeUrl?: string): string {
-  const unsubscribeHref = unsubscribeUrl ?? `${BASE_URL}/unsubscribe`;
+  const footerLinks = unsubscribeUrl
+    ? `<a href="${BASE_URL}/privacy" style="font-family:${SANS};font-size:12px;color:#52514E;text-decoration:underline;">Privacy Notice</a>
+                <span style="color:#C5C5C4;margin:0 8px;">&middot;</span>
+                <a href="${BASE_URL}/terms" style="font-family:${SANS};font-size:12px;color:#52514E;text-decoration:underline;">Terms of Use</a>
+                <span style="color:#C5C5C4;margin:0 8px;">&middot;</span>
+                <a href="${unsubscribeUrl}" style="font-family:${SANS};font-size:12px;color:#52514E;text-decoration:underline;">Unsubscribe</a>`
+    : `<a href="${BASE_URL}/privacy" style="font-family:${SANS};font-size:12px;color:#52514E;text-decoration:underline;">Privacy Notice</a>
+                <span style="color:#C5C5C4;margin:0 8px;">&middot;</span>
+                <a href="${BASE_URL}/terms" style="font-family:${SANS};font-size:12px;color:#52514E;text-decoration:underline;">Terms of Use</a>`;
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -27,7 +31,7 @@ export function emailLayout(title: string, body: string, unsubscribeUrl?: string
   <meta http-equiv="X-UA-Compatible" content="IE=edge" />
   <title>${title}</title>
 </head>
-<body style="margin:0;padding:0;background-color:#EEECE6;font-family:Georgia,'Times New Roman',serif;">
+<body style="margin:0;padding:0;background-color:#EEECE6;font-family:${SANS};">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#EEECE6;">
     <tr>
       <td align="center" style="padding:32px 16px;">
@@ -35,46 +39,35 @@ export function emailLayout(title: string, body: string, unsubscribeUrl?: string
 
           <!-- Header -->
           <tr>
-            <td style="background-color:#1A1A1A;padding:18px 32px;text-align:center;">
-              <img src="${LOGO_URL}" alt="Kinkané" width="32" height="38" style="display:inline-block;vertical-align:middle;margin-right:10px;" /><span style="display:inline-block;vertical-align:middle;font-family:Georgia,'Times New Roman',serif;font-size:20px;font-weight:bold;color:#FFFFFF;letter-spacing:0.3px;">Kinkané</span>
+            <td style="background-color:#262626;padding:32px 40px;text-align:center;">
+              <img src="${LOGO_URL}" alt="Kinkané" width="28" height="33" style="display:inline-block;vertical-align:middle;margin-right:12px;" /><span style="display:inline-block;vertical-align:middle;font-family:Georgia,'Times New Roman',serif;font-size:20px;font-weight:400;color:#FFFFFF;letter-spacing:0.5px;">Kinkané</span>
             </td>
           </tr>
 
           <!-- Hero band -->
           <tr>
-            <td style="background-color:#F5E49C;padding:30px 48px;text-align:center;">
-              <h1 style="margin:0;font-family:Georgia,'Times New Roman',serif;font-size:24px;font-weight:bold;color:#1A1A1A;line-height:1.35;">${title}</h1>
+            <td style="background-color:#FFF18A;padding:24px 40px;text-align:center;">
+              <h1 style="margin:0;font-family:Georgia,'Times New Roman',serif;font-size:24px;font-weight:400;color:#262626;line-height:32px;">${title}</h1>
             </td>
           </tr>
 
           <!-- Body -->
           <tr>
-            <td style="background-color:#FFFFFF;padding:40px 48px;">
-              <div style="font-family:${SANS};font-size:14px;font-weight:400;line-height:22.75px;letter-spacing:-0.15px;color:#1A1A1A;">
+            <td style="background-color:#FFFFFF;padding:40px;">
+              <div style="font-family:${SANS};font-size:14px;font-weight:400;line-height:22.75px;letter-spacing:-0.15px;">
                 ${body}
               </div>
             </td>
           </tr>
 
-          <!-- Divider -->
-          <tr>
-            <td style="background-color:#FFFFFF;padding:0 48px;">
-              <hr style="border:none;border-top:1px solid #E8E0D0;margin:0;" />
-            </td>
-          </tr>
-
           <!-- Footer -->
           <tr>
-            <td style="background-color:#F5F0E8;padding:24px 48px;text-align:center;">
-              <p style="margin:0 0 10px;font-family:${SANS};font-size:12px;color:#666666;line-height:1.5;">An amazing euphorium bringing the world's books to readers everywhere.</p>
-              <p style="margin:0 0 10px;">
-                <a href="${BASE_URL}/privacy" style="font-family:${SANS};font-size:12px;color:#555555;text-decoration:underline;">Privacy Notice</a>
-                <span style="color:#BBBBBB;margin:0 8px;">&middot;</span>
-                <a href="${BASE_URL}/terms" style="font-family:${SANS};font-size:12px;color:#555555;text-decoration:underline;">Terms of Use</a>
-                <span style="color:#BBBBBB;margin:0 8px;">&middot;</span>
-                <a href="${unsubscribeHref}" style="font-family:${SANS};font-size:12px;color:#555555;text-decoration:underline;">Unsubscribe</a>
+            <td style="background-color:#F5F0E8;border-top:1px solid #E8E8E7;padding:32px 40px;text-align:center;">
+              <p style="margin:0 0 12px;font-family:${SANS};font-size:12px;color:#52514E;line-height:16px;">An amazing euphorium bringing the world's books to readers everywhere.</p>
+              <p style="margin:0 0 16px;">
+                ${footerLinks}
               </p>
-              <p style="margin:0;font-family:${SANS};font-size:11px;color:#999999;">&copy; ${CURRENT_YEAR} Kinkané &middot; 19 HP Nyemitei Street, Accra, Ghana</p>
+              <p style="margin:0;font-family:${SANS};font-size:12px;color:rgba(82,81,78,0.50);line-height:16px;">&copy; ${CURRENT_YEAR} Kinkané &middot; 19 HP Nyemitei Street, Accra, Ghana</p>
             </td>
           </tr>
 
@@ -86,11 +79,33 @@ export function emailLayout(title: string, body: string, unsubscribeUrl?: string
 </html>`;
 }
 
-/** Black pill CTA button, uppercase label — matches the Figma button style. */
-export function ctaButton(text: string, url: string): string {
-  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:28px auto 4px;">
+/** Greeting line — #262626, slightly heavier visual weight than body paragraphs. */
+export function greeting(name: string): string {
+  return `<p style="margin:0 0 24px;font-family:${SANS};font-size:14px;font-weight:400;line-height:20px;color:#262626;">Hi ${name},</p>`;
+}
+
+/**
+ * Divider + sign-off section — always ends with "The Kinkané Team".
+ * `disclaimer` renders in small muted text (disclaimers, security notes, closings like "Happy reading,").
+ */
+export function signOff(disclaimer?: string): string {
+  const disclaimerHtml = disclaimer
+    ? `<p style="margin:0 0 12px;font-family:${SANS};font-size:12px;font-weight:400;line-height:19.5px;color:rgba(82,81,78,0.70);">${disclaimer}</p>`
+    : '';
+  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width:100%;margin-top:20px;border-top:1px solid #E8E8E7;">
     <tr>
-      <td style="background-color:#1A1A1A;border-radius:6px;text-align:center;">
+      <td style="padding-top:32px;">
+        ${disclaimerHtml}<p style="margin:0;font-family:${SANS};font-size:14px;font-weight:400;line-height:20px;color:#52514E;">The Kinkané Team</p>
+      </td>
+    </tr>
+  </table>`;
+}
+
+/** Black CTA button, uppercase label — matches the Figma button style. */
+export function ctaButton(text: string, url: string): string {
+  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:28px 0 0;">
+    <tr>
+      <td style="background-color:#262626;border-radius:6px;text-align:center;">
         <a href="${url}" style="display:inline-block;padding:14px 32px;font-family:${SANS};font-size:12px;font-weight:bold;letter-spacing:1.5px;color:#FFFFFF;text-decoration:none;text-transform:uppercase;">${text}</a>
       </td>
     </tr>
@@ -99,25 +114,25 @@ export function ctaButton(text: string, url: string): string {
 
 /**
  * Individual digit boxes for OTP codes — matches the Figma verification code display.
- * Renders "YOUR VERIFICATION CODE" label above the digit row, plus the expiry note below.
+ * White boxes with #E8E8E7 outline, Georgia digits, cream container.
  */
 export function otpDisplay(otp: string, expiryMinutes: number = 15): string {
   const digitCells = otp
     .split('')
     .map(
       (d) =>
-        `<td style="background-color:#F5F0E8;border:1px solid #E0D8C8;border-radius:5px;padding:14px 0;width:44px;font-family:${SANS};font-size:28px;font-weight:bold;color:#1A1A1A;text-align:center;">${d}</td><td style="width:8px;"></td>`,
+        `<td style="width:44px;height:56px;background-color:#FFFFFF;outline:1px solid #E8E8E7;text-align:center;vertical-align:middle;"><span style="font-family:Georgia,'Times New Roman',serif;font-size:24px;font-weight:400;color:#262626;line-height:32px;">${d}</span></td>`,
     )
-    .join('');
+    .join('<td style="width:12px;"></td>');
 
-  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:28px auto 0;background-color:#F5F0E8;border:1px solid #E0D8C8;border-radius:8px;padding:0;">
+  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width:100%;margin:20px 0 0;background-color:#F5F0E8;border-radius:6px;outline:1px solid #E8E8E7;">
     <tr>
-      <td style="padding:24px 32px;text-align:center;">
-        <p style="margin:0 0 16px;font-family:${SANS};font-size:10px;font-weight:bold;letter-spacing:3px;color:#999999;text-transform:uppercase;">Your Verification Code</p>
+      <td style="padding:32px 24px;text-align:center;">
+        <p style="margin:0 0 16px;font-family:${SANS};font-size:12px;font-weight:400;letter-spacing:3.6px;color:#52514E;text-transform:uppercase;line-height:16px;">Your Verification Code</p>
         <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 auto;">
           <tr>${digitCells}</tr>
         </table>
-        <p style="margin:16px 0 0;font-family:${SANS};font-size:12px;color:#888888;">This code will expire in ${expiryMinutes} minutes.</p>
+        <p style="margin:16px 0 0;font-family:${SANS};font-size:12px;color:rgba(82,81,78,0.60);line-height:16px;">This code will expire in ${expiryMinutes} minutes.</p>
       </td>
     </tr>
   </table>`;
@@ -127,7 +142,7 @@ export function otpDisplay(otp: string, expiryMinutes: number = 15): string {
 export function quoteBlock(text: string): string {
   return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:20px 0;width:100%;">
     <tr>
-      <td style="border-left:3px solid #E0D8C8;padding:10px 16px;font-family:Georgia,'Times New Roman',serif;font-size:14px;color:#555555;line-height:1.65;">${text}</td>
+      <td style="border-left:3px solid #E8E8E7;padding:10px 16px;font-family:Georgia,'Times New Roman',serif;font-size:14px;color:#52514E;line-height:1.65;">${text}</td>
     </tr>
   </table>`;
 }
@@ -141,7 +156,7 @@ export function escapeHtml(str: string): string {
     .replace(/'/g, '&#x27;');
 }
 
-/** Convenience: wraps a string in a styled <p> tag. Last item should use margin:0. */
+/** Paragraph — body text colour #52514E. Use `last: true` to remove bottom margin. */
 export function p(content: string, last = false): string {
-  return `<p style="margin:0${last ? '' : ' 0 16px'};font-size:14px;font-weight:400;line-height:22.75px;letter-spacing:-0.15px;">${content}</p>`;
+  return `<p style="margin:0${last ? '' : ' 0 20px'};font-family:${SANS};font-size:14px;font-weight:400;line-height:22.75px;letter-spacing:-0.15px;color:#52514E;">${content}</p>`;
 }

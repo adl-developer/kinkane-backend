@@ -1,16 +1,16 @@
 import { sgMail, FROM } from '../../lib/sendgrid';
-import { emailLayout, ctaButton, escapeHtml, p } from '../lib/layout';
+import { emailLayout, ctaButton, greeting, signOff, escapeHtml, p } from '../lib/layout';
 
 export async function sendPasswordResetEmail(to: string, name: string, resetUrl: string): Promise<void> {
   const safeName = escapeHtml(name);
   const title = 'Reset your password';
 
   const body = [
-    p(`Hi ${safeName},`),
+    greeting(safeName),
     p('We received a request to reset your Kinkané password.'),
     p('Click the button below to create a new password:'),
     ctaButton('Reset Password', resetUrl),
-    p("If you didn't request a password reset, you can safely ignore this email. Your account remains secure.", true),
+    signOff("If you didn't request a password reset, you can safely ignore this email. Your account remains secure."),
   ].join('\n');
 
   await sgMail.send({

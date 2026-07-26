@@ -1,5 +1,5 @@
 import { sgMail, FROM } from '../../lib/sendgrid';
-import { emailLayout, otpDisplay, escapeHtml, p } from '../lib/layout';
+import { emailLayout, otpDisplay, greeting, signOff, escapeHtml, p } from '../lib/layout';
 
 export async function sendVerifyEmail(
   to: string,
@@ -11,13 +11,12 @@ export async function sendVerifyEmail(
   const title = 'One more step to start reading';
 
   const body = [
-    p(`Hi ${safeName},`),
+    greeting(safeName),
     p('Please verify your email address to complete your Kinkané account setup.'),
     p("Once verified, you'll be able to save books, build your bookshelf, and receive personalised recommendations tailored to your reading tastes."),
     p('Use the verification code below to continue:'),
     otpDisplay(otp, expiryMinutes),
-    `<p style="margin:24px 0 0;font-family:Arial,sans-serif;font-size:12px;color:#888888;">If you didn't create a Kinkané account, you can safely ignore this email.</p>`,
-    p('<strong>The Kinkané Team</strong>', true),
+    signOff("If you didn't create a Kinkané account, you can safely ignore this email."),
   ].join('\n');
 
   await sgMail.send({

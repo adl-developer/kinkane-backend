@@ -1,5 +1,5 @@
 import { sgMail, FROM } from '../../lib/sendgrid';
-import { emailLayout, ctaButton, escapeHtml, p } from '../lib/layout';
+import { emailLayout, ctaButton, greeting, signOff, escapeHtml, p } from '../lib/layout';
 import { unsubscribeUrl } from '../../lib/unsubscribe-token';
 
 export async function sendPostLikeEmail(
@@ -14,10 +14,10 @@ export async function sendPostLikeEmail(
   const title = 'Someone liked your review';
 
   const body = [
-    p(`Hi ${safeName},`),
+    greeting(safeName),
     p(`<strong>${safeLiker}</strong> liked your review of <em>${safeBook}</em>. Looks like your taste resonates.`),
     ctaButton('View in App', 'https://kinkane.com'),
-    p('<strong>The Kinkané Team</strong>', true),
+    signOff(),
   ].join('\n');
 
   await sgMail.send({

@@ -1,5 +1,5 @@
 import { sgMail, FROM } from '../../lib/sendgrid';
-import { emailLayout, ctaButton, escapeHtml, p } from '../lib/layout';
+import { emailLayout, ctaButton, greeting, signOff, escapeHtml, p } from '../lib/layout';
 import { unsubscribeUrl } from '../../lib/unsubscribe-token';
 
 export async function sendRateReviewReminderEmail(
@@ -13,11 +13,11 @@ export async function sendRateReviewReminderEmail(
   const title = 'Share your thoughts';
 
   const body = [
-    p(`Hi ${safeName},`),
+    greeting(safeName),
     p(`Looks like you finished <strong>${safeTitle}</strong> by ${safeAuthor}. Your take matters — readers like you are what makes the Kinkané community worth being part of.`),
     p('It only takes a minute to rate and share what you thought.'),
     ctaButton('Leave a Review', book.url),
-    p('<strong>The Kinkané Team</strong>', true),
+    signOff(),
   ].join('\n');
 
   await sgMail.send({

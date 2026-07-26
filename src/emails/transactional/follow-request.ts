@@ -1,5 +1,5 @@
 import { sgMail, FROM } from '../../lib/sendgrid';
-import { emailLayout, ctaButton, escapeHtml, p } from '../lib/layout';
+import { emailLayout, ctaButton, greeting, signOff, escapeHtml, p } from '../lib/layout';
 import { unsubscribeUrl } from '../../lib/unsubscribe-token';
 
 export async function sendFollowRequestEmail(to: string, receiverName: string, senderName: string): Promise<void> {
@@ -8,10 +8,10 @@ export async function sendFollowRequestEmail(to: string, receiverName: string, s
   const title = 'New follow request';
 
   const body = [
-    p(`Hi ${safeReceiver},`),
+    greeting(safeReceiver),
     p(`<strong>${safeSender}</strong> has sent you a follow request on Kinkané.`),
     ctaButton('Open Kinkané', 'https://kinkane.com'),
-    p('<strong>The Kinkané Team</strong>', true),
+    signOff(),
   ].join('\n');
 
   await sgMail.send({
@@ -29,11 +29,11 @@ export async function sendFollowAcceptedEmail(to: string, senderName: string, ac
   const title = 'Follow request accepted';
 
   const body = [
-    p(`Hi ${safeSender},`),
+    greeting(safeSender),
     p(`<strong>${safeAccepter}</strong> has accepted your follow request on Kinkané.`),
     p('You can now see their reading activity.'),
     ctaButton('View Their Shelf', 'https://kinkane.com'),
-    p('<strong>The Kinkané Team</strong>', true),
+    signOff(),
   ].join('\n');
 
   await sgMail.send({

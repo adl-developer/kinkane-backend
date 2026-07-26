@@ -1,5 +1,5 @@
 import { sgMail, FROM } from '../../lib/sendgrid';
-import { emailLayout, ctaButton, escapeHtml, p } from '../lib/layout';
+import { emailLayout, ctaButton, greeting, signOff, escapeHtml, p } from '../lib/layout';
 import { unsubscribeUrl } from '../../lib/unsubscribe-token';
 
 export async function sendWelcomeEmail(to: string, name: string): Promise<void> {
@@ -7,14 +7,13 @@ export async function sendWelcomeEmail(to: string, name: string): Promise<void> 
   const title = 'Welcome to Kinkané';
 
   const body = [
-    p(`Hi ${safeName},`),
+    greeting(safeName),
     p('Welcome to Kinkané,'),
     p("We're excited to help you discover books you'll actually love — not just what's trending."),
     p('The more you tell us about your reading tastes, the better your recommendations become. Start building your bookshelf, explore new authors, and uncover stories that match your mood and interests.'),
     p('Your next favourite book might be closer than you think.'),
     ctaButton('Explore Your Bookshelf', 'https://kinkane.com'),
-    p('Happy reading,'),
-    p('<strong>The Kinkané Team</strong>', true),
+    signOff('Happy reading,'),
   ].join('\n');
 
   await sgMail.send({
