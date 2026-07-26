@@ -1,13 +1,6 @@
 import { sgMail, FROM } from '../../lib/sendgrid';
-
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#x27;');
-}
+import { emailLayout, ctaButton, escapeHtml, p } from '../lib/layout';
+import { unsubscribeUrl } from '../../lib/unsubscribe-token';
 
 export async function sendRateReviewReminderEmail(
   to: string,
@@ -17,18 +10,21 @@ export async function sendRateReviewReminderEmail(
   const safeName = escapeHtml(name);
   const safeTitle = escapeHtml(book.title);
   const safeAuthor = escapeHtml(book.author);
+  const title = 'Share your thoughts';
+
+  const body = [
+    p(`Hi ${safeName},`),
+    p(`Looks like you finished <strong>${safeTitle}</strong> by ${safeAuthor}. Your take matters — readers like you are what makes the Kinkané community worth being part of.`),
+    p('It only takes a minute to rate and share what you thought.'),
+    ctaButton('Leave a Review', book.url),
+    p('<strong>The Kinkané Team</strong>', true),
+  ].join('\n');
 
   await sgMail.send({
     to,
     from: FROM,
     subject: `How did you find "${book.title}"?`,
-    html: `
-      <p>Hi ${safeName},</p>
-      <p>Looks like you finished <strong>${safeTitle}</strong> by ${safeAuthor}. Your take matters — readers like you are what makes the Kinkané community worth being part of.</p>
-      <p>It only takes a minute to rate and share what you thought.</p>
-      <p><a href="${book.url}" style="background:#1a1a1a;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;display:inline-block;">Leave a Review</a></p>
-      <p>The Kinkané Team</p>
-    `,
+    html: emailLayout(title, body, unsubscribeUrl(to)),
     text: `Hi ${name},\n\nLooks like you finished "${book.title}" by ${book.author}. Your take matters — readers like you are what makes the Kinkané community worth being part of.\n\nIt only takes a minute to rate and share what you thought.\n\n${book.url}\n\nThe Kinkané Team`,
   });
 }

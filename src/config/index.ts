@@ -44,6 +44,10 @@ const envSchema = z.object({
   // Must be at least 32 characters. Generate with: openssl rand -hex 32
   ADMIN_TOKEN: z.string().min(32),
 
+  // Secret used to sign one-way unsubscribe tokens embedded in email footers.
+  // Must be at least 32 characters. Generate with: openssl rand -hex 32
+  UNSUBSCRIBE_SECRET: z.string().min(32),
+
   // Cloudinary cloud name — used to validate that uploaded photo URLs belong
   // to this project's Cloudinary account, not an arbitrary third-party account.
   CLOUDINARY_CLOUD_NAME: z.string().min(1),
@@ -114,6 +118,7 @@ export const config = {
   },
   appUrl: env.APP_URL,
   adminToken: env.ADMIN_TOKEN,
+  unsubscribeSecret: env.UNSUBSCRIBE_SECRET,
   cloudinary: {
     cloudName: env.CLOUDINARY_CLOUD_NAME,
   },

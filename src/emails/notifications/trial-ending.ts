@@ -1,25 +1,35 @@
 import { sgMail, FROM } from '../../lib/sendgrid';
+import { emailLayout, ctaButton, escapeHtml, p } from '../lib/layout';
+import { unsubscribeUrl } from '../../lib/unsubscribe-token';
 
 export async function sendTrialEndingEmail(to: string, name: string, daysLeft: number): Promise<void> {
+  const safeName = escapeHtml(name);
+  const plural = daysLeft === 1 ? '' : 's';
+  const title = `Your Kinkané Plus trial ends in ${daysLeft} day${plural}`;
+
+  const featureList = `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:16px 0 16px 8px;">
+    <tr><td style="padding:4px 0;font-family:Georgia,'Times New Roman',serif;font-size:15px;color:#1A1A1A;">&#8226;&nbsp; Personalised recommendations tailored to your reading tastes</td></tr>
+    <tr><td style="padding:4px 0;font-family:Georgia,'Times New Roman',serif;font-size:15px;color:#1A1A1A;">&#8226;&nbsp; Unlimited bookshelf saves</td></tr>
+    <tr><td style="padding:4px 0;font-family:Georgia,'Times New Roman',serif;font-size:15px;color:#1A1A1A;">&#8226;&nbsp; Community features</td></tr>
+    <tr><td style="padding:4px 0;font-family:Georgia,'Times New Roman',serif;font-size:15px;color:#1A1A1A;">&#8226;&nbsp; Curated reading collections</td></tr>
+  </table>`;
+
+  const body = [
+    p(`Hi ${safeName},`),
+    p(`Your Kinkané Plus trial will end in <strong>${daysLeft} day${plural}</strong>.`),
+    p("During your trial, you've enjoyed:"),
+    featureList,
+    p('To continue discovering books chosen just for you, upgrade to Kinkané Plus before your trial expires.'),
+    ctaButton('Upgrade to Plus', 'https://kinkane.com/subscribe'),
+    p('Your next great read is waiting.'),
+    p('<strong>The Kinkané Team</strong>', true),
+  ].join('\n');
+
   await sgMail.send({
     to,
     from: FROM,
-    subject: `Your Kinkané Plus trial ends in ${daysLeft} day${daysLeft === 1 ? '' : 's'}`,
-    html: `
-      <p>Hi ${name},</p>
-      <p>Your Kinkané Plus trial will end in <strong>${daysLeft} day${daysLeft === 1 ? '' : 's'}</strong>.</p>
-      <p>During your trial, you've enjoyed:</p>
-      <ul>
-        <li>Personalised recommendations tailored to your reading tastes</li>
-        <li>Unlimited bookshelf saves</li>
-        <li>Community features</li>
-        <li>Curated reading collections</li>
-      </ul>
-      <p>To continue discovering books chosen just for you, upgrade to Kinkané Plus before your trial expires.</p>
-      <p><a href="https://kinkane.com/subscribe" style="background:#1a1a1a;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;display:inline-block;">Upgrade to Plus</a></p>
-      <p>Your next great read is waiting.</p>
-      <p>The Kinkané Team</p>
-    `,
-    text: `Hi ${name},\n\nYour Kinkané Plus trial will end in ${daysLeft} day${daysLeft === 1 ? '' : 's'}.\n\nDuring your trial, you've enjoyed:\n• Personalised recommendations tailored to your reading tastes\n• Unlimited bookshelf saves\n• Community features\n• Curated reading collections\n\nTo continue discovering books chosen just for you, upgrade to Kinkané Plus before your trial expires.\n\nhttps://kinkane.com/subscribe\n\nYour next great read is waiting.\n\nThe Kinkané Team`,
+    subject: title,
+    html: emailLayout(title, body, unsubscribeUrl(to)),
+    text: `Hi ${name},\n\nYour Kinkané Plus trial will end in ${daysLeft} day${plural}.\n\nDuring your trial, you've enjoyed:\n• Personalised recommendations tailored to your reading tastes\n• Unlimited bookshelf saves\n• Community features\n• Curated reading collections\n\nTo continue discovering books chosen just for you, upgrade to Kinkané Plus before your trial expires.\n\nhttps://kinkane.com/subscribe\n\nYour next great read is waiting.\n\nThe Kinkané Team`,
   });
 }

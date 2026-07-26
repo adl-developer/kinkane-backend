@@ -1,9 +1,11 @@
 import { sgMail, FROM } from '../../lib/sendgrid';
+import { emailLayout } from '../lib/layout';
 
 export interface NewsletterPayload {
   subject: string;
-  preheader?: string;  // preview text shown in inbox before opening
-  htmlBody: string;
+  title: string;         // hero band headline (required for branded layout)
+  preheader?: string;    // preview text shown in inbox before opening
+  htmlBody: string;      // inner body content only — the layout shell is added here
   textBody: string;
 }
 
@@ -13,6 +15,7 @@ export interface NewsletterPayload {
  * campaigns API rather than calling this in a loop.
  *
  * Always include an unsubscribe link in htmlBody/textBody — required by CAN-SPAM/GDPR.
+ * The branded shell already includes a footer Unsubscribe link.
  */
 export async function sendNewsletterEmail(
   to: string,
@@ -22,9 +25,8 @@ export async function sendNewsletterEmail(
     to,
     from: FROM,
     subject: payload.subject,
-    html: payload.htmlBody,
+    html: emailLayout(payload.title, payload.htmlBody),
     text: payload.textBody,
-    // Tells SendGrid to track unsubscribes via its suppression groups
     trackingSettings: {
       clickTracking: { enable: true },
       openTracking: { enable: true },
