@@ -3,6 +3,10 @@
 
 ## 2026-07-25
 
+### Features
+
+* let people sign up without finishing onboarding first ([d0f6fa0](https://adl.github.com/adl-developer/kinkane-backend/commit/d0f6fa065d621e052e4f1670ec0ba275987063a1)) — [details](changelog/2026-07-25-optional-guest-session-signup.md)
+
 ### Bug Fixes
 
 * stop deploys failing when the index build needs more memory ([be01bd6](https://adl.github.com/adl-developer/kinkane-backend/commit/be01bd64307cb72525b62a2bbb084d33cc356fc0)) — [details](changelog/2026-07-25-parallel-index-build-shared-memory.md)
