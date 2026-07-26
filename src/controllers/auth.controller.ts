@@ -15,8 +15,8 @@ const signupSchema = z.object({
     .regex(/[a-z]/, 'Password must contain at least one lowercase letter')
     .regex(/[0-9]/, 'Password must contain at least one number')
     .regex(/[!@#$%^&*()\-_+=\[\]{}|;:,.<>?`~]/, 'Password must contain at least one special character'),
-  // Required — the user always goes through onboarding before creating an account
-  guestSessionId: z.string().uuid(),
+  // Optional — most users go through onboarding first, but it's not required
+  guestSessionId: z.string().uuid().optional(),
 });
 
 const loginSchema = z.object({

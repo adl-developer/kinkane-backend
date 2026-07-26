@@ -1,0 +1,1 @@
+CREATE INDEX IF NOT EXISTS "idx_books_publication_date" ON "books" USING btree ("publication_date");

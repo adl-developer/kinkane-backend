@@ -23,6 +23,12 @@ import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-ex
 
 const BOOK_DETAIL_TTL    = 60 * 60;    // 1 hour
 const LIST_TTL           = 5 * 60;     // 5 minutes
+// COUNT(*) over the books table is the expensive part of a list query (full/near-full
+// scan on 1M+ rows) while the row-fetch itself is a cheap indexed lookup. The total only
+// depends on the filter fields (not limit/offset/sort), and barely changes minute to
+// minute, so it's cached far longer than the rows and under its own filter-only key —
+// see countCacheKey — instead of being recomputed on every LIST_TTL expiry.
+const COUNT_TTL          = 30 * 60;    // 30 minutes
 const SUGGESTIONS_TTL    = 5 * 60;     // 5 minutes
 const TRENDING_TTL       = 60 * 60;    // 1 hour
 const PERSONALIZED_TTL   = 60 * 60;    // 1 hour
@@ -221,6 +227,60 @@ function buildAuthorBookSearchOrderBy(q: string): SQL[] {
   ];
 }
 
+// Tiers 0-1 only (exact/word prefix) — both are backed directly by the trigram
+// GIN index as index scans (confirmed via EXPLAIN: low tens of ms each, even on
+// the full books table). This is deliberately a subset of buildSearchCondition,
+// used to try the cheap match first — see the tiered fetch in suggestions() —
+// before ever reaching for the expensive tier-2/3 (word_similarity/FTS) scan,
+// which forces Postgres to materialize and rank every fuzzy-matching row in
+// the table before it can apply a LIMIT.
+function buildTitlePrefixCondition(q: string): SQL {
+  const prefix = q + '%';
+  const wordPrefix = '% ' + q + '%';
+  return sql`(${books.title} ILIKE ${prefix} OR ${books.title} ILIKE ${wordPrefix})`;
+}
+
+function buildTitlePrefixOrderBy(q: string): SQL[] {
+  const prefix = q + '%';
+  return [sql`CASE WHEN ${books.title} ILIKE ${prefix} THEN 0 ELSE 1 END`, asc(books.title)];
+}
+
+// Same cheap-tier-only shape as buildTitlePrefixCondition, applied to author name.
+function buildAuthorPrefixCondition(q: string): SQL {
+  const prefix = q + '%';
+  const wordPrefix = '% ' + q + '%';
+  return sql`${books.id} IN (
+    SELECT bc.book_id FROM book_contributors bc
+    WHERE bc.role = 'A01'
+      AND bc.person_name IS NOT NULL
+      AND (bc.person_name ILIKE ${prefix} OR bc.person_name ILIKE ${wordPrefix})
+  )`;
+}
+
+function buildAuthorPrefixOrderBy(q: string): SQL[] {
+  const prefix = q + '%';
+  return [
+    sql`(
+      SELECT MIN(CASE WHEN bc.person_name ILIKE ${prefix} THEN 0 ELSE 1 END)
+      FROM book_contributors bc
+      WHERE bc.book_id = ${books.id} AND bc.role = 'A01'
+    )`,
+  ];
+}
+
+// Cheap tier for authorSuggestions()'s grouped-by-name query — prefix/word-prefix
+// directly on person_name, same rationale as buildTitlePrefixCondition.
+function buildPersonNamePrefixCondition(q: string): SQL {
+  const prefix = q + '%';
+  const wordPrefix = '% ' + q + '%';
+  return sql`(${bookContributors.personName} ILIKE ${prefix} OR ${bookContributors.personName} ILIKE ${wordPrefix})`;
+}
+
+function buildPersonNamePrefixOrderBy(q: string): SQL[] {
+  const prefix = q + '%';
+  return [sql`CASE WHEN ${bookContributors.personName} ILIKE ${prefix} THEN 0 ELSE 1 END`];
+}
+
 function buildWhereClause(opts: ListBooksOptions): SQL | undefined {
   const conditions: SQL[] = [];
 
@@ -330,16 +390,26 @@ async function withWordSimilarityThreshold<T>(fn: (conn: Pick<typeof db, 'select
 
 export const booksService = {
   async list(opts: ListBooksOptions): Promise<{ books: BookListItem[]; total: number }> {
-    const cacheKey = `books:list:${createHash('sha256').update(JSON.stringify(opts)).digest('hex')}`;
-    const cached = await redis.get(cacheKey);
-    if (cached) {
-      const parsed = JSON.parse(cached) as { books: BookListItem[]; total: number };
-      for (const b of parsed.books) {
-        b.createdAt = new Date(b.createdAt);
-        b.updatedAt = new Date(b.updatedAt);
-      }
-      return parsed;
-    }
+    const rowsCacheKey = `books:list:${createHash('sha256').update(JSON.stringify(opts)).digest('hex')}`;
+    // Keyed only on the fields that affect the count (not limit/offset/sort) so every
+    // page of the same filter — and every sort direction — shares one cached total.
+    const countCacheKey = `books:count:${createHash('sha256')
+      .update(
+        JSON.stringify({
+          q: opts.q,
+          genre: opts.genre,
+          availability: opts.availability,
+          productForm: opts.productForm,
+          publishingStatus: opts.publishingStatus,
+          publisher: opts.publisher,
+        }),
+      )
+      .digest('hex')}`;
+
+    const [cachedRows, cachedCount] = await Promise.all([
+      redis.get(rowsCacheKey),
+      redis.get(countCacheKey),
+    ]);
 
     const where = buildWhereClause(opts);
     // When a search query is present, relevance ranking takes priority and sort is ignored.
@@ -350,40 +420,60 @@ export const booksService = {
         ? [opts.sort === 'desc' ? desc(books.title) : asc(books.title)]
         : [books.updatedAt];
 
-    const rowsQuery = (conn: Pick<typeof db, 'select'>) =>
-      conn
-        .select(LIST_COLUMNS)
-        .from(books)
-        .where(where)
-        .orderBy(...orderBy)
-        .limit(opts.limit)
-        .offset(opts.offset);
-    const countQuery = (conn: Pick<typeof db, 'select'>) =>
-      conn.select({ count: sql<number>`COUNT(*)::int` }).from(books).where(where);
+    const booksPromise: Promise<BookListItem[]> = cachedRows
+      ? Promise.resolve(JSON.parse(cachedRows) as BookListItem[]).then((parsed) => {
+          for (const b of parsed) {
+            b.createdAt = new Date(b.createdAt);
+            b.updatedAt = new Date(b.updatedAt);
+          }
+          return parsed;
+        })
+      : (async () => {
+          const rowsQuery = (conn: Pick<typeof db, 'select'>) =>
+            conn
+              .select(LIST_COLUMNS)
+              .from(books)
+              .where(where)
+              .orderBy(...orderBy)
+              .limit(opts.limit)
+              .offset(opts.offset);
+          // <% only appears in `where` when opts.q is set (buildSearchCondition) — skip
+          // the transaction wrapper otherwise so the common no-search browse path keeps
+          // its fully parallel dispatch.
+          const rows = await (opts.q ? withWordSimilarityThreshold(rowsQuery) : rowsQuery(db));
 
-    // <% only appears in `where` when opts.q is set (buildSearchCondition) — skip
-    // the transaction wrapper otherwise so the common no-search browse path keeps
-    // its fully parallel dispatch.
-    const [rows, [countRow]] = await Promise.all([
-      opts.q ? withWordSimilarityThreshold(rowsQuery) : rowsQuery(db),
-      opts.q ? withWordSimilarityThreshold(countQuery) : countQuery(db),
-    ]);
+          const [relations, excerptMap] = await Promise.all([
+            attachRelationsToList(rows),
+            getExcerptsByIsbns(rows.map((r) => r.isbn13)),
+          ]);
+          const result = rows.map((r) => ({
+            ...r,
+            ...relations.get(r.id)!,
+            excerpt: pickExcerpt(r.isbn13, excerptMap),
+          }));
 
-    const [relations, excerptMap] = await Promise.all([
-      attachRelationsToList(rows),
-      getExcerptsByIsbns(rows.map((r) => r.isbn13)),
-    ]);
-    const result = {
-      books: rows.map((r) => ({
-        ...r,
-        ...relations.get(r.id)!,
-        excerpt: pickExcerpt(r.isbn13, excerptMap),
-      })),
-      total: countRow?.count ?? 0,
-    };
+          await redis.set(rowsCacheKey, JSON.stringify(result), 'EX', LIST_TTL);
+          return result;
+        })();
 
-    await redis.set(cacheKey, JSON.stringify(result), 'EX', LIST_TTL);
-    return result;
+    // COUNT(*) is the expensive part of this query — a full (or near-full) scan of a
+    // 1M+ row table — while the row fetch above is a cheap indexed lookup. The total
+    // barely changes minute to minute, so it's cached far longer than the rows and
+    // under the filter-only key above, instead of being recomputed on every LIST_TTL
+    // expiry (which previously happened on every distinct limit/offset/sort combo too).
+    const totalPromise: Promise<number> = cachedCount != null
+      ? Promise.resolve(parseInt(cachedCount, 10))
+      : (async () => {
+          const countQuery = (conn: Pick<typeof db, 'select'>) =>
+            conn.select({ count: sql<number>`COUNT(*)::int` }).from(books).where(where);
+          const [countRow] = await (opts.q ? withWordSimilarityThreshold(countQuery) : countQuery(db));
+          const total = countRow?.count ?? 0;
+          await redis.set(countCacheKey, String(total), 'EX', COUNT_TTL);
+          return total;
+        })();
+
+    const [resultBooks, total] = await Promise.all([booksPromise, totalPromise]);
+    return { books: resultBooks, total };
   },
 
   async suggestions(q: string, limit: number, type: 'title' | 'author' = 'title'): Promise<SuggestionItem[]> {
@@ -398,29 +488,48 @@ export const booksService = {
     //   2 — word_similarity > 0.3      (e.g. "Haary" → "Harry Potter..." / "Harry Styles")
     //   3 — FTS hit                    (title: description/subtitle; author: full name)
     // Within each tier, ranked by word_similarity then ts_rank descending.
-    const where = type === 'author' ? buildAuthorBookSearchCondition(q) : buildSearchCondition(q);
-    const orderBy = type === 'author' ? buildAuthorBookSearchOrderBy(q) : buildSearchOrderBy(q);
-
-    // Over-fetch a candidate pool so deduping same title+subtitle editions
-    // (see dedupeByTitleAndSubtitle) still leaves enough distinct results to
-    // fill the requested limit.
+    //
+    // Tiers 0-1 run first, alone — EXPLAIN ANALYZE against the live 1.1M-row
+    // table showed the full four-tier OR'd condition forces Postgres to
+    // materialize and rank every tier-2 (word_similarity) match before
+    // limiting (tens of thousands of rows for a common query like "harry",
+    // ~28s of execution time). Tiers 0-1 alone are index scans on the trigram
+    // index (tens of ms). Since a real prefix match exists for the large
+    // majority of typeahead queries, this skips the expensive tiers entirely
+    // in the common case — they're only reached when tiers 0-1 don't already
+    // fill the pool.
     const poolSize = Math.min(limit * FEED_POOL_MULTIPLIER, FEED_POOL_MAX);
+    const selectColumns = {
+      id: books.id,
+      title: books.title,
+      subtitle: books.subtitle,
+      isbn13: books.isbn13,
+      productForm: books.productForm,
+      coverUrl: books.coverUrl,
+    };
 
-    const pool = await withWordSimilarityThreshold((conn) =>
-      conn
-        .select({
-          id: books.id,
-          title: books.title,
-          subtitle: books.subtitle,
-          isbn13: books.isbn13,
-          productForm: books.productForm,
-          coverUrl: books.coverUrl,
-        })
-        .from(books)
-        .where(where)
-        .orderBy(...orderBy)
-        .limit(poolSize),
+    const cheapWhere = type === 'author' ? buildAuthorPrefixCondition(q) : buildTitlePrefixCondition(q);
+    const cheapOrderBy = type === 'author' ? buildAuthorPrefixOrderBy(q) : buildTitlePrefixOrderBy(q);
+
+    let pool = await withWordSimilarityThreshold((conn) =>
+      conn.select(selectColumns).from(books).where(cheapWhere).orderBy(...cheapOrderBy).limit(poolSize),
     );
+
+    if (pool.length < poolSize) {
+      const broadWhere = type === 'author' ? buildAuthorBookSearchCondition(q) : buildSearchCondition(q);
+      const broadOrderBy = type === 'author' ? buildAuthorBookSearchOrderBy(q) : buildSearchOrderBy(q);
+      const excludeIds = pool.map((r) => r.id);
+
+      const extra = await withWordSimilarityThreshold((conn) =>
+        conn
+          .select(selectColumns)
+          .from(books)
+          .where(excludeIds.length > 0 ? and(broadWhere, notInArray(books.id, excludeIds)) : broadWhere)
+          .orderBy(...broadOrderBy)
+          .limit(poolSize - pool.length),
+      );
+      pool = [...pool, ...extra];
+    }
 
     const rows = dedupeByTitleAndSubtitle(pool).slice(0, limit);
 
@@ -474,37 +583,57 @@ export const booksService = {
       ? sql` OR to_tsvector('simple', ${bookContributors.personName}) @@ plainto_tsquery('simple', ${q})`
       : sql``;
 
-    const rows = await withWordSimilarityThreshold((conn) =>
+    const selectColumns = {
+      personName: bookContributors.personName,
+      bookCount: sql<number>`COUNT(DISTINCT ${bookContributors.bookId})::int`,
+    };
+    const baseWhere = and(eq(bookContributors.role, 'A01'), sql`${bookContributors.personName} IS NOT NULL`);
+
+    // Same tiered approach as suggestions() — try the cheap prefix/word-prefix
+    // tier (index scan on the trigram index) first, and only fall through to
+    // the expensive word_similarity/FTS tier if that doesn't fill `limit`.
+    let rows = await withWordSimilarityThreshold((conn) =>
       conn
-        .select({
-          personName: bookContributors.personName,
-          bookCount: sql<number>`COUNT(DISTINCT ${bookContributors.bookId})::int`,
-        })
+        .select(selectColumns)
         .from(bookContributors)
-        .where(
-          and(
-            eq(bookContributors.role, 'A01'),
-            sql`${bookContributors.personName} IS NOT NULL`,
-            sql`(
-              ${bookContributors.personName} ILIKE ${prefix}
-              OR ${bookContributors.personName} ILIKE ${wordPrefix}
-              OR ${q} <% ${bookContributors.personName}
-              ${fts}
-            )`,
-          ),
-        )
+        .where(and(baseWhere, buildPersonNamePrefixCondition(q)))
         .groupBy(bookContributors.personName)
-        .orderBy(
-          sql`CASE
-            WHEN ${bookContributors.personName} ILIKE ${prefix}     THEN 0
-            WHEN ${bookContributors.personName} ILIKE ${wordPrefix} THEN 1
-            WHEN word_similarity(${q}, ${bookContributors.personName}) > 0.3 THEN 2
-            ELSE 3
-          END`,
-          sql`word_similarity(${q}, ${bookContributors.personName}) DESC`,
-        )
+        .orderBy(...buildPersonNamePrefixOrderBy(q))
         .limit(limit),
     );
+
+    if (rows.length < limit) {
+      const excludeNames = rows.map((r) => r.personName).filter((n): n is string => n !== null);
+      const extra = await withWordSimilarityThreshold((conn) =>
+        conn
+          .select(selectColumns)
+          .from(bookContributors)
+          .where(
+            and(
+              baseWhere,
+              sql`(
+                ${bookContributors.personName} ILIKE ${prefix}
+                OR ${bookContributors.personName} ILIKE ${wordPrefix}
+                OR ${q} <% ${bookContributors.personName}
+                ${fts}
+              )`,
+              excludeNames.length > 0 ? notInArray(bookContributors.personName, excludeNames) : undefined,
+            ),
+          )
+          .groupBy(bookContributors.personName)
+          .orderBy(
+            sql`CASE
+              WHEN ${bookContributors.personName} ILIKE ${prefix}     THEN 0
+              WHEN ${bookContributors.personName} ILIKE ${wordPrefix} THEN 1
+              WHEN word_similarity(${q}, ${bookContributors.personName}) > 0.3 THEN 2
+              ELSE 3
+            END`,
+            sql`word_similarity(${q}, ${bookContributors.personName}) DESC`,
+          )
+          .limit(limit - rows.length),
+      );
+      rows = [...rows, ...extra];
+    }
 
     const results = rows.map((r) => ({ personName: r.personName as string, bookCount: r.bookCount }));
 
