@@ -5,12 +5,13 @@
 
 ### Features
 
-* add backfill pass to recommendations so niche readers always get a full list ([8a41bf0](https://adl.github.com/adl-developer/kinkane-backend/commit/8a41bf085086f370b332702dd12f1124235e07e9)) — [details](changelog/2026-07-26-database-plan-upgrade.md)
+* apply Figma-accurate styling to all 16 email templates ([4dc5d8d](https://adl.github.com/adl-developer/kinkane-backend/commit/4dc5d8d919aa382e7f209e064a0043228bc8c410)) — [details](changelog/2026-07-26-trending-fallback-missing-index.md)
+* add backfill pass to recommendations so niche readers always get a full list ([8a41bf0](https://adl.github.com/adl-developer/kinkane-backend/commit/8a41bf085086f370b332702dd12f1124235e07e9)) — [details](changelog/2026-07-26-books-list-search-latency.md)
 * branded email layout, real logo, and one-click unsubscribe ([c34c01b](https://adl.github.com/adl-developer/kinkane-backend/commit/c34c01b3fdcfbd09c1dd6d93ab7278b0e97162e0))
 
 ### Bug Fixes
 
-* stop trending's fallback from scanning every book ([6d6b49a](https://adl.github.com/adl-developer/kinkane-backend/commit/6d6b49ae6efaf480a90f744691dce82781a77ea7)) — [details](changelog/2026-07-26-trending-fallback-missing-index.md)
+* stop trending's fallback from scanning every book ([6d6b49a](https://adl.github.com/adl-developer/kinkane-backend/commit/6d6b49ae6efaf480a90f744691dce82781a77ea7)) — [details](changelog/2026-07-26-books-list-search-latency.md)
 
 
 ## 2026-07-25
