@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-07-26
+
+### Bug Fixes
+
+* stop trending's fallback from scanning every book ([6d6b49a](https://adl.github.com/adl-developer/kinkane-backend/commit/6d6b49ae6efaf480a90f744691dce82781a77ea7)) — [details](changelog/2026-07-26-trending-fallback-missing-index.md)
+
+
 ## 2026-07-25
 
 ### Features
