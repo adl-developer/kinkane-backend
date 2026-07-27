@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { booksController } from '../controllers/books.controller';
-import { optionalAuth } from '../middleware/auth.middleware';
+import { optionalAuth, requireAuth } from '../middleware/auth.middleware';
 
 const router = Router();
 
@@ -37,8 +37,8 @@ router.get('/:id', optionalAuth, booksController.getById);
  * GET /books/:id/similar?limit=10
  * Returns books ranked by cosine similarity to the given book's embedding
  * ("You May Also Like"). Excludes the book itself. Empty list if the book
- * has no embedding yet. Public — no auth required.
+ * has no embedding yet. Requires authentication.
  */
-router.get('/:id/similar', booksController.similar);
+router.get('/:id/similar', requireAuth, booksController.similar);
 
 export default router;
