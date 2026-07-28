@@ -43,12 +43,14 @@ const TRENDING_INTERACTION_TYPES = ['view', 'wishlist', 'chosen_from_recommendat
 // leaves enough distinct titles to fill the requested count.
 const FEED_POOL_MULTIPLIER = 3;
 const FEED_POOL_MAX = 100;
-// Above this many cheap-tier (prefix) matches, list()'s search path reports the cheap
-// count as-is instead of paying for an exact broad-tier count — see the cheap-first
-// comment in list(). Comfortably above the max page size (50) so normal pagination
-// depth doesn't force a fallback, while still being small enough that reaching it
-// means the term is common enough for an exact count to be expensive.
-const SEARCH_COUNT_THRESHOLD = 500;
+// Hard ceiling on how many rows a search's result count is willing to examine. Counting
+// a search's full match set is unbounded work — on the production catalogue (1.1M rows)
+// a single common term like "the" matches ~322k rows, and EXPLAIN (ANALYZE, BUFFERS)
+// measured ~900MB of disk reads for one such count against a ~4GB-RAM instance. Past
+// this cap the count stops early and reports the cap as a floor ("1000+"), which callers
+// distinguish via `totalIsApproximate`. Comfortably above the max page size (50) so
+// ordinary pagination never notices.
+const SEARCH_COUNT_CAP = 1000;
 
 export interface ListBooksOptions {
   q?: string;
@@ -428,14 +430,34 @@ async function withWordSimilarityThreshold<T>(fn: (conn: Pick<typeof db, 'select
   });
 }
 
+// COUNT(*) over a search condition is unbounded work — it has to visit every matching
+// row before it can report a number, which for a common term means hundreds of thousands
+// of rows and hundreds of MB of disk reads (see SEARCH_COUNT_CAP). Counting inside a
+// LIMIT'd subquery instead lets Postgres stop as soon as it has seen `cap` matches, so
+// the cost is bounded by the cap rather than by how popular the search term is.
+//
+// Returns a value up to `cap`; reaching exactly `cap` means "at least this many" rather
+// than an exact total, which is why callers pass cap+1 to tell the two cases apart.
+async function countUpTo(where: SQL | undefined, cap: number): Promise<number> {
+  const rows = await db.execute<{ count: number }>(
+    sql`SELECT COUNT(*)::int AS count FROM (SELECT 1 FROM ${books} WHERE ${where ?? sql`TRUE`} LIMIT ${cap}) t`,
+  );
+  return Number((rows as unknown as { count: number }[])[0]?.count ?? 0);
+}
+
 // ── Public service ────────────────────────────────────────────────────────────
 
 export const booksService = {
-  async list(opts: ListBooksOptions): Promise<{ books: BookListItem[]; total: number }> {
-    const rowsCacheKey = `books:list:${createHash('sha256').update(JSON.stringify(opts)).digest('hex')}`;
+  async list(
+    opts: ListBooksOptions,
+  ): Promise<{ books: BookListItem[]; total: number; hasMore: boolean; totalIsApproximate: boolean }> {
+    // v2: the cached row payload changed shape (now { rows, hasMore }) and the cached
+    // count is now capped for searches — bumping the prefix retires incompatible entries
+    // rather than letting them deserialize into the wrong shape.
+    const rowsCacheKey = `books:list:v2:${createHash('sha256').update(JSON.stringify(opts)).digest('hex')}`;
     // Keyed only on the fields that affect the count (not limit/offset/sort) so every
     // page of the same filter — and every sort direction — shares one cached total.
-    const countCacheKey = `books:count:${createHash('sha256')
+    const countCacheKey = `books:count:v2:${createHash('sha256')
       .update(
         JSON.stringify({
           q: opts.q,
@@ -470,40 +492,45 @@ export const booksService = {
     //   - rows: a tier is used only once it has enough matches to fill the requested page
     //     (offset + limit); a request deep enough to outrun it still needs the next tier
     //     to fetch the right rows.
-    //   - count: reported from the first tier that clears SEARCH_COUNT_THRESHOLD, rather
-    //     than paying for an exact broad-tier COUNT(*). This is a known approximation (a
-    //     lower bound — the true total may include additional matches from a broader
-    //     tier) accepted for search terms common enough to make an exact count expensive.
-    // Both checks are independent of the requested offset for the *count* decision (it's
-    // cached under a page-independent key — see countCacheKey), so every page of the same
-    // query agrees on the same total instead of it drifting by whichever page happened to
-    // trigger the computation first.
+    //   - count: never runs against the broad tier at all, and is capped at
+    //     SEARCH_COUNT_CAP. A search's exact total is unbounded work and was the single
+    //     slowest thing this endpoint did — `GET /books?q=the alchemist` timed out in
+    //     production (>25s) purely on its count, while the same query's rows come back in
+    //     well under a second. The reported total is therefore a lower bound whenever
+    //     `totalIsApproximate` is set; `hasMore` is what callers should paginate on.
+    // The count is deliberately independent of the requested offset (it's cached under a
+    // page-independent key — see countCacheKey), so every page of the same query agrees on
+    // the same total instead of it drifting by whichever page computed it first.
     let fastCount = 0;
     let cheapCount = 0;
     if (opts.q && (!cachedRows || cachedCount == null)) {
-      const fastWhere = buildWhereClause(opts, buildFastTitlePrefixCondition(opts.q));
-      const [fastRow] = await db.select({ count: sql<number>`COUNT(*)::int` }).from(books).where(fastWhere);
-      fastCount = fastRow?.count ?? 0;
-
-      if (fastCount < opts.offset + opts.limit || fastCount < SEARCH_COUNT_THRESHOLD) {
-        const cheapWhere = buildWhereClause(opts, buildTitlePrefixCondition(opts.q));
-        const [cheapRow] = await db.select({ count: sql<number>`COUNT(*)::int` }).from(books).where(cheapWhere);
-        cheapCount = cheapRow?.count ?? 0;
+      fastCount = await countUpTo(
+        buildWhereClause(opts, buildFastTitlePrefixCondition(opts.q)),
+        SEARCH_COUNT_CAP + 1,
+      );
+      // Only worth widening to the cheap tier if the fast tier hasn't already hit the cap.
+      if (fastCount <= SEARCH_COUNT_CAP) {
+        cheapCount = await countUpTo(
+          buildWhereClause(opts, buildTitlePrefixCondition(opts.q)),
+          SEARCH_COUNT_CAP + 1,
+        );
       }
     }
+    const searchMatchCount = Math.max(fastCount, cheapCount);
 
     type SearchTier = 'fast' | 'cheap' | 'broad';
+    const pageEnd = opts.offset + opts.limit;
+    // The broad tier is now reserved for searches the cheaper tiers can't answer *at all*
+    // at this offset (in practice: typos and pure fuzzy matches). Previously any query
+    // whose prefix matches couldn't fill a whole page fell through to it — which is why a
+    // specific multi-word title like "the god of small things" (a handful of real
+    // editions, nowhere near a 20-row page) hit the slowest path and timed out. Returning
+    // that handful of genuine matches is both far faster and better ranked than padding
+    // the page out with fuzzy near-misses.
     const rowsTier: SearchTier = opts.q
-      ? fastCount >= opts.offset + opts.limit
+      ? fastCount >= pageEnd
         ? 'fast'
-        : cheapCount >= opts.offset + opts.limit
-          ? 'cheap'
-          : 'broad'
-      : 'broad';
-    const countTier: SearchTier = opts.q
-      ? fastCount >= SEARCH_COUNT_THRESHOLD
-        ? 'fast'
-        : cheapCount >= SEARCH_COUNT_THRESHOLD
+        : cheapCount > opts.offset
           ? 'cheap'
           : 'broad'
       : 'broad';
@@ -530,9 +557,9 @@ export const booksService = {
         ? [opts.sort === 'desc' ? desc(books.title) : asc(books.title)]
         : [books.updatedAt];
 
-    const booksPromise: Promise<BookListItem[]> = cachedRows
-      ? Promise.resolve(JSON.parse(cachedRows) as BookListItem[]).then((parsed) => {
-          for (const b of parsed) {
+    const pagePromise: Promise<{ rows: BookListItem[]; hasMore: boolean }> = cachedRows
+      ? Promise.resolve(JSON.parse(cachedRows) as { rows: BookListItem[]; hasMore: boolean }).then((parsed) => {
+          for (const b of parsed.rows) {
             b.createdAt = new Date(b.createdAt);
             b.updatedAt = new Date(b.updatedAt);
           }
@@ -545,12 +572,17 @@ export const booksService = {
               .from(books)
               .where(rowsWhere)
               .orderBy(...rowsOrderBy)
-              .limit(opts.limit)
+              // One row beyond the page, so `hasMore` is known without a second query —
+              // this is what callers should paginate on now that `total` may be capped.
+              .limit(opts.limit + 1)
               .offset(opts.offset);
           // <% only appears in `rowsWhere` when opts.q is set AND rowsTier resolved to
           // 'broad' — skip the transaction wrapper otherwise so the fast/cheap tiers
           // (and the common no-search browse path) keep their fully parallel dispatch.
-          const rows = await (opts.q && rowsTier === 'broad' ? withWordSimilarityThreshold(rowsQuery) : rowsQuery(db));
+          const fetched = await (opts.q && rowsTier === 'broad' ? withWordSimilarityThreshold(rowsQuery) : rowsQuery(db));
+
+          const hasMore = fetched.length > opts.limit;
+          const rows = hasMore ? fetched.slice(0, opts.limit) : fetched;
 
           const [relations, excerptMap] = await Promise.all([
             attachRelationsToList(rows),
@@ -562,8 +594,9 @@ export const booksService = {
             excerpt: pickExcerpt(r.isbn13, excerptMap),
           }));
 
-          await redis.set(rowsCacheKey, JSON.stringify(result), 'EX', LIST_TTL);
-          return result;
+          const page = { rows: result, hasMore };
+          await redis.set(rowsCacheKey, JSON.stringify(page), 'EX', LIST_TTL);
+          return page;
         })();
 
     // Without a search query, COUNT(*) is the expensive part of this query — a full (or
@@ -575,22 +608,28 @@ export const booksService = {
     const totalPromise: Promise<number> = cachedCount != null
       ? Promise.resolve(parseInt(cachedCount, 10))
       : (async () => {
-          if (opts.q && countTier !== 'broad') {
-            const total = countTier === 'fast' ? fastCount : cheapCount;
+          // Searches never run a count query of their own — they reuse the capped tier
+          // probes computed above, so a search's count can never be the slow part again.
+          if (opts.q) {
+            const total = Math.min(searchMatchCount, SEARCH_COUNT_CAP);
             await redis.set(countCacheKey, String(total), 'EX', COUNT_TTL);
             return total;
           }
-          const countWhere = opts.q ? buildWhereClause(opts, buildSearchCondition(opts.q)) : rowsWhere;
+          // Filter-only browse (no q) keeps an exact count: it's already cached for
+          // COUNT_TTL under a page-independent key, it wasn't implicated in the timeouts,
+          // and capping it would make whole-catalogue pagination meaningless.
           const countQuery = (conn: Pick<typeof db, 'select'>) =>
-            conn.select({ count: sql<number>`COUNT(*)::int` }).from(books).where(countWhere);
-          const [countRow] = await (opts.q ? withWordSimilarityThreshold(countQuery) : countQuery(db));
+            conn.select({ count: sql<number>`COUNT(*)::int` }).from(books).where(rowsWhere);
+          const [countRow] = await countQuery(db);
           const total = countRow?.count ?? 0;
           await redis.set(countCacheKey, String(total), 'EX', COUNT_TTL);
           return total;
         })();
 
-    const [resultBooks, total] = await Promise.all([booksPromise, totalPromise]);
-    return { books: resultBooks, total };
+    const [page, total] = await Promise.all([pagePromise, totalPromise]);
+    // Derived rather than stored so it stays correct when `total` came from cache.
+    const totalIsApproximate = !!opts.q && total >= SEARCH_COUNT_CAP;
+    return { books: page.rows, total, hasMore: page.hasMore, totalIsApproximate };
   },
 
   async suggestions(q: string, limit: number, type: 'title' | 'author' = 'title'): Promise<SuggestionItem[]> {
