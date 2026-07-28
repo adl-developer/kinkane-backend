@@ -71,6 +71,11 @@ export const booksController = {
       res.status(200).json({
         books: result.books,
         total: result.total,
+        // `total` is capped for search queries (see SEARCH_COUNT_CAP) — when
+        // totalIsApproximate is true it's a floor, not an exact count, and clients should
+        // paginate on hasMore rather than computing page counts from total.
+        totalIsApproximate: result.totalIsApproximate,
+        hasMore: result.hasMore,
         limit: parsed.data.limit,
         offset: parsed.data.offset,
       });

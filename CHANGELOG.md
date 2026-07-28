@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-07-27
+
+### Features
+
+* require sign-in to view "You May Also Like" recommendations ([ddfcd89](https://adl.github.com/adl-developer/kinkane-backend/commit/ddfcd8986b7deecb884a52edbc76bbf9ac825a29)) — [details](changelog/2026-07-27-books-search-count-cap.md)
+
+
 ## 2026-07-26
 
 ### Features
