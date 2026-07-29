@@ -18,13 +18,14 @@ import { books, vector } from './books';
 
 // Shared shape for the dislikes object used in both guest sessions and user preferences.
 // Exported so recommendations.service.ts can import the canonical type.
-export interface Dislikes {
-  emotionalTone?: string[];
-  pacingStructure?: string[];
-  writingStyle?: string[];
-  genreFocus?: string[];
-  commitmentLevel?: string[];
-}
+//
+// Deliberately open: the categories and the labels inside them are owned by the
+// onboarding UI, not by this schema. Whatever the client sends is stored and fed
+// into the preference text as-is, so the frontend can add, rename or reword a
+// category without a backend deploy. The categories in use at the time of writing
+// are emotionalTone, contentSensitivity, pacingStructure, writingStyle, genreFocus
+// and commitmentLevel, but nothing here depends on that list.
+export type Dislikes = Record<string, string[]>;
 
 // ── Guest Sessions ─────────────────────────────────────────────────────────────
 // Temporary record created at the end of the onboarding flow (after the user

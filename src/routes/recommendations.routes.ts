@@ -24,14 +24,17 @@ const router = Router();
  *   feelings: string[3],          — exactly 3 (preset labels or freeform ≤200 chars)
  *   bookIds?: number[],           — up to 10 books they've already enjoyed
  *   genres: string[3],            — exactly 3 from the allowed genre enum
- *   dislikes?: {                  — reading experiences to avoid (all sub-fields optional)
- *     emotionalTone?: string[],
- *     pacingStructure?: string[],
- *     writingStyle?: string[],
- *     genreFocus?: string[],
- *     commitmentLevel?: string[]  — "long book (500+ pages)" and/or "series commitment"
- *                                    apply hard SQL filters before the similarity search
- *   }
+ *   dislikes?: Record<string, string[]>
+ *                                 — reading experiences to avoid, grouped by whatever
+ *                                    category keys the onboarding UI uses (currently
+ *                                    emotionalTone, contentSensitivity, pacingStructure,
+ *                                    writingStyle, genreFocus, commitmentLevel). Keys and
+ *                                    labels are not validated against a fixed list — each
+ *                                    label is ≤200 chars and feeds the preference embedding.
+ *                                    The labels "long book (500+ pages)" and
+ *                                    "series commitment" additionally apply hard SQL
+ *                                    filters before the similarity search, in whichever
+ *                                    category they appear.
  * }
  *
  * Returns 200: {
@@ -84,7 +87,7 @@ router.get('/preferences', requireAuth, (req: Request, res: Response) =>
  *   feelings: string[3],
  *   bookIds?: number[],
  *   genres: string[3],
- *   dislikes?: { emotionalTone?, pacingStructure?, writingStyle?, genreFocus?, commitmentLevel? }
+ *   dislikes?: Record<string, string[]>   — see POST /recommendations above; open shape
  * }
  *
  * Returns 200: { preferences: { feelings, genres, dislikes, bookIds } }

@@ -3,6 +3,7 @@ import { eq, sql, and, inArray, notInArray, gt, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { books, bookContributors, bookGenres, genres, userPreferences, users } from '../db/schema';
 import { recommendationCache, type RecommendationItem } from '../db/schema/recommendations';
+import type { Dislikes } from '../db/schema/onboarding';
 import { dedupeByTitle } from '../lib/dedupe';
 import { generateEmbedding, generateExplanations, type BookContext } from '../lib/gemini';
 import { guestService } from './guest.service';
@@ -36,13 +37,16 @@ export interface RecommendationInput {
   feelings: string[];
   bookIds: number[];
   genres: string[];
-  dislikes: {
-    emotionalTone?: string[];
-    pacingStructure?: string[];
-    writingStyle?: string[];
-    genreFocus?: string[];
-    commitmentLevel?: string[];
-  };
+  dislikes: Dislikes;
+}
+
+/**
+ * Flattens the dislikes object into a single list of labels. Every consumer
+ * below treats dislikes as a flat set — the category keys exist for the UI's
+ * grouping, not for anything the recommendation pipeline reasons about.
+ */
+function flattenDislikes(dislikes: Dislikes): string[] {
+  return Object.values(dislikes ?? {}).flatMap((v) => (Array.isArray(v) ? v : []));
 }
 
 export interface RecommendationResult {
@@ -64,13 +68,11 @@ function hashInput(input: RecommendationInput): string {
     feelings: [...input.feelings].sort(),
     bookIds: [...input.bookIds].sort((a, b) => a - b),
     genres: [...input.genres].sort(),
-    dislikes: {
-      emotionalTone: [...(input.dislikes.emotionalTone ?? [])].sort(),
-      pacingStructure: [...(input.dislikes.pacingStructure ?? [])].sort(),
-      writingStyle: [...(input.dislikes.writingStyle ?? [])].sort(),
-      genreFocus: [...(input.dislikes.genreFocus ?? [])].sort(),
-      commitmentLevel: [...(input.dislikes.commitmentLevel ?? [])].sort(),
-    },
+    // Categories are open, so the hash is built from the flat sorted label set.
+    // That also makes the cache key indifferent to which category a label was
+    // filed under — if the UI moves "slow paced" from one group to another, the
+    // preferences are still the same preferences.
+    dislikes: flattenDislikes(input.dislikes).sort(),
   };
   return createHash('sha256').update(JSON.stringify(normalized)).digest('hex');
 }
@@ -115,7 +117,7 @@ async function fetchLikedBooks(
  * that gets embedded by gemini-embedding — richer text produces a better vector.
  */
 export function buildPreferenceText(
-  input: { feelings: string[]; genres: string[]; dislikes: { emotionalTone?: string[]; pacingStructure?: string[]; writingStyle?: string[]; genreFocus?: string[]; commitmentLevel?: string[] } },
+  input: { feelings: string[]; genres: string[]; dislikes: Dislikes },
   likedBooks: { id: number; title: string; authors: string[] }[],
 ): string {
   const parts: string[] = [];
@@ -132,13 +134,7 @@ export function buildPreferenceText(
     parts.push(`Books I have enjoyed: ${titles}.`);
   }
 
-  const allDislikes = [
-    ...(input.dislikes.emotionalTone ?? []),
-    ...(input.dislikes.pacingStructure ?? []),
-    ...(input.dislikes.writingStyle ?? []),
-    ...(input.dislikes.genreFocus ?? []),
-    ...(input.dislikes.commitmentLevel ?? []),
-  ];
+  const allDislikes = flattenDislikes(input.dislikes);
 
   if (allDislikes.length > 0) {
     parts.push(`I want to avoid: ${allDislikes.join(', ')}.`);
@@ -154,17 +150,25 @@ export function buildPreferenceText(
  * - "series commitment"       → approximate: exclude titles/subtitles that contain
  *                               common series numbering patterns like "#1", "Book 2", "Vol. 3".
  *                               Not exhaustive, but catches the vast majority of explicit series.
+ *
+ * These two labels are the only ones with a hard filter; every other dislike
+ * influences the result through the preference embedding alone. Because the
+ * categories are open, the labels are matched anywhere in the object rather than
+ * under a specific key — if the UI regroups them the filters keep working. Note
+ * this is an exact-string match: reword either label in the frontend and the
+ * corresponding filter silently stops applying.
  */
-function buildDislikeConditions(dislikes: RecommendationInput['dislikes']) {
+function buildDislikeConditions(dislikes: Dislikes) {
   const conditions = [];
+  const labels = flattenDislikes(dislikes);
 
-  if (dislikes.commitmentLevel?.includes('long book (500+ pages)')) {
+  if (labels.includes('long book (500+ pages)')) {
     conditions.push(
       sql`(${books.pageCount} IS NULL OR ${books.pageCount} < 500)`,
     );
   }
 
-  if (dislikes.commitmentLevel?.includes('series commitment')) {
+  if (labels.includes('series commitment')) {
     conditions.push(
       sql`NOT (
         ${books.title} ~* '\\s#[0-9]'

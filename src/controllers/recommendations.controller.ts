@@ -35,24 +35,16 @@ const GENRE_VALUES = [
   'travel',
 ] as const;
 
-const dislikesSchema = z
-  .object({
-    emotionalTone: z
-      .array(z.enum(['too dark or heavy', 'sad or tragic ending', 'emotionally intense']))
-      .optional(),
-    pacingStructure: z
-      .array(z.enum(['slow paced', 'complex or layered plot', 'multiple POVs']))
-      .optional(),
-    writingStyle: z
-      .array(z.enum(['academic or dense', 'experimental writing style']))
-      .optional(),
-    genreFocus: z
-      .array(z.enum(['romance-heavy', 'fantasy-heavy', 'faith-based themes']))
-      .optional(),
-    commitmentLevel: z
-      .array(z.enum(['long book (500+ pages)', 'series commitment']))
-      .optional(),
-  });
+// Open by design — both the category keys and the labels inside them belong to
+// the onboarding UI. Validating them against a fixed enum here meant every copy
+// tweak or new category (e.g. "Content Sensitivity") was a backend release, and
+// a mismatch failed the whole request rather than degrading gracefully. The only
+// constraint kept is a length cap, since every label ends up in the embedded
+// preference text. Category keys map to string arrays; nothing else is assumed.
+const dislikesSchema = z.record(
+  z.string().min(1).max(100),
+  z.array(z.string().min(1).max(200)),
+);
 
 const recommendationsSchema = z.object({
   displayName: z.string().min(1, 'Name is required').max(100),
