@@ -10,6 +10,7 @@ import { logger } from '../lib/logger';
 import { enqueueEmail } from '../lib/email-queue';
 import { generateEmbedding } from '../lib/gemini';
 import { buildPreferenceText } from './recommendations.service';
+import { preferenceHistoryService } from './preference-history.service';
 
 const BCRYPT_ROUNDS = 12;
 
@@ -154,6 +155,21 @@ async function migrateGuestSession(userId: number, sessionId: string): Promise<v
       genres: session.genres,
       dislikes: session.dislikes,
     });
+
+    // Baseline entry in the preference audit log. Runs inside the transaction
+    // so it rolls back with the rest if migration fails. Reader type is passed
+    // explicitly because the users row isn't updated until a few lines below.
+    await preferenceHistoryService.record(
+      userId,
+      {
+        feelings: session.feelings,
+        bookIds: session.bookIds,
+        genres: session.genres,
+        dislikes: session.dislikes,
+      },
+      'onboarding',
+      { readerType: session.readerType ?? null, tx },
+    );
 
     // Generate and store the preference embedding outside the transaction
     // (Gemini call — non-blocking, failure is logged but does not affect signup).

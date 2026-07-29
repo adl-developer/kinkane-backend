@@ -1,6 +1,20 @@
 # Changelog
 
 
+## 2026-07-29
+
+### Features
+
+* keep a permanent record of how a reader's preferences change over time ([322be4c](https://adl.github.com/adl-developer/kinkane-backend/commit/322be4cdc744d951964bb913b6e45d0652cd31f5)) — [details](changelog/2026-07-29-preference-history.md)
+
+
+## 2026-07-28
+
+### Bug Fixes
+
+* stop book search timing out on ordinary title searches ([a510985](https://adl.github.com/adl-developer/kinkane-backend/commit/a510985d10eef1a0fa9a66dff844ae764bcc3f37))
+
+
 ## 2026-07-27
 
 ### Features

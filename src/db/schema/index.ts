@@ -4,6 +4,7 @@ export * from './book-excerpts';
 export * from './ingestion';
 export * from './recommendations';
 export * from './onboarding';
+export * from './preference-history';
 export * from './subscriptions';
 export * from './password-reset-tokens';
 export * from './email-verification-tokens';

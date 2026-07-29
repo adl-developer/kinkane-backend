@@ -190,6 +190,13 @@
       "when": 1785025051130,
       "tag": "0026_huge_calypso",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1785303473195,
+      "tag": "0027_plain_wolf_cub",
+      "breakpoints": true
     }
   ]
 }
