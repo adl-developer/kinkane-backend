@@ -6,6 +6,7 @@ import { recommendationCache, type RecommendationItem } from '../db/schema/recom
 import { dedupeByTitle } from '../lib/dedupe';
 import { generateEmbedding, generateExplanations, type BookContext } from '../lib/gemini';
 import { guestService } from './guest.service';
+import { preferenceHistoryService } from './preference-history.service';
 import { logger } from '../lib/logger';
 import { redis } from '../lib/redis';
 
@@ -716,6 +717,28 @@ async function saveUserPreferenceFields(
       updatedAt: new Date(),
     })
     .where(eq(userPreferences.userId, userId));
+
+  // Append to the preference audit log. Deliberately not awaited into the
+  // user's failure path: the save above already succeeded, and losing one
+  // history row is a far better outcome than telling the user their save
+  // failed. `record` no-ops when nothing actually changed.
+  try {
+    await preferenceHistoryService.record(
+      userId,
+      {
+        feelings: input.feelings,
+        bookIds: input.bookIds,
+        genres: input.genres,
+        dislikes: input.dislikes,
+      },
+      'user_edit',
+    );
+  } catch (err) {
+    logger.error('Failed to record preference history', {
+      userId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 /**

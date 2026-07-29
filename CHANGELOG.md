@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-07-28
+
+### Bug Fixes
+
+* stop book search timing out on ordinary title searches ([a510985](https://adl.github.com/adl-developer/kinkane-backend/commit/a510985d10eef1a0fa9a66dff844ae764bcc3f37))
+
+
 ## 2026-07-27
 
 ### Features
