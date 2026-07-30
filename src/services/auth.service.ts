@@ -201,14 +201,19 @@ async function migrateGuestSession(userId: number, sessionId: string): Promise<v
         )
         .onConflictDoNothing();
 
-      await tx.insert(userInteractions).values(
-        (session.chosenBookIds ?? []).map((bookId) => ({
-          userId,
-          bookId,
-          type: 'chosen_from_recommendation',
-          weight: 1.0,
-        })),
-      );
+      await tx
+        .insert(userInteractions)
+        .values(
+          (session.chosenBookIds ?? []).map((bookId) => ({
+            userId,
+            bookId,
+            type: 'chosen_from_recommendation',
+            weight: 1.0,
+          })),
+        )
+        // A repeated book ID in chosenBookIds would now violate the partial unique
+        // index on (user_id, book_id, type) and abort the whole migration transaction.
+        .onConflictDoNothing();
     }
 
     logger.info('Guest session migrated successfully', { sessionId, userId });

@@ -13,6 +13,7 @@ import {
   uniqueIndex,
   customType,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { users, readerTypeEnum } from './users';
 import { books, vector } from './books';
 
@@ -95,7 +96,10 @@ export const userInteractions = pgTable(
     bookId: integer('book_id')
       .notNull()
       .references(() => books.id, { onDelete: 'cascade' }),
-    // 'view' | 'purchase' | 'high_rating' | 'wishlist' | 'chosen_from_recommendation'
+    // 'view' | 'like' | 'want_to_read' | 'reading' | 'read' | 'purchase' |
+    // 'high_rating' | 'chosen_from_recommendation'
+    // See INTERACTION_TYPES / INTERACTION_WEIGHTS in services/interactions.service.ts,
+    // which owns what each type is worth to the trending feed.
     type: varchar('type', { length: 50 }).notNull(),
     // Relative importance of this signal — higher = stronger influence on future recommendations
     weight: real('weight').notNull().default(1.0),
@@ -105,8 +109,18 @@ export const userInteractions = pgTable(
     userIdIdx: index('idx_user_interactions_user_id').on(t.userId),
     bookIdIdx: index('idx_user_interactions_book_id').on(t.bookId),
     typeIdx: index('idx_user_interactions_type').on(t.type),
-    // Supports the trending query: WHERE created_at > NOW()-30d GROUP BY book_id ORDER BY SUM(weight)
-    trendingIdx: index('idx_user_interactions_trending').on(t.createdAt, t.bookId),
+    // Supports the trending query, which now also filters on type:
+    //   WHERE created_at > NOW()-30d AND type IN (...) GROUP BY book_id
+    // Column order matters — created_at leads because it's the range predicate, and
+    // type before book_id lets the whole scan stay index-only.
+    trendingIdx: index('idx_user_interactions_trending').on(t.createdAt, t.type, t.bookId),
+    // Caps every non-view signal at one row per user per book, permanently. This is
+    // what makes like → unlike → like farming worth exactly one row. Views are
+    // excluded because they're meant to recur over time; they're rate-limited in
+    // Redis instead (see VIEW_DEDUPE_TTL).
+    uniqueNonView: uniqueIndex('idx_user_interactions_unique_non_view')
+      .on(t.userId, t.bookId, t.type)
+      .where(sql`${t.type} <> 'view'`),
   }),
 );
 
