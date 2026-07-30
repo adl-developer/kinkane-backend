@@ -16,6 +16,15 @@ import {
 } from '../db/schema';
 import { redis } from '../lib/redis';
 import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-excerpts.service';
+import { interactionsService, type InteractionType } from './interactions.service';
+
+/**
+ * Reading statuses that are also trending signals. Every value the API accepts is
+ * a valid interaction type of the same name, so the mapping is the identity — but
+ * going through this set means an unrecognised status can never reach the
+ * interactions table.
+ */
+const STATUS_INTERACTION_TYPES = new Set<InteractionType>(['want_to_read', 'reading', 'read']);
 
 const PUBLIC_NOTES_TTL = 2 * 60; // 2 minutes
 
@@ -279,6 +288,20 @@ export const userBooksService = {
         target: [userBooks.userId, userBooks.bookId],
         set: updateSet,
       });
+
+    // Trending signals. Fire-and-forget on purpose: a failure to record analytics
+    // must never turn a successful shelf update into an error for the user.
+    //
+    // Progressing want_to_read → reading → read deliberately records all three,
+    // because sustained engagement with a book is genuinely a stronger signal than
+    // a single status change. Moving *backwards*, or re-setting the same status,
+    // adds nothing — the partial unique index keeps it to one row per type.
+    if (fields.status && STATUS_INTERACTION_TYPES.has(fields.status as InteractionType)) {
+      interactionsService.recordFireAndForget(userId, bookId, fields.status as InteractionType);
+    }
+    if (fields.liked === true) {
+      interactionsService.recordFireAndForget(userId, bookId, 'like');
+    }
   },
 
   /**
@@ -305,11 +328,19 @@ export const userBooksService = {
         target: [userBooks.userId, userBooks.bookId],
         set: { liked: true, likedAt: new Date(), source: 'manual' },
       });
+
+    interactionsService.recordFireAndForget(userId, bookId, 'like');
   },
 
   /**
    * Unlikes a book. If the row has no reading status, it is deleted entirely
    * (nothing left to keep it). Otherwise only the liked flag is cleared.
+   *
+   * Deliberately does NOT retract the 'like' trending signal. The interaction log
+   * is append-only: the user's attention on that book at that moment was real, and
+   * it ages out of the trending window on its own. Retracting would also make
+   * like → unlike a way to hand-tune the public list, and re-liking can't re-add
+   * the row anyway (the partial unique index allows exactly one per user per book).
    */
   async unlike(userId: number, bookId: number): Promise<void> {
     const [row] = await db

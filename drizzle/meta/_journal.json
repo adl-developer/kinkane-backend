@@ -197,6 +197,13 @@
       "when": 1785303473195,
       "tag": "0027_plain_wolf_cub",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1785320342743,
+      "tag": "0028_powerful_avengers",
+      "breakpoints": true
     }
   ]
 }

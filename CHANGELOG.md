@@ -5,6 +5,7 @@
 
 ### Features
 
+* accept whatever "things to avoid" options the onboarding screen offers ([f7cbb8f](https://adl.github.com/adl-developer/kinkane-backend/commit/f7cbb8f1cb8c31431180873f1ed54926a8ca842b)) — [details](changelog/2026-07-29-preference-history.md)
 * keep a permanent record of how a reader's preferences change over time ([322be4c](https://adl.github.com/adl-developer/kinkane-backend/commit/322be4cdc744d951964bb913b6e45d0652cd31f5)) — [details](changelog/2026-07-29-preference-history.md)
 
 

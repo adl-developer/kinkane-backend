@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { z } from 'zod';
 import { booksService } from '../services/books.service';
 import { userBooksService } from '../services/user-books.service';
+import { interactionsService } from '../services/interactions.service';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 
 const suggestionsSchema = z.object({
@@ -115,6 +116,14 @@ export const booksController = {
       // anonymous callers get userStatus: null rather than a 401.
       const userId = (req as Partial<AuthenticatedRequest>).user?.id;
       const userStatus = userId ? await userBooksService.getStatus(userId, id) : null;
+
+      // Record the view as a trending signal. Only for signed-in callers — the
+      // interactions table requires a user_id, so anonymous views are dropped
+      // rather than attributed. Not awaited: this endpoint is the hottest read in
+      // the app and analytics must not sit in front of the response.
+      if (userId) {
+        interactionsService.recordFireAndForget(userId, id, 'view');
+      }
 
       res.status(200).json({ book, publicNotes, userStatus });
     } catch (err: unknown) {

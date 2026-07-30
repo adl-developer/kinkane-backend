@@ -20,6 +20,7 @@ import {
 import { dedupeByTitle, dedupeByTitleAndSubtitle } from '../lib/dedupe';
 import { redis } from '../lib/redis';
 import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-excerpts.service';
+import { TRENDING_SCORED_TYPES, trendingScoreSql } from './interactions.service';
 
 const BOOK_DETAIL_TTL    = 60 * 60;    // 1 hour
 const LIST_TTL           = 5 * 60;     // 5 minutes
@@ -37,7 +38,6 @@ const PERSONALIZED_SIMILARITY_THRESHOLD = 0.5;
 // which would silently drop recall on the <=> ANN queries. Widen it per-query.
 const HNSW_EF_SEARCH = 150;
 const TRENDING_WINDOW_DAYS = 30;
-const TRENDING_INTERACTION_TYPES = ['view', 'wishlist', 'chosen_from_recommendation'] as const;
 // Feeds (trending/personalized/similar) over-fetch a candidate pool larger than the
 // requested `limit` so that deduping same-titled editions (see dedupeByTitle) still
 // leaves enough distinct titles to fill the requested count.
@@ -912,7 +912,9 @@ export const booksService = {
   },
 
   async trending(limit: number): Promise<TrendingBookItem[]> {
-    const cacheKey = `trending:v1:${limit}`;
+    // v2: scores are now weighted per interaction type and decayed by age. Old v1
+    // payloads would otherwise linger for an hour with the flat unweighted ranking.
+    const cacheKey = `trending:v2:${limit}`;
     const cached = await redis.get(cacheKey);
     if (cached) return JSON.parse(cached) as TrendingBookItem[];
 
@@ -921,21 +923,25 @@ export const booksService = {
 
     const poolSize = Math.min(limit * FEED_POOL_MULTIPLIER, FEED_POOL_MAX);
 
-    // Aggregate interaction signals over the last 30 days into a ranked list of book IDs
+    // Aggregate interaction signals over the last 30 days into a ranked list of book
+    // IDs. Weighting and time decay both live in trendingScoreSql — see
+    // interactions.service.ts for why each action is worth what it's worth.
+    const score = trendingScoreSql();
+
     const scored = await db
       .select({
         bookId: userInteractions.bookId,
-        score: sql<number>`SUM(${userInteractions.weight})::float`,
+        score: sql<number>`${score}::float`,
       })
       .from(userInteractions)
       .where(
         and(
           gt(userInteractions.createdAt, since),
-          inArray(userInteractions.type, [...TRENDING_INTERACTION_TYPES]),
+          inArray(userInteractions.type, TRENDING_SCORED_TYPES),
         ),
       )
       .groupBy(userInteractions.bookId)
-      .orderBy(sql`SUM(${userInteractions.weight}) DESC`)
+      .orderBy(sql`${score} DESC`)
       .limit(poolSize);
 
     let bookIds = scored.map((r) => r.bookId);
