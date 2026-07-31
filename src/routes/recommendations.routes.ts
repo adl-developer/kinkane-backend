@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { requireAuth } from '../middleware/auth.middleware';
+import { optionalAuth, requireAuth } from '../middleware/auth.middleware';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 import { recommendationsController } from '../controllers/recommendations.controller';
 import { recommendationsLimiter } from '../middleware/rate-limit.middleware';
@@ -42,9 +42,15 @@ const router = Router();
  *   guestSessionId: string,   — store this immediately; required for the next two steps
  *   expiresAt: string         — ISO timestamp when the guest session expires
  * }
+ * Auth is optional. Anonymous callers are the normal onboarding case. If a
+ * signed-in user retakes the quiz through this endpoint, send their token:
+ * books they have previously swiped away (and other editions of them) are
+ * then excluded from the results, and their rejection history forms part of
+ * the cache key so they don't get served someone else's pre-rejection list.
+ *
  * Errors: 400 validation | 429 rate limit (20 req/hour — each uncached request calls Gemini)
  */
-router.post('/', recommendationsLimiter, recommendationsController.getRecommendations);
+router.post('/', recommendationsLimiter, optionalAuth, recommendationsController.getRecommendations);
 
 /**
  * GET /api/v1/recommendations/preferences
@@ -56,7 +62,11 @@ router.post('/', recommendationsLimiter, recommendationsController.getRecommenda
  * Note: the data model currently has no "region" preference — only
  * feelings (mood), genres, dislikes (avoid), and bookIds are stored.
  *
- * Returns 200: { preferences: { feelings, genres, dislikes, bookIds } }
+ * `dislikedBookIds` is every book the user has ever swiped away, accumulated
+ * across onboarding and every subsequent quiz. It is read from its own
+ * append-only table rather than the preferences row.
+ *
+ * Returns 200: { preferences: { feelings, genres, dislikes, bookIds, dislikedBookIds } }
  * Errors: 401 unauthenticated | 404 no preferences saved yet (e.g. never completed onboarding)
  */
 router.get('/preferences', requireAuth, (req: Request, res: Response) =>
@@ -87,10 +97,18 @@ router.get('/preferences', requireAuth, (req: Request, res: Response) =>
  *   feelings: string[3],
  *   bookIds?: number[],
  *   genres: string[3],
- *   dislikes?: Record<string, string[]>   — see POST /recommendations above; open shape
+ *   dislikes?: Record<string, string[]>,  — see POST /recommendations above; open shape
+ *   dislikedBookIds?: number[]            — books swiped away since the last quiz
  * }
  *
- * Returns 200: { preferences: { feelings, genres, dislikes, bookIds } }
+ * Unlike every other field here, `dislikedBookIds` is a delta, not a
+ * replacement: the IDs sent are added to the user's permanent rejection
+ * history, and omitting the field clears nothing. Those books — and other
+ * editions of them — are then filtered out of quiz results, the personalized
+ * feed, "you may also like", and recommendation emails.
+ *
+ * Returns 200: { preferences: { feelings, genres, dislikes, bookIds, dislikedBookIds } }
+ *              — dislikedBookIds is the full accumulated set, not the delta sent
  *      or, with ?includeRecommendations=true:
  *         { recommendations: [{ bookId, rank, explanation }] }
  * Errors: 400 validation | 401 unauthenticated | 429 rate limit

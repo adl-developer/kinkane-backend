@@ -17,7 +17,10 @@ export const exploreController = {
     }
 
     try {
-      const books = await booksService.trending(parsed.data.limit);
+      // optionalAuth route — anonymous callers have no rejection history, and
+      // signed-in ones get their rejected books filtered out of the shared list.
+      const userId = (req as Partial<AuthenticatedRequest>).user?.id;
+      const books = await booksService.trending(parsed.data.limit, userId);
       res.status(200).json({ books });
     } catch (err: unknown) {
       logger.error('Unexpected error fetching trending books', { error: (err as Error).message });

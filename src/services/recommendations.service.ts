@@ -5,8 +5,18 @@ import { books, bookContributors, bookGenres, genres, userPreferences, users } f
 import { recommendationCache, type RecommendationItem } from '../db/schema/recommendations';
 import type { Dislikes } from '../db/schema/onboarding';
 import { dedupeByTitle } from '../lib/dedupe';
+import {
+  buildWorkExclusionCondition,
+  bustPersonalizedFeedCache,
+  getUserExclusions,
+  normalizeForMatch,
+  EMPTY_EXCLUSIONS,
+  type ExcludedWork,
+  type UserExclusions,
+} from '../lib/exclusions';
 import { generateEmbedding, generateExplanations, type BookContext } from '../lib/gemini';
 import { guestService } from './guest.service';
+import { dislikedBooksService } from './disliked-books.service';
 import { preferenceHistoryService } from './preference-history.service';
 import { logger } from '../lib/logger';
 import { redis } from '../lib/redis';
@@ -38,6 +48,13 @@ export interface RecommendationInput {
   bookIds: number[];
   genres: string[];
   dislikes: Dislikes;
+  /**
+   * Books the user swiped away on the recommendation list since their last
+   * quiz. Additive — these are recorded on top of everything they've rejected
+   * before, never treated as the complete set. Logged-in path only; a guest's
+   * swipes go on the guest session instead (see guestService.saveSelections).
+   */
+  dislikedBookIds?: number[];
 }
 
 /**
@@ -63,11 +80,15 @@ export interface RecommendationResult {
  */
 // displayName is intentionally excluded — it's identity, not preference.
 // Two users with the same tastes but different names get the same cached recommendations.
-function hashInput(input: RecommendationInput): string {
+function hashInput(input: RecommendationInput, dislikedBookIds: number[] = []): string {
   const normalized = {
     feelings: [...input.feelings].sort(),
     bookIds: [...input.bookIds].sort((a, b) => a - b),
     genres: [...input.genres].sort(),
+    // Part of the key because it changes the result set: two users with
+    // identical quiz answers but different rejection histories must not share
+    // a cache entry, or one of them gets back books they swiped away.
+    dislikedBookIds: [...dislikedBookIds].sort((a, b) => a - b),
     // Categories are open, so the hash is built from the flat sorted label set.
     // That also makes the cache key indifferent to which category a label was
     // filed under — if the UI moves "slow paced" from one group to another, the
@@ -110,6 +131,52 @@ async function fetchLikedBooks(
   }
 
   return rows.map((r) => ({ id: r.id, title: r.title, authors: authorMap.get(r.id) ?? [] }));
+}
+
+/**
+ * Turns the books a user named in the quiz into work-level exclusions.
+ * Only the first author is used — one author is enough to anchor the match,
+ * and requiring all of them would miss editions credited differently.
+ */
+function likedBooksToWorks(
+  likedBooks: { title: string; authors: string[] }[],
+): ExcludedWork[] {
+  return likedBooks.map((b) => ({
+    title: normalizeForMatch(b.title),
+    author: b.authors[0] ? normalizeForMatch(b.authors[0]) : null,
+  }));
+}
+
+/**
+ * The full WHERE set shared by both entry points: dislike filters, format
+ * intent, and everything the user has told us not to show them — the books
+ * they said they've already read, plus every book they've ever swiped away.
+ *
+ * The work-level exclusion is applied here, in SQL, rather than by filtering
+ * the result array afterwards. Post-filtering would silently return a short
+ * list; a WHERE clause lets the search top itself back up to TARGET_RESULTS.
+ */
+function buildBaseConditions(
+  input: { genres: string[]; bookIds: number[]; dislikes: Dislikes },
+  likedBooks: { title: string; authors: string[] }[],
+  exclusions: UserExclusions,
+): SQL[] {
+  const formatCondition = buildFormatCondition(resolveFormatIntent(input.genres));
+  // Exact-ID exclusion stays alongside the work-level one: it's indexed and
+  // cheap, and it covers the case where the same work is stored under a title
+  // spelling that doesn't normalize identically.
+  const excludedIds = [...new Set([...input.bookIds, ...exclusions.bookIds])];
+  const workCondition = buildWorkExclusionCondition([
+    ...likedBooksToWorks(likedBooks),
+    ...exclusions.works,
+  ]);
+
+  return [
+    ...buildDislikeConditions(input.dislikes),
+    ...(formatCondition ? [formatCondition] : []),
+    ...(excludedIds.length > 0 ? [notInArray(books.id, excludedIds)] : []),
+    ...(workCondition ? [workCondition] : []),
+  ];
 }
 
 /**
@@ -325,8 +392,19 @@ async function fetchCandidateBooks(
 // ── Public service ────────────────────────────────────────────────────────────
 
 export const recommendationsService = {
-  async getRecommendations(input: RecommendationInput): Promise<RecommendationResult> {
-    const hash = hashInput(input);
+  /**
+   * `userId` is optional because this is the onboarding entry point and most
+   * callers are anonymous. It is passed whenever a signed-in user retakes the
+   * quiz through this endpoint: without it their rejection history would be
+   * ignored on exactly the flow where re-recommending a rejected book is most
+   * visible, since they are being shown a fresh list to pick from.
+   */
+  async getRecommendations(
+    input: RecommendationInput,
+    userId?: number,
+  ): Promise<RecommendationResult> {
+    const exclusions = userId === undefined ? EMPTY_EXCLUSIONS : await getUserExclusions(userId);
+    const hash = hashInput(input, exclusions.bookIds);
     const now = new Date();
     const redisCacheKey = `recommendations:hash:${hash}`;
 
@@ -387,13 +465,10 @@ export const recommendationsService = {
 
     // 4. pgvector cosine similarity search — strict pass first, backfilled
     //    with a looser pass if that doesn't leave enough to hit TARGET_RESULTS.
-    const dislikeConditions = buildDislikeConditions(input.dislikes);
-    const formatCondition = buildFormatCondition(resolveFormatIntent(input.genres));
-    const baseConditions: SQL[] = [
-      ...dislikeConditions,
-      ...(formatCondition ? [formatCondition] : []),
-      ...(input.bookIds.length > 0 ? [notInArray(books.id, input.bookIds)] : []),
-    ];
+    //    For an anonymous guest `exclusions` is empty — they haven't seen a
+    //    recommendation list to swipe on yet. Their swipes land on the guest
+    //    session and start applying once registration moves them to a user row.
+    const baseConditions: SQL[] = buildBaseConditions(input, likedBooks, exclusions);
 
     const candidateRows = await fetchCandidateBooks(vectorLiteral, baseConditions);
 
@@ -507,22 +582,27 @@ export const recommendationsService = {
    * pipeline, unlike `refresh`.
    */
   async getPreferences(userId: number): Promise<Omit<RecommendationInput, 'displayName'>> {
-    const [row] = await db
-      .select({
-        feelings: userPreferences.feelings,
-        genres: userPreferences.genres,
-        dislikes: userPreferences.dislikes,
-        bookIds: userPreferences.bookIds,
-      })
-      .from(userPreferences)
-      .where(eq(userPreferences.userId, userId))
-      .limit(1);
+    // Dislikes live in their own append-only table rather than on
+    // user_preferences, so they're read alongside rather than from the row.
+    const [[row], dislikedBookIds] = await Promise.all([
+      db
+        .select({
+          feelings: userPreferences.feelings,
+          genres: userPreferences.genres,
+          dislikes: userPreferences.dislikes,
+          bookIds: userPreferences.bookIds,
+        })
+        .from(userPreferences)
+        .where(eq(userPreferences.userId, userId))
+        .limit(1),
+      dislikedBooksService.listBookIds(userId),
+    ]);
 
     if (!row) {
       throw Object.assign(new Error('Preferences not found'), { statusCode: 404 });
     }
 
-    return row;
+    return { ...row, dislikedBookIds };
   },
 
   /**
@@ -539,12 +619,21 @@ export const recommendationsService = {
    * preferences" action shouldn't hang or fail because Gemini is slow or
    * down. The personalized feed will pick up the new embedding once that
    * background call completes; until then it keeps serving on the old one.
+   *
+   * Any `dislikedBookIds` in the payload are recorded first and awaited, not
+   * fired off in the background: they feed the exclusion set that the
+   * recommendation pass below reads, so a book the user just swiped away must
+   * already be excluded by the time that pass runs.
    */
   async refresh(
     userId: number,
     input: Omit<RecommendationInput, 'displayName'>,
     includeRecommendations = false,
   ): Promise<Omit<RecommendationInput, 'displayName'> & { recommendations?: RecommendationItem[] }> {
+    if (input.dislikedBookIds?.length) {
+      await dislikedBooksService.record(userId, input.dislikedBookIds, 'quiz_refresh');
+    }
+
     await saveUserPreferenceFields(userId, input);
 
     regeneratePreferenceEmbedding(userId, input).catch((err) => {
@@ -554,12 +643,17 @@ export const recommendationsService = {
       });
     });
 
+    // Echo back the user's whole rejection history, not just what this call
+    // added — the client sends a delta but reads back state.
+    const dislikedBookIds = await dislikedBooksService.listBookIds(userId);
+    const saved = { ...input, dislikedBookIds };
+
     if (!includeRecommendations) {
-      return input;
+      return saved;
     }
 
     const results = await computeRecommendations(userId, input);
-    return { ...input, recommendations: results };
+    return { ...saved, recommendations: results };
   },
 };
 
@@ -585,7 +679,12 @@ async function computeRecommendations(
 
   const displayName = userRow?.name ?? 'User';
 
-  const hash = hashInput({ displayName, ...input });
+  // Everything this user has ever swiped away. Loaded before the cache lookup
+  // because it's part of the cache key — a user who rejected three books since
+  // their last quiz must not be served the pre-rejection result set.
+  const exclusions = await getUserExclusions(userId);
+
+  const hash = hashInput({ displayName, ...input }, exclusions.bookIds);
   const now = new Date();
   const redisCacheKey = `recommendations:hash:${hash}`;
 
@@ -613,13 +712,7 @@ async function computeRecommendations(
   const queryVector = await generateEmbedding(preferenceText);
   const vectorLiteral = `[${queryVector.join(',')}]`;
 
-  const dislikeConditions = buildDislikeConditions(input.dislikes);
-  const formatCondition = buildFormatCondition(resolveFormatIntent(input.genres));
-  const baseConditions: SQL[] = [
-    ...dislikeConditions,
-    ...(formatCondition ? [formatCondition] : []),
-    ...(input.bookIds.length > 0 ? [notInArray(books.id, input.bookIds)] : []),
-  ];
+  const baseConditions: SQL[] = buildBaseConditions(input, likedBooks, exclusions);
 
   const candidateRows = await fetchCandidateBooks(vectorLiteral, baseConditions);
 
@@ -687,20 +780,6 @@ async function computeRecommendations(
   return results;
 }
 
-// Bust personalized feed cache for all limit variants. `limit` is bounded to
-// 1-20 by explore.controller's limitSchema, so we delete the exact bounded
-// key set directly rather than scanning the keyspace with KEYS — KEYS is an
-// O(N) blocking operation over the *entire* Redis instance and must never
-// run on every preference update in production.
-async function bustPersonalizedCache(userId: number): Promise<void> {
-  const PERSONALIZED_CACHE_MAX_LIMIT = 20;
-  const keys = Array.from(
-    { length: PERSONALIZED_CACHE_MAX_LIMIT },
-    (_, i) => `personalized:v1:${userId}:${i + 1}`,
-  );
-  await redis.del(...keys);
-}
-
 /**
  * Writes the structured preference fields only — no Gemini call. This is the
  * part callers need to wait on for a "your save succeeded" confirmation;
@@ -727,6 +806,11 @@ async function saveUserPreferenceFields(
   // history row is a far better outcome than telling the user their save
   // failed. `record` no-ops when nothing actually changed.
   try {
+    // The full rejection set as it stands *after* this save, not just the ones
+    // sent in this payload — a history row is a snapshot of the whole taste
+    // profile, and dislikes are cumulative.
+    const dislikedBookIds = await dislikedBooksService.listBookIds(userId);
+
     await preferenceHistoryService.record(
       userId,
       {
@@ -734,6 +818,7 @@ async function saveUserPreferenceFields(
         bookIds: input.bookIds,
         genres: input.genres,
         dislikes: input.dislikes,
+        dislikedBookIds,
       },
       'user_edit',
     );
@@ -764,5 +849,5 @@ async function regeneratePreferenceEmbedding(
     .set({ preferenceEmbedding: embedding, updatedAt: new Date() })
     .where(eq(userPreferences.userId, userId));
 
-  await bustPersonalizedCache(userId);
+  await bustPersonalizedFeedCache(userId);
 }

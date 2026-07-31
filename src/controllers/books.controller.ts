@@ -152,7 +152,10 @@ export const booksController = {
         return;
       }
 
-      const results = await booksService.similar(id, parsed.data.limit);
+      // Route is behind requireAuth, so the viewer is always known — passed in
+      // so books they've rejected are filtered out of the shelf.
+      const { user } = req as AuthenticatedRequest;
+      const results = await booksService.similar(id, parsed.data.limit, user.id);
       res.status(200).json({ books: results });
     } catch (err: unknown) {
       const e = err as Error;

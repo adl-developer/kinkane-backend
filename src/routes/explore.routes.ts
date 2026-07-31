@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { requireAuth } from '../middleware/auth.middleware';
+import { optionalAuth, requireAuth } from '../middleware/auth.middleware';
 import { exploreController } from '../controllers/explore.controller';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 
@@ -13,11 +13,15 @@ const router = Router();
  * Falls back to recently published books to fill the list on sparse data.
  * Results are cached in Redis for 1 hour.
  *
+ * The ranking is global — everyone sees the same list — with one exception:
+ * a signed-in viewer never sees a book they have swiped away, or another
+ * edition of one.
+ *
  * Query params: limit — number of books to return (1–20, default 10)
  * Returns 200: { books: [{ id, title, coverUrl, isbn13, publicationDate, contributors, genres }] }
- * Public — no auth required.
+ * Public — no auth required. Send a token to get rejected books filtered out.
  */
-router.get('/trending', exploreController.getTrending);
+router.get('/trending', optionalAuth, exploreController.getTrending);
 
 /**
  * GET /api/v1/explore/personalized?limit=10

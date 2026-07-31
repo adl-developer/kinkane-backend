@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-07-30
+
+### Features
+
+* base trending on what readers actually view, like and read ([b5e60a4](https://adl.github.com/adl-developer/kinkane-backend/commit/b5e60a41798e3c1f7edac05565fefc7b50f4264a)) — [details](changelog/2026-07-30-trending-real-signals.md)
+
+
 ## 2026-07-29
 
 ### Features

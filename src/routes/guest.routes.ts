@@ -29,8 +29,15 @@ const router = Router();
  * user's reading list (user_books) and interaction signals (user_interactions)
  * when they create an account.
  *
+ * Books the user swiped away on that screen can be sent in the same call.
+ * They're parked on the guest session and promoted into the user's permanent
+ * rejection history at registration, after which they are filtered out of
+ * every recommendation surface — quiz results, the personalized feed, "you
+ * may also like", and recommendation emails.
+ *
  * Params: id — the guestSessionId returned by POST /recommendations
- * Body:   { chosenBookIds: number[] }  — 1 to 5 book IDs
+ * Body:   { chosenBookIds: number[],      — 1 to 5 book IDs
+ *           dislikedBookIds?: number[] }  — books swiped away, optional
  * Returns 200: { ok: true }
  * Errors: 400 invalid UUID or validation failure | 404 session not found or expired
  */

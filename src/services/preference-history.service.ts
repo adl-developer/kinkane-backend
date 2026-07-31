@@ -21,6 +21,12 @@ export interface PreferenceSnapshotInput {
   bookIds: number[];
   genres: string[];
   dislikes: Dislikes;
+  /**
+   * Books the user has rejected as of this snapshot. Optional so callers that
+   * predate dislikes keep working; omitted means "none recorded", which is the
+   * honest reading for a user who has never swiped a book away.
+   */
+  dislikedBookIds?: number[];
 }
 
 export interface RecordOptions {
@@ -100,7 +106,8 @@ export const preferenceHistoryService = {
       .orderBy(desc(userPreferenceHistory.recordedAt), desc(userPreferenceHistory.id))
       .limit(1);
 
-    const next = { ...prefs, readerType };
+    const dislikedBookIds = prefs.dislikedBookIds ?? [];
+    const next = { ...prefs, dislikedBookIds, readerType };
     let changedFields: PreferenceHistoryField[];
 
     if (previous) {
@@ -109,6 +116,7 @@ export const preferenceHistoryService = {
         'bookIds',
         'genres',
         'dislikes',
+        'dislikedBookIds',
         'readerType',
       ];
       changedFields = fields.filter(
@@ -118,7 +126,7 @@ export const preferenceHistoryService = {
       if (changedFields.length === 0) return null;
     } else {
       // First row for this user: everything is new by definition, so an empty
-      // changedFields is the honest answer rather than listing all five.
+      // changedFields is the honest answer rather than listing every field.
       changedFields = [];
     }
 
@@ -130,6 +138,7 @@ export const preferenceHistoryService = {
         bookIds: prefs.bookIds,
         genres: prefs.genres,
         dislikes: prefs.dislikes,
+        dislikedBookIds,
         readerType,
         changedFields,
         source,
