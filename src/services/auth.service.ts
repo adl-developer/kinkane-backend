@@ -11,6 +11,7 @@ import { enqueueEmail } from '../lib/email-queue';
 import { generateEmbedding } from '../lib/gemini';
 import { buildPreferenceText } from './recommendations.service';
 import { preferenceHistoryService } from './preference-history.service';
+import { dislikedBooksService } from './disliked-books.service';
 
 const BCRYPT_ROUNDS = 12;
 
@@ -117,6 +118,8 @@ async function generatePreferenceEmbedding(
  * if any step fails the user account is still fully usable; the error is logged.
  *
  * Steps:
+ *  0. Promote books swiped away during onboarding into the user's permanent
+ *     rejection history (user_disliked_books)
  *  1. Save structured preferences (feelings, genres, dislikes, liked books)
  *  2. Seed reading list with the 5 chosen books (status: want_to_read)
  *  3. Record those choices as interactions (type: chosen_from_recommendation)
@@ -146,6 +149,14 @@ async function migrateGuestSession(userId: number, sessionId: string): Promise<v
     }
 
     const session = deleted[0];
+    const dislikedBookIds = session.dislikedBookIds ?? [];
+
+    // 0. Books swiped away during onboarding become the user's permanent
+    // rejection history. Written before the history snapshot below so that
+    // snapshot records the set the user actually finished onboarding with.
+    if (dislikedBookIds.length > 0) {
+      await dislikedBooksService.record(userId, dislikedBookIds, 'onboarding_selection', { tx });
+    }
 
     // 1. User preferences
     await tx.insert(userPreferences).values({
@@ -166,6 +177,7 @@ async function migrateGuestSession(userId: number, sessionId: string): Promise<v
         bookIds: session.bookIds,
         genres: session.genres,
         dislikes: session.dislikes,
+        dislikedBookIds,
       },
       'onboarding',
       { readerType: session.readerType ?? null, tx },

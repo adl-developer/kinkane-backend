@@ -46,6 +46,10 @@ export const guestSessions = pgTable(
     // The 5 books the user chose from the recommendation results.
     // Null until the client calls POST /guest-sessions/:id/selections.
     chosenBookIds: jsonb('chosen_book_ids').$type<number[]>(),
+    // Books the user swiped away on that same recommendation list. Held here
+    // only until registration, when migrateGuestSession copies them into
+    // user_disliked_books — a guest has no user row to hang them off yet.
+    dislikedBookIds: jsonb('disliked_book_ids').$type<number[]>(),
     readerType: readerTypeEnum('reader_type'),
     // Ties back to recommendation_cache.input_hash so we can retrieve the result if needed
     recommendationHash: varchar('recommendation_hash', { length: 64 }),

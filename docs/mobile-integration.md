@@ -49,6 +49,47 @@ Its `rate-review-reminder` email template exists but nothing calls it. Push
 for this event isn't wired either. No mobile work is blocked on this, but the
 toggle in Settings currently controls a notification type that never fires.
 
+## Swipe-Away Dislikes on the Recommendation List
+
+Backend pieces already built: the `user_disliked_books` table, capture on both
+onboarding and quiz-refresh, and filtering on every recommendation surface
+(quiz results, personalized feed, "you may also like", recommendation emails).
+
+**Nothing is recorded until the app sends these IDs.** The backend change is
+additive and inert on its own — until the client wires this up, behaviour is
+exactly as it was.
+
+1. **Track swipe-aways on the recommendation list** — the screen where the user
+   picks their 5 books. Collect the IDs of books they swipe away, the same way
+   the chosen ones are collected. No other metadata is needed.
+2. **Guest / first-time onboarding** — send them with the existing selections
+   call: `POST /api/v1/guest-sessions/:id/selections` now takes
+   `{ chosenBookIds, dislikedBookIds? }`. They're stored on the guest session
+   and promoted to the user's permanent history at registration, so they start
+   filtering from the user's very first feed.
+3. **Every subsequent quiz** — send them on
+   `PATCH /api/v1/recommendations/refresh` as `dislikedBookIds`.
+4. **Send only the new ones.** Unlike every other field on `/refresh`, this is a
+   delta: IDs are *added* to the user's permanent rejection history. Sending an
+   empty array (or omitting it) clears nothing, and re-sending an ID the user
+   already rejected is harmless — it counts as a repeat, not a duplicate.
+5. **Reading them back** — `GET /api/v1/recommendations/preferences` returns
+   `dislikedBookIds`, the full accumulated set. Use this if the UI ever needs to
+   show or manage what the user has rejected.
+6. **Send the access token when retaking the quiz.** `POST /recommendations` is
+   the anonymous onboarding endpoint, but it now takes optional auth: with a
+   token, a signed-in user's rejected books are excluded from the fresh list.
+   Without one, that path behaves as it always did and can hand back books the
+   user already rejected. Same for `GET /explore/trending`, which is public but
+   filters rejections when a token is present.
+7. **What it affects** — a rejected book, *and other editions of it* (same title
+   and author, different ISBN), stop appearing in quiz recommendations, the
+   personalized home feed, trending, "you may also like" on book detail, and
+   recommendation emails.
+8. **What it does not affect** — search, browse, author pages and book detail.
+   A rejected book is still reachable if the user goes looking for it; the
+   rejection suppresses recommendations, not the catalogue.
+
 ## Social Sign-In (Firebase Auth SSO)
 
 Full backend setup details (Firebase project creation, service account) are in

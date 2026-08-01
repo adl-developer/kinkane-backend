@@ -18,6 +18,11 @@ import {
   type BookPrice,
 } from '../db/schema';
 import { dedupeByTitle, dedupeByTitleAndSubtitle } from '../lib/dedupe';
+import {
+  buildWorkExclusionCondition,
+  filterExcludedWorks,
+  getUserExclusions,
+} from '../lib/exclusions';
 import { redis } from '../lib/redis';
 import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-excerpts.service';
 import { TRENDING_SCORED_TYPES, trendingScoreSql } from './interactions.service';
@@ -43,6 +48,13 @@ const TRENDING_WINDOW_DAYS = 30;
 // leaves enough distinct titles to fill the requested count.
 const FEED_POOL_MULTIPLIER = 3;
 const FEED_POOL_MAX = 100;
+// Trending and "you may also like" cache one shared list (per limit, per book)
+// and serve it to every viewer, so a viewer's rejected books are filtered out
+// after the cache read. This is how many spare rows are cached beyond the
+// requested limit to absorb that filtering — enough for a typical rejection
+// list without inflating every cache entry for the majority of users who have
+// rejected nothing.
+const FEED_EXCLUSION_HEADROOM = 10;
 // Hard ceiling on how many rows a search's result count is willing to examine. Counting
 // a search's full match set is unbounded work — on the production catalogue (1.1M rows)
 // a single common term like "the" matches ~322k rows, and EXPLAIN (ANALYZE, BUFFERS)
@@ -911,17 +923,29 @@ export const booksService = {
     return detail;
   },
 
-  async trending(limit: number): Promise<TrendingBookItem[]> {
-    // v2: scores are now weighted per interaction type and decayed by age. Old v1
-    // payloads would otherwise linger for an hour with the flat unweighted ranking.
-    const cacheKey = `trending:v2:${limit}`;
+  /**
+   * The global trending leaderboard — the same ranking for everybody, which is
+   * what lets one cache entry serve all traffic.
+   *
+   * A signed-in viewer still never sees a book they rejected: like "you may
+   * also like", the shared list is filtered per viewer after the cache read
+   * rather than being computed per user. Anonymous callers get the list as-is.
+   */
+  async trending(limit: number, userId?: number): Promise<TrendingBookItem[]> {
+    const cacheTarget = limit + FEED_EXCLUSION_HEADROOM;
+    // v3: the cached value is a pool of cacheTarget items rather than exactly
+    // `limit`, so per-viewer filtering has spare rows to eat. (v2 reweighted
+    // scores per interaction type; v1 was the flat unweighted ranking.)
+    const cacheKey = `trending:v3:${limit}`;
     const cached = await redis.get(cacheKey);
-    if (cached) return JSON.parse(cached) as TrendingBookItem[];
+    if (cached) {
+      return applyUserExclusions(JSON.parse(cached) as TrendingBookItem[], userId, limit);
+    }
 
     const since = new Date();
     since.setDate(since.getDate() - TRENDING_WINDOW_DAYS);
 
-    const poolSize = Math.min(limit * FEED_POOL_MULTIPLIER, FEED_POOL_MAX);
+    const poolSize = Math.min(cacheTarget * FEED_POOL_MULTIPLIER, FEED_POOL_MAX);
 
     // Aggregate interaction signals over the last 30 days into a ranked list of book
     // IDs. Weighting and time decay both live in trendingScoreSql — see
@@ -1013,10 +1037,12 @@ export const booksService = {
 
     // Preserve the score-ordered sequence from bookIds
     const ordered = bookIds.map((id) => bookMap.get(id)).filter((b): b is TrendingBookItem => b !== undefined);
-    const results = dedupeByTitle(ordered).slice(0, limit);
+    const pool = dedupeByTitle(ordered).slice(0, cacheTarget);
 
-    await redis.set(cacheKey, JSON.stringify(results), 'EX', TRENDING_TTL);
-    return results;
+    // The pool is shared across all viewers; each one gets their own filtered
+    // view of it.
+    await redis.set(cacheKey, JSON.stringify(pool), 'EX', TRENDING_TTL);
+    return applyUserExclusions(pool, userId, limit);
   },
 
   async personalized(userId: number, limit: number): Promise<TrendingBookItem[]> {
@@ -1024,9 +1050,10 @@ export const booksService = {
     const cached = await redis.get(cacheKey);
     if (cached) return JSON.parse(cached) as TrendingBookItem[];
 
-    // Fetch the user's stored preference embedding and their shelf (to exclude
-    // from results) in parallel — independent queries, no need to serialize them.
-    const [[prefs], shelfRows] = await Promise.all([
+    // Fetch the user's stored preference embedding, their shelf and their
+    // rejected books (both to exclude from results) in parallel — independent
+    // queries, no need to serialize them.
+    const [[prefs], shelfRows, exclusions] = await Promise.all([
       db
         .select({ preferenceEmbedding: userPreferences.preferenceEmbedding })
         .from(userPreferences)
@@ -1037,18 +1064,23 @@ export const booksService = {
         .select({ bookId: userBooks.bookId })
         .from(userBooks)
         .where(eq(userBooks.userId, userId)),
+
+      getUserExclusions(userId),
     ]);
 
     // No embedding yet (migration still in progress or user has no preferences)
     if (!prefs?.preferenceEmbedding) return [];
 
-    const shelfIds = shelfRows.map((r) => r.bookId);
+    const excludedIds = [...new Set([...shelfRows.map((r) => r.bookId), ...exclusions.bookIds])];
 
     const vectorLiteral = `[${prefs.preferenceEmbedding.join(',')}]`;
 
     const whereClause = and(
       sql`(${books.embedding} <=> ${vectorLiteral}::vector) < ${PERSONALIZED_SIMILARITY_THRESHOLD}`,
-      shelfIds.length > 0 ? notInArray(books.id, shelfIds) : undefined,
+      excludedIds.length > 0 ? notInArray(books.id, excludedIds) : undefined,
+      // Catches other editions of a rejected book, which the ID list above
+      // can't see — the catalogue stores each format as its own row.
+      buildWorkExclusionCondition(exclusions.works),
     );
 
     const poolSize = Math.min(limit * FEED_POOL_MULTIPLIER, FEED_POOL_MAX);
@@ -1115,10 +1147,30 @@ export const booksService = {
     return results;
   },
 
-  async similar(bookId: number, limit: number): Promise<TrendingBookItem[]> {
-    const cacheKey = `similar:v1:${bookId}:${limit}`;
+  /**
+   * "You May Also Like" — books nearest the given book's embedding.
+   *
+   * The cache stays keyed on the book, not the viewer: one cached list serves
+   * every user, which is what makes this cheap. Per-user rejections are
+   * applied *after* the cache read instead, so a user never sees a book they
+   * swiped away without turning the cache key into book × user.
+   *
+   * The trade for that is caching a slightly longer list than asked for
+   * (FEED_EXCLUSION_HEADROOM) so filtering still tends to leave `limit`
+   * results. A user who has rejected an unusual number of near-neighbours of
+   * this particular book can still come up short — an acceptable outcome for a
+   * secondary shelf, and strictly better than showing them the rejects.
+   */
+  async similar(bookId: number, limit: number, userId?: number): Promise<TrendingBookItem[]> {
+    // Over-fetch target, so per-user filtering below has spare rows to eat.
+    const cacheTarget = limit + FEED_EXCLUSION_HEADROOM;
+    // v2: the cached value is now a pool of cacheTarget items rather than
+    // exactly `limit`, so old v1 entries must not be read back.
+    const cacheKey = `similar:v2:${bookId}:${limit}`;
     const cached = await redis.get(cacheKey);
-    if (cached) return JSON.parse(cached) as TrendingBookItem[];
+    if (cached) {
+      return applyUserExclusions(JSON.parse(cached) as TrendingBookItem[], userId, limit);
+    }
 
     const [target] = await db
       .select({ embedding: books.embedding })
@@ -1131,7 +1183,7 @@ export const booksService = {
 
     const vectorLiteral = `[${target.embedding.join(',')}]`;
 
-    const poolSize = Math.min(limit * FEED_POOL_MULTIPLIER, FEED_POOL_MAX);
+    const poolSize = Math.min(cacheTarget * FEED_POOL_MULTIPLIER, FEED_POOL_MAX);
 
     // SET LOCAL scopes the raised ef_search to just this query, inside a
     // transaction — a bare SET would stick to the pooled connection and leak
@@ -1194,9 +1246,29 @@ export const booksService = {
 
     // Preserve cosine similarity order from rows
     const ordered = rows.map((r) => bookMap.get(r.id)).filter((b): b is TrendingBookItem => b !== undefined);
-    const results = dedupeByTitle(ordered).slice(0, limit);
+    const pool = dedupeByTitle(ordered).slice(0, cacheTarget);
 
-    await redis.set(cacheKey, JSON.stringify(results), 'EX', PERSONALIZED_TTL);
-    return results;
+    // The pool is what gets cached and shared across users; the caller gets
+    // their own filtered view of it.
+    await redis.set(cacheKey, JSON.stringify(pool), 'EX', PERSONALIZED_TTL);
+    return applyUserExclusions(pool, userId, limit);
   },
 };
+
+/**
+ * Drops books the viewer has rejected from an already-built list, then trims
+ * to `limit`. Filtering happens here rather than in SQL because the list is a
+ * per-book cache entry shared across users — see booksService.similar.
+ *
+ * Anonymous callers have nothing to exclude and skip the lookup entirely.
+ */
+async function applyUserExclusions(
+  items: TrendingBookItem[],
+  userId: number | undefined,
+  limit: number,
+): Promise<TrendingBookItem[]> {
+  if (userId === undefined) return items.slice(0, limit);
+
+  const exclusions = await getUserExclusions(userId);
+  return filterExcludedWorks(items, exclusions).slice(0, limit);
+}

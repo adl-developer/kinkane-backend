@@ -89,16 +89,27 @@ export const guestService = {
    * Saves the user's 5 chosen books against an existing guest session and
    * infers their reader type via Gemini from those book selections.
    * Returns false if the session doesn't exist or has expired.
+   *
+   * Books swiped away on the same screen are parked on the session too. They
+   * do nothing for this guest — there's no user row to hang a rejection
+   * history off yet, and this quiz's results are already generated — but
+   * migrateGuestSession promotes them into user_disliked_books at signup, so
+   * they start filtering recommendations from the user's very first feed.
    */
   async saveSelections(
     id: string,
     chosenBookIds: number[],
+    dislikedBookIds: number[] = [],
   ): Promise<{ readerType: string | null; books: { id: number; title: string; coverUrl: string | null }[] } | null> {
     const readerType = await fetchAndInferReaderType(chosenBookIds);
 
     const [updated] = await db
       .update(guestSessions)
-      .set({ chosenBookIds, readerType: readerType ?? undefined })
+      .set({
+        chosenBookIds,
+        dislikedBookIds: [...new Set(dislikedBookIds)],
+        readerType: readerType ?? undefined,
+      })
       .where(
         and(
           eq(guestSessions.id, id),

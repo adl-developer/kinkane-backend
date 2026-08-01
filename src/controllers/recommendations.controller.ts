@@ -65,8 +65,14 @@ const recommendationsSchema = z.object({
   dislikes: dislikesSchema.default({}),
 });
 
-// Refresh uses the same shape minus displayName
-const refreshSchema = recommendationsSchema.omit({ displayName: true });
+// Refresh uses the same shape minus displayName, plus the books the user
+// swiped away on the recommendation list since their last quiz. Those are
+// added to their permanent rejection history rather than replacing it, so the
+// client only needs to send new ones — and unlike the other fields, omitting
+// this one never clears anything.
+const refreshSchema = recommendationsSchema.omit({ displayName: true }).extend({
+  dislikedBookIds: z.array(z.number().int().positive()).default([]),
+});
 
 // Opt-in flag on /refresh — by default no recommendations are computed or
 // returned (just a preference update), since that's an expensive Gemini-backed
@@ -92,8 +98,12 @@ export const recommendationsController = {
     }
 
     try {
+      // optionalAuth route — anonymous during onboarding, but a signed-in user
+      // retaking the quiz here must still have their rejected books excluded.
+      const userId = (req as Partial<AuthenticatedRequest>).user?.id;
+
       const { recommendations, guestSessionId, expiresAt } =
-        await recommendationsService.getRecommendations(parsed.data);
+        await recommendationsService.getRecommendations(parsed.data, userId);
       res.status(200).json({ recommendations, guestSessionId, expiresAt });
     } catch (err: unknown) {
       logger.error('Unexpected error generating recommendations', { error: (err as Error).message });
@@ -143,7 +153,13 @@ export const recommendationsController = {
         res.status(200).json({ recommendations: result.recommendations });
       } else {
         res.status(200).json({
-          preferences: { feelings: result.feelings, genres: result.genres, dislikes: result.dislikes, bookIds: result.bookIds },
+          preferences: {
+            feelings: result.feelings,
+            genres: result.genres,
+            dislikes: result.dislikes,
+            bookIds: result.bookIds,
+            dislikedBookIds: result.dislikedBookIds,
+          },
         });
       }
 

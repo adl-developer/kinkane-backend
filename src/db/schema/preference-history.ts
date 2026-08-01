@@ -32,6 +32,7 @@ export type PreferenceHistoryField =
   | 'bookIds'
   | 'genres'
   | 'dislikes'
+  | 'dislikedBookIds'
   | 'readerType';
 
 export const userPreferenceHistory = pgTable(
@@ -45,6 +46,12 @@ export const userPreferenceHistory = pgTable(
     bookIds: jsonb('book_ids').$type<number[]>().notNull(),
     genres: jsonb('genres').$type<string[]>().notNull(),
     dislikes: jsonb('dislikes').$type<Dislikes>().notNull(),
+    // Every book the user had rejected as of this snapshot. Denormalized from
+    // user_disliked_books (which is the authoritative, append-only store) so a
+    // history row stays a self-contained picture of the taste profile — the
+    // same reason readerType is carried forward below. Defaults to an empty
+    // array so rows written before dislikes existed read back cleanly.
+    dislikedBookIds: jsonb('disliked_book_ids').$type<number[]>().notNull().default([]),
     // Carried forward from users.reader_type so each row is a self-contained
     // picture of the taste profile, even though reader type is written on a
     // different code path than the rest of these fields.

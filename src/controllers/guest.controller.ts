@@ -10,6 +10,13 @@ const selectionsSchema = z.object({
     .array(z.number().int().positive())
     .min(1, 'At least 1 book must be chosen')
     .max(5, 'A maximum of 5 books can be chosen'),
+
+  // Books swiped away on the same screen. Optional — a user can pick their 5
+  // without rejecting anything. Unbounded above by design: the recommendation
+  // list runs to 100 books and a thorough swiper can reject most of them.
+  dislikedBookIds: z
+    .array(z.number().int().positive())
+    .default([]),
 });
 
 export const guestController = {
@@ -32,7 +39,11 @@ export const guestController = {
     }
 
     try {
-      const result = await guestService.saveSelections(id, parsed.data.chosenBookIds);
+      const result = await guestService.saveSelections(
+        id,
+        parsed.data.chosenBookIds,
+        parsed.data.dislikedBookIds,
+      );
       if (!result) {
         res.status(404).json({ error: 'Session not found or expired' });
         return;

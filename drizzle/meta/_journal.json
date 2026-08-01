@@ -204,6 +204,13 @@
       "when": 1785320342743,
       "tag": "0028_powerful_avengers",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1785525388767,
+      "tag": "0029_big_yellow_claw",
+      "breakpoints": true
     }
   ]
 }
