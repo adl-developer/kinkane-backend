@@ -98,12 +98,8 @@ export const recommendationsController = {
     }
 
     try {
-      // optionalAuth route — anonymous during onboarding, but a signed-in user
-      // retaking the quiz here must still have their rejected books excluded.
-      const userId = (req as Partial<AuthenticatedRequest>).user?.id;
-
       const { recommendations, guestSessionId, expiresAt } =
-        await recommendationsService.getRecommendations(parsed.data, userId);
+        await recommendationsService.getRecommendations(parsed.data);
       res.status(200).json({ recommendations, guestSessionId, expiresAt });
     } catch (err: unknown) {
       logger.error('Unexpected error generating recommendations', { error: (err as Error).message });

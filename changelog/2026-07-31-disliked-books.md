@@ -16,9 +16,10 @@ author, so every edition of a named book is filtered out.
 table, `user_disliked_books`, stores every book a reader swipes away on the
 recommendation list, accumulated across onboarding and every subsequent quiz.
 Those books — and other editions of them — are now filtered out of every
-surface that suggests a book to a reader: quiz results (first time and every
-retake), the personalized home feed, trending, "you may also like" on book
-detail, and recommendation emails.
+surface that suggests a book to a reader: every quiz retake, the personalized
+home feed, trending, "you may also like" on book detail, and recommendation
+emails. (The first quiz needs no filtering — the reader hasn't rejected
+anything yet.)
 
 Search, browse and book detail are deliberately *not* filtered: if a reader
 goes looking for a book by name, hiding it would be a bug, not a feature.
@@ -95,14 +96,12 @@ leaderboard. It simply isn't shown to the reader who rejected it. `/trending`
 is now an `optionalAuth` route for this reason: anonymous callers get the list
 unchanged, signed-in ones get their rejections removed.
 
-**The quiz endpoint takes optional auth.** `POST /recommendations` is the
-onboarding entry point and was fully anonymous. But a signed-in user retaking
-the quiz through it would have had their entire rejection history ignored — on
-the one flow where re-recommending a rejected book is most obvious, since
-they're being shown a fresh list to pick five from. It now applies exclusions
-whenever a token is present. **The mobile app must send the access token on
-this call for signed-in users**, or that path silently keeps the old
-behaviour.
+**The guest quiz endpoint stays unauthenticated.** `POST /recommendations` runs
+before an account exists, so there is no rejection history to apply — a guest
+hasn't been shown a list to swipe on yet. Their swipes are saved to the guest
+session and start filtering once registration turns them into a user. A
+signed-in reader retaking the quiz goes through `PATCH /refresh`, which loads
+their exclusions.
 
 **Rejections are part of the recommendation cache key.** Otherwise two users
 with identical quiz answers but different rejection histories share a cached
