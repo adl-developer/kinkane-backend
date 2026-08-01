@@ -393,18 +393,12 @@ async function fetchCandidateBooks(
 
 export const recommendationsService = {
   /**
-   * `userId` is optional because this is the onboarding entry point and most
-   * callers are anonymous. It is passed whenever a signed-in user retakes the
-   * quiz through this endpoint: without it their rejection history would be
-   * ignored on exactly the flow where re-recommending a rejected book is most
-   * visible, since they are being shown a fresh list to pick from.
+   * The guest onboarding entry point — always unauthenticated, so there is no
+   * rejection history to apply. A signed-in reader retaking the quiz goes
+   * through `refresh` instead, which loads their exclusions.
    */
-  async getRecommendations(
-    input: RecommendationInput,
-    userId?: number,
-  ): Promise<RecommendationResult> {
-    const exclusions = userId === undefined ? EMPTY_EXCLUSIONS : await getUserExclusions(userId);
-    const hash = hashInput(input, exclusions.bookIds);
+  async getRecommendations(input: RecommendationInput): Promise<RecommendationResult> {
+    const hash = hashInput(input);
     const now = new Date();
     const redisCacheKey = `recommendations:hash:${hash}`;
 
@@ -465,10 +459,11 @@ export const recommendationsService = {
 
     // 4. pgvector cosine similarity search — strict pass first, backfilled
     //    with a looser pass if that doesn't leave enough to hit TARGET_RESULTS.
-    //    For an anonymous guest `exclusions` is empty — they haven't seen a
-    //    recommendation list to swipe on yet. Their swipes land on the guest
-    //    session and start applying once registration moves them to a user row.
-    const baseConditions: SQL[] = buildBaseConditions(input, likedBooks, exclusions);
+    //    No stored rejections to exclude on this path: the caller is a guest
+    //    who hasn't seen a recommendation list to swipe on yet. Their swipes
+    //    land on the guest session and start applying once registration moves
+    //    them to a user row.
+    const baseConditions: SQL[] = buildBaseConditions(input, likedBooks, EMPTY_EXCLUSIONS);
 
     const candidateRows = await fetchCandidateBooks(vectorLiteral, baseConditions);
 

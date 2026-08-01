@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-07-31
+
+### Features
+
+* stop recommending books a reader has already read or rejected ([05a81ae](https://adl.github.com/adl-developer/kinkane-backend/commit/05a81ae133f20802c7bfd6bac4a8c66d5d2e8af0)) — [details](changelog/2026-07-31-disliked-books.md)
+
+
 ## 2026-07-30
 
 ### Features

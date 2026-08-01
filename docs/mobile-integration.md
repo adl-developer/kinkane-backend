@@ -76,12 +76,12 @@ exactly as it was.
 5. **Reading them back** — `GET /api/v1/recommendations/preferences` returns
    `dislikedBookIds`, the full accumulated set. Use this if the UI ever needs to
    show or manage what the user has rejected.
-6. **Send the access token when retaking the quiz.** `POST /recommendations` is
-   the anonymous onboarding endpoint, but it now takes optional auth: with a
-   token, a signed-in user's rejected books are excluded from the fresh list.
-   Without one, that path behaves as it always did and can hand back books the
-   user already rejected. Same for `GET /explore/trending`, which is public but
-   filters rejections when a token is present.
+6. **Send the access token on `GET /explore/trending`.** It's a public endpoint,
+   but it filters out the viewer's rejected books when a token is present.
+   Without one it returns the unfiltered global list.
+   (`POST /recommendations` needs no token — it's the guest onboarding call,
+   made before an account exists. A signed-in reader retaking the quiz goes
+   through `PATCH /recommendations/refresh`, which applies their rejections.)
 7. **What it affects** — a rejected book, *and other editions of it* (same title
    and author, different ISBN), stop appearing in quiz recommendations, the
    personalized home feed, trending, "you may also like" on book detail, and
