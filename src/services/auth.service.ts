@@ -12,6 +12,8 @@ import { generateEmbedding } from '../lib/gemini';
 import { buildPreferenceText } from './recommendations.service';
 import { preferenceHistoryService } from './preference-history.service';
 import { dislikedBooksService } from './disliked-books.service';
+import { subscriptionStateService } from './subscriptions/state.service';
+import type { SubscriptionTier, SubscriptionStatus } from '../db/schema';
 
 const BCRYPT_ROUNDS = 12;
 
@@ -31,8 +33,10 @@ export interface MeUser extends AuthUser {
   photoUrl: string | null;
   joinedYear: number;
   subscription: {
-    tier: 'free' | 'plus';
-    status: 'active' | 'trialing' | 'expired' | 'cancelled';
+    tier: SubscriptionTier;
+    // Sourced from the enum rather than restated, so adding a Stripe-driven
+    // status (past_due, incomplete) can't leave this contract behind.
+    status: SubscriptionStatus;
     trialDaysLeft: number | null;
     trialEndsAt: Date | null;
   };
@@ -309,8 +313,14 @@ export const authService = {
         .insert(users)
         .values({ name: name.trim(), email: email.toLowerCase().trim(), passwordHash })
         .returning({ id: users.id, name: users.name, email: users.email, emailVerified: users.emailVerified });
-      await tx.insert(userSubscriptions).values({ userId: u.id, tier: 'plus', status: 'trialing', trialEndsAt });
+      const [sub] = await tx
+        .insert(userSubscriptions)
+        .values({ userId: u.id, tier: 'plus', status: 'trialing', trialEndsAt })
+        .returning();
       await tx.insert(subscriptionEvents).values({ userId: u.id, event: 'started', newTrialEndsAt: trialEndsAt });
+      // Opens the first history interval, so a user's state timeline starts at
+      // signup rather than at whatever their first change happens to be.
+      await subscriptionStateService.recordHistory(tx, sub, 'signup', null);
       await tx.insert(notificationPreferences).values({ userId: u.id });
       return u;
     });
@@ -665,24 +675,10 @@ export const authService = {
 
     // Lazy write: if the trial deadline has passed but nothing has flipped the
     // row yet (the cron sweep runs periodically, not instantly), do it now so
-    // status/tier reflect reality and the transition is recorded.
-    if (sub.status === 'trialing' && sub.trialEndsAt && sub.trialEndsAt < new Date()) {
-      const expiredAt = new Date();
-      const previousTrialEndsAt = sub.trialEndsAt;
-      await db.transaction(async (tx) => {
-        await tx
-          .update(userSubscriptions)
-          .set({ status: 'expired', tier: 'free', trialExpiredAt: expiredAt, updatedAt: expiredAt })
-          .where(eq(userSubscriptions.id, sub!.id));
-        await tx.insert(subscriptionEvents).values({
-          userId,
-          event: 'expired',
-          previousTrialEndsAt,
-          newTrialEndsAt: null,
-        });
-      });
-      sub = { ...sub, status: 'expired', tier: 'free', trialExpiredAt: expiredAt };
-    }
+    // status/tier reflect reality and the transition is recorded. Returns null
+    // if there was nothing to do or another writer got there first, in which
+    // case the row we already read is still the truth.
+    sub = (await subscriptionStateService.expireTrialIfDue(sub)) ?? sub;
 
     const providerRows = await db
       .select({ provider: userProviders.provider })
@@ -795,8 +791,12 @@ export const authService = {
         .values({ name, email, photoUrl, emailVerified: true })
         .returning({ id: users.id, name: users.name, email: users.email, emailVerified: users.emailVerified });
       await tx.insert(userProviders).values({ userId: u.id, provider, providerUid });
-      await tx.insert(userSubscriptions).values({ userId: u.id, tier: 'plus', status: 'trialing', trialEndsAt });
+      const [sub] = await tx
+        .insert(userSubscriptions)
+        .values({ userId: u.id, tier: 'plus', status: 'trialing', trialEndsAt })
+        .returning();
       await tx.insert(subscriptionEvents).values({ userId: u.id, event: 'started', newTrialEndsAt: trialEndsAt });
+      await subscriptionStateService.recordHistory(tx, sub, 'signup', null);
       await tx.insert(notificationPreferences).values({ userId: u.id });
       return u;
     });
