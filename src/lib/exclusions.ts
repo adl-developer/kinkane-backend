@@ -1,6 +1,6 @@
 import { sql, eq, and, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../db';
-import { books, bookContributors, userDislikedBooks } from '../db/schema';
+import { books, bookContributors, userBooks, userDislikedBooks } from '../db/schema';
 import { redis } from './redis';
 import { logger } from './logger';
 
@@ -128,11 +128,26 @@ export function filterExcludedWorks<
 }
 
 /**
- * Everything a user has rejected, in the shape the exclusion predicate wants.
+ * Every book a user should never be recommended, in the shape the exclusion
+ * predicate wants. Two sources, deliberately merged into one set:
+ *
+ *  - books they rejected (user_disliked_books)
+ *  - books already on their shelf (user_books), whatever the source or reading
+ *    status — a book they own, are reading, or have finished is not a
+ *    recommendation, and re-surfacing it in a quiz reads as the quiz not
+ *    knowing them
+ *
+ * Both are matched at work level, so a paperback on the shelf also suppresses
+ * the hardback and the ebook.
+ *
+ * Dislikes carry their own normalized title/author snapshot, frozen at the
+ * moment of rejection. Shelf books have no such snapshot, so their titles are
+ * resolved live — meaning a shelf exclusion follows catalogue corrections while
+ * a dislike keeps the form the user actually rejected.
  *
  * Redis-cached because this is read on every personalized feed request while
- * the underlying set changes only when the user swipes a book away — which is
- * also the only thing that busts it (see `bustUserExclusions`).
+ * the underlying set only changes when the user swipes a book away or edits
+ * their shelf — both of which bust it (see `bustUserExclusions`).
  *
  * Never throws: a Redis or Postgres hiccup here degrades to "no exclusions"
  * rather than failing the feed. The cost of that degradation is one unwanted
@@ -152,18 +167,38 @@ export async function getUserExclusions(userId: number): Promise<UserExclusions>
   }
 
   try {
-    const rows = await db
-      .select({
-        bookId: userDislikedBooks.bookId,
-        title: userDislikedBooks.titleNormalized,
-        author: userDislikedBooks.authorNormalized,
-      })
-      .from(userDislikedBooks)
-      .where(eq(userDislikedBooks.userId, userId));
+    const [dislikedRows, shelfRows] = await Promise.all([
+      db
+        .select({
+          bookId: userDislikedBooks.bookId,
+          title: userDislikedBooks.titleNormalized,
+          author: userDislikedBooks.authorNormalized,
+        })
+        .from(userDislikedBooks)
+        .where(eq(userDislikedBooks.userId, userId)),
 
+      db
+        .select({ bookId: userBooks.bookId })
+        .from(userBooks)
+        .where(eq(userBooks.userId, userId)),
+    ]);
+
+    // Shelf books need the same normalized title/author shape a dislike stores,
+    // built through the same helper so the two sources can't drift apart.
+    const shelfSnapshots = await resolveWorkSnapshots(shelfRows.map((r) => r.bookId));
+
+    // A book can be on the shelf and disliked at once (added, then rejected in
+    // a later quiz), and two shelf editions of one work collapse to the same
+    // title/author pair. Dedup both lists so neither the ID filter nor the
+    // VALUES clause in buildWorkExclusionCondition carries redundant rows.
     const exclusions: UserExclusions = {
-      bookIds: rows.map((r) => r.bookId),
-      works: rows.map((r) => ({ title: r.title, author: r.author })),
+      bookIds: [
+        ...new Set([...dislikedRows.map((r) => r.bookId), ...shelfRows.map((r) => r.bookId)]),
+      ],
+      works: dedupeWorks([
+        ...dislikedRows.map((r) => ({ title: r.title, author: r.author })),
+        ...shelfSnapshots.values(),
+      ]),
     };
 
     await redis
@@ -182,9 +217,10 @@ export async function getUserExclusions(userId: number): Promise<UserExclusions>
 
 /**
  * Drops the cached exclusion set — call after any write to
- * user_disliked_books. Also clears the user's personalized feed, which is
- * built from these exclusions: without that, a book the user just swiped away
- * keeps showing up on the home feed until the feed's own TTL expires.
+ * user_disliked_books or user_books. Also clears the user's personalized feed,
+ * which is built from these exclusions: without that, a book the user just
+ * swiped away (or just added to their shelf) keeps showing up on the home feed
+ * until the feed's own TTL expires.
  */
 export async function bustUserExclusions(userId: number): Promise<void> {
   try {
@@ -255,10 +291,24 @@ export async function resolveWorkSnapshots(
   return snapshots;
 }
 
+/** Collapses works to one entry per normalized title/author pair. */
+function dedupeWorks(works: ExcludedWork[]): ExcludedWork[] {
+  const byKey = new Map<string, ExcludedWork>();
+  for (const work of works) {
+    // Explicit NUL separator so a title/author pair can't collide with a
+    // differently-split pair whose title happens to contain the separator.
+    byKey.set(`${work.title}\u0000${work.author ?? ''}`, work);
+  }
+  return [...byKey.values()];
+}
+
 const EXCLUSIONS_TTL_SECONDS = 60 * 60; // 1 hour — writes bust it explicitly
 
 const PERSONALIZED_CACHE_MAX_LIMIT = 20;
 
+// v2 — shelf books joined the set. The bump retires v1 entries, which held
+// dislikes only and would otherwise keep serving shelf books for up to an hour
+// after deploy.
 function exclusionsCacheKey(userId: number): string {
-  return `exclusions:v1:${userId}`;
+  return `exclusions:v2:${userId}`;
 }

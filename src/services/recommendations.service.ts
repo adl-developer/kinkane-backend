@@ -1,13 +1,24 @@
 import { createHash } from 'crypto';
 import { eq, sql, and, inArray, notInArray, gt, type SQL } from 'drizzle-orm';
 import { db } from '../db';
-import { books, bookContributors, bookGenres, genres, userPreferences, users } from '../db/schema';
+import {
+  books,
+  bookContributors,
+  bookGenres,
+  genres,
+  userBooks,
+  userInteractions,
+  userPreferences,
+  users,
+  type ReaderType,
+} from '../db/schema';
 import { recommendationCache, type RecommendationItem } from '../db/schema/recommendations';
 import type { Dislikes } from '../db/schema/onboarding';
 import { dedupeByTitle } from '../lib/dedupe';
 import {
   buildWorkExclusionCondition,
   bustPersonalizedFeedCache,
+  bustUserExclusions,
   getUserExclusions,
   normalizeForMatch,
   EMPTY_EXCLUSIONS,
@@ -15,6 +26,7 @@ import {
   type UserExclusions,
 } from '../lib/exclusions';
 import { generateEmbedding, generateExplanations, type BookContext } from '../lib/gemini';
+import { fetchAndInferReaderType } from '../lib/reader-type';
 import { guestService } from './guest.service';
 import { dislikedBooksService } from './disliked-books.service';
 import { preferenceHistoryService } from './preference-history.service';
@@ -49,10 +61,13 @@ export interface RecommendationInput {
   genres: string[];
   dislikes: Dislikes;
   /**
-   * Books the user swiped away on the recommendation list since their last
-   * quiz. Additive — these are recorded on top of everything they've rejected
-   * before, never treated as the complete set. Logged-in path only; a guest's
-   * swipes go on the guest session instead (see guestService.saveSelections).
+   * Every book the user has ever swiped away, accumulated across onboarding
+   * and all later quizzes. Read-only on this type: it is populated on the way
+   * out (getPreferences, refresh) from the append-only dislikes table, and
+   * ignored on the way in. Recording a new rejection goes through
+   * recommendationsService.saveSelections, the only write path for a logged-in
+   * user; a guest's swipes go on the guest session instead (see
+   * guestService.saveSelections).
    */
   dislikedBookIds?: number[];
 }
@@ -615,20 +630,16 @@ export const recommendationsService = {
    * down. The personalized feed will pick up the new embedding once that
    * background call completes; until then it keeps serving on the old one.
    *
-   * Any `dislikedBookIds` in the payload are recorded first and awaited, not
-   * fired off in the background: they feed the exclusion set that the
-   * recommendation pass below reads, so a book the user just swiped away must
-   * already be excluded by the time that pass runs.
+   * This endpoint no longer records rejections — `saveSelections` owns that
+   * write. It still reads them back, because the recommendation pass below
+   * filters on the user's accumulated exclusion set regardless of what the
+   * caller sent.
    */
   async refresh(
     userId: number,
     input: Omit<RecommendationInput, 'displayName'>,
     includeRecommendations = false,
   ): Promise<Omit<RecommendationInput, 'displayName'> & { recommendations?: RecommendationItem[] }> {
-    if (input.dislikedBookIds?.length) {
-      await dislikedBooksService.record(userId, input.dislikedBookIds, 'quiz_refresh');
-    }
-
     await saveUserPreferenceFields(userId, input);
 
     regeneratePreferenceEmbedding(userId, input).catch((err) => {
@@ -649,6 +660,107 @@ export const recommendationsService = {
 
     const results = await computeRecommendations(userId, input);
     return { ...saved, recommendations: results };
+  },
+
+  /**
+   * Saves the books an authenticated user picked from a quiz retake — the
+   * logged-in twin of POST /guest-sessions/:id/selections.
+   *
+   * The guest version parks its results on the session row and waits for
+   * registration to turn them into real state. Here there is already a user, so
+   * the same work happens directly and immediately: chosen books land on the
+   * shelf and in the interaction log, and swiped-away books go straight into the
+   * permanent rejection history.
+   *
+   * Reader type is re-inferred from the new picks and written to the preference
+   * history only — `users.readerType` is left alone. A retake is evidence about
+   * taste, but the reader type shown in settings stays something the user owns
+   * rather than something a quiz silently overwrites; the history row is where
+   * the drift becomes visible.
+   *
+   * Both writes feed the exclusion set, so neither a chosen nor a rejected book
+   * can come back in a later quiz.
+   */
+  async saveSelections(
+    userId: number,
+    chosenBookIds: number[],
+    dislikedBookIds: number[] = [],
+  ): Promise<{ readerType: ReaderType | null; books: { id: number; title: string; coverUrl: string | null }[] }> {
+    // A book listed twice is one pick, not two — dedup before anything counts
+    // or inserts it, so the 5-book cap can't be gamed and the response doesn't
+    // echo a book back twice.
+    const uniqueChosenIds = [...new Set(chosenBookIds)];
+
+    // Reject unknown book IDs up front rather than letting a foreign key fail
+    // mid-transaction — the client sent something that isn't in the catalogue
+    // and deserves a 400, not a 500.
+    const selectedBooks = await db
+      .select({ id: books.id, title: books.title, coverUrl: books.coverUrl })
+      .from(books)
+      .where(inArray(books.id, uniqueChosenIds));
+
+    if (selectedBooks.length !== uniqueChosenIds.length) {
+      const found = new Set(selectedBooks.map((b) => b.id));
+      throw Object.assign(
+        new Error(`Unknown book IDs: ${uniqueChosenIds.filter((id) => !found.has(id)).join(', ')}`),
+        { statusCode: 400 },
+      );
+    }
+
+    if (dislikedBookIds.length > 0) {
+      await dislikedBooksService.record(userId, dislikedBookIds, 'quiz_refresh');
+    }
+
+    const readerType = await fetchAndInferReaderType(uniqueChosenIds);
+
+    await db.transaction(async (tx) => {
+      // onConflictDoNothing on both: a book already on the shelf keeps the
+      // status, note and source the user gave it. Picking it again in a quiz is
+      // not a reason to overwrite their own edits — and since shelf books are
+      // excluded from quiz results, this should only fire on a stale client.
+      await tx
+        .insert(userBooks)
+        .values(
+          uniqueChosenIds.map((bookId) => ({
+            userId,
+            bookId,
+            status: null,
+            source: 'chosen_from_quiz',
+            liked: true,
+            likedAt: new Date(),
+          })),
+        )
+        .onConflictDoNothing();
+
+      await tx
+        .insert(userInteractions)
+        .values(
+          uniqueChosenIds.map((bookId) => ({
+            userId,
+            bookId,
+            type: 'chosen_from_recommendation',
+            weight: 1.0,
+          })),
+        )
+        .onConflictDoNothing();
+    });
+
+    // History is a side record, not the point of the call — a failure to log
+    // the snapshot must not fail the user's selection, which is already saved.
+    try {
+      const prefs = await recommendationsService.getPreferences(userId);
+      await preferenceHistoryService.record(userId, prefs, 'user_edit', { readerType });
+    } catch (err) {
+      logger.error('Failed to record preference history after quiz selections', {
+        userId,
+        error: (err as Error).message,
+      });
+    }
+
+    // The shelf just grew, and the shelf is part of the exclusion set.
+    await bustUserExclusions(userId);
+
+    return { readerType, books: selectedBooks };
   },
 };
 

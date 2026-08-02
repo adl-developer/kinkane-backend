@@ -17,6 +17,9 @@ import {
   sendRateReviewReminderEmail,
   sendPostCommentEmail,
   sendPostLikeEmail,
+  sendSubscriptionConfirmedEmail,
+  sendSubscriptionPaymentFailedEmail,
+  sendSubscriptionCancelledEmail,
 } from '../emails';
 import { logger } from '../lib/logger';
 
@@ -104,6 +107,23 @@ async function processEmailJob(job: Job): Promise<void> {
     case 'post-like': {
       const { to, name: userName, likerName, bookTitle } = job.data as EmailJobMap['post-like'];
       await sendPostLikeEmail(to, userName, likerName, bookTitle);
+      break;
+    }
+    case 'subscription-confirmed': {
+      const { to, name: userName, plan, isFounding, currentPeriodEnd } =
+        job.data as EmailJobMap['subscription-confirmed'];
+      await sendSubscriptionConfirmedEmail(to, userName, { plan, isFounding, currentPeriodEnd });
+      break;
+    }
+    case 'subscription-payment-failed': {
+      const { to, name: userName, amountCents, currency } =
+        job.data as EmailJobMap['subscription-payment-failed'];
+      await sendSubscriptionPaymentFailedEmail(to, userName, amountCents, currency);
+      break;
+    }
+    case 'subscription-cancelled': {
+      const { to, name: userName, accessEndsAt } = job.data as EmailJobMap['subscription-cancelled'];
+      await sendSubscriptionCancelledEmail(to, userName, accessEndsAt);
       break;
     }
     default: {

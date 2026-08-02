@@ -6,7 +6,7 @@ import { interactionsService } from '../services/interactions.service';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 
 const suggestionsSchema = z.object({
-  q: z.string().min(2, 'Query must be at least 2 characters').max(100),
+  q: z.string().min(1, 'Query must not be empty').max(100),
   limit: z.coerce.number().int().min(1).max(15).default(8),
   type: z.enum(['title', 'author']).default('title'),
 });

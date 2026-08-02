@@ -341,10 +341,11 @@ JWT_REFRESH_SECRET=your_refresh_token_secret_min_32_chars
 ACCESS_TOKEN_TTL=900        # 15 minutes
 REFRESH_TOKEN_TTL=2592000   # 30 days
 
-# Firebase Admin SDK — from your Firebase project service account JSON
-FIREBASE_PROJECT_ID=your-firebase-project-id
-FIREBASE_CLIENT_EMAIL=firebase-adminsdk-xxxxx@your-project.iam.gserviceaccount.com
-FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+# Firebase Admin SDK — the whole service account JSON, base64-encoded:
+#   base64 -i serviceAccountKey.json
+# (the individual FIREBASE_PROJECT_ID / _CLIENT_EMAIL / _PRIVATE_KEY vars still
+# work as a fallback — see the Firebase setup section)
+FIREBASE_SERVICE_ACCOUNT_B64=eyJ0eXBlIjoic2VydmljZV9hY2NvdW50Iiwi...
 
 # Google Gemini — same API key as onix_ingester
 # GEMINI_EMBEDDING_MODEL must match the model used to embed books (default: text-embedding-004)
@@ -836,7 +837,7 @@ All book endpoints are **public** — no auth required.
 
 #### `GET /api/v1/books/search`
 
-Typeahead suggestions. Designed to be called on every keystroke. Returns up to 15 results. Minimum 2 characters.
+Typeahead suggestions. Designed to be called on every keystroke. Returns up to 15 results. Minimum 1 character.
 
 **Query parameters**
 
@@ -1379,7 +1380,24 @@ Start:  node dist/server.js
 
 1. Go to **Project Settings → Service accounts**
 2. Click **Generate new private key** — downloads a JSON file
-3. Copy these three values into your `.env`:
+3. Base64-encode the whole file and set the result as a single variable:
+
+```bash
+base64 -i serviceAccountKey.json
+```
+
+```
+FIREBASE_SERVICE_ACCOUNT_B64=<the base64 output>
+```
+
+The server decodes this and reads `project_id`, `client_email` and `private_key` out of the JSON.
+
+**Use this form for Render and any other dashboard-configured environment.** A raw PEM private key does not survive a web form intact: dashboards store the value verbatim, so wrapping double quotes become part of the string and multi-line pastes can arrive with the newlines flattened. Either way OpenSSL rejects the key and Firebase fails to start with the unhelpful message `error:1E08010C:DECODER routines::unsupported`. Base64 contains no characters a form can mangle.
+
+<details>
+<summary>Alternative: the three fields individually</summary>
+
+Still supported, and fine in a local `.env` where dotenv handles the quoting:
 
 ```
 FIREBASE_PROJECT_ID      ← "project_id"
@@ -1387,7 +1405,11 @@ FIREBASE_CLIENT_EMAIL    ← "client_email"
 FIREBASE_PRIVATE_KEY     ← "private_key"
 ```
 
-Keep the private key wrapped in double quotes and leave the `\n` characters as-is.
+Keep the private key wrapped in double quotes and leave the `\n` characters as-is. These are read only when `FIREBASE_SERVICE_ACCOUNT_B64` is unset.
+
+</details>
+
+The server exits at startup if neither form is configured, and throws with a diagnostic message if the key is present but unparseable — Firebase backs social sign-in and push, so a server running without it would pass health checks while rejecting every Google login.
 
 ### 3. Mobile integration
 
@@ -1403,4 +1425,5 @@ For the onboarding flow, the `guestSessionId` must survive the OAuth redirect. E
 ### Service account security
 
 - Never commit the service account JSON or your `.env` to version control
-- On Render, set `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, and `FIREBASE_PRIVATE_KEY` as environment variables in the dashboard
+- On Render, set `FIREBASE_SERVICE_ACCOUNT_B64` as an environment variable in the dashboard
+- If a key is ever pasted somewhere it shouldn't be — a chat, a ticket, a log — treat it as compromised: generate a new one under **Service accounts** and delete the old key, rather than assuming it went unnoticed

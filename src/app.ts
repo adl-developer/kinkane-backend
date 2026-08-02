@@ -10,6 +10,7 @@ import { pushQueue } from './lib/push-queue';
 import { config } from './config';
 import apiRoutes from './routes';
 import gardnersDropshipRoutes from './routes/gardners-dropship.routes';
+import { webhookRouter as stripeWebhookRouter } from './routes/subscriptions.routes';
 
 const app = express();
 
@@ -23,6 +24,14 @@ app.use(cors({
   credentials: true,
   exposedHeaders: ['X-New-Access-Token'],
 }));
+
+// ── Stripe webhook ────────────────────────────────────────────────────────────
+// Mounted before express.json on purpose: Stripe signs the exact bytes it sends,
+// so the signature can only be verified against an unparsed body. The route's
+// own express.raw parser handles it. Unauthenticated by design — the signature
+// is the authentication — and outside the API rate limiter, since Stripe's
+// delivery volume is not abuse.
+app.use('/api/v1/user/subscription/webhook', stripeWebhookRouter);
 
 app.use(express.json({ limit: '50kb' }));
 app.use(express.urlencoded({ extended: false, limit: '50kb' }));

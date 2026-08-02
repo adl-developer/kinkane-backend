@@ -15,6 +15,7 @@ import {
   type BookPrice,
 } from '../db/schema';
 import { redis } from '../lib/redis';
+import { bustUserExclusions } from '../lib/exclusions';
 import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-excerpts.service';
 import { interactionsService, type InteractionType } from './interactions.service';
 
@@ -302,6 +303,10 @@ export const userBooksService = {
     if (fields.liked === true) {
       interactionsService.recordFireAndForget(userId, bookId, 'like');
     }
+
+    // A book on the shelf is excluded from every recommendation surface, so the
+    // cached exclusion set is stale the moment the shelf changes.
+    await bustUserExclusions(userId);
   },
 
   /**
@@ -330,6 +335,8 @@ export const userBooksService = {
       });
 
     interactionsService.recordFireAndForget(userId, bookId, 'like');
+
+    await bustUserExclusions(userId);
   },
 
   /**
@@ -353,6 +360,10 @@ export const userBooksService = {
 
     if (row.status === null) {
       await db.delete(userBooks).where(eq(userBooks.id, row.id));
+      // Only this branch changes the exclusion set — the row is gone, so the
+      // book can be recommended again. Clearing the liked flag on a row that
+      // keeps its reading status leaves it on the shelf, and so still excluded.
+      await bustUserExclusions(userId);
     } else {
       await db
         .update(userBooks)
@@ -371,6 +382,9 @@ export const userBooksService = {
     await db
       .delete(userBooks)
       .where(and(eq(userBooks.userId, userId), eq(userBooks.bookId, bookId)));
+
+    // The book is off the shelf and eligible to be recommended again.
+    await bustUserExclusions(userId);
   },
 
   /**
@@ -432,6 +446,7 @@ export const userBooksService = {
         pipeline.del(`book:public-notes:${bookId}`);
       }
       await pipeline.exec();
+      await bustUserExclusions(userId);
     }
 
     return { deleted: deleted.length };

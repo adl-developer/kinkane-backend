@@ -1,7 +1,8 @@
 import cron, { ScheduledTask } from 'node-cron';
-import { and, eq, lt } from 'drizzle-orm';
+import { and, eq, lt, isNull } from 'drizzle-orm';
 import { db } from '../db';
-import { userSubscriptions, subscriptionEvents } from '../db/schema';
+import { userSubscriptions } from '../db/schema';
+import { subscriptionStateService } from '../services/subscriptions/state.service';
 import { logger } from '../lib/logger';
 
 /**
@@ -13,39 +14,34 @@ import { logger } from '../lib/logger';
  *
  * Cron expression: "0 * * * *"  →  at minute 0 of every hour.
  *
- * NOTE: In a multi-process cluster this job runs in every worker
- * simultaneously. Each row is only updated while it still matches
- * status='trialing', so concurrent runs can't double-flip or double-log the
- * same row.
+ * The flip itself lives in subscriptionStateService.expireTrialIfDue, shared
+ * with getMe, which re-checks its guards inside the UPDATE. That matters here
+ * for two reasons: in a multi-process cluster this job runs in every worker
+ * simultaneously, and a user can convert to paid in the gap between the SELECT
+ * below and the UPDATE. Neither can double-flip a row or downgrade a payer.
+ *
+ * The candidate query also filters out rows with Stripe billing attached — the
+ * guard inside the service is the correctness boundary, this is just avoiding
+ * pointless work.
  */
 export function startTrialExpiryCron(): ScheduledTask {
   const task = cron.schedule('0 * * * *', async () => {
     try {
       const candidates = await db
-        .select({ id: userSubscriptions.id, userId: userSubscriptions.userId, trialEndsAt: userSubscriptions.trialEndsAt })
+        .select()
         .from(userSubscriptions)
-        .where(and(eq(userSubscriptions.status, 'trialing'), lt(userSubscriptions.trialEndsAt, new Date())));
+        .where(
+          and(
+            eq(userSubscriptions.status, 'trialing'),
+            lt(userSubscriptions.trialEndsAt, new Date()),
+            isNull(userSubscriptions.stripeSubscriptionId),
+          ),
+        );
 
       let expiredCount = 0;
       for (const row of candidates) {
-        const expiredAt = new Date();
-        await db.transaction(async (tx) => {
-          const updated = await tx
-            .update(userSubscriptions)
-            .set({ status: 'expired', tier: 'free', trialExpiredAt: expiredAt, updatedAt: expiredAt })
-            .where(and(eq(userSubscriptions.id, row.id), eq(userSubscriptions.status, 'trialing')))
-            .returning({ id: userSubscriptions.id });
-
-          if (updated.length > 0) {
-            await tx.insert(subscriptionEvents).values({
-              userId: row.userId,
-              event: 'expired',
-              previousTrialEndsAt: row.trialEndsAt,
-              newTrialEndsAt: null,
-            });
-            expiredCount += 1;
-          }
-        });
+        const updated = await subscriptionStateService.expireTrialIfDue(row);
+        if (updated) expiredCount += 1;
       }
 
       if (expiredCount > 0) {
