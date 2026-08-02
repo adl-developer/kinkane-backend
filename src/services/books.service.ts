@@ -10,7 +10,6 @@ import {
   genres,
   userInteractions,
   userPreferences,
-  userBooks,
   type Book,
   type BookContributor,
   type Genre,
@@ -1050,20 +1049,15 @@ export const booksService = {
     const cached = await redis.get(cacheKey);
     if (cached) return JSON.parse(cached) as TrendingBookItem[];
 
-    // Fetch the user's stored preference embedding, their shelf and their
-    // rejected books (both to exclude from results) in parallel — independent
-    // queries, no need to serialize them.
-    const [[prefs], shelfRows, exclusions] = await Promise.all([
+    // Fetch the user's stored preference embedding and their exclusion set
+    // (rejected books plus everything already on their shelf) in parallel —
+    // independent queries, no need to serialize them.
+    const [[prefs], exclusions] = await Promise.all([
       db
         .select({ preferenceEmbedding: userPreferences.preferenceEmbedding })
         .from(userPreferences)
         .where(eq(userPreferences.userId, userId))
         .limit(1),
-
-      db
-        .select({ bookId: userBooks.bookId })
-        .from(userBooks)
-        .where(eq(userBooks.userId, userId)),
 
       getUserExclusions(userId),
     ]);
@@ -1071,14 +1065,12 @@ export const booksService = {
     // No embedding yet (migration still in progress or user has no preferences)
     if (!prefs?.preferenceEmbedding) return [];
 
-    const excludedIds = [...new Set([...shelfRows.map((r) => r.bookId), ...exclusions.bookIds])];
-
     const vectorLiteral = `[${prefs.preferenceEmbedding.join(',')}]`;
 
     const whereClause = and(
       sql`(${books.embedding} <=> ${vectorLiteral}::vector) < ${PERSONALIZED_SIMILARITY_THRESHOLD}`,
-      excludedIds.length > 0 ? notInArray(books.id, excludedIds) : undefined,
-      // Catches other editions of a rejected book, which the ID list above
+      exclusions.bookIds.length > 0 ? notInArray(books.id, exclusions.bookIds) : undefined,
+      // Catches other editions of an excluded book, which the ID list above
       // can't see — the catalogue stores each format as its own row.
       buildWorkExclusionCondition(exclusions.works),
     );

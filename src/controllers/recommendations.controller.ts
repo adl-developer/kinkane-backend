@@ -65,12 +65,25 @@ const recommendationsSchema = z.object({
   dislikes: dislikesSchema.default({}),
 });
 
-// Refresh uses the same shape minus displayName, plus the books the user
-// swiped away on the recommendation list since their last quiz. Those are
-// added to their permanent rejection history rather than replacing it, so the
-// client only needs to send new ones — and unlike the other fields, omitting
-// this one never clears anything.
-const refreshSchema = recommendationsSchema.omit({ displayName: true }).extend({
+// Refresh uses the same shape minus displayName. It used to also accept
+// dislikedBookIds; that moved to POST /selections, which is now the single
+// write path for a logged-in user's rejections. Strict so a client still
+// sending the old field gets a 400 telling it so, rather than having its
+// swipes silently dropped.
+const refreshSchema = recommendationsSchema.omit({ displayName: true }).strict();
+
+// The logged-in twin of the guest selections body. Same bounds as
+// guest.controller's version deliberately: it's the same screen, and a retake
+// should not have different rules than a first run.
+const selectionsSchema = z.object({
+  chosenBookIds: z
+    .array(z.number().int().positive())
+    .min(1, 'At least 1 book must be chosen')
+    .max(5, 'A maximum of 5 books can be chosen'),
+
+  // Books swiped away on the same screen. Optional — a user can pick without
+  // rejecting anything. Unbounded above by design: the recommendation list runs
+  // to 100 books and a thorough swiper can reject most of them.
   dislikedBookIds: z.array(z.number().int().positive()).default([]),
 });
 
@@ -168,6 +181,36 @@ export const recommendationsController = {
     } catch (err: unknown) {
       logger.error('Unexpected error refreshing recommendations', { error: (err as Error).message });
       res.status(500).json({ error: 'An unexpected error occurred' });
+    }
+  },
+
+  /**
+   * POST /api/v1/recommendations/selections
+   * Saves the books a signed-in user picked after retaking the quiz.
+   */
+  async saveSelections(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const parsed = selectionsSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+
+    try {
+      const result = await recommendationsService.saveSelections(
+        req.user.id,
+        parsed.data.chosenBookIds,
+        parsed.data.dislikedBookIds,
+      );
+      res.status(200).json({ readerType: result.readerType, books: result.books });
+    } catch (err: unknown) {
+      const e = err as Error & { statusCode?: number };
+      const status = e.statusCode ?? 500;
+      if (status >= 500) {
+        logger.error('Unexpected error saving quiz selections', { error: e.message });
+        res.status(500).json({ error: 'An unexpected error occurred' });
+      } else {
+        res.status(status).json({ error: e.message });
+      }
     }
   },
 };

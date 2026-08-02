@@ -99,24 +99,63 @@ router.get('/preferences', requireAuth, (req: Request, res: Response) =>
  *   feelings: string[3],
  *   bookIds?: number[],
  *   genres: string[3],
- *   dislikes?: Record<string, string[]>,  — see POST /recommendations above; open shape
- *   dislikedBookIds?: number[]            — books swiped away since the last quiz
+ *   dislikes?: Record<string, string[]>  — see POST /recommendations above; open shape
  * }
  *
- * Unlike every other field here, `dislikedBookIds` is a delta, not a
- * replacement: the IDs sent are added to the user's permanent rejection
- * history, and omitting the field clears nothing. Those books — and other
- * editions of them — are then filtered out of quiz results, the personalized
- * feed, "you may also like", and recommendation emails.
+ * The body is strict: `dislikedBookIds` used to be accepted here and now
+ * belongs to POST /selections, so sending it returns 400 rather than silently
+ * dropping the user's swipes.
+ *
+ * Results never include books the user has rejected or already has on their
+ * shelf, whatever this body says — that comes from the server's own record
+ * (see getUserExclusions), so a client that sends nothing extra still gets a
+ * clean list.
  *
  * Returns 200: { preferences: { feelings, genres, dislikes, bookIds, dislikedBookIds } }
- *              — dislikedBookIds is the full accumulated set, not the delta sent
+ *              — dislikedBookIds is the full accumulated set, read-only here
  *      or, with ?includeRecommendations=true:
  *         { recommendations: [{ bookId, rank, explanation }] }
- * Errors: 400 validation | 401 unauthenticated | 429 rate limit
+ * Errors: 400 validation | 401 unauthenticated | 403 not a Plus member | 429 rate limit
  */
 router.patch('/refresh', requireAuth, requirePlus, recommendationsLimiter, (req: Request, res: Response) =>
   recommendationsController.refresh(req as AuthenticatedRequest, res),
+);
+
+/**
+ * POST /api/v1/recommendations/selections
+ *
+ * Saves the books a signed-in user picked after retaking the quiz — the
+ * logged-in twin of POST /guest-sessions/:id/selections. Call it after
+ * PATCH /refresh?includeRecommendations=true, with the picks made from that
+ * response. Plus-gated for the same reason /refresh is: this only exists to
+ * finish a retake, and only Plus members can start one.
+ *
+ * Unlike the guest version, nothing is parked for later. There is already a
+ * user, so the chosen books go onto their shelf and into the interaction log
+ * immediately, and swiped-away books go straight into their permanent rejection
+ * history. This is the only way a signed-in user's rejections get recorded.
+ *
+ * Both lists feed the exclusion set, so a book picked or rejected here cannot
+ * come back in a later quiz, the personalized feed, "you may also like", or a
+ * recommendation email.
+ *
+ * A chosen book already on the shelf keeps the status, note and source the user
+ * gave it — this call never overwrites their own edits.
+ *
+ * Reader type is re-inferred from the new picks and recorded in the preference
+ * history, but `users.readerType` (what settings displays) is deliberately left
+ * unchanged — a retake is evidence about taste, not a decision the user made
+ * about how they want to be labelled.
+ *
+ * Body: { chosenBookIds: number[],      — 1 to 5 book IDs
+ *         dislikedBookIds?: number[] }  — books swiped away, optional, additive
+ * Returns 200: { readerType, books: [{ id, title, coverUrl }] }
+ *              — readerType is the freshly inferred value, null if inference failed
+ * Errors: 400 validation or unknown book ID | 401 unauthenticated |
+ *         403 not a Plus member | 429 rate limit
+ */
+router.post('/selections', requireAuth, requirePlus, recommendationsLimiter, (req: Request, res: Response) =>
+  recommendationsController.saveSelections(req as AuthenticatedRequest, res),
 );
 
 export default router;

@@ -10,7 +10,7 @@ const router = Router();
  * `type` toggles whether `q` matches against the book title (default) or the
  * author's name — both return books, ranked by: prefix match > word prefix >
  * trigram similarity > full-text search fallback.
- * Minimum 2 characters. Public — no auth required.
+ * Minimum 1 character. Public — no auth required.
  *
  * NOTE: must be defined before /:id so Express does not treat "search" as an ID.
  */

@@ -143,7 +143,9 @@ export const userBooks = pgTable(
       .references(() => books.id, { onDelete: 'cascade' }),
     // 'want_to_read' | 'reading' | 'read' — null means no reading status has been set
     status: varchar('status', { length: 20 }),
-    // 'chosen_from_onboarding' | 'manual' | 'recommended'
+    // 'chosen_from_onboarding' | 'chosen_from_quiz' | 'manual' | 'recommended'
+    // — 'chosen_from_quiz' is a pick from a retake (POST /recommendations/selections),
+    // as distinct from the first-run picks migrated in at signup.
     source: varchar('source', { length: 50 }).notNull().default('manual'),
     // Optional note the user writes about the book (max 1000 chars enforced at API layer)
     note: text('note'),
