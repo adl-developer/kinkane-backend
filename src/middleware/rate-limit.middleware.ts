@@ -61,6 +61,20 @@ export const recommendationsLimiter = rateLimit({
   store: new RedisStore({ prefix: 'rl:recommendations:', sendCommand }),
 });
 
+// Checkout / billing portal: 20 per hour per user — each one is a live Stripe
+// API call, and nobody legitimately needs to start twenty checkouts an hour.
+// Keyed by user rather than IP so one person on a shared network can't lock
+// everyone else out of subscribing.
+export const checkoutLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: json429,
+  keyGenerator: (req: Request) => String((req as AuthenticatedRequest).user.id),
+  store: new RedisStore({ prefix: 'rl:checkout:', sendCommand }),
+});
+
 // Password reset: 5 per hour — prevents email bombing and brute-forcing reset tokens
 export const passwordResetLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,

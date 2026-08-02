@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { requireAuth } from '../middleware/auth.middleware';
+import { requirePlus } from '../middleware/require-plus.middleware';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 import { recommendationsController } from '../controllers/recommendations.controller';
 import { recommendationsLimiter } from '../middleware/rate-limit.middleware';
@@ -114,7 +115,7 @@ router.get('/preferences', requireAuth, (req: Request, res: Response) =>
  *         { recommendations: [{ bookId, rank, explanation }] }
  * Errors: 400 validation | 401 unauthenticated | 429 rate limit
  */
-router.patch('/refresh', requireAuth, recommendationsLimiter, (req: Request, res: Response) =>
+router.patch('/refresh', requireAuth, requirePlus, recommendationsLimiter, (req: Request, res: Response) =>
   recommendationsController.refresh(req as AuthenticatedRequest, res),
 );
 

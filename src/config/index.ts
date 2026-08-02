@@ -52,6 +52,36 @@ const envSchema = z.object({
   // to this project's Cloudinary account, not an arbitrary third-party account.
   CLOUDINARY_CLOUD_NAME: z.string().min(1),
 
+  // Stripe — payments for Kinkané Plus.
+  // All optional so the server still boots without them: local development,
+  // CI and the existing deployment predate payments, and a missing key should
+  // fail the one route that needs it with a clear message rather than taking
+  // the whole process down at startup. `assertStripeConfigured()` in
+  // src/lib/stripe.ts is what enforces their presence at the point of use.
+  STRIPE_SECRET_KEY: z.string().min(1).optional(),
+  STRIPE_WEBHOOK_SECRET: z.string().min(1).optional(),
+  STRIPE_PRICE_PLUS_MONTHLY: z.string().min(1).optional(),
+  STRIPE_PRICE_PLUS_ANNUAL: z.string().min(1).optional(),
+  STRIPE_PRICE_PLUS_MONTHLY_FOUNDING: z.string().min(1).optional(),
+  STRIPE_PRICE_PLUS_ANNUAL_FOUNDING: z.string().min(1).optional(),
+  // While NOW() is before this, checkout uses the Founding Member prices and
+  // schedules a rollover to standard pricing after the first term. Unset means
+  // the launch promotion is over (or hasn't been configured), and everyone
+  // gets standard pricing.
+  FOUNDING_OFFER_ENDS_AT: z.coerce.date().optional(),
+  // Where Stripe returns the user after checkout / billing portal. Default to
+  // the app URL so a minimal config still works end to end.
+  STRIPE_CHECKOUT_SUCCESS_URL: z.string().url().optional(),
+  STRIPE_CHECKOUT_CANCEL_URL: z.string().url().optional(),
+  STRIPE_PORTAL_RETURN_URL: z.string().url().optional(),
+
+  // Master switch for Plus feature gating. Off by default so the gate can be
+  // deployed dark and turned on (or reverted) without shipping code.
+  GATING_ENABLED: z
+    .string()
+    .default('false')
+    .transform((v) => v === 'true'),
+
   // Gardners Books — I12 Home Delivery (dropship) ordering account. This is
   // a separate FTP account/directory set (HOMEORD/HOMEACK/etc.) from the
   // read-only catalogue feeds ingested by onix_ingester — confirm with
@@ -122,6 +152,21 @@ export const config = {
   cloudinary: {
     cloudName: env.CLOUDINARY_CLOUD_NAME,
   },
+  stripe: {
+    secretKey: env.STRIPE_SECRET_KEY,
+    webhookSecret: env.STRIPE_WEBHOOK_SECRET,
+    prices: {
+      monthly: env.STRIPE_PRICE_PLUS_MONTHLY,
+      annual: env.STRIPE_PRICE_PLUS_ANNUAL,
+      monthlyFounding: env.STRIPE_PRICE_PLUS_MONTHLY_FOUNDING,
+      annualFounding: env.STRIPE_PRICE_PLUS_ANNUAL_FOUNDING,
+    },
+    foundingOfferEndsAt: env.FOUNDING_OFFER_ENDS_AT,
+    checkoutSuccessUrl: env.STRIPE_CHECKOUT_SUCCESS_URL ?? `${env.APP_URL}/account/subscription?checkout=success`,
+    checkoutCancelUrl: env.STRIPE_CHECKOUT_CANCEL_URL ?? `${env.APP_URL}/account/subscription?checkout=cancelled`,
+    portalReturnUrl: env.STRIPE_PORTAL_RETURN_URL ?? `${env.APP_URL}/account/subscription`,
+  },
+  gatingEnabled: env.GATING_ENABLED,
   gardnersDropship: {
     sftp: {
       host: env.GARDNERS_DROPSHIP_SFTP_HOST,

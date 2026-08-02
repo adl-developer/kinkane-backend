@@ -7,6 +7,10 @@ import { startWeeklyDigestCron, stopWeeklyDigestCron } from './jobs/weekly-diges
 import { startRecommendationCron, stopRecommendationCron } from './jobs/recommendation.cron';
 import { startTrialExpiryCron, stopTrialExpiryCron } from './jobs/trial-expiry.cron';
 import {
+  startSubscriptionReconciliationCron,
+  stopSubscriptionReconciliationCron,
+} from './jobs/subscription-reconciliation.cron';
+import {
   startPreferenceHistoryCleanupCron,
   stopPreferenceHistoryCleanupCron,
 } from './jobs/preference-history-cleanup.cron';
@@ -26,6 +30,7 @@ async function main(): Promise<void> {
   const weeklyDigestTask = startWeeklyDigestCron();
   const recommendationCronTask = startRecommendationCron();
   const trialExpiryCronTask = startTrialExpiryCron();
+  const subscriptionReconciliationTask = startSubscriptionReconciliationCron();
   const preferenceHistoryCleanupTask = startPreferenceHistoryCleanupCron();
   const interactionCleanupTask = startInteractionCleanupCron();
   const emailWorker = startEmailWorker();
@@ -41,6 +46,7 @@ async function main(): Promise<void> {
     stopWeeklyDigestCron(weeklyDigestTask);
     stopRecommendationCron(recommendationCronTask);
     stopTrialExpiryCron(trialExpiryCronTask);
+    stopSubscriptionReconciliationCron(subscriptionReconciliationTask);
     stopPreferenceHistoryCleanupCron(preferenceHistoryCleanupTask);
     stopInteractionCleanupCron(interactionCleanupTask);
     // server.close() stops accepting new connections and waits for in-flight

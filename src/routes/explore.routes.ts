@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { optionalAuth, requireAuth } from '../middleware/auth.middleware';
+import { requirePlus } from '../middleware/require-plus.middleware';
 import { exploreController } from '../controllers/explore.controller';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 
@@ -36,7 +37,7 @@ router.get('/trending', optionalAuth, exploreController.getTrending);
  * Returns 200: { books: [{ id, title, coverUrl, isbn13, publicationDate, contributors, genres }] }
  * Errors: 401 unauthenticated
  */
-router.get('/personalized', requireAuth, (req: Request, res: Response) =>
+router.get('/personalized', requireAuth, requirePlus, (req: Request, res: Response) =>
   exploreController.getPersonalized(req as AuthenticatedRequest, res),
 );
 

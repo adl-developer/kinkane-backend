@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-08-02
+
+### Features
+
+* remember every subscription state a reader passes through ([f168dae](https://adl.github.com/adl-developer/kinkane-backend/commit/f168dae46b04667e1013829dad0e9c1fdf4f131b)) — [details](changelog/2026-08-02-stripe-subscriptions.md)
+
+
 ## 2026-07-31
 
 ### Features
