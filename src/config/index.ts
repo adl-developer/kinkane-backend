@@ -16,9 +16,22 @@ const envSchema = z.object({
   ACCESS_TOKEN_TTL: z.coerce.number().default(900),        // 15 min
   REFRESH_TOKEN_TTL: z.coerce.number().default(2592000),   // 30 days
 
-  FIREBASE_PROJECT_ID: z.string().min(1),
-  FIREBASE_CLIENT_EMAIL: z.string().email(),
-  FIREBASE_PRIVATE_KEY: z.string().min(1),
+  // Firebase Admin credentials. Supply EITHER the whole service-account JSON
+  // base64-encoded in FIREBASE_SERVICE_ACCOUNT_B64 (preferred — see below), or
+  // the three individual fields. All are optional here because the schema
+  // can't express "one of these two sets"; `resolveFirebaseCredentials()`
+  // below enforces that exactly one complete set is present.
+  //
+  // Prefer the base64 form in any dashboard-configured environment. A PEM
+  // private key pasted into a web form loses to quoting and newline mangling
+  // (Render stores the value verbatim, so surrounding quotes become part of
+  // the string) and surfaces only as an opaque OpenSSL "DECODER routines::
+  // unsupported" error at startup. Base64 has no characters a form can mangle.
+  //   base64 -i serviceAccountKey.json
+  FIREBASE_SERVICE_ACCOUNT_B64: z.string().min(1).optional(),
+  FIREBASE_PROJECT_ID: z.string().min(1).optional(),
+  FIREBASE_CLIENT_EMAIL: z.string().email().optional(),
+  FIREBASE_PRIVATE_KEY: z.string().min(1).optional(),
 
   GEMINI_API_KEY: z.string().min(1),
   // Must match the model used by onix_ingester to embed books (default: text-embedding-004)
@@ -111,6 +124,71 @@ if (!parsed.success) {
 
 const env = parsed.data;
 
+type FirebaseCredentials = {
+  projectId: string;
+  clientEmail: string;
+  privateKey: string;
+};
+
+/**
+ * Resolves Firebase Admin credentials from whichever of the two supported
+ * forms is configured, preferring the base64 service-account JSON.
+ *
+ * Fails the process rather than returning undefined: Firebase backs Google
+ * sign-in and push notifications, so booting without it produces a server
+ * that looks healthy and then rejects logins at request time. Failing at
+ * startup keeps that visible in the deploy logs instead. This matches the
+ * previous behaviour, where the three fields were required by the schema.
+ */
+function resolveFirebaseCredentials(): FirebaseCredentials {
+  if (env.FIREBASE_SERVICE_ACCOUNT_B64) {
+    let serviceAccount: Record<string, unknown>;
+    try {
+      const json = Buffer.from(env.FIREBASE_SERVICE_ACCOUNT_B64, 'base64').toString('utf8');
+      serviceAccount = JSON.parse(json);
+    } catch (err) {
+      console.error(
+        'FIREBASE_SERVICE_ACCOUNT_B64 is not valid base64-encoded JSON:',
+        (err as Error).message,
+      );
+      console.error('Generate it with: base64 -i serviceAccountKey.json');
+      process.exit(1);
+    }
+
+    const { project_id: projectId, client_email: clientEmail, private_key: privateKey } =
+      serviceAccount as { project_id?: string; client_email?: string; private_key?: string };
+
+    if (!projectId || !clientEmail || !privateKey) {
+      console.error(
+        'FIREBASE_SERVICE_ACCOUNT_B64 decoded, but is missing one of: project_id, client_email, private_key.',
+      );
+      console.error('Use the service-account JSON downloaded from the Firebase console verbatim.');
+      process.exit(1);
+    }
+
+    // JSON.parse already turns the file's \n escapes into real newlines. The
+    // unescape below is a no-op on a well-formed key and only rescues a
+    // double-escaped one, which some JSON-editing tools produce.
+    return { projectId, clientEmail, privateKey: privateKey.replace(/\\n/g, '\n') };
+  }
+
+  if (env.FIREBASE_PROJECT_ID && env.FIREBASE_CLIENT_EMAIL && env.FIREBASE_PRIVATE_KEY) {
+    return {
+      projectId: env.FIREBASE_PROJECT_ID,
+      clientEmail: env.FIREBASE_CLIENT_EMAIL,
+      // Env files and dashboards escape newlines as \n literals — unescape them.
+      privateKey: env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+    };
+  }
+
+  console.error(
+    'Missing Firebase credentials. Set FIREBASE_SERVICE_ACCOUNT_B64 (preferred), or all of FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY.',
+  );
+  process.exit(1);
+}
+
+const firebaseCredentials = resolveFirebaseCredentials();
+
 export const config = {
   port: env.PORT,
   nodeEnv: env.NODE_ENV,
@@ -126,12 +204,7 @@ export const config = {
     accessTtl: env.ACCESS_TOKEN_TTL,
     refreshTtl: env.REFRESH_TOKEN_TTL,
   },
-  firebase: {
-    projectId: env.FIREBASE_PROJECT_ID,
-    clientEmail: env.FIREBASE_CLIENT_EMAIL,
-    // Render/env files escape newlines as \n literals — unescape them
-    privateKey: env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-  },
+  firebase: firebaseCredentials,
   gemini: {
     apiKey: env.GEMINI_API_KEY,
     embeddingModel: env.GEMINI_EMBEDDING_MODEL,
