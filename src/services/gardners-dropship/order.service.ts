@@ -21,7 +21,7 @@ import {
 } from '../../db/schema';
 import { config } from '../../config';
 import { logger } from '../../lib/logger';
-import { withDropshipSftp, HOME_DELIVERY_DIRS } from './connection.service';
+import { withDropshipFtp, HOME_DELIVERY_DIRS, uploadBuffer, fileExists, downloadBuffer, removeFile } from './connection.service';
 import { buildOrderFile, type RecipientAddress } from './order-builder';
 import { parseAckFile } from './ack-parser';
 
@@ -212,7 +212,7 @@ async function submitOrder(orderId: number): Promise<void> {
   const remotePath = `${HOME_DELIVERY_DIRS.order}/${order.fileStem}.ORD`;
 
   try {
-    await withDropshipSftp((client) => client.put(Buffer.from(content, 'ascii'), remotePath));
+    await withDropshipFtp((client) => uploadBuffer(client, Buffer.from(content, 'ascii'), remotePath));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await db
@@ -257,13 +257,13 @@ async function pollAck(orderId: number): Promise<PollAckOutcome> {
   const ackPath = `${HOME_DELIVERY_DIRS.ack}/${order.fileStem}.ACK`;
   const donePath = `${ackPath}.DONE`;
 
-  const raw = await withDropshipSftp(async (client) => {
-    const ready = await client.exists(donePath);
+  const raw = await withDropshipFtp(async (client) => {
+    const ready = await fileExists(client, donePath);
     if (!ready) return null;
 
-    const buffer = (await client.get(ackPath)) as Buffer;
-    await client.delete(ackPath).catch(() => undefined);
-    await client.delete(donePath).catch(() => undefined);
+    const buffer = await downloadBuffer(client, ackPath);
+    await removeFile(client, ackPath).catch(() => undefined);
+    await removeFile(client, donePath).catch(() => undefined);
     return buffer.toString('ascii');
   });
 

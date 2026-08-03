@@ -95,15 +95,16 @@ const envSchema = z.object({
     .default('false')
     .transform((v) => v === 'true'),
 
-  // Gardners Books — I12 Home Delivery (dropship) ordering account. This is
-  // a separate FTP account/directory set (HOMEORD/HOMEACK/etc.) from the
-  // read-only catalogue feeds ingested by onix_ingester — confirm with
-  // Gardners whether it shares a host with the Bespoke Inventory account or
-  // needs its own credentials before pointing this at production.
-  GARDNERS_DROPSHIP_SFTP_HOST: z.string().min(1).optional(),
-  GARDNERS_DROPSHIP_SFTP_PORT: z.coerce.number().default(22),
-  GARDNERS_DROPSHIP_SFTP_USERNAME: z.string().min(1).optional(),
-  GARDNERS_DROPSHIP_SFTP_PASSWORD: z.string().min(1).optional(),
+  // Gardners Books — I12 Home Delivery (dropship) ordering account:
+  // orders.gardners.com over explicit FTPS ("FTPeS"), confirmed live
+  // 2026-08-03. Despite sharing the "KIN155FTP"-style username with
+  // onix_ingester's Bespoke Inventory SFTP account, this is a different
+  // host and a different protocol — do not assume the two are
+  // interchangeable.
+  GARDNERS_DROPSHIP_FTP_HOST: z.string().min(1).optional(),
+  GARDNERS_DROPSHIP_FTP_PORT: z.coerce.number().default(21),
+  GARDNERS_DROPSHIP_FTP_USERNAME: z.string().min(1).optional(),
+  GARDNERS_DROPSHIP_FTP_PASSWORD: z.string().min(1).optional(),
   // Your 6-character Gardners account code, quoted in every HEADER record.
   GARDNERS_DROPSHIP_ACCOUNT_CODE: z.string().length(6).optional(),
   // Default value for the HEADER TESTING flag on newly created orders.
@@ -241,11 +242,11 @@ export const config = {
   },
   gatingEnabled: env.GATING_ENABLED,
   gardnersDropship: {
-    sftp: {
-      host: env.GARDNERS_DROPSHIP_SFTP_HOST,
-      port: env.GARDNERS_DROPSHIP_SFTP_PORT,
-      username: env.GARDNERS_DROPSHIP_SFTP_USERNAME,
-      password: env.GARDNERS_DROPSHIP_SFTP_PASSWORD,
+    ftp: {
+      host: env.GARDNERS_DROPSHIP_FTP_HOST,
+      port: env.GARDNERS_DROPSHIP_FTP_PORT,
+      username: env.GARDNERS_DROPSHIP_FTP_USERNAME,
+      password: env.GARDNERS_DROPSHIP_FTP_PASSWORD,
     },
     accountCode: env.GARDNERS_DROPSHIP_ACCOUNT_CODE,
     defaultTesting: env.GARDNERS_DROPSHIP_DEFAULT_TESTING,

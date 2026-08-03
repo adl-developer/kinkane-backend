@@ -1,50 +1,85 @@
 /**
- * SFTP connection handling for Gardners' I12 Home Delivery (dropship)
- * account. Mirrors the keepalive settings onix_ingester's Gardners feed
- * connections use (src/services/gardners/connections.service.ts there) —
- * without them, ssh2-sftp-client's default handlers just log a dropped
- * connection rather than rejecting anything, which would otherwise hang a
- * submit/poll call forever with no error surfaced.
+ * FTP connection handling for Gardners' I12 Home Delivery (dropship)
+ * account. Confirmed live (2026-08-03): this account is explicit FTPS
+ * ("FTPeS") on orders.gardners.com — a different protocol AND host from
+ * onix_ingester's SFTP-based Bespoke Inventory / Generic Data feed
+ * accounts, despite sharing the same "KIN155FTP"-style username convention.
+ * Do not assume the two are interchangeable.
+ *
+ * Directory names on the real server are lowercase (`homeord`, `homeack`,
+ * etc.) — the spec PDF prints them uppercase (HOMEORD, HOMEACK), but FTP
+ * paths are case-sensitive on Gardners' server, confirmed by directly
+ * listing it.
  *
  * Order/ack files here are tiny (a handful of KB at most), so unlike the
- * catalogue feeds there's no need for fastGet/chunked downloads — plain
- * put()/get() is fine.
+ * catalogue feeds there's no need for concurrent/chunked transfers — a
+ * plain upload/download per call is fine, and each call opens and closes
+ * its own connection rather than holding one open across a poll loop.
  */
-import SftpClient from 'ssh2-sftp-client';
+import { Readable, Writable } from 'stream';
+import { Client as FtpClient, FileInfo } from 'basic-ftp';
 import { config } from '../../config';
 
 export const HOME_DELIVERY_DIRS = {
-  order: 'HOMEORD',
-  ack: 'HOMEACK',
-  dispatch: 'HOMEDISP',
-  general: 'HOMEGEN',
-  preDispatch: 'HOMEPRE',
+  order: 'homeord',
+  ack: 'homeack',
+  dispatch: 'homedisp',
+  general: 'homegen',
+  preDispatch: 'homepre',
 } as const;
 
-const SFTP_KEEPALIVE_OPTIONS = {
-  keepaliveInterval: 10_000,
-  keepaliveCountMax: 5,
-  readyTimeout: 20_000,
-};
-
 function requireCredentials() {
-  const { host, port, username, password } = config.gardnersDropship.sftp;
+  const { host, port, username, password } = config.gardnersDropship.ftp;
   if (!host || !username || !password) {
     throw new Error(
-      'Gardners dropship SFTP is not configured — set GARDNERS_DROPSHIP_SFTP_HOST/USERNAME/PASSWORD ' +
+      'Gardners dropship FTP is not configured — set GARDNERS_DROPSHIP_FTP_HOST/USERNAME/PASSWORD ' +
         '(and GARDNERS_DROPSHIP_ACCOUNT_CODE) before submitting or polling orders.',
     );
   }
   return { host, port, username, password };
 }
 
-export async function withDropshipSftp<T>(fn: (client: SftpClient) => Promise<T>): Promise<T> {
+export async function withDropshipFtp<T>(fn: (client: FtpClient) => Promise<T>): Promise<T> {
   const { host, port, username, password } = requireCredentials();
-  const client = new SftpClient();
-  await client.connect({ host, port, username, password, ...SFTP_KEEPALIVE_OPTIONS });
+  const client = new FtpClient();
+  await client.access({ host, port, user: username, password, secure: true });
   try {
     return await fn(client);
   } finally {
-    await client.end().catch(() => undefined);
+    client.close();
   }
+}
+
+export async function listFiles(client: FtpClient, dirPath: string): Promise<FileInfo[]> {
+  return client.list(dirPath);
+}
+
+export async function fileExists(client: FtpClient, path: string): Promise<boolean> {
+  try {
+    await client.size(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function uploadBuffer(client: FtpClient, buffer: Buffer, remotePath: string): Promise<void> {
+  await client.uploadFrom(Readable.from(buffer), remotePath);
+}
+
+/** Downloads a small remote file into memory — only used for order/ack files (a few KB), never large feeds. */
+export async function downloadBuffer(client: FtpClient, remotePath: string): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  const sink = new Writable({
+    write(chunk: Buffer, _enc, callback) {
+      chunks.push(chunk);
+      callback();
+    },
+  });
+  await client.downloadTo(sink, remotePath);
+  return Buffer.concat(chunks);
+}
+
+export async function removeFile(client: FtpClient, remotePath: string): Promise<void> {
+  await client.remove(remotePath);
 }
