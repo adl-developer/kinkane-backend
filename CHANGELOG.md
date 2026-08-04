@@ -5,6 +5,7 @@
 
 ### Features
 
+* let signed-in readers save their picks after retaking the quiz ([8104a39](https://adl.github.com/adl-developer/kinkane-backend/commit/8104a3967e18d271c24c24bc1c3d6c5856babd30)) — [details](changelog/2026-08-02-quiz-retake-selections.md)
 * accept Firebase credentials as one base64 variable ([64275b2](https://adl.github.com/adl-developer/kinkane-backend/commit/64275b228dfc995bca9d8aee2f14600250b461d0)) — [details](changelog/2026-08-02-firebase-service-account-base64.md)
 * let readers subscribe to Kinkané Plus ([511cbb2](https://adl.github.com/adl-developer/kinkane-backend/commit/511cbb24ef168732bdce3e59c4bd8fba6551dcbf))
 * remember every subscription state a reader passes through ([f168dae](https://adl.github.com/adl-developer/kinkane-backend/commit/f168dae46b04667e1013829dad0e9c1fdf4f131b)) — [details](changelog/2026-08-02-firebase-service-account-base64.md)

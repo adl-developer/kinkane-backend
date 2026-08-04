@@ -1409,6 +1409,24 @@ Keep the private key wrapped in double quotes and leave the `\n` characters as-i
 
 </details>
 
+### Checking the credentials work
+
+```bash
+npm run firebase:check
+```
+
+Reports which credential source is in use, whether the private key is well-formed PEM, and whether Google actually accepts it (it mints a real access token). Pass a Firebase ID token as an argument — `npm run firebase:check -- <idToken>` — to also verify the exact path `POST /api/v1/auth/social` takes. It prints no secret material; keys are reported by length and SHA-256 prefix, so the output is safe to paste into a ticket.
+
+Run it in Render's shell (**Shell** tab on the service) to check the deployed environment without waiting on a deploy and a login attempt.
+
+### Getting an ID token to test with
+
+Call `firebaseUser.getIdToken()` in the mobile app after signing in. Tokens last one hour.
+
+`scripts/google-signin-test.html` does the same from a browser, via a real Google sign-in popup — see the comment at the top of that file for how to run it. It needs a **Web** app registered in the Firebase project first; only Android and iOS are registered today, so it won't work until someone adds one.
+
+### Failure behaviour
+
 The server exits at startup if neither form is configured, and throws with a diagnostic message if the key is present but unparseable — Firebase backs social sign-in and push, so a server running without it would pass health checks while rejecting every Google login.
 
 ### 3. Mobile integration
