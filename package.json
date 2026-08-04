@@ -12,6 +12,7 @@
     "db:init": "npm run db:migrate && tsx src/db/setup.ts",
     "db:reset": "tsx src/db/reset.ts",
     "gardners:dropship-test": "tsx scripts/gardners-dropship-test.ts",
+    "firebase:check": "tsx scripts/check-firebase.ts",
     "changelog": "node scripts/generate-changelog.mjs",
     "test": "vitest run",
     "test:watch": "vitest"

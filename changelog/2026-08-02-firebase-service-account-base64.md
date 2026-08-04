@@ -57,6 +57,36 @@ This is a deliberate trade: a bad Firebase key now takes the deploy down. Given
 that the alternative is a server that looks healthy and can't authenticate
 anyone, a failed deploy is the cheaper failure.
 
+## Checking an environment
+
+`npm run firebase:check` (`scripts/check-firebase.ts`) answers "are the Firebase
+credentials in this environment actually good?" without a deploy and a login
+attempt. It reports the credential source, checks the private key is
+well-formed PEM, and then mints a real access token — which is the only way to
+prove the key, the client email and the clock all line up. Pass an ID token as
+an argument to also exercise `verifyIdToken`, the path
+`POST /api/v1/auth/social` takes.
+
+It prints no secret material — keys are reported by length, newline count and
+SHA-256 prefix — so its output is safe to paste into a ticket. The errors worth
+distinguishing (`DECODER routines`, `invalid_grant`, a bad ID token) are mapped
+onto what to do about each. It runs in Render's shell as well as locally.
+
+The ID token that step needs has to come from a real sign-in.
+`scripts/google-signin-test.html` is a browser harness that runs an actual
+Google sign-in popup and prints the token, with `sign_in_provider` of
+`google.com`. It is checked in unfinished: it needs a **Web** app registered in
+the Firebase project, and only Android and iOS are registered today, so it
+can't run until someone adds one.
+
+A second script that minted tokens via the Admin SDK's custom-token exchange
+was written and then dropped. It worked without a Web app, but its tokens
+carried `sign_in_provider` of `custom` rather than `google.com` — so it proved
+the endpoint's plumbing rather than the path production actually takes — and it
+wrote a real `user_providers` row with provider `custom` that had to be cleaned
+up by hand afterwards. A harness that tests the wrong provider and leaves rows
+behind isn't worth maintaining alongside one that does neither.
+
 ## Out of scope
 
 `render.yaml` isn't touched — the Firebase variables are dashboard-managed and
@@ -80,3 +110,8 @@ modules were loaded against it in five configurations:
 The base64 run also confirms precedence: a local `.env` supplying the three
 legacy variables was present, and the resolved project id came from the base64
 blob. `npx tsc --noEmit` is clean. The throwaway key was deleted afterwards.
+
+`npm run firebase:check` was then run against the real local environment, using
+`FIREBASE_SERVICE_ACCOUNT_B64`: the key parsed, and Google minted an access
+token for `firebase-adminsdk-fbsvc@kinkane-7adf9.iam.gserviceaccount.com`. ID
+token verification was not exercised — that needs a token from a signed-in app.
