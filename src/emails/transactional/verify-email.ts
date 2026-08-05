@@ -1,4 +1,4 @@
-import { sgMail, FROM } from '../../lib/sendgrid';
+import { sendEmail, FROM } from '../../lib/resend';
 import { emailLayout, otpDisplay, greeting, signOff, escapeHtml, p } from '../lib/layout';
 
 export async function sendVerifyEmail(
@@ -19,7 +19,7 @@ export async function sendVerifyEmail(
     signOff("If you didn't create a Kinkané account, you can safely ignore this email."),
   ].join('\n');
 
-  await sgMail.send({
+  await sendEmail({
     to,
     from: FROM,
     subject: title,

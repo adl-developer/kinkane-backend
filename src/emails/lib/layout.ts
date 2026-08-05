@@ -9,8 +9,13 @@ const SANS = "Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,san
  * Wraps email body HTML in the branded Kinkané shell:
  * dark header → yellow hero band → white body → cream footer.
  *
- * Pass `unsubscribeUrl` for user-targeted emails. Omit for security emails
- * (OTP, password reset) — the Unsubscribe link is hidden entirely in that case.
+ * Pass `unsubscribeUrl` only for promotional email — the newsletter, book
+ * recommendations, reading reminders and the weekly digest. Those are exactly
+ * the emails the unsubscribe route can actually switch off.
+ *
+ * Omit it everywhere else (security, billing, follow requests, trial-ending,
+ * welcome): those keep sending after an unsubscribe, so showing the link would
+ * hand the user a confirmation page for something that doesn't stop.
  */
 export function emailLayout(title: string, body: string, unsubscribeUrl?: string): string {
   const footerLinks = unsubscribeUrl

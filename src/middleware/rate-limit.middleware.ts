@@ -101,7 +101,7 @@ export const verifyEmailOtpLimiter = rateLimit({
 
 // Resend verification email: 5 per hour per user — authenticated route, so key
 // by user ID rather than IP. Prevents a single account from triggering unbounded
-// SendGrid sends regardless of how many IPs they call from.
+// email-provider sends regardless of how many IPs they call from.
 export const resendVerificationEmailLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 5,

@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-08-05
+
+### Features
+
+* make Unsubscribe stop marketing email only, not follow requests ([6c012cb](https://adl.github.com/adl-developer/kinkane-backend/commit/6c012cb310602f4d0ef4da8a3321ac5fe3ff3ef8)) — [details](changelog/2026-08-05-resend-email-provider.md)
+
+
 ## 2026-08-02
 
 ### Features

@@ -1,4 +1,4 @@
-import { sgMail, FROM } from '../../lib/sendgrid';
+import { sendEmail, FROM } from '../../lib/resend';
 import { emailLayout, ctaButton, greeting, signOff, escapeHtml, p } from '../lib/layout';
 import { config } from '../../config';
 
@@ -62,7 +62,7 @@ export async function sendSubscriptionConfirmedEmail(
     ? "\n\nAs a Founding Member, you've locked in your introductory price for your first term."
     : '';
 
-  await sgMail.send({
+  await sendEmail({
     to,
     from: FROM,
     subject: title,

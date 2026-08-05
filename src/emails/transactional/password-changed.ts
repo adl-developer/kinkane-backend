@@ -1,4 +1,4 @@
-import { sgMail, FROM } from '../../lib/sendgrid';
+import { sendEmail, FROM } from '../../lib/resend';
 import { emailLayout, greeting, signOff, escapeHtml, p } from '../lib/layout';
 
 export async function sendPasswordChangedEmail(to: string, name: string): Promise<void> {
@@ -12,7 +12,7 @@ export async function sendPasswordChangedEmail(to: string, name: string): Promis
     signOff('If you did not change your password, please contact us immediately.'),
   ].join('\n');
 
-  await sgMail.send({
+  await sendEmail({
     to,
     from: FROM,
     subject: title,

@@ -9,8 +9,8 @@ const router = Router();
  *
  * Returns the authenticated user's notification preferences.
  *
- * Returns 200: { notificationPreferences: { newBookSuggestions, rateReviewReminders,
- *   friendRequests, comments, likes } }
+ * Returns 200: { notificationPreferences: { marketingEmails, newBookSuggestions,
+ *   rateReviewReminders, friendRequests, comments, likes } }
  * Errors: 401 unauthenticated
  */
 router.get('/', requireAuth, (req: Request, res: Response) =>
@@ -23,8 +23,11 @@ router.get('/', requireAuth, (req: Request, res: Response) =>
  * Toggles one or more notification preference categories. Omitted fields are
  * left unchanged. All fields default to true on account creation.
  *
- * Body (all optional): { newBookSuggestions?, rateReviewReminders?,
- *   friendRequests?, comments?, likes? }
+ * `comments` and `likes` control push and the in-app feed only — social
+ * activity never sends email regardless of these flags.
+ *
+ * Body (all optional): { marketingEmails?, newBookSuggestions?,
+ *   rateReviewReminders?, friendRequests?, comments?, likes? }
  * Returns 200: { notificationPreferences: { ... } }
  * Errors: 400 invalid input | 401 unauthenticated
  */

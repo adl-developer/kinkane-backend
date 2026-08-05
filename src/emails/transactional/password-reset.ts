@@ -1,4 +1,4 @@
-import { sgMail, FROM } from '../../lib/sendgrid';
+import { sendEmail, FROM } from '../../lib/resend';
 import { emailLayout, ctaButton, greeting, signOff, escapeHtml, p } from '../lib/layout';
 
 export async function sendPasswordResetEmail(to: string, name: string, resetUrl: string): Promise<void> {
@@ -13,7 +13,7 @@ export async function sendPasswordResetEmail(to: string, name: string, resetUrl:
     signOff("If you didn't request a password reset, you can safely ignore this email. Your account remains secure."),
   ].join('\n');
 
-  await sgMail.send({
+  await sendEmail({
     to,
     from: FROM,
     subject: 'Reset your Kinkané password',

@@ -6,6 +6,7 @@ import { logger } from '../lib/logger';
 
 const updateSchema = z
   .object({
+    marketingEmails: z.boolean().optional(),
     newBookSuggestions: z.boolean().optional(),
     rateReviewReminders: z.boolean().optional(),
     friendRequests: z.boolean().optional(),
@@ -18,6 +19,7 @@ const updateSchema = z
 
 function formatPrefs(row: Awaited<ReturnType<typeof notificationPreferencesService.get>>) {
   return {
+    marketingEmails: row.marketingEmails,
     newBookSuggestions: row.newBookSuggestions,
     rateReviewReminders: row.rateReviewReminders,
     friendRequests: row.friendRequests,

@@ -46,7 +46,7 @@ const envSchema = z.object({
   // Default: 24 * 3 = 72 hours (3 days). Set to e.g. 168 for a full week.
   GUEST_SESSION_TTL_HOURS: z.coerce.number().int().min(1).default(72),
 
-  SENDGRID_API_KEY: z.string().min(1),
+  RESEND_API_KEY: z.string().min(1),
   EMAIL_FROM: z.string().email().default('hello@kinkane.com'),
   EMAIL_FROM_NAME: z.string().default('Kinkane'),
 
@@ -214,8 +214,8 @@ export const config = {
   guestSession: {
     ttlHours: env.GUEST_SESSION_TTL_HOURS,
   },
-  sendgrid: {
-    apiKey: env.SENDGRID_API_KEY,
+  email: {
+    apiKey: env.RESEND_API_KEY,
     from: env.EMAIL_FROM,
     fromName: env.EMAIL_FROM_NAME,
   },
