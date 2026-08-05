@@ -27,8 +27,8 @@ export interface EmailJobMap {
   'follow-request':       { to: string; receiverName: string; senderName: string };
   'follow-accepted':      { to: string; senderName: string; accepterName: string };
   'rate-review-reminder': { to: string; name: string; book: { title: string; author: string; url: string } };
-  'post-comment':         { to: string; name: string; commenterName: string; bookTitle: string; commentPreview: string };
-  'post-like':            { to: string; name: string; likerName: string; bookTitle: string };
+  // No post-like / post-comment jobs by design: social activity notifies via
+  // push and the in-app feed only, never email. See community.service.ts.
   'subscription-confirmed':     { to: string; name: string; plan: 'monthly' | 'annual'; isFounding: boolean; currentPeriodEnd: string | null };
   'subscription-payment-failed':{ to: string; name: string; amountCents: number | null; currency: string | null };
   'subscription-cancelled':     { to: string; name: string; accessEndsAt: string | null };
@@ -54,8 +54,6 @@ export const EMAIL_PRIORITY: Record<EmailJobName, number> = {
   'follow-request':       7,
   'follow-accepted':      7,
   'rate-review-reminder': 7,
-  'post-comment':         7,
-  'post-like':            8,
   // Billing mail is as critical as password mail — a payment failure the user
   // doesn't see becomes a cancellation they didn't choose.
   'subscription-confirmed':     1,

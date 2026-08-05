@@ -1,6 +1,10 @@
 import { sgMail, FROM } from '../../lib/sendgrid';
 import { emailLayout, ctaButton, greeting, signOff, escapeHtml, p } from '../lib/layout';
-import { unsubscribeUrl } from '../../lib/unsubscribe-token';
+
+// No unsubscribe link: follow-request mail is not part of the promotional set
+// and keeps sending after a user unsubscribes, so offering the link here would
+// show them a confirmation page for something it does not switch off. The
+// per-user `friendRequests` toggle in Settings is how this is turned off.
 
 export async function sendFollowRequestEmail(to: string, receiverName: string, senderName: string): Promise<void> {
   const safeReceiver = escapeHtml(receiverName);
@@ -18,7 +22,7 @@ export async function sendFollowRequestEmail(to: string, receiverName: string, s
     to,
     from: FROM,
     subject: `${senderName} wants to follow you on Kinkané`,
-    html: emailLayout(title, body, unsubscribeUrl(to)),
+    html: emailLayout(title, body),
     text: `Hi ${receiverName},\n\n${senderName} has sent you a follow request on Kinkané.\n\nOpen the app to accept or ignore the request.\n\nThe Kinkané Team`,
   });
 }
@@ -40,7 +44,7 @@ export async function sendFollowAcceptedEmail(to: string, senderName: string, ac
     to,
     from: FROM,
     subject: `${accepterName} accepted your follow request`,
-    html: emailLayout(title, body, unsubscribeUrl(to)),
+    html: emailLayout(title, body),
     text: `Hi ${senderName},\n\n${accepterName} has accepted your follow request on Kinkané.\n\nYou can now see their reading activity.\n\nhttps://kinkane.com\n\nThe Kinkané Team`,
   });
 }

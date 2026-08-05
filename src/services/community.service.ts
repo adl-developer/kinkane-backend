@@ -100,6 +100,11 @@ async function getPrimaryAuthor(bookId: number): Promise<string | null> {
 // self-like (caller is expected to check `post.userId !== userId` first).
 // bookTitle, bookId, bookCoverUrl, likerName, and likerPhotoUrl are passed in
 // from the caller to avoid extra DB fetches.
+//
+// Push and the in-app feed only — no email, deliberately. Likes and comments
+// are high-frequency and low-consequence; mailing someone every time a post is
+// liked is how an inbox learns to ignore us. The `likes` preference below gates
+// the push, not an email, and there is no post-like email job to enqueue.
 async function notifyPostLike(
   recipientId: number,
   likerId: number,
@@ -134,6 +139,9 @@ async function notifyPostLike(
 // on a self-comment (caller is expected to check `post.userId !== userId` first).
 // bookTitle, bookId, bookCoverUrl, commenterName, and commenterPhotoUrl are
 // passed in from the caller to avoid extra DB fetches.
+//
+// Push and the in-app feed only — no email, for the same reason as
+// notifyPostLike above.
 async function notifyPostComment(
   recipientId: number,
   commenterId: number,

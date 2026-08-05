@@ -4,6 +4,7 @@ import { db } from '../db';
 import { users } from '../db/schema/users';
 import { notificationPreferences } from '../db/schema/notification-preferences';
 import { verifyUnsubscribeToken } from '../lib/unsubscribe-token';
+import { UNSUBSCRIBE_FLAGS } from '../services/notification-preferences.service';
 import { logger } from '../lib/logger';
 
 const router = Router();
@@ -27,7 +28,8 @@ const successHtml = (message: string) => `<!DOCTYPE html>
   <div class="card">
     <div class="logo"><span>K</span>Kinkané</div>
     <h1>${message}</h1>
-    <p>You won't receive marketing or notification emails from Kinkané.<br/>Security emails (password resets, verification codes) will still be sent.</p>
+    <p>You won't receive book recommendations, reading reminders or our newsletter any more.</p>
+    <p style="margin-top:12px;">You'll still get follow requests, and emails about your account, subscription and security. You can change any of this in the app under Settings.</p>
   </div>
 </body>
 </html>`;
@@ -59,12 +61,19 @@ const errorHtml = (message: string) => `<!DOCTYPE html>
 /**
  * GET /api/v1/unsubscribe?token=<signed-jwt>
  *
- * One-click unsubscribe. Verifies the HMAC-signed token, then sets all
- * notification preference flags to false for that user. No authentication
+ * One-click unsubscribe. Verifies the HMAC-signed token, then clears the
+ * promotional flags (UNSUBSCRIBE_FLAGS) for that user. No authentication
  * required — the signed token is the proof of identity.
  *
- * Security emails (password reset, OTP, account alerts) are never gated on
- * notification preferences and continue to send regardless.
+ * Scoped to promotional email only: the newsletter, book recommendations and
+ * reading reminders. Follow requests, trial-ending, subscription and security
+ * email are not gated on this and keep sending — those are either something
+ * another person did or something the user needs to see about their own
+ * account, and burying them behind a marketing opt-out would be worse for the
+ * user than the extra mail.
+ *
+ * Only emails in that promotional set carry an Unsubscribe link in their
+ * footer, so the link never appears on mail this route cannot actually stop.
  *
  * Returns an HTML page (not JSON) — this URL is opened in a browser from
  * the email client, not called by the app.
@@ -97,21 +106,25 @@ router.get('/', async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
+    // Built from UNSUBSCRIBE_FLAGS rather than written out, so adding a future
+    // promotional category to that list is all it takes for unsubscribe to
+    // cover it — no chance of a new marketing email quietly outliving the
+    // user's opt-out because someone forgot to update this route.
+    const cleared = Object.fromEntries(UNSUBSCRIBE_FLAGS.map((flag) => [flag, false]));
+
     const result = await db
       .update(notificationPreferences)
-      .set({
-        newBookSuggestions: false,
-        rateReviewReminders: false,
-        friendRequests: false,
-        updatedAt: new Date(),
-      })
+      .set({ ...cleared, updatedAt: new Date() })
       .where(eq(notificationPreferences.userId, user.id))
       .returning({ id: notificationPreferences.id });
 
     if (result.length === 0) {
       logger.warn('Unsubscribe: no notification_preferences row found', { email });
     } else {
-      logger.info('User unsubscribed from all emails', { email });
+      logger.info('User unsubscribed from promotional emails', {
+        email,
+        cleared: UNSUBSCRIBE_FLAGS,
+      });
     }
 
     res.status(200).send(successHtml("You've been unsubscribed"));

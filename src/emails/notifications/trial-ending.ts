@@ -1,6 +1,9 @@
 import { sgMail, FROM } from '../../lib/sendgrid';
 import { emailLayout, ctaButton, greeting, signOff, escapeHtml, p } from '../lib/layout';
-import { unsubscribeUrl } from '../../lib/unsubscribe-token';
+
+// No unsubscribe link: a trial that is about to convert to a paid subscription
+// is account state the user needs to know about, so this sends regardless of
+// the promotional opt-out and must not imply otherwise.
 
 const SANS = "Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif";
 
@@ -30,7 +33,7 @@ export async function sendTrialEndingEmail(to: string, name: string, daysLeft: n
     to,
     from: FROM,
     subject: title,
-    html: emailLayout(title, body, unsubscribeUrl(to)),
+    html: emailLayout(title, body),
     text: `Hi ${name},\n\nYour Kinkané Plus trial will end in ${daysLeft} day${plural}.\n\nDuring your trial, you've enjoyed:\n• Personalised recommendations tailored to your reading tastes\n• Unlimited bookshelf saves\n• Community features\n• Curated reading collections\n\nTo continue discovering books chosen just for you, upgrade to Kinkané Plus before your trial expires.\n\nhttps://kinkane.com/subscribe\n\nYour next great read is waiting.\n\nThe Kinkané Team`,
   });
 }

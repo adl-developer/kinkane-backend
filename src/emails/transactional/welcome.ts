@@ -1,6 +1,9 @@
 import { sgMail, FROM } from '../../lib/sendgrid';
 import { emailLayout, ctaButton, greeting, signOff, escapeHtml, p } from '../lib/layout';
-import { unsubscribeUrl } from '../../lib/unsubscribe-token';
+
+// No unsubscribe link: this is the one-off transactional email confirming the
+// account exists, sent once and never repeated, so there is nothing for an
+// unsubscribe to stop.
 
 export async function sendWelcomeEmail(to: string, name: string): Promise<void> {
   const safeName = escapeHtml(name);
@@ -20,7 +23,7 @@ export async function sendWelcomeEmail(to: string, name: string): Promise<void> 
     to,
     from: FROM,
     subject: title,
-    html: emailLayout(title, body, unsubscribeUrl(to)),
+    html: emailLayout(title, body),
     text: `Hi ${name},\n\nWelcome to Kinkané,\n\nWe're excited to help you discover books you'll actually love — not just what's trending.\n\nThe more you tell us about your reading tastes, the better your recommendations become. Start building your bookshelf, explore new authors, and uncover stories that match your mood and interests.\n\nYour next favourite book might be closer than you think.\n\nhttps://kinkane.com\n\nHappy reading,\nThe Kinkané Team`,
   });
 }
