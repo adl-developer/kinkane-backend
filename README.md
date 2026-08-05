@@ -55,7 +55,7 @@ This is one of two independent services that share the same PostgreSQL database:
 | PostgreSQL | 14+ | Must have `pg_trgm` and `pgvector` extensions enabled (handled by `onix_ingester`) |
 | Redis | 6+ | Required for rate limiting and the email job queue |
 | Google Gemini API key | — | Same key used by `onix_ingester` — see [AI Recommendations](#ai-recommendations) |
-| SendGrid API key | — | Required for transactional and marketing emails — see [Email](#email) |
+| Resend API key | — | Required for transactional and marketing emails — see [Email](#email) |
 
 ---
 
@@ -278,7 +278,7 @@ server/
 │   │   ├── gemini.ts                # Gemini embedding + explanation helpers
 │   │   ├── logger.ts                # Structured JSON logger
 │   │   ├── redis.ts                 # ioredis client (rate limiting)
-│   │   └── sendgrid.ts              # SendGrid client initialisation
+│   │   └── resend.ts                # Resend client initialisation
 │   ├── workers/
 │   │   └── email.worker.ts          # BullMQ worker — processes all email job types
 │   ├── services/
@@ -357,8 +357,8 @@ GEMINI_FLASH_MODEL=gemini-2.5-flash-lite
 # Set to 168 for a full week, 24 for a single day, etc.
 GUEST_SESSION_TTL_HOURS=72
 
-# SendGrid — https://app.sendgrid.com/settings/api_keys
-SENDGRID_API_KEY=SG.your-api-key-here
+# Resend — https://resend.com/api-keys
+RESEND_API_KEY=re_your-api-key-here
 EMAIL_FROM=hello@kinkane.com
 EMAIL_FROM_NAME=Kinkane
 
@@ -1238,8 +1238,8 @@ All outgoing emails are processed through a **BullMQ** queue backed by Redis. Em
 
 **Why a queue instead of direct sends?**
 - Automatic retries with exponential backoff (3 attempts, 2s → 4s)
-- Survives transient SendGrid outages without losing emails
-- Controlled concurrency (5 simultaneous sends) respects SendGrid rate limits
+- Survives transient Resend outages without losing emails
+- Controlled concurrency (5 simultaneous sends) respects Resend rate limits
 - Priority lanes ensure password reset emails jump ahead of bulk newsletter jobs
 - Full job history visible in Bull Board
 
@@ -1281,7 +1281,7 @@ Task: enqueueEmail('weekly-digest', { to, payload }) per active user
 
 ## Email
 
-All emails are sent via **SendGrid** and routed through the BullMQ queue. Email templates live in `src/emails/` organised by type.
+All emails are sent via **Resend** and routed through the BullMQ queue. Email templates live in `src/emails/` organised by type.
 
 ### Email types
 
@@ -1309,12 +1309,15 @@ await enqueueEmail('trial-ending', { to: user.email, name: user.name, daysLeft: 
 
 The helper is fully typed — TypeScript will catch mismatched payloads at compile time.
 
-### SendGrid setup
+### Resend setup
 
-1. Create an account at [sendgrid.com](https://sendgrid.com)
-2. Go to **Settings → API Keys** and create a key with **Mail Send** permission
-3. Verify your sender domain or email address under **Settings → Sender Authentication**
-4. Add `SENDGRID_API_KEY` and `EMAIL_FROM` to your `.env`
+1. Create an account at [resend.com](https://resend.com)
+2. Go to **API Keys** and create a key with **Sending access**
+3. Add and verify your sender domain under **Domains** (DNS records for SPF/DKIM).
+   The domain must match the one in `EMAIL_FROM` or every send is rejected.
+4. Enable click/open tracking under **Domains → Tracking** if you want it — Resend
+   configures tracking per domain, not per message
+5. Add `RESEND_API_KEY` and `EMAIL_FROM` to your `.env`
 
 ---
 
@@ -1327,7 +1330,7 @@ npm install
 # 2. Set up environment
 cp .env.example .env
 # Fill in DATABASE_URL, REDIS_URL, JWT secrets, Firebase credentials,
-# GEMINI_API_KEY, SENDGRID_API_KEY, and APP_URL
+# GEMINI_API_KEY, RESEND_API_KEY, and APP_URL
 
 # 3. Apply migrations
 npm run db:migrate
@@ -1350,7 +1353,7 @@ Once running, the **Bull Board** queue dashboard is available at `http://localho
 
 ### Environment variables on Render
 
-Set all values from [Environment Variables](#environment-variables) in the Render dashboard. `DATABASE_URL` is injected automatically from the linked database. `REDIS_URL` is injected automatically from the linked Redis instance. Set `SENDGRID_API_KEY`, `EMAIL_FROM`, `EMAIL_FROM_NAME`, and `APP_URL` manually.
+Set all values from [Environment Variables](#environment-variables) in the Render dashboard. `DATABASE_URL` is injected automatically from the linked database. `REDIS_URL` is injected automatically from the linked Redis instance. Set `RESEND_API_KEY`, `EMAIL_FROM`, `EMAIL_FROM_NAME`, and `APP_URL` manually.
 
 ### Pre-deploy command
 

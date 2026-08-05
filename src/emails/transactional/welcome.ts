@@ -1,4 +1,4 @@
-import { sgMail, FROM } from '../../lib/sendgrid';
+import { sendEmail, FROM } from '../../lib/resend';
 import { emailLayout, ctaButton, greeting, signOff, escapeHtml, p } from '../lib/layout';
 
 // No unsubscribe link: this is the one-off transactional email confirming the
@@ -19,7 +19,7 @@ export async function sendWelcomeEmail(to: string, name: string): Promise<void> 
     signOff('Happy reading,'),
   ].join('\n');
 
-  await sgMail.send({
+  await sendEmail({
     to,
     from: FROM,
     subject: title,

@@ -14,13 +14,11 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 const sent: { to: string; html: string }[] = [];
 
-vi.mock('../lib/sendgrid', () => ({
-  sgMail: {
-    send: async (msg: { to: string; html: string }) => {
-      sent.push(msg);
-    },
+vi.mock('../lib/resend', () => ({
+  sendEmail: async (msg: { to: string; html: string }) => {
+    sent.push(msg);
   },
-  FROM: 'test@kinkane.com',
+  FROM: 'Kinkane <test@kinkane.com>',
 }));
 
 // A stable secret so unsubscribeUrl can sign a token during the test run.

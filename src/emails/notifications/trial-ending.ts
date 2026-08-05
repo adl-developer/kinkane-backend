@@ -1,4 +1,4 @@
-import { sgMail, FROM } from '../../lib/sendgrid';
+import { sendEmail, FROM } from '../../lib/resend';
 import { emailLayout, ctaButton, greeting, signOff, escapeHtml, p } from '../lib/layout';
 
 // No unsubscribe link: a trial that is about to convert to a paid subscription
@@ -29,7 +29,7 @@ export async function sendTrialEndingEmail(to: string, name: string, daysLeft: n
     signOff('Your next great read is waiting.'),
   ].join('\n');
 
-  await sgMail.send({
+  await sendEmail({
     to,
     from: FROM,
     subject: title,

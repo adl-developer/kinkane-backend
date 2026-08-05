@@ -1,4 +1,4 @@
-import { sgMail, FROM } from '../../lib/sendgrid';
+import { sendEmail, FROM } from '../../lib/resend';
 import { emailLayout, ctaButton, greeting, signOff, escapeHtml, p } from '../lib/layout';
 import { unsubscribeUrl } from '../../lib/unsubscribe-token';
 
@@ -20,7 +20,7 @@ export async function sendRateReviewReminderEmail(
     signOff(),
   ].join('\n');
 
-  await sgMail.send({
+  await sendEmail({
     to,
     from: FROM,
     subject: `How did you find "${book.title}"?`,

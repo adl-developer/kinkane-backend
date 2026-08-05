@@ -136,7 +136,7 @@ async function processEmailJob(job: Job): Promise<void> {
 export function startEmailWorker(): Worker {
   const worker = new Worker('emails', processEmailJob, {
     connection: bullConnection,
-    concurrency: 5, // process up to 5 emails simultaneously — respects SendGrid rate limits
+    concurrency: 5, // process up to 5 emails simultaneously — respects Resend rate limits
   });
 
   worker.on('completed', (job) => {

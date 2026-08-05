@@ -1,4 +1,4 @@
-import { sgMail, FROM } from '../../lib/sendgrid';
+import { sendEmail, FROM } from '../../lib/resend';
 import { emailLayout, ctaButton, greeting, signOff, escapeHtml, p } from '../lib/layout';
 
 export async function sendEmailChangeNotifyEmail(to: string, name: string, cancelUrl: string): Promise<void> {
@@ -14,7 +14,7 @@ export async function sendEmailChangeNotifyEmail(to: string, name: string, cance
     signOff('This link will expire in 15 minutes.'),
   ].join('\n');
 
-  await sgMail.send({
+  await sendEmail({
     to,
     from: FROM,
     subject: 'Email change requested for your Kinkané account',

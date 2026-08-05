@@ -1,4 +1,4 @@
-import { sgMail, FROM } from '../../lib/sendgrid';
+import { sendEmail, FROM } from '../../lib/resend';
 import { emailLayout, ctaButton, greeting, signOff, escapeHtml, p } from '../lib/layout';
 
 // No unsubscribe link: follow-request mail is not part of the promotional set
@@ -18,7 +18,7 @@ export async function sendFollowRequestEmail(to: string, receiverName: string, s
     signOff(),
   ].join('\n');
 
-  await sgMail.send({
+  await sendEmail({
     to,
     from: FROM,
     subject: `${senderName} wants to follow you on Kinkané`,
@@ -40,7 +40,7 @@ export async function sendFollowAcceptedEmail(to: string, senderName: string, ac
     signOff(),
   ].join('\n');
 
-  await sgMail.send({
+  await sendEmail({
     to,
     from: FROM,
     subject: `${accepterName} accepted your follow request`,

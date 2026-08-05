@@ -21,7 +21,6 @@
     "@bull-board/api": "^7.1.5",
     "@bull-board/express": "^7.1.5",
     "@google/generative-ai": "^0.24.1",
-    "@sendgrid/mail": "^8.1.6",
     "@types/cors": "^2.8.19",
     "bcryptjs": "^2.4.3",
     "bullmq": "^5.77.6",
@@ -38,6 +37,7 @@
     "p-limit": "^7.3.0",
     "postgres": "^3.4.4",
     "rate-limit-redis": "^5.0.0",
+    "resend": "^6.18.1",
     "ssh2-sftp-client": "^12.1.1",
     "stripe": "^22.4.0",
     "zod": "^3.23.8"
