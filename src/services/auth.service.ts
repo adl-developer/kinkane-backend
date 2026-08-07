@@ -13,7 +13,7 @@ import { buildPreferenceText } from './recommendations.service';
 import { preferenceHistoryService } from './preference-history.service';
 import { dislikedBooksService } from './disliked-books.service';
 import { subscriptionStateService } from './subscriptions/state.service';
-import type { SubscriptionTier, SubscriptionStatus } from '../db/schema';
+import type { SubscriptionTier, SubscriptionStatus, SubscriptionPlan } from '../db/schema';
 
 const BCRYPT_ROUNDS = 12;
 
@@ -37,8 +37,15 @@ export interface MeUser extends AuthUser {
     // Sourced from the enum rather than restated, so adding a Stripe-driven
     // status (past_due, incomplete) can't leave this contract behind.
     status: SubscriptionStatus;
+    // Which recurring interval was bought — null while free or trialing.
+    plan: SubscriptionPlan | null;
     trialDaysLeft: number | null;
     trialEndsAt: Date | null;
+    // End of the paid period Stripe has already collected for. Read together
+    // with cancelAtPeriodEnd: it's a renewal date unless that flag is set, in
+    // which case it's the date access actually ends.
+    currentPeriodEnd: Date | null;
+    cancelAtPeriodEnd: boolean;
   };
   providers: string[];
 }
@@ -699,8 +706,11 @@ export const authService = {
       subscription: {
         tier: sub.tier,
         status: sub.status,
+        plan: sub.plan,
         trialDaysLeft,
         trialEndsAt: sub.trialEndsAt,
+        currentPeriodEnd: sub.currentPeriodEnd,
+        cancelAtPeriodEnd: sub.cancelAtPeriodEnd,
       },
       providers: providerRows.map((r) => r.provider),
     };

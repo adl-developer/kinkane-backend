@@ -5,6 +5,7 @@
 
 ### Features
 
+* send all email through Resend instead of SendGrid ([0722373](https://adl.github.com/adl-developer/kinkane-backend/commit/0722373d0073c412f9807d7af288c9c7acd0aa3a)) — [details](changelog/2026-08-05-resend-email-provider.md)
 * make Unsubscribe stop marketing email only, not follow requests ([6c012cb](https://adl.github.com/adl-developer/kinkane-backend/commit/6c012cb310602f4d0ef4da8a3321ac5fe3ff3ef8)) — [details](changelog/2026-08-05-resend-email-provider.md)
 
 
