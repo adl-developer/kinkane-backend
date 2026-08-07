@@ -139,7 +139,7 @@ costs more in churn than the few days of access it saves.
 | GET | `/api/v1/user/subscription/plans` | live pricing from Stripe |
 | POST | `/api/v1/user/subscription/checkout-session` | `{ plan }` → Checkout URL |
 | POST | `/api/v1/user/subscription/portal-session` | → Billing Portal URL |
-| POST | `/api/v1/user/subscription/upgrade` | **deprecated**, now delegates to checkout |
+| POST | `/api/v1/user/subscription/upgrade` | **deprecated**, now delegates to checkout — removed 2026-08-07 |
 | POST | `/api/v1/user/subscription/webhook` | Stripe only |
 
 The client names a plan and nothing else — prices are resolved server-side, so a
@@ -150,6 +150,7 @@ attacker's page at the exact moment they're primed to trust it.
 `/upgrade` was the pre-Stripe stub that returned `{ status: 'pending' }`. It
 still returns that key, plus a real checkout URL, so an un-updated client doesn't
 break. Remove it after the app ships a version that uses `/checkout-session`.
+(Removed on 2026-08-07 — see `2026-08-07-remove-upgrade-endpoint.md`.)
 
 ## Emails
 
