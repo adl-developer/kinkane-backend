@@ -85,15 +85,6 @@ router.post(
   wrap(subscriptionsController.createPortalSession),
 );
 
-/**
- * POST /api/v1/user/subscription/upgrade
- *
- * @deprecated Superseded by POST /checkout-session, which this now delegates to.
- * Kept so the pre-Stripe client contract (which returned `{ status: 'pending' }`)
- * keeps working for one release.
- */
-router.post('/upgrade', requireAuth, checkoutLimiter, wrap(subscriptionsController.upgrade));
-
 export default router;
 
 /**

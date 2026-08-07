@@ -125,21 +125,6 @@ export const subscriptionsController = {
   },
 
   /**
-   * POST /api/v1/user/subscription/upgrade
-   * The pre-Stripe stub's URL, kept working. It used to return
-   * `{ status: 'pending' }`; it now creates a real checkout session and
-   * returns the same shape plus a `url`, so an un-updated client doesn't break
-   * on the response it already ignores.
-   *
-   * @deprecated Use POST /checkout-session.
-   */
-  async upgrade(req: AuthenticatedRequest, res: Response): Promise<void> {
-    const plan = req.body?.plan === 'annual' ? 'annual' : 'monthly';
-    const result = await checkoutService.createCheckoutSession(req.user.id, plan);
-    res.status(200).json({ status: 'pending', ...result });
-  },
-
-  /**
    * POST /api/v1/user/subscription/webhook
    *
    * Unauthenticated by design — the Stripe signature over the raw body is the
