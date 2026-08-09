@@ -8,7 +8,9 @@ import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 const suggestionsSchema = z.object({
   q: z.string().min(1, 'Query must not be empty').max(100),
   limit: z.coerce.number().int().min(1).max(15).default(8),
-  type: z.enum(['title', 'author']).default('title'),
+  // Defaults to matching both title and author. The single-sided values stay accepted so
+  // existing callers that pass type=title or type=author keep their current behaviour.
+  type: z.enum(['all', 'title', 'author']).default('all'),
 });
 
 const similarSchema = z.object({
