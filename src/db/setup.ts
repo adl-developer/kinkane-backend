@@ -59,10 +59,32 @@ async function main() {
   // transaction — must stay as its own top-level statement, not batched with others).
   await sql`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_books_title_lower_pattern ON books (lower(title) text_pattern_ops)`;
 
-  // Author search/suggestions (buildAuthorBookSearchCondition, authorSuggestions)
+  // Author search/suggestions (buildAuthorMatchCondition, authorSuggestions)
   // does ILIKE/word_similarity against book_contributors.person_name — same
   // shape of query as book title search, so it needs the same trigram index.
-  await sql`CREATE INDEX IF NOT EXISTS idx_book_contributors_person_name_trgm ON book_contributors USING GIN (person_name gin_trgm_ops)`;
+  //
+  // Partial on role = 'A01': every author query filters to that role (a book's
+  // editors, translators and illustrators are not what someone typing a name is
+  // looking for), and without it in the index that filter can only be applied
+  // after the index has already returned every contributor row matching the name.
+  //
+  // Note the new name. The predicate is part of an index's definition, not something
+  // CREATE INDEX IF NOT EXISTS will reconcile — against a database that already has the
+  // old unpartitioned index, re-running the statement under its original name is a silent
+  // no-op and the predicate never lands. Hence a distinct name, with the superseded index
+  // dropped below once this one exists.
+  await sql`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_book_contributors_author_name_trgm ON book_contributors USING GIN (person_name gin_trgm_ops) WHERE role = 'A01'`;
+  await sql`DROP INDEX CONCURRENTLY IF EXISTS idx_book_contributors_person_name_trgm`;
+
+  // The author-name counterpart of idx_books_title_lower_pattern above, and it exists
+  // for the same reason: the trigram index serves ILIKE, but for a common name fragment
+  // ("jo", "sm") it becomes a poor filter and Postgres falls back to rechecking a large
+  // number of heap pages. This functional index gives `lower(person_name) LIKE lower(q||'%')`
+  // a genuine indexed range scan instead, which is what orders the bounded candidate set
+  // in buildAuthorMatchCondition — the step that decides which matches survive its LIMIT.
+  // Same caveats as the title version: plain LIKE only (text_pattern_ops matches no other
+  // operator), and CONCURRENTLY so it builds without locking the table against writes.
+  await sql`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_book_contributors_author_name_lower_pattern ON book_contributors (lower(person_name) text_pattern_ops) WHERE role = 'A01'`;
 
   // ANN index for the "similar"/"personalized" cosine-distance (<=>) queries.
   // Without this, ORDER BY embedding <=> vector is a brute-force scan that

@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import { eq, sql, and, ilike, inArray, asc, desc, gt, notInArray, type SQL } from 'drizzle-orm';
+import type { PgColumn } from 'drizzle-orm/pg-core';
 import { db } from '../db';
 import {
   books,
@@ -62,6 +63,12 @@ const FEED_EXCLUSION_HEADROOM = 10;
 // distinguish via `totalIsApproximate`. Comfortably above the max page size (50) so
 // ordinary pagination never notices.
 const SEARCH_COUNT_CAP = 1000;
+// Ceiling on how many author matches a search will pull from book_contributors before
+// ranking them — see buildAuthorMatchCondition. Sized well above any real author's
+// catalogue (the most prolific names in the catalogue are in the low hundreds of titles)
+// so it only ever truncates genuinely ambiguous fragments, where the rows past the cap
+// were never going to be shown anyway.
+const AUTHOR_MATCH_LIMIT = 5000;
 
 export interface ListBooksOptions {
   q?: string;
@@ -117,6 +124,11 @@ export interface BookListItem {
   prices: Pick<BookPrice, 'priceType' | 'priceAmount' | 'currencyCode'>[];
   excerpt: BookExcerptInfo | null;
 }
+
+// Which side of the catalogue a typeahead query is matched against. 'all' (the default)
+// matches both and merges the results; the single-sided values exist for callers that
+// already know what the user is looking for, such as a dedicated author filter.
+export type SuggestionType = 'all' | 'title' | 'author';
 
 export interface SuggestionItem {
   id: number;
@@ -201,49 +213,177 @@ function buildSearchOrderBy(q: string): SQL[] {
   ];
 }
 
-// Same four-tier matching scheme as buildSearchCondition, applied to author
-// name instead of title, scoped down to a set of matching book IDs.
-function buildAuthorBookSearchCondition(q: string): SQL {
+// Matches books by their author's name, as an *uncorrelated* subquery over a
+// bounded candidate set.
+//
+// Both properties are load-bearing, and replace an earlier shape that had
+// neither:
+//   - Uncorrelated: the previous version ranked author matches with a
+//     correlated subquery per candidate row (a MIN(CASE ...) over
+//     book_contributors evaluated once per book). Postgres has to run that for
+//     every row it considers before it can sort and apply LIMIT/OFFSET, which
+//     is survivable for the small fixed pool in suggestions() but not for a
+//     paginated list. Ranking now comes from the branch's own ORDER BY (see
+//     buildAuthorMatchOrderBy) so the subquery is evaluated once, as a hashed
+//     SubPlan, no matter how many books it is checked against.
+//   - Bounded: the inner LIMIT caps how many contributor rows can ever feed the
+//     outer query, so a very common name fragment ("sm", "jo") costs the same as
+//     a rare one. Without it, the outer sort is proportional to how popular the
+//     name is — the same unbounded-work problem SEARCH_COUNT_CAP exists to
+//     prevent on the count side.
+//
+// The two name tiers are separate UNION ALL branches, each with its own LIMIT, rather
+// than one OR'd condition ranked by an ORDER BY CASE. The obvious version,
+//
+//     WHERE person_name ILIKE 'jo%' OR person_name ILIKE '% jo%'
+//     ORDER BY CASE WHEN lower(person_name) LIKE 'jo%' THEN 0 ELSE 1 END
+//     LIMIT 5000
+//
+// looks bounded but isn't: an ORDER BY over a computed expression can't be satisfied by
+// any index, so Postgres has to consume and rank *every* matching contributor row before
+// the LIMIT applies. Cost then scales with how common the fragment is — the same
+// unbounded-work shape SEARCH_COUNT_CAP exists to prevent on the count side. Splitting
+// them caps each branch independently: the sort at the end sees at most 2×the cap rows
+// no matter how popular the name.
+//
+// The split also puts the prefix tier where an index can serve it. Branch 0 matches on
+// lower(person_name) LIKE — plain LIKE, not ILIKE, since text_pattern_ops matches no
+// other operator — which EXPLAIN confirms is an indexed range scan on
+// idx_book_contributors_author_name_lower_pattern, the same trick
+// buildFastTitlePrefixCondition uses on titles. Branch 1 is the trigram GIN's job.
+//
+// Ordering by tier decides which rows survive when the match set exceeds the cap: exact
+// prefix matches ("chimamanda" → "Chimamanda Ngozi Adichie") win over word-prefix ones
+// ("adichie" matching mid-name). Branch 1 doesn't repeat the plain-prefix arm — branch 0
+// already covers it, and duplicate book ids cost nothing in an IN (...).
+//
+// 'broad' adds the fuzzy tiers (trigram word-similarity + FTS over the name) and is only
+// used when the title branch has already fallen through to its own broad tier — i.e. when
+// nothing cheaper matched at all. Callers must run it inside withWordSimilarityThreshold,
+// since it uses the <% operator.
+export function buildAuthorMatchSource(q: string, tier: 'cheap' | 'broad'): SQL {
   const prefix = q + '%';
   const wordPrefix = '% ' + q + '%';
-  const fts = q.length >= 3
-    ? sql` OR to_tsvector('simple', bc.person_name) @@ plainto_tsquery('simple', ${q})`
-    : sql``;
 
-  return sql`${books.id} IN (
-    SELECT bc.book_id FROM book_contributors bc
-    WHERE bc.role = 'A01'
-      AND bc.person_name IS NOT NULL
-      AND (
-        bc.person_name ILIKE ${prefix}
-        OR bc.person_name ILIKE ${wordPrefix}
-        OR ${q} <% bc.person_name
-        ${fts}
-      )
+  const fuzzy =
+    tier === 'broad'
+      ? q.length >= 3
+        ? sql` OR ${q} <% bc.person_name
+               OR to_tsvector('simple', bc.person_name) @@ plainto_tsquery('simple', ${q})`
+        : sql` OR ${q} <% bc.person_name`
+      : sql``;
+
+  return sql`(
+    (
+      SELECT bc.book_id, 0 AS tier
+      FROM book_contributors bc
+      WHERE bc.role = 'A01'
+        AND lower(bc.person_name) LIKE lower(${prefix})
+      LIMIT ${AUTHOR_MATCH_LIMIT}
+    )
+    UNION ALL
+    (
+      SELECT bc.book_id, 1 AS tier
+      FROM book_contributors bc
+      WHERE bc.role = 'A01'
+        AND bc.person_name IS NOT NULL
+        AND (
+          bc.person_name ILIKE ${wordPrefix}
+          ${fuzzy}
+        )
+      LIMIT ${AUTHOR_MATCH_LIMIT}
+    )
   )`;
 }
 
-function buildAuthorBookSearchOrderBy(q: string): SQL[] {
-  const prefix = q + '%';
-  const wordPrefix = '% ' + q + '%';
+// Membership-only form, for the count probe and for suggestions' author pool — anywhere
+// the tier isn't needed for ranking. Where it is needed, see fetchAuthorBranch, which
+// keeps the tier rather than throwing it away here.
+export function buildAuthorMatchCondition(q: string, tier: 'cheap' | 'broad'): SQL {
+  return sql`${books.id} IN (SELECT m.book_id FROM ${buildAuthorMatchSource(q, tier)} m)`;
+}
 
-  return [
-    sql`(
-      SELECT MIN(CASE
-        WHEN bc.person_name ILIKE ${prefix}     THEN 0
-        WHEN bc.person_name ILIKE ${wordPrefix} THEN 1
-        WHEN word_similarity(${q}, bc.person_name) > 0.3 THEN 2
-        ELSE 3
-      END)
-      FROM book_contributors bc
-      WHERE bc.book_id = ${books.id} AND bc.role = 'A01'
-    )`,
-    sql`(
-      SELECT MAX(word_similarity(${q}, bc.person_name))
-      FROM book_contributors bc
-      WHERE bc.book_id = ${books.id} AND bc.role = 'A01'
-    ) DESC`,
-  ];
+// Resolves the author branch in two steps: rank matching book ids in SQL, then fetch
+// those books through the normal typed select.
+//
+// The ranking can't be folded into the fetch's ORDER BY, because the tier lives in the
+// subquery and referencing it per book row is the correlated-subquery shape that made the
+// previous implementation slow. Ordering the fetch by title instead — which is what this
+// did at first — throws the tier away entirely, and the result is that "Roderick Hunt"
+// returns books by Constance Elizabeth Hunt and Roderic P. Quirk in alphabetical order
+// while the author's own books sit thousands of rows down. The tier is the whole signal;
+// it has to survive to the sort.
+//
+// Ids are over-fetched relative to the page because the filters (genre, availability, …)
+// are applied to the books fetch, not to the ranking, so some ranked ids won't survive
+// them. The multiplier is what keeps a filtered author search from under-filling its page.
+// Everything here is bounded: at most branchLimit × OVERFETCH ids, sorted in memory.
+const AUTHOR_ID_OVERFETCH = 5;
+
+// Book ids whose author matched, mapped to their best (lowest) name-match tier.
+//
+// The ORDER BY has to be total, and has to be the same order the caller finally displays
+// in — not just "tier first". `take` grows with the requested page, so page 2 asks for a
+// larger sample than page 1; unless the ordering is deterministic and page-independent,
+// the two samples are different arbitrary subsets of the tied rows and pages overlap. That
+// is not hypothetical: with a bare ORDER BY MIN(tier), a prolific author's page 2 repeated
+// a book from page 1, because 171 rows tied at tier 0 and Postgres was free to return any
+// 30 of them. Ordering by (tier, title, id) makes every sample a prefix of the next one.
+async function rankAuthorMatches(
+  conn: Pick<typeof db, 'execute'>,
+  q: string,
+  tier: 'cheap' | 'broad',
+  take: number,
+): Promise<Map<number, number>> {
+  const ranked = await conn.execute<{ id: number; tier: number }>(sql`
+    SELECT m.book_id AS id, MIN(m.tier) AS tier
+    FROM ${buildAuthorMatchSource(q, tier)} m
+    JOIN ${books} ON ${books.id} = m.book_id
+    GROUP BY m.book_id, ${books.title}
+    ORDER BY MIN(m.tier), lower(${books.title}), m.book_id
+    LIMIT ${take}
+  `);
+
+  const tierById = new Map<number, number>();
+  for (const row of ranked as unknown as { id: number; tier: number }[]) {
+    tierById.set(Number(row.id), Number(row.tier));
+  }
+  return tierById;
+}
+
+// Exact-prefix names first, then alphabetically within a tier. Must be the same total
+// order rankAuthorMatches applies in SQL, including the id tiebreak — the ranking decides
+// *which* rows a page can contain and this decides where they sit, so a disagreement
+// between them puts a row on two pages or on none.
+function byAuthorTierThenTitle<T extends { id: number; title: string }>(tierById: Map<number, number>) {
+  return (a: T, b: T) => {
+    const byTier = tierById.get(a.id)! - tierById.get(b.id)!;
+    if (byTier !== 0) return byTier;
+    const [at, bt] = [a.title.toLowerCase(), b.title.toLowerCase()];
+    if (at !== bt) return at < bt ? -1 : 1;
+    return a.id - b.id;
+  };
+}
+
+async function fetchAuthorBranch(
+  conn: Pick<typeof db, 'select' | 'execute'>,
+  opts: ListBooksOptions,
+  q: string,
+  tier: 'cheap' | 'broad',
+  branchLimit: number,
+) {
+  const tierById = await rankAuthorMatches(conn, q, tier, branchLimit * AUTHOR_ID_OVERFETCH);
+  if (tierById.size === 0) return [];
+
+  const filters = buildWhereClause(opts);
+  const ids = [...tierById.keys()];
+  const rows = await conn
+    .select(LIST_COLUMNS)
+    .from(books)
+    .where(filters ? and(inArray(books.id, ids), filters) : inArray(books.id, ids));
+
+  rows.sort(byAuthorTierThenTitle(tierById));
+  return rows.slice(0, branchLimit);
 }
 
 // Tiers 0-1 only (exact/word prefix) — both are backed directly by the trigram
@@ -294,29 +434,6 @@ function buildFastTitlePrefixCondition(q: string): SQL {
 // measured) — the exact regression this index exists to avoid.
 function buildFastTitlePrefixOrderBy(): SQL[] {
   return [sql`lower(${books.title})`];
-}
-
-// Same cheap-tier-only shape as buildTitlePrefixCondition, applied to author name.
-function buildAuthorPrefixCondition(q: string): SQL {
-  const prefix = q + '%';
-  const wordPrefix = '% ' + q + '%';
-  return sql`${books.id} IN (
-    SELECT bc.book_id FROM book_contributors bc
-    WHERE bc.role = 'A01'
-      AND bc.person_name IS NOT NULL
-      AND (bc.person_name ILIKE ${prefix} OR bc.person_name ILIKE ${wordPrefix})
-  )`;
-}
-
-function buildAuthorPrefixOrderBy(q: string): SQL[] {
-  const prefix = q + '%';
-  return [
-    sql`(
-      SELECT MIN(CASE WHEN bc.person_name ILIKE ${prefix} THEN 0 ELSE 1 END)
-      FROM book_contributors bc
-      WHERE bc.book_id = ${books.id} AND bc.role = 'A01'
-    )`,
-  ];
 }
 
 // Cheap tier for authorSuggestions()'s grouped-by-name query — prefix/word-prefix
@@ -434,7 +551,7 @@ async function attachRelationsToList(
 // SET LOCAL scopes the override to just the wrapped query, inside a
 // transaction — a bare SET would stick to the pooled connection and leak
 // into unrelated queries reusing it afterward.
-async function withWordSimilarityThreshold<T>(fn: (conn: Pick<typeof db, 'select'>) => Promise<T>): Promise<T> {
+async function withWordSimilarityThreshold<T>(fn: (conn: Pick<typeof db, 'select' | 'execute'>) => Promise<T>): Promise<T> {
   return db.transaction(async (tx) => {
     await tx.execute(sql.raw('SET LOCAL pg_trgm.word_similarity_threshold = 0.3'));
     return fn(tx);
@@ -456,6 +573,83 @@ async function countUpTo(where: SQL | undefined, cap: number): Promise<number> {
   return Number((rows as unknown as { count: number }[])[0]?.count ?? 0);
 }
 
+// Fetches one page of search results as two independently-bounded branches — books
+// matched by title, then books matched by their author's name — merged title-first.
+//
+// Why two queries instead of one OR'd condition: the title branch's speed comes entirely
+// from its ORDER BY matching an index's own ordering (see buildFastTitlePrefixOrderBy).
+// A blended query has to rank title matches against author matches, which no single index
+// can order, so Postgres would sort the whole candidate set — for a common prefix like
+// "the" that is ~322k rows, the exact regression buildFastTitlePrefixCondition exists to
+// avoid. Split in two, each branch keeps its own index-ordered plan and its own LIMIT, and
+// the merge happens over at most 2×(offset+limit) rows in memory.
+//
+// Which branch leads depends on how well the title side actually matched, because the two
+// branches carry very different confidence at different tiers:
+//   - fast/cheap: the title branch is prefix or word-prefix matching, a strong signal, and
+//     a query is more often a title than a name — so titles lead.
+//   - broad: the title branch has fallen through to trigram/FTS, i.e. nothing matched a
+//     title properly and it is returning fuzzy near-misses. An exact author-name match is
+//     a far better answer than a fuzzy title one, so the author branch leads.
+// Concretely, "Roderick Hunt" produced a page led by "Life of Sir Roderick I. Murchison"
+// before this distinction existed, with the author's own books below the fold — the exact
+// query this feature is for, answered with noise.
+//
+// Within a branch, no cross-branch relevance score is attempted: none of the indexes
+// involved can supply one, and computing it would mean ranking the merged set in SQL,
+// which is what makes the single-query version slow.
+//
+// The branches fetch from row 0 rather than pushing `offset` into SQL, since the offset
+// applies to the merged sequence, not to either branch — so a deep page transfers
+// offset+limit rows per branch. That is bounded by the max page size (50) and by
+// SEARCH_COUNT_CAP making pagination past ~1000 rows meaningless for a search anyway.
+async function fetchSearchPage(
+  opts: ListBooksOptions,
+  q: string,
+  tier: 'fast' | 'cheap' | 'broad',
+  titleWhere: SQL | undefined,
+  titleOrderBy: (SQL | PgColumn)[],
+) {
+  const branchLimit = opts.offset + opts.limit + 1;
+
+  const titleQuery = (conn: Pick<typeof db, 'select'>) =>
+    conn.select(LIST_COLUMNS).from(books).where(titleWhere).orderBy(...titleOrderBy).limit(branchLimit);
+
+  // The author branch only reaches for its fuzzy tier when the title branch has already
+  // fallen through to its own — i.e. nothing cheaper matched anywhere. Escalating the two
+  // together keeps the expensive trigram/FTS path off every ordinary search.
+  const authorQuery = (conn: Pick<typeof db, 'select' | 'execute'>) =>
+    fetchAuthorBranch(conn, opts, q, tier === 'broad' ? 'broad' : 'cheap', branchLimit);
+
+  let titleRows: Awaited<ReturnType<typeof titleQuery>>;
+  let authorRows: Awaited<ReturnType<typeof authorQuery>>;
+  if (tier === 'broad') {
+    // Both branches use <% at this tier, so both need the threshold override — and it only
+    // holds for the transaction, so they run inside one rather than in parallel.
+    const pair = await withWordSimilarityThreshold(async (conn) => ({
+      title: await titleQuery(conn),
+      author: await authorQuery(conn),
+    }));
+    titleRows = pair.title;
+    authorRows = pair.author;
+  } else {
+    [titleRows, authorRows] = await Promise.all([titleQuery(db), authorQuery(db)]);
+  }
+
+  // A book matching on both sides must appear once, at its leading branch's position.
+  const ordered = tier === 'broad' ? [...authorRows, ...titleRows] : [...titleRows, ...authorRows];
+  const seen = new Set<number>();
+  const merged: typeof titleRows = [];
+  for (const row of ordered) {
+    if (seen.has(row.id)) continue;
+    seen.add(row.id);
+    merged.push(row);
+  }
+
+  // One row beyond the page, so the caller can derive `hasMore` without a second query.
+  return merged.slice(opts.offset, branchLimit);
+}
+
 // ── Public service ────────────────────────────────────────────────────────────
 
 export const booksService = {
@@ -465,10 +659,12 @@ export const booksService = {
     // v2: the cached row payload changed shape (now { rows, hasMore }) and the cached
     // count is now capped for searches — bumping the prefix retires incompatible entries
     // rather than letting them deserialize into the wrong shape.
-    const rowsCacheKey = `books:list:v2:${createHash('sha256').update(JSON.stringify(opts)).digest('hex')}`;
+    // v3: searches now match on author name too, so the same key yields a different (and
+    // larger) result set than anything cached under v2.
+    const rowsCacheKey = `books:list:v3:${createHash('sha256').update(JSON.stringify(opts)).digest('hex')}`;
     // Keyed only on the fields that affect the count (not limit/offset/sort) so every
     // page of the same filter — and every sort direction — shares one cached total.
-    const countCacheKey = `books:count:v2:${createHash('sha256')
+    const countCacheKey = `books:count:v3:${createHash('sha256')
       .update(
         JSON.stringify({
           q: opts.q,
@@ -512,22 +708,52 @@ export const booksService = {
     // The count is deliberately independent of the requested offset (it's cached under a
     // page-independent key — see countCacheKey), so every page of the same query agrees on
     // the same total instead of it drifting by whichever page computed it first.
+    //
+    // The tier probes below measure the *title* match set only, because that is what they
+    // are choosing between — the author branch is fetched separately and has its own
+    // bounded cost (see buildAuthorMatchCondition), so it never influences which title
+    // tier is used. The reported total is a third, blended probe: it has to count books
+    // matched by either side, and a title probe alone would undercount a search like
+    // "chimamanda" to zero.
     let fastCount = 0;
     let cheapCount = 0;
+    let blendedCount = 0;
     if (opts.q && (!cachedRows || cachedCount == null)) {
-      fastCount = await countUpTo(
-        buildWhereClause(opts, buildFastTitlePrefixCondition(opts.q)),
-        SEARCH_COUNT_CAP + 1,
-      );
-      // Only worth widening to the cheap tier if the fast tier hasn't already hit the cap.
-      if (fastCount <= SEARCH_COUNT_CAP) {
-        cheapCount = await countUpTo(
-          buildWhereClause(opts, buildTitlePrefixCondition(opts.q)),
+      const q = opts.q;
+      // The two title probes are sequential (the second is only worth running if the first
+      // didn't already hit the cap), but the blended probe doesn't depend on either — so it
+      // overlaps them rather than adding its latency on top.
+      const [titleCounts, blended] = await Promise.all([
+        (async () => {
+          const fast = await countUpTo(
+            buildWhereClause(opts, buildFastTitlePrefixCondition(q)),
+            SEARCH_COUNT_CAP + 1,
+          );
+          // Only worth widening to the cheap tier if the fast tier hasn't already hit the cap.
+          const cheap =
+            fast > SEARCH_COUNT_CAP
+              ? 0
+              : await countUpTo(
+                  buildWhereClause(opts, buildTitlePrefixCondition(q)),
+                  SEARCH_COUNT_CAP + 1,
+                );
+          return { fast, cheap };
+        })(),
+        countUpTo(
+          buildWhereClause(
+            opts,
+            sql`(${buildTitlePrefixCondition(q)} OR ${buildAuthorMatchCondition(q, 'cheap')})`,
+          ),
           SEARCH_COUNT_CAP + 1,
-        );
-      }
+        ),
+      ]);
+      fastCount = titleCounts.fast;
+      cheapCount = titleCounts.cheap;
+      blendedCount = blended;
     }
-    const searchMatchCount = Math.max(fastCount, cheapCount);
+    // blendedCount already counts the union of both branches, so it dominates the title-only
+    // probes — max() rather than a sum, which would double-count books matching both.
+    const searchMatchCount = Math.max(fastCount, cheapCount, blendedCount);
 
     type SearchTier = 'fast' | 'cheap' | 'broad';
     const pageEnd = opts.offset + opts.limit;
@@ -577,20 +803,17 @@ export const booksService = {
           return parsed;
         })
       : (async () => {
-          const rowsQuery = (conn: Pick<typeof db, 'select'>) =>
-            conn
-              .select(LIST_COLUMNS)
-              .from(books)
-              .where(rowsWhere)
-              .orderBy(...rowsOrderBy)
-              // One row beyond the page, so `hasMore` is known without a second query —
-              // this is what callers should paginate on now that `total` may be capped.
-              .limit(opts.limit + 1)
-              .offset(opts.offset);
-          // <% only appears in `rowsWhere` when opts.q is set AND rowsTier resolved to
-          // 'broad' — skip the transaction wrapper otherwise so the fast/cheap tiers
-          // (and the common no-search browse path) keep their fully parallel dispatch.
-          const fetched = await (opts.q && rowsTier === 'broad' ? withWordSimilarityThreshold(rowsQuery) : rowsQuery(db));
+          const fetched = opts.q
+            ? await fetchSearchPage(opts, opts.q, rowsTier, rowsWhere, rowsOrderBy)
+            : await db
+                .select(LIST_COLUMNS)
+                .from(books)
+                .where(rowsWhere)
+                .orderBy(...rowsOrderBy)
+                // One row beyond the page, so `hasMore` is known without a second query —
+                // this is what callers should paginate on now that `total` may be capped.
+                .limit(opts.limit + 1)
+                .offset(opts.offset);
 
           const hasMore = fetched.length > opts.limit;
           const rows = hasMore ? fetched.slice(0, opts.limit) : fetched;
@@ -643,32 +866,34 @@ export const booksService = {
     return { books: page.rows, total, hasMore: page.hasMore, totalIsApproximate };
   },
 
-  async suggestions(q: string, limit: number, type: 'title' | 'author' = 'title'): Promise<SuggestionItem[]> {
-    const cacheKey = `suggestions:${type}:${createHash('sha256').update(`${q}:${limit}`).digest('hex')}`;
+  async suggestions(q: string, limit: number, type: SuggestionType = 'all'): Promise<SuggestionItem[]> {
+    // v2: `all` is the new default and the merge reserves a share of the list for author
+    // matches, so entries cached under the old title-only behaviour would now be wrong.
+    const cacheKey = `suggestions:v2:${type}:${createHash('sha256').update(`${q}:${limit}`).digest('hex')}`;
     const cached = await redis.get(cacheKey);
     if (cached) return JSON.parse(cached) as SuggestionItem[];
 
-    // Four-tier match (tiers 0–2 prefix/word-prefix/trigram, tier 3 FTS fallback),
-    // applied to either the title or the author's name depending on `type`:
+    // Four-tier match (tiers 0–2 prefix/word-prefix/trigram, tier 3 FTS fallback), run
+    // against the book's title and against its author's name as two independent pools
+    // that are merged at the end:
     //   0 — starts with q              (e.g. "Harr"  → "Harry Potter..." / "Harriet Beecher")
     //   1 — a word starts with q       (e.g. "Pot"   → "Harry Potter..." / "Pottinger")
     //   2 — word_similarity > 0.3      (e.g. "Haary" → "Harry Potter..." / "Harry Styles")
     //   3 — FTS hit                    (title: description/subtitle; author: full name)
-    // Within each tier, ranked by word_similarity then ts_rank descending.
     //
     // Tiers 0-1 run first, alone — EXPLAIN ANALYZE against the live 1.1M-row
     // table showed the full four-tier OR'd condition forces Postgres to
     // materialize and rank every tier-2 (word_similarity) match before
     // limiting (tens of thousands of rows for a common query like "harry",
     // ~28s of execution time). Tiers 0-1 alone are index scans on the trigram
-    // index (tens of ms) for most terms — but for `type === 'title'`, an even
-    // cheaper tier-0-only step runs first (see buildFastTitlePrefixCondition):
-    // for very common prefixes (e.g. "the", ~30% of the table) tiers 0-1's
-    // combined trigram scan itself degrades to seconds, while the fast tier's
-    // indexed range scan on idx_books_title_lower_pattern stays cheap regardless.
-    // There's no equivalent index for author names yet, so `type === 'author'`
-    // goes straight to tiers 0-1. Each step only reaches the next when the
-    // current one doesn't already fill the pool.
+    // index (tens of ms) for most terms — and on the title side an even cheaper
+    // tier-0-only step runs first (see buildFastTitlePrefixCondition): for very
+    // common prefixes (e.g. "the", ~30% of the table) tiers 0-1's combined trigram
+    // scan itself degrades to seconds, while the fast tier's indexed range scan on
+    // idx_books_title_lower_pattern stays cheap regardless. The author side gets the
+    // same protection from the bounded subquery in buildAuthorMatchCondition, whose
+    // inner ordering is served by idx_book_contributors_person_name_lower_pattern.
+    // Each step only reaches the next when the current one doesn't already fill the pool.
     const poolSize = Math.min(limit * FEED_POOL_MULTIPLIER, FEED_POOL_MAX);
     const selectColumns = {
       id: books.id,
@@ -679,50 +904,119 @@ export const booksService = {
       coverUrl: books.coverUrl,
     };
 
-    const cheapWhere = type === 'author' ? buildAuthorPrefixCondition(q) : buildTitlePrefixCondition(q);
-    const cheapOrderBy = type === 'author' ? buildAuthorPrefixOrderBy(q) : buildTitlePrefixOrderBy(q);
+    type SuggestionRow = {
+      id: number;
+      title: string;
+      subtitle: string | null;
+      isbn13: string | null;
+      productForm: string | null;
+      coverUrl: string | null;
+    };
+    const wantsTitle = type !== 'author';
+    const wantsAuthor = type !== 'title';
+    // Each step excludes what earlier steps already found, so a book can't occupy two
+    // slots in the pool. notInArray rejects an empty list, hence the guard.
+    const excluding = (rows: SuggestionRow[]): SQL | undefined =>
+      rows.length > 0 ? notInArray(books.id, rows.map((r) => r.id)) : undefined;
 
-    let pool: { id: number; title: string; subtitle: string | null; isbn13: string | null; productForm: string | null; coverUrl: string | null }[] = [];
-    if (type === 'title') {
-      pool = await db
+    // Ranks author matches by name-match tier, then fetches those books — the same two-step
+    // as fetchAuthorBranch, and for the same reason: ordering these by title alone would
+    // discard the tier and bury the exact match the user typed.
+    const authorSuggestionsFor = async (
+      conn: Pick<typeof db, 'select' | 'execute'>,
+      tier: 'cheap' | 'broad',
+      exclude: SuggestionRow[],
+      take: number,
+    ): Promise<SuggestionRow[]> => {
+      const tierById = await rankAuthorMatches(conn, q, tier, take * AUTHOR_ID_OVERFETCH);
+      for (const row of exclude) tierById.delete(row.id);
+      if (tierById.size === 0) return [];
+      const rows = await conn
         .select(selectColumns)
         .from(books)
-        .where(buildFastTitlePrefixCondition(q))
-        .orderBy(...buildFastTitlePrefixOrderBy())
-        .limit(poolSize);
-    }
+        .where(inArray(books.id, [...tierById.keys()]));
+      return rows.sort(byAuthorTierThenTitle(tierById)).slice(0, take);
+    };
 
-    // Neither buildFastTitlePrefixCondition nor cheapWhere uses the <% trigram-similarity
+    // The two sides are independent, so the cheap tier of each runs in one round trip
+    // rather than one after the other.
+    let [titlePool, authorPool]: [SuggestionRow[], SuggestionRow[]] = await Promise.all([
+      wantsTitle
+        ? db
+            .select(selectColumns)
+            .from(books)
+            .where(buildFastTitlePrefixCondition(q))
+            .orderBy(...buildFastTitlePrefixOrderBy())
+            .limit(poolSize)
+        : Promise.resolve([] as SuggestionRow[]),
+      wantsAuthor ? authorSuggestionsFor(db, 'cheap', [], poolSize) : Promise.resolve([] as SuggestionRow[]),
+    ]);
+
+    // Neither the fast title tier nor the cheap author tier uses the <% trigram-similarity
     // operator, so neither needs withWordSimilarityThreshold — only the broad tier below does.
-    if (pool.length < poolSize) {
-      const excludeIds = pool.map((r) => r.id);
-      const midWhere = excludeIds.length > 0 ? and(cheapWhere, notInArray(books.id, excludeIds)) : cheapWhere;
+    if (wantsTitle && titlePool.length < poolSize) {
+      const exclude = excluding(titlePool);
+      const cheap = buildTitlePrefixCondition(q);
       const midRows = await db
         .select(selectColumns)
         .from(books)
-        .where(midWhere)
-        .orderBy(...cheapOrderBy)
-        .limit(poolSize - pool.length);
-      pool = [...pool, ...midRows];
+        .where(exclude ? and(cheap, exclude) : cheap)
+        .orderBy(...buildTitlePrefixOrderBy(q))
+        .limit(poolSize - titlePool.length);
+      titlePool = [...titlePool, ...midRows];
     }
 
-    if (pool.length < poolSize) {
-      const broadWhere = type === 'author' ? buildAuthorBookSearchCondition(q) : buildSearchCondition(q);
-      const broadOrderBy = type === 'author' ? buildAuthorBookSearchOrderBy(q) : buildSearchOrderBy(q);
-      const excludeIds = pool.map((r) => r.id);
+    // How much each side found *before* the fuzzy tier is what decides ordering below, so
+    // it has to be captured here, while the pools still contain only confident matches.
+    const titleCheapCount = titlePool.length;
+    const authorCheapCount = authorPool.length;
 
-      const extra = await withWordSimilarityThreshold((conn) =>
-        conn
-          .select(selectColumns)
-          .from(books)
-          .where(excludeIds.length > 0 ? and(broadWhere, notInArray(books.id, excludeIds)) : broadWhere)
-          .orderBy(...broadOrderBy)
-          .limit(poolSize - pool.length),
-      );
-      pool = [...pool, ...extra];
+    // Broad (fuzzy/FTS) is a last resort for both sides — reached only when nothing
+    // cheaper filled the pool, which in practice means typos and partial names.
+    if (titlePool.length + authorPool.length < poolSize) {
+      const shortfall = poolSize - (titlePool.length + authorPool.length);
+      await withWordSimilarityThreshold(async (conn) => {
+        if (wantsTitle) {
+          const exclude = excluding([...titlePool, ...authorPool]);
+          const broad = buildSearchCondition(q);
+          titlePool = [
+            ...titlePool,
+            ...(await conn
+              .select(selectColumns)
+              .from(books)
+              .where(exclude ? and(broad, exclude) : broad)
+              .orderBy(...buildSearchOrderBy(q))
+              .limit(shortfall)),
+          ];
+        }
+        if (wantsAuthor) {
+          authorPool = [
+            ...authorPool,
+            ...(await authorSuggestionsFor(conn, 'broad', [...titlePool, ...authorPool], shortfall)),
+          ];
+        }
+      });
     }
 
-    const rows = dedupeByTitleAndSubtitle(pool).slice(0, limit);
+    const titleRows = dedupeByTitleAndSubtitle(titlePool);
+    const titleIds = new Set(titleRows.map((r) => r.id));
+    const authorRows = dedupeByTitleAndSubtitle(authorPool).filter((r) => !titleIds.has(r.id));
+
+    // Same rule as the paginated search (see fetchSearchPage): titles lead, unless nothing
+    // matched a title with any confidence and the author side did. A fuzzy title match is
+    // a guess; an exact author match is an answer. "Jennifer Dussling" put "Elizabeth
+    // Jennings: 'The Inward War'" — a trigram near-miss on Jennings/Jennifer — above seven
+    // of Dussling's own books before this was applied here too.
+    const authorFirst = titleCheapCount === 0 && authorCheapCount > 0;
+
+    // The trailing side still keeps a reserved share of the list rather than getting
+    // whatever is left over. Without a reserve, a query whose leading side already fills
+    // the pool pushes the other out entirely — so "king" would return books with "King" in
+    // the title and never a Stephen King novel, which is the exact case this feature
+    // exists for. A third is enough to stay visible without displacing the better match.
+    const [lead, trail] = authorFirst ? [authorRows, titleRows] : [titleRows, authorRows];
+    const trailQuota = Math.min(trail.length, Math.floor(limit / 3));
+    const rows = [...lead.slice(0, limit - trailQuota), ...trail].slice(0, limit);
 
     if (rows.length === 0) {
       await redis.set(cacheKey, '[]', 'EX', SUGGESTIONS_TTL);
