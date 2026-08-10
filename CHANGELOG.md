@@ -5,8 +5,12 @@
 
 ### Features
 
-* use the Around the World invite wording, and switch it off when the campaign ends ([ac0bb55](https://adl.github.com/adl-developer/kinkane-backend/commit/ac0bb55139e093f16fe10a02103fcf165b3c1841)) — [details](changelog/2026-08-10-referral-competition.md)
+* use the Around the World invite wording, and switch it off when the campaign ends ([281e33b](https://adl.github.com/adl-developer/kinkane-backend/commit/281e33bef1cba09c5413ff8bd6fb625187c2d2b4)) — [details](changelog/2026-08-10-referral-competition.md)
 * invite a friend and compete to send Kinkané around the world ([50131fd](https://adl.github.com/adl-developer/kinkane-backend/commit/50131fd8e225114ba6c109751fd34227313ee296)) — [details](changelog/2026-08-10-referral-competition.md)
+
+### Bug Fixes
+
+* point every link at kinkane.app instead of kinkane.com ([78a4393](https://adl.github.com/adl-developer/kinkane-backend/commit/78a4393df292916ef94a39b0e2490588dd78585f)) — [details](changelog/2026-08-10-referral-competition.md)
 
 
 ## 2026-08-09

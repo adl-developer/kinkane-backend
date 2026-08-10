@@ -340,7 +340,7 @@ the rules.
 ## Link shape
 
 ```
-https://kinkane.com/r/{code}/{name-slug}
+https://kinkane.app/r/{code}/{name-slug}
 ```
 
 `{code}` is authoritative; `{name-slug}` is **decorative and never part of the

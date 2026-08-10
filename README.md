@@ -359,12 +359,12 @@ GUEST_SESSION_TTL_HOURS=72
 
 # Resend — https://resend.com/api-keys
 RESEND_API_KEY=re_your-api-key-here
-EMAIL_FROM=hello@kinkane.com
+EMAIL_FROM=hello@kinkane.app
 EMAIL_FROM_NAME=Kinkane
 
 # Frontend base URL — used to build links in emails (e.g. password reset)
 # Use http://localhost:3001 (or your frontend's port) in development
-APP_URL=https://kinkane.com
+APP_URL=https://kinkane.app
 ```
 
 **Why two JWT secrets?** Access and refresh tokens are signed with different secrets. A leaked access token cannot be used to forge a refresh token.

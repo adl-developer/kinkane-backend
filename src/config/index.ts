@@ -47,11 +47,18 @@ const envSchema = z.object({
   GUEST_SESSION_TTL_HOURS: z.coerce.number().int().min(1).default(72),
 
   RESEND_API_KEY: z.string().min(1),
-  EMAIL_FROM: z.string().email().default('hello@kinkane.com'),
+  EMAIL_FROM: z.string().email().default('hello@kinkane.app'),
   EMAIL_FROM_NAME: z.string().default('Kinkane'),
 
-  // Frontend base URL — used to build links in emails (e.g. password reset)
-  APP_URL: z.string().url().default('https://kinkane.com'),
+  // Base client URL, and the single source of truth for every user-facing link
+  // this server builds: email CTAs, password reset, Stripe return URLs, and
+  // referral links (`APP_URL/r/CODE/name-slug`).
+  //
+  // Kinkané lives on **kinkane.app**, not .com. Anything that hardcodes a
+  // domain instead of reading this is a bug — it will keep pointing at the old
+  // host no matter what the environment says, and it will not fail loudly, it
+  // will just send users somewhere wrong.
+  APP_URL: z.string().url().default('https://kinkane.app'),
 
   // Secret token for accessing the Bull Board admin dashboard (/admin/queues).
   // Must be at least 32 characters. Generate with: openssl rand -hex 32
@@ -92,7 +99,7 @@ const envSchema = z.object({
   // Marketing video linked from every invite. Placeholder default until the
   // real video exists — it is an env var precisely so swapping it needs no
   // deploy.
-  REFERRAL_VIDEO_URL: z.string().url().default('https://kinkane.com/about'),
+  REFERRAL_VIDEO_URL: z.string().url().default('https://kinkane.app/about'),
 
   // While NOW() is before this, invites use the "Around the World in 80 Days"
   // launch copy; after it, the evergreen copy. Unset means the campaign is over

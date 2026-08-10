@@ -4,7 +4,7 @@ import { emailLayout, ctaButton, escapeHtml, p } from '../lib/layout';
 import { activeCampaign, emailCopy, emailPlainText } from '../../lib/referral-copy';
 
 /**
- * "Jason via Kinkané <hello@kinkane.com>" — the sender's name in the display
+ * "Jason via Kinkané <hello@kinkane.app>" — the sender's name in the display
  * position, our domain in the address.
  *
  * The copy is written in the first person ("come with me", "my link") but never

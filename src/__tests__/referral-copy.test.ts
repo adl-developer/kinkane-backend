@@ -18,7 +18,7 @@ afterEach(() => {
   process.env = { ...BASE_ENV };
 });
 
-const LINK = 'https://kinkane.com/r/K7M3QP9XVT/jason-appiatu';
+const LINK = 'https://kinkane.app/r/K7M3QP9XVT/jason-appiatu';
 
 describe('shortMessage', () => {
   it('is the launch campaign copy, verbatim', () => {

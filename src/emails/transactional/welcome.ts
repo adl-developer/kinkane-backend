@@ -1,4 +1,5 @@
 import { sendEmail, FROM } from '../../lib/resend';
+import { config } from '../../config';
 import { emailLayout, ctaButton, greeting, signOff, escapeHtml, p } from '../lib/layout';
 
 // No unsubscribe link: this is the one-off transactional email confirming the
@@ -15,7 +16,7 @@ export async function sendWelcomeEmail(to: string, name: string): Promise<void> 
     p("We're excited to help you discover books you'll actually love — not just what's trending."),
     p('The more you tell us about your reading tastes, the better your recommendations become. Start building your bookshelf, explore new authors, and uncover stories that match your mood and interests.'),
     p('Your next favourite book might be closer than you think.'),
-    ctaButton('Explore Your Bookshelf', 'https://kinkane.com'),
+    ctaButton('Explore Your Bookshelf', config.appUrl),
     signOff('Happy reading,'),
   ].join('\n');
 
@@ -24,6 +25,6 @@ export async function sendWelcomeEmail(to: string, name: string): Promise<void> 
     from: FROM,
     subject: title,
     html: emailLayout(title, body),
-    text: `Hi ${name},\n\nWelcome to Kinkané,\n\nWe're excited to help you discover books you'll actually love — not just what's trending.\n\nThe more you tell us about your reading tastes, the better your recommendations become. Start building your bookshelf, explore new authors, and uncover stories that match your mood and interests.\n\nYour next favourite book might be closer than you think.\n\nhttps://kinkane.com\n\nHappy reading,\nThe Kinkané Team`,
+    text: `Hi ${name},\n\nWelcome to Kinkané,\n\nWe're excited to help you discover books you'll actually love — not just what's trending.\n\nThe more you tell us about your reading tastes, the better your recommendations become. Start building your bookshelf, explore new authors, and uncover stories that match your mood and interests.\n\nYour next favourite book might be closer than you think.\n\n${config.appUrl}\n\nHappy reading,\nThe Kinkané Team`,
   });
 }

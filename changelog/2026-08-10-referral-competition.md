@@ -12,7 +12,7 @@ whom to any depth.
 The link looks like this:
 
 ```
-https://kinkane.com/r/K7M3QP9XVT/jason-appiatu
+https://kinkane.app/r/K7M3QP9XVT/jason-appiatu
 ```
 
 The code in the middle is what identifies the referrer. The name on the end is
@@ -253,7 +253,7 @@ sets (read by the web client, which passes it back in the body).
 - **Unwinding circuits on void.** Voiding a referral clears its direct award but
   leaves circuit points that may now be unearned, for the same reason.
 - **The marketing video.** `REFERRAL_VIDEO_URL` ships pointing at
-  `https://kinkane.com/about` and is still returned by the API, but the supplied
+  `https://kinkane.app/about` and is still returned by the API, but the supplied
   copy has no slot for it, so no message currently links it.
 - **An end date for the competition.** The launch copy says "80 Days" but
   `REFERRAL_CAMPAIGN_ENDS_AT` only switches the *words* — it does not stop
