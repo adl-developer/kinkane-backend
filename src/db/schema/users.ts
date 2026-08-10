@@ -2,6 +2,7 @@ import {
   pgTable,
   serial,
   varchar,
+  char,
   boolean,
   timestamp,
   integer,
@@ -41,6 +42,23 @@ export const users = pgTable(
     emailVerified: boolean('email_verified').default(false).notNull(),
     shelfVisibility: shelfVisibilityEnum('shelf_visibility').notNull().default('public'),
     readerType: readerTypeEnum('reader_type'),
+    // ── Competition geography ──────────────────────────────────────────────
+    // ISO 3166-1 alpha-2, resolved once at signup and then immutable except by
+    // an admin correction. Deliberately not re-resolved on later logins: a user
+    // who travels must not silently move country mid-competition, and a field
+    // that drifts underneath the leaderboard is impossible to reason about.
+    //
+    // No foreign key to `countries` on purpose — a geo lookup can return a code
+    // the seed doesn't carry (AQ, or user-assigned codes like XK), and an FK
+    // would turn that into a failed signup. Unrecognised codes simply score
+    // nothing.
+    countryCode: char('country_code', { length: 2 }),
+    // How country_code was determined: 'header' (trusted CDN geo header),
+    // 'maxmind' (local GeoLite2 lookup), 'admin' (manual correction), or
+    // 'unknown'. Kept so the accuracy of the signal can be audited later
+    // without guessing which path produced any given row.
+    countrySource: varchar('country_source', { length: 20 }),
+    countryResolvedAt: timestamp('country_resolved_at', { withTimezone: true }),
     searchVector: tsvector('search_vector'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),

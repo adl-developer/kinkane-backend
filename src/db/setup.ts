@@ -9,6 +9,7 @@ dotenv.config();
 
 import postgres from 'postgres';
 import { resolveSslMode } from './ssl';
+import { COUNTRY_SEED } from './seeds/countries';
 
 const sql = postgres(process.env.DATABASE_URL!, {
   ssl: resolveSslMode(process.env.DATABASE_URL!),
@@ -110,6 +111,18 @@ async function main() {
   // runs single-threaded instead, still with the larger memory budget above.
   await sql`SET max_parallel_maintenance_workers = 0`;
   await sql`CREATE INDEX IF NOT EXISTS idx_books_embedding_hnsw ON books USING hnsw (embedding vector_cosine_ops)`;
+
+  // ── Country reference data ────────────────────────────────────────────────
+  // Seeded here rather than in a migration so it stays correctable: a continent
+  // assignment is a scoring rule (10 points vs 20), and re-running setup is the
+  // supported way to fix one. Upsert on the name/continent so an existing row is
+  // corrected rather than skipped, which ON CONFLICT DO NOTHING would do.
+  await sql`
+    INSERT INTO countries ${sql(COUNTRY_SEED, 'code', 'name', 'continent')}
+    ON CONFLICT (code) DO UPDATE
+      SET name = EXCLUDED.name, continent = EXCLUDED.continent
+  `;
+  console.log(`Seeded ${COUNTRY_SEED.length} countries.`);
 
   console.log('Setup complete.');
   await sql.end();

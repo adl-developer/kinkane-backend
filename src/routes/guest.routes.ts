@@ -44,6 +44,23 @@ const router = Router();
 router.post('/:id/selections', guestSessionLimiter, guestController.saveSelections);
 
 /**
+ * POST /api/v1/guest-sessions/:id/referral
+ *
+ * Parks a referral code on the guest session so it survives until the user
+ * creates an account. Call this when the app holds both a session and a code
+ * (from a /r/ link, a deep link, or the "Have an invite code?" field).
+ *
+ * The code is stored as given and only resolved at signup — an unknown code
+ * reads as "no referral" then, rather than failing onboarding here.
+ *
+ * Params: id — the guestSessionId
+ * Body:   { referralCode: string }
+ * Returns 200: { ok: true }
+ * Errors: 400 invalid UUID or code format | 404 session not found or expired
+ */
+router.post('/:id/referral', guestSessionLimiter, guestController.attachReferral);
+
+/**
  * GET /api/v1/guest-sessions/:id
  *
  * Checks whether a stored guestSessionId is still alive. Call this on app

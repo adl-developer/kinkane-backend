@@ -18,6 +18,7 @@ import {
   sendSubscriptionConfirmedEmail,
   sendSubscriptionPaymentFailedEmail,
   sendSubscriptionCancelledEmail,
+  sendReferralInviteEmail,
 } from '../emails';
 import { notificationPreferencesService } from '../services/notification-preferences.service';
 import { logger } from '../lib/logger';
@@ -121,6 +122,11 @@ async function processEmailJob(job: Job): Promise<void> {
     case 'subscription-cancelled': {
       const { to, name: userName, accessEndsAt } = job.data as EmailJobMap['subscription-cancelled'];
       await sendSubscriptionCancelledEmail(to, userName, accessEndsAt);
+      break;
+    }
+    case 'referral-invite': {
+      const { to, referrerName, link, videoUrl } = job.data as EmailJobMap['referral-invite'];
+      await sendReferralInviteEmail(to, referrerName, link, videoUrl);
       break;
     }
     default: {

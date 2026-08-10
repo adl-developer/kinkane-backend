@@ -15,6 +15,29 @@ export interface CreateGuestSessionInput {
 
 export const guestService = {
   /**
+   * Parks a referral code on an existing guest session so it survives until
+   * there is a user row to attribute it to.
+   *
+   * A separate call rather than a field on create() because guest sessions are
+   * created several layers down inside the recommendations flow, and a referral
+   * code has nothing to do with generating recommendations — threading it
+   * through every one of those call sites would put competition plumbing in the
+   * middle of an unrelated feature. The client calls this once it holds both a
+   * session and a code.
+   *
+   * Returns false when the session doesn't exist or has expired.
+   */
+  async attachReferralCode(sessionId: string, referralCode: string): Promise<boolean> {
+    const updated = await db
+      .update(guestSessions)
+      .set({ referralCode: referralCode.toUpperCase() })
+      .where(and(eq(guestSessions.id, sessionId), gt(guestSessions.expiresAt, new Date())))
+      .returning({ id: guestSessions.id });
+
+    return updated.length > 0;
+  },
+
+  /**
    * Creates a guest session at recommendation time.
    * chosenBookIds starts as null — populated later via saveSelections.
    */

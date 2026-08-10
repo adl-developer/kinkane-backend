@@ -13,6 +13,9 @@ import { buildPreferenceText } from './recommendations.service';
 import { preferenceHistoryService } from './preference-history.service';
 import { dislikedBooksService } from './disliked-books.service';
 import { subscriptionStateService } from './subscriptions/state.service';
+import { referralsService } from './referrals.service';
+import { referralScoringService } from './referral-scoring.service';
+import type { CountrySource } from './geo.service';
 import type { SubscriptionTier, SubscriptionStatus, SubscriptionPlan } from '../db/schema';
 
 const BCRYPT_ROUNDS = 12;
@@ -287,6 +290,61 @@ async function issueEmailVerification(userId: number, email: string, name: strin
   });
 }
 
+// ── Referral attribution ──────────────────────────────────────────────────────
+
+/**
+ * Everything a new account needs to be placed in the referral competition:
+ * which code brought them (if any), and where they are.
+ *
+ * Optional throughout — signup predates all of this, and an account must still
+ * be creatable when no code was used, when geolocation is unconfigured, or when
+ * the lookup simply failed.
+ */
+export interface SignupContext {
+  referralCode?: string;
+  country?: { code: string | null; source: CountrySource };
+  channel?: string;
+  clickId?: number | null;
+}
+
+/**
+ * Resolves which referral code applies: an explicit one from the request wins,
+ * otherwise whatever was parked on the guest session when the user followed an
+ * invite link before creating an account.
+ */
+async function resolveReferralCode(
+  explicit: string | undefined,
+  guestSessionId: string | undefined,
+): Promise<string | undefined> {
+  if (explicit) return explicit;
+  if (!guestSessionId) return undefined;
+
+  const [session] = await db
+    .select({ referralCode: guestSessions.referralCode })
+    .from(guestSessions)
+    .where(eq(guestSessions.id, guestSessionId))
+    .limit(1);
+
+  return session?.referralCode ?? undefined;
+}
+
+/**
+ * Circuit detection, run after the signup transaction has committed.
+ *
+ * Deliberately fire-and-forget: it reads and writes rows belonging to users far
+ * outside the one signing up, and no scoring bug should ever be able to stop an
+ * account being created. Attribution is the durable fact; circuits are derived
+ * from it and can be recomputed at any time.
+ */
+function detectCircuitsInBackground(referredUserId: number): void {
+  referralScoringService.detectCircuits(referredUserId).catch((err) => {
+    logger.error('Circuit detection failed after signup', {
+      referredUserId,
+      error: (err as Error).message,
+    });
+  });
+}
+
 // ── Auth service ──────────────────────────────────────────────────────────────
 
 export const authService = {
@@ -295,6 +353,7 @@ export const authService = {
     email: string,
     password: string,
     guestSessionId: string | undefined,
+    context: SignupContext = {},
   ): Promise<{ user: AuthUser; tokens: TokenPair }> {
     const existing = await db
       .select({ id: users.id })
@@ -313,12 +372,23 @@ export const authService = {
     const trialEndsAt = new Date();
     trialEndsAt.setDate(trialEndsAt.getDate() + TRIAL_DAYS);
 
+    const referralCode = await resolveReferralCode(context.referralCode, guestSessionId);
+
     // Atomic: user + subscription committed together — if either insert fails,
     // neither row persists and the client can safely retry without hitting a 409.
     const user = await db.transaction(async (tx) => {
       const [u] = await tx
         .insert(users)
-        .values({ name: name.trim(), email: email.toLowerCase().trim(), passwordHash })
+        .values({
+          name: name.trim(),
+          email: email.toLowerCase().trim(),
+          passwordHash,
+          // Resolved once, here, and then frozen — see geo.service for why it is
+          // never re-derived on later requests.
+          countryCode: context.country?.code ?? null,
+          countrySource: context.country?.source ?? 'unknown',
+          countryResolvedAt: new Date(),
+        })
         .returning({ id: users.id, name: users.name, email: users.email, emailVerified: users.emailVerified });
       const [sub] = await tx
         .insert(userSubscriptions)
@@ -329,8 +399,24 @@ export const authService = {
       // signup rather than at whatever their first change happens to be.
       await subscriptionStateService.recordHistory(tx, sub, 'signup', null);
       await tx.insert(notificationPreferences).values({ userId: u.id });
+
+      // Attribution rides the same transaction as the account it describes.
+      // Written outside it, a referral row could survive a signup that rolled
+      // back, or vanish while the account it belongs to persists.
+      if (referralCode) {
+        await referralsService.attributeSignup(tx, {
+          referredUserId: u.id,
+          code: referralCode,
+          redeemerCountry: context.country?.code ?? null,
+          channel: context.channel,
+          clickId: context.clickId,
+        });
+      }
+
       return u;
     });
+
+    if (referralCode) detectCircuitsInBackground(user.id);
 
     const tokens = await issueTokenPair(user.id, user.email);
 
@@ -731,6 +817,7 @@ export const authService = {
   async socialLogin(
     idToken: string,
     guestSessionId: string | undefined,
+    context: SignupContext = {},
   ): Promise<{ user: AuthUser; tokens: TokenPair; isNewUser: boolean }> {
     let decoded: admin.auth.DecodedIdToken;
     try {
@@ -794,11 +881,21 @@ export const authService = {
     const trialEndsAt = new Date();
     trialEndsAt.setDate(trialEndsAt.getDate() + TRIAL_DAYS);
 
+    const referralCode = await resolveReferralCode(context.referralCode, guestSessionId);
+
     // Atomic: user + provider link + subscription committed together.
     const newUser = await db.transaction(async (tx) => {
       const [u] = await tx
         .insert(users)
-        .values({ name, email, photoUrl, emailVerified: true })
+        .values({
+          name,
+          email,
+          photoUrl,
+          emailVerified: true,
+          countryCode: context.country?.code ?? null,
+          countrySource: context.country?.source ?? 'unknown',
+          countryResolvedAt: new Date(),
+        })
         .returning({ id: users.id, name: users.name, email: users.email, emailVerified: users.emailVerified });
       await tx.insert(userProviders).values({ userId: u.id, provider, providerUid });
       const [sub] = await tx
@@ -808,8 +905,24 @@ export const authService = {
       await tx.insert(subscriptionEvents).values({ userId: u.id, event: 'started', newTrialEndsAt: trialEndsAt });
       await subscriptionStateService.recordHistory(tx, sub, 'signup', null);
       await tx.insert(notificationPreferences).values({ userId: u.id });
+
+      // Social signup is a signup: it earns the referrer points exactly as the
+      // email path does. Easy to overlook, and the two paths diverging would
+      // mean a whole class of referral silently scoring nothing.
+      if (referralCode) {
+        await referralsService.attributeSignup(tx, {
+          referredUserId: u.id,
+          code: referralCode,
+          redeemerCountry: context.country?.code ?? null,
+          channel: context.channel,
+          clickId: context.clickId,
+        });
+      }
+
       return u;
     });
+
+    if (referralCode) detectCircuitsInBackground(newUser.id);
 
     const tokens = await issueTokenPair(newUser.id, newUser.email);
 

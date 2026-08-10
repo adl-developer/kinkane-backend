@@ -225,6 +225,13 @@
       "when": 1785882310880,
       "tag": "0031_black_princess_powerful",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1786343883228,
+      "tag": "0032_wild_gertrude_yorkes",
+      "breakpoints": true
     }
   ]
 }

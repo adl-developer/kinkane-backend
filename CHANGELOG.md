@@ -1,6 +1,20 @@
 # Changelog
 
 
+## 2026-08-10
+
+### Features
+
+* invite a friend and compete to send Kinkané around the world ([5a89e93](https://adl.github.com/adl-developer/kinkane-backend/commit/5a89e9328ac7783e90b1c6046b1fb43155d3b913)) — [details](changelog/2026-08-10-referral-competition.md)
+
+
+## 2026-08-09
+
+### Features
+
+* find books by typing the author's name ([e028e82](https://adl.github.com/adl-developer/kinkane-backend/commit/e028e829714851845f4b1a5e64f19478a03129d1)) — [details](changelog/2026-08-09-author-search.md)
+
+
 ## 2026-08-07
 
 ### Features
