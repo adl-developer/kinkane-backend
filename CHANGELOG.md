@@ -5,7 +5,8 @@
 
 ### Features
 
-* invite a friend and compete to send Kinkané around the world ([5a89e93](https://adl.github.com/adl-developer/kinkane-backend/commit/5a89e9328ac7783e90b1c6046b1fb43155d3b913)) — [details](changelog/2026-08-10-referral-competition.md)
+* use the Around the World invite wording, and switch it off when the campaign ends ([ac0bb55](https://adl.github.com/adl-developer/kinkane-backend/commit/ac0bb55139e093f16fe10a02103fcf165b3c1841)) — [details](changelog/2026-08-10-referral-competition.md)
+* invite a friend and compete to send Kinkané around the world ([50131fd](https://adl.github.com/adl-developer/kinkane-backend/commit/50131fd8e225114ba6c109751fd34227313ee296)) — [details](changelog/2026-08-10-referral-competition.md)
 
 
 ## 2026-08-09

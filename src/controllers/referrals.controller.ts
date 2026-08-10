@@ -119,7 +119,6 @@ export const referralsController = {
       to: parsed.data.email,
       referrerName: name,
       link: referralsService.buildReferralLink(code, name, 'email'),
-      videoUrl: config.referrals.videoUrl,
     });
 
     // 202, not 200: the email is queued, not sent. Reporting success for a job

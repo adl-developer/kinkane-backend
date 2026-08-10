@@ -94,6 +94,13 @@ const envSchema = z.object({
   // deploy.
   REFERRAL_VIDEO_URL: z.string().url().default('https://kinkane.com/about'),
 
+  // While NOW() is before this, invites use the "Around the World in 80 Days"
+  // launch copy; after it, the evergreen copy. Unset means the campaign is over
+  // (or was never configured) and everyone gets evergreen — the safe default,
+  // since the launch copy promises a challenge that may not be running.
+  // Mirrors how FOUNDING_OFFER_ENDS_AT gates launch pricing.
+  REFERRAL_CAMPAIGN_ENDS_AT: z.coerce.date().optional(),
+
   // Where a user's country comes from. Two independent sources, tried in order:
   //
   // 1. A trusted geo header set by the CDN/proxy in front of this server
@@ -246,6 +253,7 @@ export const config = {
   appUrl: env.APP_URL,
   referrals: {
     videoUrl: env.REFERRAL_VIDEO_URL,
+    campaignEndsAt: env.REFERRAL_CAMPAIGN_ENDS_AT,
     // Lower-cased once here so the header lookup never has to care about the
     // casing used in the env var — Node normalizes incoming header names, the
     // config value has to match.

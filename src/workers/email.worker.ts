@@ -125,8 +125,8 @@ async function processEmailJob(job: Job): Promise<void> {
       break;
     }
     case 'referral-invite': {
-      const { to, referrerName, link, videoUrl } = job.data as EmailJobMap['referral-invite'];
-      await sendReferralInviteEmail(to, referrerName, link, videoUrl);
+      const { to, referrerName, link } = job.data as EmailJobMap['referral-invite'];
+      await sendReferralInviteEmail(to, referrerName, link);
       break;
     }
     default: {

@@ -72,6 +72,47 @@ them until the referred user verified their email, to stop disposable inboxes
 farming a prize. There are no prizes, so that hold bought nothing and cost the
 referrer a confusing delay between "my friend joined" and "my score moved".
 
+## Invite copy, and the campaign switch
+
+The words are supplied marketing copy, held verbatim — emoji, em dashes and
+curly apostrophes included. They live in one module
+([referral-copy.ts](../src/lib/referral-copy.ts)) rather than inside the
+share-payload builder and the email template separately, because both need the
+same words and they must not drift: someone who copies the WhatsApp text and
+someone who sends the email should be sending the same message.
+
+There are two sets, and which one is in force is decided by
+`REFERRAL_CAMPAIGN_ENDS_AT`:
+
+- **Launch** — the "Around the World in 80 Days" copy, while now is before that
+  date.
+- **Evergreen** — the plain "I think you'll like this" copy, after it.
+
+Unset means evergreen. That is the safe default rather than an arbitrary one:
+the launch copy promises a challenge, and sending it when no campaign is running
+is a promise the product doesn't keep. This mirrors how `FOUNDING_OFFER_ENDS_AT`
+gates launch pricing.
+
+`GET /referrals/me` now returns `campaign` alongside the payloads, so a client
+can key its own UI — a progress meter, campaign artwork — off the same decision
+the copy used instead of re-deriving it from a date it would have to be told.
+
+Two things worth knowing about the copy as supplied:
+
+- **It no longer carries the marketing video.** Neither copy set has a slot for
+  it. `REFERRAL_VIDEO_URL` still exists and is still returned by
+  `GET /referrals/me`, but nothing injects it into a message. Dropped from the
+  email job payload accordingly.
+- **Neither the subject nor the body says who sent it.** The copy is first
+  person throughout — "come with me", "my link" — but never names the sender, so
+  a recipient would get a personal-sounding note from a brand they've never heard
+  of. The sender's name therefore rides in the From display name:
+  `Jason via Kinkane <no-reply@kinkane.app>`. The address stays ours, so SPF,
+  DKIM and DMARC are unaffected — this is the standard mailing-list pattern, not
+  spoofing. The name is sanitised before it goes in: it is user-controlled and
+  lands in a mail header, where CR/LF would allow header injection outright and
+  quotes or angle brackets would break the RFC 5322 parse.
+
 ## Data model
 
 Four new tables, plus three columns on `users` and one on `guest_sessions`.
@@ -212,11 +253,18 @@ sets (read by the web client, which passes it back in the body).
 - **Unwinding circuits on void.** Voiding a referral clears its direct award but
   leaves circuit points that may now be unearned, for the same reason.
 - **The marketing video.** `REFERRAL_VIDEO_URL` ships pointing at
-  `https://kinkane.com/about`. Swapping it is an env var change, no deploy.
+  `https://kinkane.com/about` and is still returned by the API, but the supplied
+  copy has no slot for it, so no message currently links it.
+- **An end date for the competition.** The launch copy says "80 Days" but
+  `REFERRAL_CAMPAIGN_ENDS_AT` only switches the *words* — it does not stop
+  scoring, close a season, or freeze the leaderboard. Points keep accruing to
+  season 1 after it passes. If "80 days" is meant to bound the contest rather
+  than describe it, that is a separate piece of work and `season_id` is where it
+  would land.
 
 ## How it was verified
 
-26 new unit tests across the two pure rule functions — `scoreDirectReferral` and
+38 new unit tests. 26 across the two pure rule functions — `scoreDirectReferral` and
 `findCircuitEarners` — covering the cases that decide points and are invisible
 from a happy path: unknown continents on both sides, an identical-but-unplaceable
 country, a circuit closing five levels down, an ancestor sitting below the last
@@ -224,6 +272,17 @@ departure, and an unknown continent that must not be able to stand in for
 "leaving". Plus link-shape tests: accent stripping (`René` → `rene`, not `ren`),
 non-Latin names falling back to `friend`, no trailing hyphens after truncation,
 and the code alphabet excluding `I/L/O/U`.
+
+The remaining 12 pin the invite copy to its exact supplied strings — including
+that the curly apostrophes stay curly and the deliberate mid-paragraph line
+break in the evergreen body survives — plus the campaign switch in all three
+states (window open, window closed, unconfigured). Copy held verbatim breaks
+silently otherwise: a well-meaning edit to an em dash changes what every invited
+reader sees and nothing else in the system notices.
+
+Both variants were also rendered end to end and read by eye — From line,
+subject, SMS text, plain-text body, and the HTML (one CTA href, the arrow
+intact, the line break preserved as `<br>`, no unsubscribe footer).
 
 `npx tsc --noEmit` is clean. The three failures in `subscription-pricing.test.ts`
 are pre-existing on `main` and unrelated to this change.

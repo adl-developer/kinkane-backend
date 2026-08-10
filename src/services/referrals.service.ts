@@ -11,6 +11,13 @@ import {
 import type { Referral } from '../db/schema';
 import { config } from '../config';
 import { logger } from '../lib/logger';
+import {
+  activeCampaign,
+  shortMessage,
+  emailCopy,
+  emailPlainText,
+  type Campaign,
+} from '../lib/referral-copy';
 import { referralScoringService, MAX_DEPTH } from './referral-scoring.service';
 
 /**
@@ -91,6 +98,7 @@ export function buildReferralLink(code: string, name: string, channel?: string):
 
 export interface SharePayloads {
   link: string;
+  campaign: Campaign;
   message: string;
   whatsapp: string;
   sms: string;
@@ -102,24 +110,30 @@ export interface SharePayloads {
  * Prebuilt share strings, so web and native word the invite identically and
  * every channel carries its own `?c=` tag without each client remembering to
  * add one.
+ *
+ * The words come from lib/referral-copy and switch on whether the launch
+ * campaign is running. `campaign` is returned alongside so a client can key its
+ * own UI (a progress meter, campaign artwork) off the same decision the copy
+ * used, rather than re-deriving it from a date it would have to be told.
  */
 export function buildSharePayloads(code: string, name: string): SharePayloads {
+  const campaign = activeCampaign();
   const message = (channel: string): string =>
-    `${name} thinks you'd like Kinkané — books picked for how you actually read. ` +
-    `Watch this: ${config.referrals.videoUrl}\n\nJoin here: ${buildReferralLink(code, name, channel)}`;
+    shortMessage(buildReferralLink(code, name, channel), campaign);
 
-  const subject = `${name} invited you to Kinkané`;
-  const emailBody = message('email');
+  const copy = emailCopy(campaign);
+  const emailBody = emailPlainText(copy, buildReferralLink(code, name, 'email'));
 
   return {
     link: buildReferralLink(code, name),
+    campaign,
     message: message('copy'),
     whatsapp: `https://wa.me/?text=${encodeURIComponent(message('whatsapp'))}`,
     sms: `sms:?&body=${encodeURIComponent(message('sms'))}`,
     email: {
-      subject,
+      subject: copy.subject,
       body: emailBody,
-      mailto: `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(emailBody)}`,
+      mailto: `mailto:?subject=${encodeURIComponent(copy.subject)}&body=${encodeURIComponent(emailBody)}`,
     },
     copy: message('copy'),
   };

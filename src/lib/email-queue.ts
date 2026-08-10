@@ -32,7 +32,9 @@ export interface EmailJobMap {
   'subscription-confirmed':     { to: string; name: string; plan: 'monthly' | 'annual'; isFounding: boolean; currentPeriodEnd: string | null };
   'subscription-payment-failed':{ to: string; name: string; amountCents: number | null; currency: string | null };
   'subscription-cancelled':     { to: string; name: string; accessEndsAt: string | null };
-  'referral-invite':            { to: string; referrerName: string; link: string; videoUrl: string };
+  // No videoUrl: the campaign copy has no slot for it, and the copy set in
+  // force is decided at send time rather than baked into the job.
+  'referral-invite':            { to: string; referrerName: string; link: string };
 }
 
 export type EmailJobName = keyof EmailJobMap;
