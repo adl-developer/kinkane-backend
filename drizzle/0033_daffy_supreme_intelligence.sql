@@ -1,0 +1,2 @@
+ALTER TYPE "public"."referral_point_kind" ADD VALUE 'indirect_same_continent' BEFORE 'full_circuit';--> statement-breakpoint
+ALTER TYPE "public"."referral_point_kind" ADD VALUE 'indirect_cross_continent' BEFORE 'full_circuit';

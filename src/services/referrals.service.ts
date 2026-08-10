@@ -320,6 +320,23 @@ export const referralsService = {
       .where(eq(users.id, referrerUserId))
       .limit(1);
 
+    // One person removed — the referrer's own referrer, who earns the
+    // second-degree award. It is the last entry of the *parent's* path, i.e. the
+    // second-to-last of this new node's path. Undefined when the referrer is a
+    // root, which is the common case early on.
+    //
+    // Nothing above this is fetched, deliberately: "beyond 1 person removed, you
+    // can't earn any other points through that branch".
+    const grandReferrerUserId = ancestorPath.length >= 2 ? ancestorPath[ancestorPath.length - 2] : null;
+
+    const [grandReferrerRow] = grandReferrerUserId
+      ? await tx
+          .select({ countryCode: users.countryCode })
+          .from(users)
+          .where(eq(users.id, grandReferrerUserId))
+          .limit(1)
+      : [undefined];
+
     const [referral] = await tx
       .insert(referrals)
       .values({
@@ -342,6 +359,8 @@ export const referralsService = {
       referrerUserId,
       referrerCountry: referrerRow?.countryCode ?? null,
       redeemerCountry: params.redeemerCountry,
+      grandReferrerUserId,
+      grandReferrerCountry: grandReferrerRow?.countryCode ?? null,
     });
 
     return referral;

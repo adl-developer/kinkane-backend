@@ -90,18 +90,40 @@ two halves that should be built and reasoned about separately:
 
 Scored against the **referrer's country** vs the **redeemer's country**:
 
+**Updated 2026-08-10.** Two changes from the original rules: a second-degree
+award was added, and the circuit bar moved from one foreign continent to two.
+
 | Condition | Points |
 |---|---|
-| Redeemed in the **same country** | 1 |
-| Redeemed in a **different country, same continent** | 10 |
-| Redeemed on a **different continent** | 20 |
-| **Full circuit** — a path through your tree that leaves your continent and returns | 30 |
+| **Direct** — redeemed in the **same country** | 1 |
+| **Direct** — **different country, same continent** | 10 |
+| **Direct** — **different continent** | 20 |
+| **Second degree** — different country, same continent | 5 |
+| **Second degree** — different continent | 10 |
+| **Full circuit** — reaches two foreign continents and returns | 30 |
 
-The first three are **direct referrals only** — depth 1, "if *your code* is
-redeemed". Confirmed. Only the circuit rule walks the deep tree. The rejected
-alternative, every ancestor scoring on every descendant, would make early users'
-scores grow without further effort and turn the leaderboard into a function of
-join date.
+Scoring reaches **two generations and stops**: the direct referrer and their
+referrer. "Beyond 1 person removed, you can't earn any other points through that
+branch" — so a depth-3 signup pays nobody above its grandparent, and the
+great-grandparent's geography is never even read. Circuits are the deliberate
+exception and walk the whole chain.
+
+Three gaps in the written rules, resolved 2026-08-10:
+
+1. **A second-degree signup in the earner's own country pays nothing.** The
+   rules list 5 and 10 and stop; the second degree pays for spread only. This is
+   what stops a purely domestic tree paying its root forever.
+2. **Second-degree geography is measured against the earner**, not the middle
+   person. Tom → Ama → Lisa compares Lisa to Tom. The points are Tom's, so they
+   should describe how far Tom's network reached; Ama already earns her own
+   direct award for Lisa separately.
+3. **The circuit needs two distinct foreign continents**, per the updated bullet.
+   The dev note below it still says "touched another continent" (singular) and is
+   stale.
+
+The rejected alternative — every ancestor scoring on every descendant — would
+make early users' scores grow without further effort and turn the leaderboard
+into a function of join date. The two-generation cap is what bounds that.
 
 A practical consequence worth designing the UI around: **a user's direct score is
 final the moment each friend signs up, but their circuit can arrive at any time**,
@@ -118,29 +140,35 @@ in his referral tree
 Tom → n₁ → n₂ → … → n_k
 ```
 
-such that **continent(n_k) == C** and **at least one nᵢ on the path has
-continent ≠ C**.
+such that **continent(n_k) == C** and the nᵢ between them cover **at least two
+distinct continents ≠ C**.
 
-That is the direct formalization of the dev note: the branch either starts on a
-different continent from Tom, or its referrals touch another continent along the
-way (*"leaves C"*), and the end of that branch lands back on Tom's continent
-(*"ends up back on Tom's continent"*).
+Two, not one — "went as far as at least two continents outside of yours and back
+to the continent you're on". And *distinct*: repeatedly hopping between two
+countries of the same foreign continent is not a journey around the world, so
+continents are counted as a set, not as visits.
 
 Worked example, Tom in Ghana (Africa):
 
 ```
 Tom (Africa)
-├── Ama (Europe)          ← path left Africa
-│   └── Lisa (Africa)     ← …and returned. Tom scores a circuit. ✅
+├── Ama (Europe)              ← one foreign continent so far
+│   └── Lisa (Africa)         ← home again, but only Europe was reached. No circuit. ❌
 └── Ken (Africa)
-    ├── Kofi (Africa)     ← never left Africa. No circuit from this branch.
+    ├── Kofi (Africa)         ← never left Africa. Nothing from this branch.
     └── Jen (Asia)
-        └── Alexander (Asia)  ← left, but never returned. Not yet a circuit.
+        └── Pierre (Europe)   ← two foreign continents now: Asia and Europe
+            └── Yaw (Ghana)   ← and home. Tom scores a circuit. ✅
 ```
 
 Note the rule is a property of a **path**, not of a subtree: Jen's branch has
-left Africa, and the moment anyone under Alexander signs up from an African
-country, Tom's circuit fires.
+reached Asia and Europe, and the moment anyone under Pierre signs up from an
+African country, Tom's circuit fires — from someone Tom has never met, possibly
+months later.
+
+An unknown continent anywhere on the path counts for nothing, and cannot make up
+either of the two required: a pair of failed geo lookups must not be worth 30
+points.
 
 ## Data model — `src/db/schema/referrals.ts`
 

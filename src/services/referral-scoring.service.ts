@@ -24,11 +24,40 @@ export const POINTS: Record<ReferralPointKind, number> = {
   same_country: 1,
   same_continent: 10,
   cross_continent: 20,
+  // Second degree — a friend of a friend. Half the direct award, and paid only
+  // for geographic spread: see scoreIndirectReferral.
+  indirect_same_continent: 5,
+  indirect_cross_continent: 10,
   full_circuit: 30,
 };
 
 /** Depth beyond which a chain stops being recorded as connected. */
 export const MAX_DEPTH = 20;
+
+/**
+ * How far above a redemption the points still reach.
+ *
+ * 1 = the direct referrer, 2 = one person removed. "Beyond 1 person removed,
+ * you can't earn any other points through that branch" — so a redemption pays
+ * the referrer and the referrer's referrer, and nobody higher.
+ *
+ * This bound is what stops an early user's score compounding forever off a tree
+ * they long ago stopped contributing to. Circuits are the deliberate exception:
+ * they walk the whole chain, however deep.
+ */
+export const MAX_SCORING_GENERATIONS = 2;
+
+/**
+ * How many *distinct foreign* continents a path must touch before returning
+ * home to count as a circuit.
+ *
+ * Two, not one: "went as far as at least two continents outside of yours and
+ * back to the continent you're on". Note the supplied dev note still describes
+ * the one-continent version ("their referrals touched another continent") —
+ * confirmed 2026-08-10 that the two-continent bullet is the intended rule and
+ * the dev note is stale.
+ */
+export const CIRCUIT_CONTINENTS_REQUIRED = 2;
 
 export interface GeoPoint {
   country: string | null;
@@ -67,6 +96,43 @@ export function scoreDirectReferral(
   return { kind: 'same_continent', points: POINTS.same_continent };
 }
 
+// ── Rule 2: what a second-degree referral is worth ────────────────────────────
+
+/**
+ * Points for a redemption one person removed — Tom referred Ama, Ama referred
+ * Lisa, this is what Tom earns for Lisa.
+ *
+ * Two things about this are easy to get wrong and both were confirmed
+ * explicitly:
+ *
+ * 1. **Geography is measured against the earner, not the middle person.** Lisa
+ *    is compared to Tom, not to Ama. The points are Tom's, so they describe how
+ *    far *Tom's* network reached; Ama separately earns her own direct award for
+ *    Lisa. Comparing to Ama would pay Tom 10 for two foreign countries that are
+ *    both distant from him but adjacent to each other.
+ * 2. **A second-degree signup in the earner's own country is worth nothing.**
+ *    The rules list 5 (another country, same continent) and 10 (another
+ *    continent) and stop there. The second degree pays for spread only — a
+ *    domestic friend-of-a-friend earns nothing, which is what keeps a purely
+ *    local tree from paying its root forever.
+ */
+export function scoreIndirectReferral(
+  earner: GeoPoint,
+  redeemer: GeoPoint,
+): { kind: ReferralPointKind; points: number } | null {
+  if (!earner.continent || !redeemer.continent) return null;
+
+  if (earner.continent !== redeemer.continent) {
+    return { kind: 'indirect_cross_continent', points: POINTS.indirect_cross_continent };
+  }
+
+  if (earner.country && redeemer.country && earner.country === redeemer.country) {
+    return null;
+  }
+
+  return { kind: 'indirect_same_continent', points: POINTS.indirect_same_continent };
+}
+
 // ── Rule 2: who just completed a circuit ──────────────────────────────────────
 
 export interface PathNode {
@@ -80,34 +146,46 @@ export interface PathNode {
  * have just closed an "around the world" circuit.
  *
  * An ancestor A earns a circuit when the redeemer N is back on A's continent
- * *and* the chain between them left that continent at some point:
+ * *and* the chain between them touched at least CIRCUIT_CONTINENTS_REQUIRED
+ * distinct continents that are not A's:
  *
- *     A(AF) → x(EU) → y(EU) → N(AF)     A scores — left Africa, came back
+ *     A(AF) → x(EU) → y(AS) → N(AF)     A scores — two foreign continents, home again
+ *     A(AF) → x(EU) → y(EU) → N(AF)     no — only one foreign continent (Europe twice)
  *     A(AF) → x(AF) → N(AF)             no — never left
- *     A(AF) → x(EU) → N(EU)             no — left, didn't come back
+ *     A(AF) → x(EU) → y(AS) → N(AS)     no — left twice over, didn't come back
  *
- * The scan is linear rather than the obvious nested loop: "is there a differing
- * continent later in the chain" is monotone in position, so the last index
- * holding a different continent decides it for every ancestor before it.
+ * Note the second line: repeatedly hopping between two countries of the same
+ * foreign continent is not a journey around the world, so continents are
+ * counted **distinct**, not as visits.
  *
- * Unknown continents on the path are not treated as "different" — an
- * unresolvable ancestor must not be able to manufacture a circuit that a known
- * one wouldn't.
+ * Computed with a single backward pass building a suffix count of distinct
+ * foreign continents, rather than rescanning the tail for every candidate
+ * ancestor. Every ancestor here is being tested against the same continent (the
+ * redeemer's), so one suffix table serves all of them.
+ *
+ * Unknown continents on the path count for nothing — an unresolvable ancestor
+ * must not be able to manufacture a circuit that a known one wouldn't.
  */
 export function findCircuitEarners(path: PathNode[], redeemerContinent: Continent | null): number[] {
   if (!redeemerContinent) return [];
 
-  let lastDifferent = -1;
-  for (let i = 0; i < path.length; i++) {
+  // foreignAfter[i] = how many distinct non-home continents appear in path[i..].
+  // Built from the end so each position sees everything below it.
+  const foreignAfter = new Array<number>(path.length + 1).fill(0);
+  const seen = new Set<Continent>();
+  for (let i = path.length - 1; i >= 0; i--) {
     const c = path[i].continent;
-    if (c && c !== redeemerContinent) lastDifferent = i;
+    if (c && c !== redeemerContinent) seen.add(c);
+    foreignAfter[i] = seen.size;
   }
 
-  if (lastDifferent < 0) return [];
-
   const earners: number[] = [];
-  for (let i = 0; i < lastDifferent; i++) {
-    if (path[i].continent === redeemerContinent) earners.push(path[i].userId);
+  for (let i = 0; i < path.length; i++) {
+    // Strictly below this ancestor — an ancestor's own continent is home by
+    // definition and can't count towards its own journey.
+    if (path[i].continent === redeemerContinent && foreignAfter[i + 1] >= CIRCUIT_CONTINENTS_REQUIRED) {
+      earners.push(path[i].userId);
+    }
   }
   return earners;
 }
@@ -122,12 +200,14 @@ async function geoFor(country: string | null): Promise<GeoPoint> {
 
 export const referralScoringService = {
   scoreDirectReferral,
+  scoreIndirectReferral,
   findCircuitEarners,
 
   /**
-   * Writes the direct award for a referral. Called inside the signup
-   * transaction, alongside the referral row itself, because points count at
-   * redemption.
+   * Writes the awards a redemption generates: the direct one for the referrer,
+   * and the second-degree one for the referrer's own referrer. Called inside the
+   * signup transaction, alongside the referral row itself, because points count
+   * at redemption.
    *
    * onConflictDoNothing against the (referral_id, kind) unique index makes a
    * retry a no-op rather than a double payment.
@@ -139,25 +219,54 @@ export const referralScoringService = {
       referrerUserId: number;
       referrerCountry: string | null;
       redeemerCountry: string | null;
+      /** One person removed — the referrer's own referrer, if they have one. */
+      grandReferrerUserId?: number | null;
+      grandReferrerCountry?: string | null;
     },
   ): Promise<void> {
-    const [referrer, redeemer] = await Promise.all([
+    const [referrer, redeemer, grand] = await Promise.all([
       geoFor(params.referrerCountry),
       geoFor(params.redeemerCountry),
+      geoFor(params.grandReferrerCountry ?? null),
     ]);
 
-    const award = scoreDirectReferral(referrer, redeemer);
-    if (!award) return;
+    const rows: (typeof referralPoints.$inferInsert)[] = [];
 
-    await tx
-      .insert(referralPoints)
-      .values({
+    const direct = scoreDirectReferral(referrer, redeemer);
+    if (direct) {
+      rows.push({
         userId: params.referrerUserId,
         referralId: params.referralId,
-        kind: award.kind,
-        points: award.points,
-      })
-      .onConflictDoNothing();
+        kind: direct.kind,
+        points: direct.points,
+      });
+    }
+
+    // Second degree. Scored against the grandparent's own geography, not the
+    // referrer's — the points are theirs, so they describe how far *their*
+    // network reached.
+    //
+    // Nothing beyond this generation: "beyond 1 person removed, you can't earn
+    // any other points through that branch". The great-grandparent and above are
+    // deliberately not looked up at all.
+    if (params.grandReferrerUserId) {
+      const indirect = scoreIndirectReferral(grand, redeemer);
+      if (indirect) {
+        rows.push({
+          userId: params.grandReferrerUserId,
+          referralId: params.referralId,
+          kind: indirect.kind,
+          points: indirect.points,
+        });
+      }
+    }
+
+    if (rows.length === 0) return;
+
+    // Both rows share a referral_id and differ only by kind, which is exactly
+    // what the (referral_id, kind) unique index is keyed on — so a retry is a
+    // no-op for each independently.
+    await tx.insert(referralPoints).values(rows).onConflictDoNothing();
   },
 
   /**
@@ -239,6 +348,8 @@ export const referralScoringService = {
       same_country: 0,
       same_continent: 0,
       cross_continent: 0,
+      indirect_same_continent: 0,
+      indirect_cross_continent: 0,
       full_circuit: 0,
     };
     for (const r of rows) byKind[r.kind] = r.points;

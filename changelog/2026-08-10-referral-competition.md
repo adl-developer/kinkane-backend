@@ -46,22 +46,46 @@ Scored on the referrer's country versus the country the code was redeemed in:
 
 | Condition | Points |
 |---|---|
-| Same country | 1 |
-| Different country, same continent | 10 |
-| Different continent | 20 |
+| **Direct** — your code redeemed in your country | 1 |
+| **Direct** — another country, same continent | 10 |
+| **Direct** — another continent | 20 |
+| **Second degree** — another country, same continent | 5 |
+| **Second degree** — another continent | 10 |
 | Full circuit — "around the world" | 30 |
 
-The first three apply to **direct referrals only**. Only the circuit rule walks
-the deep tree. The alternative — every ancestor scoring on every descendant —
-would make a user's score grow without further effort and turn the leaderboard
-into a function of join date.
+**Second degree** means one person removed: you referred Ama, Ama referred Lisa,
+Lisa earns you points too. Three things about it were settled explicitly because
+the rules as written don't cover them:
+
+- **A second-degree signup in your own country is worth nothing.** The rules
+  list 5 and 10 and stop there. The second degree pays for geographic spread
+  only — which is what stops a purely domestic tree paying its root forever.
+- **Geography is measured against the earner, not the middle person.** Lisa is
+  compared to *you*, not to Ama. The points are yours, so they describe how far
+  your network reached; Ama separately earns her own direct award for Lisa.
+  Comparing to Ama would pay you 10 for two foreign countries that are both
+  distant from you but adjacent to each other.
+- **Nothing is paid beyond one person removed.** A depth-3 signup pays their
+  referrer and that person's referrer, and nobody higher. The
+  great-grandparent's country is never even looked up. This is what stops an
+  early user's score compounding forever off a tree they stopped contributing to.
+
+Circuits are the deliberate exception to that cap: they walk the entire chain,
+however deep.
 
 **A circuit** is a path down someone's referral tree that starts on their
-continent, leaves it, and comes back. Tom in Ghana refers Ama in France; Ama
-refers Lisa in Nigeria; Tom has gone around the world. It is a property of a
-*path*, not of a subtree, and it is awarded **once per user** — per-path would be
-unbounded, since a wide tree could collect 30 points repeatedly for what is meant
-to read as a single achievement.
+continent, reaches **at least two distinct continents that aren't theirs**, and
+ends back home. Continents are counted distinctly, not as visits — four European
+stops are one foreign continent, not four, so a circuit can't be farmed by
+bouncing between two neighbouring countries.
+
+It is a property of a *path*, not of a subtree, and it is awarded **once per
+user** — per-path would be unbounded, since a wide tree could collect 30 points
+repeatedly for what is meant to read as a single achievement.
+
+Note the supplied dev note still describes the earlier one-continent version
+("their referrals touched another continent"). Confirmed 2026-08-10 that the
+two-continent rule is intended and the dev note is stale.
 
 Worth knowing for the UI: a user's direct points are settled the moment each
 friend signs up, but **a circuit can arrive at any time**, from someone several
@@ -264,12 +288,23 @@ sets (read by the web client, which passes it back in the body).
 
 ## How it was verified
 
-38 new unit tests. 26 across the two pure rule functions — `scoreDirectReferral` and
-`findCircuitEarners` — covering the cases that decide points and are invisible
-from a happy path: unknown continents on both sides, an identical-but-unplaceable
-country, a circuit closing five levels down, an ancestor sitting below the last
-departure, and an unknown continent that must not be able to stand in for
-"leaving". Plus link-shape tests: accent stripping (`René` → `rene`, not `ren`),
+48 new unit tests. 26 across the three pure rule functions —
+`scoreDirectReferral`, `scoreIndirectReferral` and `findCircuitEarners` —
+covering the cases that decide points and are invisible from a happy path:
+unknown continents on both sides, an identical-but-unplaceable country, a
+circuit closing five levels down, an ancestor sitting below the travelling
+section, and unknown continents that must not count towards the two a circuit
+requires.
+
+Three of those are guard rails rather than examples: the second degree must
+always pay strictly less than the equivalent direct award (or the incentive
+inverts), a direct referral must never exceed the cross-continent maximum (which
+catches a branch-ordering slip that would inflate every domestic referral 20x),
+and the circuit threshold is asserted against `CIRCUIT_CONTINENTS_REQUIRED`
+rather than the literal 2 — so a deliberate rule change moves the bar and an
+accidental one fails.
+
+Plus link-shape tests: accent stripping (`René` → `rene`, not `ren`),
 non-Latin names falling back to `friend`, no trailing hyphens after truncation,
 and the code alphabet excluding `I/L/O/U`.
 

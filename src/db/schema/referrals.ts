@@ -140,10 +140,16 @@ export const referrals = pgTable(
 // else's total.
 
 export const referralPointKindEnum = pgEnum('referral_point_kind', [
-  'same_country',      // 1
-  'same_continent',    // 10
-  'cross_continent',   // 20
-  'full_circuit',      // 30
+  // Direct — your own code was redeemed.
+  'same_country',              // 1
+  'same_continent',            // 10
+  'cross_continent',           // 20
+  // Second degree — someone you referred referred them. Paid only for
+  // geographic spread; a second-degree signup in your own country is worth
+  // nothing, and nothing at all is paid beyond this generation.
+  'indirect_same_continent',   // 5
+  'indirect_cross_continent',  // 10
+  'full_circuit',              // 30
 ]);
 
 export const referralPointStateEnum = pgEnum('referral_point_state', ['counted', 'voided']);

@@ -232,6 +232,13 @@
       "when": 1786343883228,
       "tag": "0032_wild_gertrude_yorkes",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1786398864916,
+      "tag": "0033_daffy_supreme_intelligence",
+      "breakpoints": true
     }
   ]
 }
