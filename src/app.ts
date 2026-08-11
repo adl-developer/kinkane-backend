@@ -10,6 +10,10 @@ import { pushQueue } from './lib/push-queue';
 import { config } from './config';
 import apiRoutes from './routes';
 import gardnersDropshipRoutes from './routes/gardners-dropship.routes';
+import referralRedirectRoutes from './routes/referral-redirect.routes';
+import adminReferralsRoutes from './routes/admin-referrals.routes';
+import { referralsController } from './controllers/referrals.controller';
+import { wrap } from './lib/route-helpers';
 import { webhookRouter as stripeWebhookRouter } from './routes/subscriptions.routes';
 
 const app = express();
@@ -62,6 +66,19 @@ app.use('/admin/queues', requireAdminToken, bullBoardAdapter.getRouter());
 // not part of the customer-facing checkout flow yet, so it isn't versioned
 // under /api/v1. Protected by the same static bearer token as Bull Board.
 app.use('/admin/gardners/dropship', requireAdminToken, gardnersDropshipRoutes);
+
+// ── Referral competition admin ────────────────────────────────────────────────
+// The map, the standings, and the corrections. Same static bearer token as the
+// surfaces above.
+app.use('/admin/referrals', requireAdminToken, adminReferralsRoutes);
+app.patch('/admin/users/:id/country', requireAdminToken, wrap(referralsController.adminSetCountry));
+
+// ── Referral links ────────────────────────────────────────────────────────────
+// Mounted at the root, above /api, because /r/CODE/name is a link a person sends
+// over WhatsApp — putting /api/v1 in the middle of it would be absurd. Also the
+// path registered as the universal/app link, so an installed app opens straight
+// through with the code.
+app.use('/r', referralRedirectRoutes);
 
 app.use('/api', apiRoutes);
 

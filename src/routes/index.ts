@@ -19,6 +19,7 @@ import unsubscribeRoutes from './unsubscribe.routes';
 import notificationsRoutes from './notifications.routes';
 import deviceTokensRoutes from './device-tokens.routes';
 import reportsRoutes from './reports.routes';
+import referralsRoutes from './referrals.routes';
 
 const router = Router();
 
@@ -48,6 +49,9 @@ v1.use('/user/preference-history', preferenceHistoryRoutes);
 v1.use('/user/notifications', notificationsRoutes);
 v1.use('/user/device-tokens', deviceTokensRoutes);
 v1.use('/reports', reportsRoutes);
+// Open to every signed-up user — the router itself deliberately applies
+// requireAuth without requirePlus. See referrals.routes.ts.
+v1.use('/referrals', referralsRoutes);
 v1.use('/unsubscribe', unsubscribeRoutes);
 
 router.use('/v1', v1);

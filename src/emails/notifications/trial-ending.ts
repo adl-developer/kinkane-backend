@@ -1,4 +1,5 @@
 import { sendEmail, FROM } from '../../lib/resend';
+import { config } from '../../config';
 import { emailLayout, ctaButton, greeting, signOff, escapeHtml, p } from '../lib/layout';
 
 // No unsubscribe link: a trial that is about to convert to a paid subscription
@@ -25,7 +26,7 @@ export async function sendTrialEndingEmail(to: string, name: string, daysLeft: n
     p("During your trial, you've enjoyed:"),
     featureList,
     p('To continue discovering books chosen just for you, upgrade to Kinkané Plus before your trial expires.'),
-    ctaButton('Upgrade to Plus', 'https://kinkane.com/subscribe'),
+    ctaButton('Upgrade to Plus', `${config.appUrl}/subscribe`),
     signOff('Your next great read is waiting.'),
   ].join('\n');
 
@@ -34,6 +35,6 @@ export async function sendTrialEndingEmail(to: string, name: string, daysLeft: n
     from: FROM,
     subject: title,
     html: emailLayout(title, body),
-    text: `Hi ${name},\n\nYour Kinkané Plus trial will end in ${daysLeft} day${plural}.\n\nDuring your trial, you've enjoyed:\n• Personalised recommendations tailored to your reading tastes\n• Unlimited bookshelf saves\n• Community features\n• Curated reading collections\n\nTo continue discovering books chosen just for you, upgrade to Kinkané Plus before your trial expires.\n\nhttps://kinkane.com/subscribe\n\nYour next great read is waiting.\n\nThe Kinkané Team`,
+    text: `Hi ${name},\n\nYour Kinkané Plus trial will end in ${daysLeft} day${plural}.\n\nDuring your trial, you've enjoyed:\n• Personalised recommendations tailored to your reading tastes\n• Unlimited bookshelf saves\n• Community features\n• Curated reading collections\n\nTo continue discovering books chosen just for you, upgrade to Kinkané Plus before your trial expires.\n\n${config.appUrl}/subscribe\n\nYour next great read is waiting.\n\nThe Kinkané Team`,
   });
 }

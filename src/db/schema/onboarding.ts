@@ -53,6 +53,10 @@ export const guestSessions = pgTable(
     readerType: readerTypeEnum('reader_type'),
     // Ties back to recommendation_cache.input_hash so we can retrieve the result if needed
     recommendationHash: varchar('recommendation_hash', { length: 64 }),
+    // Referral code captured before the account existed — someone who follows an
+    // invite link lands in onboarding first, and the code has to survive until
+    // there is a user row to attribute. Read once by signup, then irrelevant.
+    referralCode: varchar('referral_code', { length: 32 }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   },

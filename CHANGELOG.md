@@ -1,6 +1,26 @@
 # Changelog
 
 
+## 2026-08-10
+
+### Features
+
+* reward second-degree referrals, and make going around the world harder ([aab7569](https://adl.github.com/adl-developer/kinkane-backend/commit/aab75691d0b026c4238c0e86b57b8971037c6122)) — [details](changelog/2026-08-10-referral-competition.md)
+* use the Around the World invite wording, and switch it off when the campaign ends ([281e33b](https://adl.github.com/adl-developer/kinkane-backend/commit/281e33bef1cba09c5413ff8bd6fb625187c2d2b4)) — [details](changelog/2026-08-10-referral-competition.md)
+* invite a friend and compete to send Kinkané around the world ([50131fd](https://adl.github.com/adl-developer/kinkane-backend/commit/50131fd8e225114ba6c109751fd34227313ee296)) — [details](changelog/2026-08-10-referral-competition.md)
+
+### Bug Fixes
+
+* point every link at kinkane.app instead of kinkane.com ([88a44ff](https://adl.github.com/adl-developer/kinkane-backend/commit/88a44ffd042c9dd05c284b2738fd0ed083521336)) — [details](changelog/2026-08-10-referral-competition.md)
+
+
+## 2026-08-09
+
+### Features
+
+* find books by typing the author's name ([e028e82](https://adl.github.com/adl-developer/kinkane-backend/commit/e028e829714851845f4b1a5e64f19478a03129d1)) — [details](changelog/2026-08-09-author-search.md)
+
+
 ## 2026-08-07
 
 ### Features

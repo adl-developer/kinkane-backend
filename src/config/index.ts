@@ -47,11 +47,18 @@ const envSchema = z.object({
   GUEST_SESSION_TTL_HOURS: z.coerce.number().int().min(1).default(72),
 
   RESEND_API_KEY: z.string().min(1),
-  EMAIL_FROM: z.string().email().default('hello@kinkane.com'),
+  EMAIL_FROM: z.string().email().default('hello@kinkane.app'),
   EMAIL_FROM_NAME: z.string().default('Kinkane'),
 
-  // Frontend base URL — used to build links in emails (e.g. password reset)
-  APP_URL: z.string().url().default('https://kinkane.com'),
+  // Base client URL, and the single source of truth for every user-facing link
+  // this server builds: email CTAs, password reset, Stripe return URLs, and
+  // referral links (`APP_URL/r/CODE/name-slug`).
+  //
+  // Kinkané lives on **kinkane.app**, not .com. Anything that hardcodes a
+  // domain instead of reading this is a bug — it will keep pointing at the old
+  // host no matter what the environment says, and it will not fail loudly, it
+  // will just send users somewhere wrong.
+  APP_URL: z.string().url().default('https://kinkane.app'),
 
   // Secret token for accessing the Bull Board admin dashboard (/admin/queues).
   // Must be at least 32 characters. Generate with: openssl rand -hex 32
@@ -87,6 +94,37 @@ const envSchema = z.object({
   STRIPE_CHECKOUT_SUCCESS_URL: z.string().url().optional(),
   STRIPE_CHECKOUT_CANCEL_URL: z.string().url().optional(),
   STRIPE_PORTAL_RETURN_URL: z.string().url().optional(),
+
+  // ── Referrals & the "Around the World" competition ─────────────────────────
+  // Marketing video linked from every invite. Placeholder default until the
+  // real video exists — it is an env var precisely so swapping it needs no
+  // deploy.
+  REFERRAL_VIDEO_URL: z.string().url().default('https://kinkane.app/about'),
+
+  // While NOW() is before this, invites use the "Around the World in 80 Days"
+  // launch copy; after it, the evergreen copy. Unset means the campaign is over
+  // (or was never configured) and everyone gets evergreen — the safe default,
+  // since the launch copy promises a challenge that may not be running.
+  // Mirrors how FOUNDING_OFFER_ENDS_AT gates launch pricing.
+  REFERRAL_CAMPAIGN_ENDS_AT: z.coerce.date().optional(),
+
+  // Where a user's country comes from. Two independent sources, tried in order:
+  //
+  // 1. A trusted geo header set by the CDN/proxy in front of this server
+  //    (Cloudflare's cf-ipcountry, Vercel's x-vercel-ip-country, and so on).
+  //    Cheapest and most accurate when it exists, but ONLY trustworthy when
+  //    every request genuinely passes through that proxy — a client can forge
+  //    any header it likes, so leaving this set while exposing the origin
+  //    directly hands users a free country picker. Unset means "don't trust
+  //    any header", which is the safe default.
+  // 2. A local MaxMind GeoLite2 country database, if one is on disk. Requires
+  //    the optional `maxmind` package; when either is missing the lookup is
+  //    skipped rather than failing, and country resolves to unknown.
+  //
+  // Both absent is a supported configuration: signups simply carry no country
+  // and score nothing, which is strictly better than guessing.
+  GEO_COUNTRY_HEADER: z.string().min(1).optional(),
+  MAXMIND_DB_PATH: z.string().min(1).optional(),
 
   // Master switch for Plus feature gating. Off by default so the gate can be
   // deployed dark and turned on (or reverted) without shipping code.
@@ -220,6 +258,15 @@ export const config = {
     fromName: env.EMAIL_FROM_NAME,
   },
   appUrl: env.APP_URL,
+  referrals: {
+    videoUrl: env.REFERRAL_VIDEO_URL,
+    campaignEndsAt: env.REFERRAL_CAMPAIGN_ENDS_AT,
+    // Lower-cased once here so the header lookup never has to care about the
+    // casing used in the env var — Node normalizes incoming header names, the
+    // config value has to match.
+    countryHeader: env.GEO_COUNTRY_HEADER?.toLowerCase(),
+    maxmindDbPath: env.MAXMIND_DB_PATH,
+  },
   adminToken: env.ADMIN_TOKEN,
   unsubscribeSecret: env.UNSUBSCRIBE_SECRET,
   cloudinary: {
