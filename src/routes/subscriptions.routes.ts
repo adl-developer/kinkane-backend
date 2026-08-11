@@ -44,7 +44,7 @@ router.get('/history', requireAuth, wrap(subscriptionsController.history));
  * Returns 200: { foundingOfferActive, foundingOfferEndsAt, plans: [...] }
  * Errors: 401 unauthenticated | 503 payments not configured
  */
-router.get('/plans', requireAuth, wrap(subscriptionsController.plans));
+router.get('/plans', requireAuth, wrapHttp(subscriptionsController.plans));
 
 /**
  * POST /api/v1/user/subscription/checkout-session
@@ -63,7 +63,7 @@ router.post(
   '/checkout-session',
   requireAuth,
   checkoutLimiter,
-  wrap(subscriptionsController.createCheckoutSession),
+  wrapHttp(subscriptionsController.createCheckoutSession),
 );
 
 /**
@@ -119,7 +119,7 @@ router.post(
   '/portal-session',
   requireAuth,
   checkoutLimiter,
-  wrap(subscriptionsController.createPortalSession),
+  wrapHttp(subscriptionsController.createPortalSession),
 );
 
 export default router;
