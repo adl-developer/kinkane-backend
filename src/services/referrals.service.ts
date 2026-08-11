@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { eq, and, sql, desc, count } from 'drizzle-orm';
+import { eq, and, sql, desc } from 'drizzle-orm';
 import { db } from '../db';
 import {
   referralCodes,
@@ -11,6 +11,7 @@ import {
 import type { Referral } from '../db/schema';
 import { config } from '../config';
 import { logger } from '../lib/logger';
+import { isBotUserAgent } from '../lib/user-agent';
 import {
   activeCampaign,
   shortMessage,
@@ -246,6 +247,7 @@ export const referralsService = {
           ipHash: params.ip ? hashIp(params.ip) : null,
           userAgent: params.userAgent?.slice(0, 500),
           countryCode: params.countryCode ?? null,
+          isBot: isBotUserAgent(params.userAgent),
         })
         .returning({ id: referralClicks.id });
       return row.id;
@@ -378,8 +380,27 @@ export const referralsService = {
       .where(and(eq(referralCodes.userId, userId), eq(referralCodes.isActive, true)))
       .limit(1);
 
+    // Unique people, not raw hits.
+    //
+    // Deduped on (hashed IP, user agent) rather than IP alone: a household,
+    // office or mobile carrier behind one NAT would otherwise collapse to a
+    // single click no matter how many people actually followed the link, and
+    // shared egress IPs are the norm in a lot of the world. The pair is not a
+    // perfect identity — the same person on wifi then mobile data counts twice,
+    // and there is no cookie to do better on a redirect that must stay
+    // anonymous — but it is much closer than either extreme.
+    //
+    // The COALESCE on ip_hash keeps clicks with no recorded IP distinct: without
+    // it, every such row shares a NULL and the whole set collapses to one.
+    // Bots are excluded here rather than at insert, so preview traffic stays
+    // inspectable in the table.
     const [clickRow] = codeRow
-      ? await db.select({ n: count() }).from(referralClicks).where(eq(referralClicks.codeId, codeRow.id))
+      ? await db
+          .select({
+            n: sql<number>`count(distinct (coalesce(${referralClicks.ipHash}, ${referralClicks.id}::text), coalesce(${referralClicks.userAgent}, '')))::int`,
+          })
+          .from(referralClicks)
+          .where(and(eq(referralClicks.codeId, codeRow.id), eq(referralClicks.isBot, false)))
       : [{ n: 0 }];
 
     const direct = await db

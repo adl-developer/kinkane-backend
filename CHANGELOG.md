@@ -3,9 +3,13 @@
 
 ## 2026-08-11
 
+### Features
+
+* count referral clicks as people rather than raw hits ([ce95708](https://adl.github.com/adl-developer/kinkane-backend/commit/ce95708e1c848a9d70d1a923fd5bfaef677425a0)) — [details](changelog/2026-08-11-referral-camelcase-keys.md)
+
 ### Bug Fixes
 
-* return referral point totals with camelCase keys ([ccf03d8](https://adl.github.com/adl-developer/kinkane-backend/commit/ccf03d89bdcdfd6d16c6fd97c94e8f4bfe681ea4)) — [details](changelog/2026-08-11-referral-camelcase-keys.md)
+* return referral point totals with camelCase keys ([f2350e3](https://adl.github.com/adl-developer/kinkane-backend/commit/f2350e34846e485c6192cb5a799c28024d8b7ff5)) — [details](changelog/2026-08-11-referral-camelcase-keys.md)
 
 
 ## 2026-08-10
