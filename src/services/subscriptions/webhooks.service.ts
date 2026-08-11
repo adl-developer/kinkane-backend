@@ -9,6 +9,7 @@ import { logger } from '../../lib/logger';
 import { enqueueEmail } from '../../lib/email-queue';
 import { subscriptionStateService } from './state.service';
 import { entitlementsService } from './entitlements.service';
+import { schedulesService } from './schedules.service';
 import { orderWebhooksService } from '../commerce/order-webhooks.service';
 import { paymentsService } from '../payments.service';
 
@@ -296,7 +297,7 @@ export const webhooksService = {
     await entitlementsService.invalidate(userId);
 
     if (isFounding) {
-      await this.attachFoundingSchedule(subscription, userId);
+      await schedulesService.attachFounding(subscription, userId);
     }
 
     const [user] = await db
@@ -326,61 +327,6 @@ export const webhooksService = {
       plan: planForPriceId(priceId),
       isFounding,
     });
-  },
-
-  /**
-   * Converts a new Founding Member's subscription into a two-phase schedule:
-   * their introductory price for exactly one term, then standard pricing.
-   *
-   * Done here rather than at checkout because a schedule can only be created
-   * from a subscription that already exists. A failure is logged but never
-   * rethrown — the customer has paid and must not be left un-entitled because
-   * a future price rollover couldn't be arranged; the daily reconciliation
-   * surfaces any that didn't take.
-   */
-  async attachFoundingSchedule(subscription: Stripe.Subscription, userId: number): Promise<void> {
-    try {
-      const priceId = firstPriceId(subscription);
-      const plan = planForPriceId(priceId);
-      if (!plan) return;
-
-      const { standardPriceId } = resolvePrice(plan);
-      if (!standardPriceId || standardPriceId === priceId) return;
-
-      const schedule = await stripe().subscriptionSchedules.create({
-        from_subscription: subscription.id,
-      });
-
-      await stripe().subscriptionSchedules.update(schedule.id, {
-        end_behavior: 'release',
-        phases: [
-          // Phase 1: the locked-in founding price, one term only.
-          {
-            items: [{ price: priceId!, quantity: 1 }],
-            start_date: schedule.phases[0].start_date,
-            end_date: schedule.phases[0].end_date,
-          },
-          // Phase 2: standard pricing, open-ended.
-          {
-            items: [{ price: standardPriceId, quantity: 1 }],
-          },
-        ],
-      });
-
-      logger.info('Attached Founding Member price schedule', {
-        userId,
-        subscriptionId: subscription.id,
-        scheduleId: schedule.id,
-        foundingPriceId: priceId,
-        standardPriceId,
-      });
-    } catch (err) {
-      logger.error('Failed to attach Founding Member price schedule — subscription still active', {
-        userId,
-        subscriptionId: subscription.id,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
   },
 
   /**

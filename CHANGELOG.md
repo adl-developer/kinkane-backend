@@ -11,6 +11,7 @@
 
 ### Bug Fixes
 
+* show the real reason a subscription checkout was refused ([ea8e133](https://adl.github.com/adl-developer/kinkane-backend/commit/ea8e133729ca26ba386e9131d669da97456caac8)) — [details](changelog/2026-08-11-referral-app-clicks.md)
 * return referral point totals with camelCase keys ([f2350e3](https://adl.github.com/adl-developer/kinkane-backend/commit/f2350e34846e485c6192cb5a799c28024d8b7ff5)) — [details](changelog/2026-08-11-referral-camelcase-keys.md)
 
 
