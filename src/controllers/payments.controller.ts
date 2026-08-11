@@ -15,11 +15,15 @@ export const paymentsController = {
    * else's reference exists.
    */
   async confirm(req: AuthenticatedRequest, res: Response): Promise<void> {
-    const reference = String(req.params.reference ?? '').trim();
+    // Upper-cased here rather than deeper in: references are minted and stored
+    // uppercase, but they are also read down a phone line to support and typed
+    // back in by hand, so a lowercase one has to keep working. Normalizing at
+    // the edge means everything below this line sees the canonical form.
+    const reference = String(req.params.reference ?? '').trim().toUpperCase();
 
     // Cheap shape check before touching the database — the reference is a
     // path segment and will otherwise be whatever anyone types.
-    if (!/^KP-[0-9A-Za-z]{6,32}$/.test(reference)) {
+    if (!/^KP-[0-9A-Z]{6,32}$/.test(reference)) {
       res.status(400).json({ error: 'Invalid payment reference' });
       return;
     }
