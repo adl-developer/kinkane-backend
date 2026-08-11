@@ -4,6 +4,7 @@ import {
   scoreIndirectReferral,
   findCircuitEarners,
   POINTS,
+  POINT_KIND_JSON,
   CIRCUIT_CONTINENTS_REQUIRED,
   type PathNode,
 } from '../services/referral-scoring.service';
@@ -220,5 +221,26 @@ describe('findCircuitEarners', () => {
     const path = [at('AF', 1), at('EU', 2), at('AS', 3), at('AF', 1)];
     const earners = findCircuitEarners(path, 'AF');
     expect(new Set(earners).size).toBe(earners.length);
+  });
+});
+
+describe('POINT_KIND_JSON', () => {
+  it('names every ledger kind in camelCase', () => {
+    // The Postgres enum is snake_case and the API is camelCase; this map is the
+    // only place those two conventions meet. A new point kind that arrives
+    // without a JSON name fails the build, but one that arrives with a
+    // snake_case name would sail through — hence the shape assertion.
+    for (const jsonKey of Object.values(POINT_KIND_JSON)) {
+      expect(jsonKey).toMatch(/^[a-z][a-zA-Z0-9]*$/);
+    }
+  });
+
+  it('covers every kind that can be awarded, with no duplicates', () => {
+    // A duplicate value would silently merge two kinds into one response key,
+    // and the totals would still add up — so nothing else would catch it.
+    const kinds = Object.keys(POINTS) as (keyof typeof POINTS)[];
+    const jsonKeys = kinds.map((k) => POINT_KIND_JSON[k]);
+    expect(jsonKeys.filter(Boolean)).toHaveLength(kinds.length);
+    expect(new Set(jsonKeys).size).toBe(kinds.length);
   });
 });

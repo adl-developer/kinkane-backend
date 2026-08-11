@@ -59,6 +59,32 @@ export const MAX_SCORING_GENERATIONS = 2;
  */
 export const CIRCUIT_CONTINENTS_REQUIRED = 2;
 
+/**
+ * How each ledger kind is named in JSON.
+ *
+ * The Postgres enum stays snake_case — idiomatic for the database, and what
+ * every migration and query already reads. The API is camelCase, like every
+ * other response this server returns. Both conventions are right in their own
+ * layer, so the translation happens here, once, rather than by renaming the
+ * enum or by leaving `same_country` sitting in a response body next to
+ * `hasCircuit`.
+ *
+ * `satisfies` is doing real work: it forces this map to cover every enum
+ * member, so adding a point kind without giving it a JSON name fails the build
+ * instead of silently returning an object with a missing key.
+ */
+export const POINT_KIND_JSON = {
+  same_country: 'sameCountry',
+  same_continent: 'sameContinent',
+  cross_continent: 'crossContinent',
+  indirect_same_continent: 'indirectSameContinent',
+  indirect_cross_continent: 'indirectCrossContinent',
+  full_circuit: 'fullCircuit',
+} as const satisfies Record<ReferralPointKind, string>;
+
+/** The `pointsByKind` object as clients receive it. */
+export type PointsByKind = Record<(typeof POINT_KIND_JSON)[ReferralPointKind], number>;
+
 export interface GeoPoint {
   country: string | null;
   continent: Continent | null;
@@ -332,7 +358,7 @@ export const referralScoringService = {
   /** A user's current score, broken down by how it was earned. */
   async scoreFor(userId: number): Promise<{
     total: number;
-    byKind: Record<ReferralPointKind, number>;
+    byKind: PointsByKind;
     hasCircuit: boolean;
   }> {
     const rows = await db
@@ -344,20 +370,18 @@ export const referralScoringService = {
       .where(and(eq(referralPoints.userId, userId), eq(referralPoints.state, 'counted')))
       .groupBy(referralPoints.kind);
 
-    const byKind: Record<ReferralPointKind, number> = {
-      same_country: 0,
-      same_continent: 0,
-      cross_continent: 0,
-      indirect_same_continent: 0,
-      indirect_cross_continent: 0,
-      full_circuit: 0,
-    };
-    for (const r of rows) byKind[r.kind] = r.points;
+    // Every kind present and zeroed, so a client can render the full breakdown
+    // without special-casing absent keys.
+    const byKind = Object.fromEntries(
+      Object.values(POINT_KIND_JSON).map((key) => [key, 0]),
+    ) as PointsByKind;
+
+    for (const r of rows) byKind[POINT_KIND_JSON[r.kind]] = r.points;
 
     return {
       total: Object.values(byKind).reduce((a, b) => a + b, 0),
       byKind,
-      hasCircuit: byKind.full_circuit > 0,
+      hasCircuit: byKind.fullCircuit > 0,
     };
   },
 
