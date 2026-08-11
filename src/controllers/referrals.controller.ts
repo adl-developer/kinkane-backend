@@ -20,6 +20,11 @@ const voidSchema = z.object({
   reason: z.string().trim().min(1).max(200),
 });
 
+const clickSchema = z.object({
+  code: z.string().trim().regex(/^[0-9A-Za-z]{6,32}$/, 'Invalid referral code'),
+  channel: z.enum(['whatsapp', 'sms', 'email', 'copy', 'link', 'app']).optional(),
+});
+
 const countrySchema = z.object({
   // Two letters, and nothing further: a code the seed doesn't carry is stored
   // as-is and simply scores nothing, which is the same treatment a geolocated
@@ -170,6 +175,54 @@ export const referralsController = {
     if (clickId) target.searchParams.set('cid', String(clickId));
 
     res.redirect(302, target.toString());
+  },
+
+  /**
+   * POST /api/v1/referrals/clicks — record a click the redirect never saw.
+   *
+   * This exists because of how universal links actually behave. When iOS or
+   * Android opens the app from a `/r/...` link, **no HTTP request is made** —
+   * the domain-association file was fetched at install time, so the OS matches
+   * the path locally and hands the URL straight to the app. The server never
+   * sees the tap.
+   *
+   * Without this endpoint, `clicks` quietly degrades into "people who don't have
+   * the app" as installs grow. Signups still attribute correctly, so nothing
+   * looks broken — a referrer whose friends all have the app would just show 0
+   * clicks and 5 signups, and the funnel would read as a conversion miracle
+   * rather than a measurement gap.
+   *
+   * Unauthenticated by design: the tap happens before there is an account, which
+   * is the whole point of a referral.
+   *
+   * Always answers 202, whether or not the code resolved. Reporting "unknown
+   * code" would turn this into an oracle for testing which codes exist — the
+   * same reason the redirect sends unknown codes to the homepage instead of
+   * 404ing.
+   */
+  async recordClick(req: Request, res: Response): Promise<void> {
+    const parsed = clickSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+
+    const resolved = await referralsService.resolveCode(parsed.data.code);
+
+    if (resolved) {
+      const country = await geoService.resolveFromRequest(req);
+      await referralsService.logClick({
+        codeId: resolved.id,
+        channel: parsed.data.channel,
+        ip: req.ip,
+        userAgent: req.headers['user-agent'],
+        countryCode: country.code,
+      });
+    }
+
+    // Deliberately not { recorded: true } — that would be a claim this response
+    // can't honestly make for an unknown code.
+    res.status(202).json({ ok: true });
   },
 
   // ── Admin ───────────────────────────────────────────────────────────────────
