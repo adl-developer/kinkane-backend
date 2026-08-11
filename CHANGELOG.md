@@ -1,17 +1,29 @@
 # Changelog
 
 
+## 2026-08-11
+
+### Features
+
+* count referral link taps that open the app directly ([9f46d86](https://adl.github.com/adl-developer/kinkane-backend/commit/9f46d86797fe45667bdc9dc2ee62240807d07f4b)) — [details](changelog/2026-08-11-referral-app-clicks.md)
+* count referral clicks as people rather than raw hits ([8a41e91](https://adl.github.com/adl-developer/kinkane-backend/commit/8a41e911e15941dc082a2b8891299621707a764a)) — [details](changelog/2026-08-11-referral-app-clicks.md)
+
+### Bug Fixes
+
+* return referral point totals with camelCase keys ([f2350e3](https://adl.github.com/adl-developer/kinkane-backend/commit/f2350e34846e485c6192cb5a799c28024d8b7ff5)) — [details](changelog/2026-08-11-referral-camelcase-keys.md)
+
+
 ## 2026-08-10
 
 ### Features
 
-* reward second-degree referrals, and make going around the world harder ([aab7569](https://adl.github.com/adl-developer/kinkane-backend/commit/aab75691d0b026c4238c0e86b57b8971037c6122)) — [details](changelog/2026-08-10-referral-competition.md)
+* reward second-degree referrals, and make going around the world harder ([593fcfb](https://adl.github.com/adl-developer/kinkane-backend/commit/593fcfb07d1b1c712546b6d39840ae03f13e445d)) — [details](changelog/2026-08-10-referral-competition.md)
 * use the Around the World invite wording, and switch it off when the campaign ends ([281e33b](https://adl.github.com/adl-developer/kinkane-backend/commit/281e33bef1cba09c5413ff8bd6fb625187c2d2b4)) — [details](changelog/2026-08-10-referral-competition.md)
-* invite a friend and compete to send Kinkané around the world ([50131fd](https://adl.github.com/adl-developer/kinkane-backend/commit/50131fd8e225114ba6c109751fd34227313ee296)) — [details](changelog/2026-08-10-referral-competition.md)
+* invite a friend and compete to send Kinkané around the world ([50131fd](https://adl.github.com/adl-developer/kinkane-backend/commit/50131fd8e225114ba6c109751fd34227313ee296)) — [details](changelog/2026-08-10-ecommerce-cart-checkout.md)
 
 ### Bug Fixes
 
-* point every link at kinkane.app instead of kinkane.com ([88a44ff](https://adl.github.com/adl-developer/kinkane-backend/commit/88a44ffd042c9dd05c284b2738fd0ed083521336)) — [details](changelog/2026-08-10-referral-competition.md)
+* point every link at kinkane.app instead of kinkane.com ([88a44ff](https://adl.github.com/adl-developer/kinkane-backend/commit/88a44ffd042c9dd05c284b2738fd0ed083521336)) — [details](changelog/2026-08-10-ecommerce-cart-checkout.md)
 
 
 ## 2026-08-09

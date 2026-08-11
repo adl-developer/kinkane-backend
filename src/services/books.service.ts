@@ -1126,6 +1126,57 @@ export const booksService = {
     return results;
   },
 
+  /**
+   * Fetches books by id, **preserving the order of `ids`**.
+   *
+   * Written for ranked feeds (the bestseller chart) where the ranking is
+   * computed elsewhere and the position of each row is the whole point — an
+   * `IN (...)` lookup returns rows in whatever order the planner finds
+   * convenient, which would silently scramble a chart.
+   */
+  async listByIds(ids: number[]): Promise<BookListItem[]> {
+    if (ids.length === 0) return [];
+
+    const rows = await db
+      .select({
+        id: books.id,
+        isbn13: books.isbn13,
+        recordReference: books.recordReference,
+        title: books.title,
+        subtitle: books.subtitle,
+        publisherName: books.publisherName,
+        imprintName: books.imprintName,
+        productForm: books.productForm,
+        publicationDate: books.publicationDate,
+        publishingStatus: books.publishingStatus,
+        availabilityCode: books.availabilityCode,
+        pageCount: books.pageCount,
+        coverUrl: books.coverUrl,
+        createdAt: books.createdAt,
+        updatedAt: books.updatedAt,
+      })
+      .from(books)
+      .where(and(inArray(books.id, ids), eq(books.isRemoved, false)));
+
+    const [relations, excerptMap] = await Promise.all([
+      attachRelationsToList(rows),
+      getExcerptsByIsbns(rows.map((row) => row.isbn13)),
+    ]);
+    const byId = new Map(rows.map((row) => [row.id, row]));
+
+    return ids
+      .map((id) => {
+        const row = byId.get(id);
+        if (!row) return null;
+        return {
+          ...row,
+          ...(relations.get(id) ?? { contributors: [], genres: [], prices: [] }),
+          excerpt: pickExcerpt(row.isbn13, excerptMap),
+        } as BookListItem;
+      })
+      .filter((book): book is BookListItem => book !== null);
+  },
+
   async getById(id: number): Promise<BookDetail | null> {
     const cacheKey = `book:detail:${id}`;
     const cached = await redis.get(cacheKey);

@@ -65,6 +65,12 @@ export const referralClicks = pgTable(
     ipHash: varchar('ip_hash', { length: 64 }),
     userAgent: varchar('user_agent', { length: 500 }),
     countryCode: char('country_code', { length: 2 }),
+    // Link-preview fetchers and crawlers, flagged rather than dropped. WhatsApp,
+    // iMessage and Slack all fetch a URL server-side to build the preview card,
+    // which hits this endpoint exactly as a person would. Keeping the rows means
+    // "was the link even delivered?" stays answerable; excluding them from the
+    // count means the number a user sees is people.
+    isBot: boolean('is_bot').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({

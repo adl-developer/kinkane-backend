@@ -7,6 +7,7 @@ import { ExpressAdapter } from '@bull-board/express';
 import { logger } from './lib/logger';
 import { emailQueue } from './lib/email-queue';
 import { pushQueue } from './lib/push-queue';
+import { fulfilmentQueue } from './lib/fulfilment-queue';
 import { config } from './config';
 import apiRoutes from './routes';
 import gardnersDropshipRoutes from './routes/gardners-dropship.routes';
@@ -56,7 +57,14 @@ function requireAdminToken(req: Request, res: Response, next: NextFunction): voi
 const bullBoardAdapter = new ExpressAdapter();
 bullBoardAdapter.setBasePath('/admin/queues');
 createBullBoard({
-  queues: [new BullMQAdapter(emailQueue), new BullMQAdapter(pushQueue)],
+  // Fulfilment is here for a different reason than the other two: a failed job
+  // on this queue is a paid order that never reached the supplier, and this
+  // dashboard is where an operator will go to find and retry it.
+  queues: [
+    new BullMQAdapter(emailQueue),
+    new BullMQAdapter(pushQueue),
+    new BullMQAdapter(fulfilmentQueue),
+  ],
   serverAdapter: bullBoardAdapter,
 });
 app.use('/admin/queues', requireAdminToken, bullBoardAdapter.getRouter());

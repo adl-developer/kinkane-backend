@@ -1,0 +1,1 @@
+ALTER TABLE "referral_clicks" ADD COLUMN "is_bot" boolean DEFAULT false NOT NULL;

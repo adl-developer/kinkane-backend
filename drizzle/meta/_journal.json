@@ -239,6 +239,27 @@
       "when": 1786398864916,
       "tag": "0033_daffy_supreme_intelligence",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1786409232710,
+      "tag": "0034_youthful_hex",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1786441973411,
+      "tag": "0035_tidy_blue_blade",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1786446343849,
+      "tag": "0036_cultured_ben_parker",
+      "breakpoints": true
     }
   ]
 }

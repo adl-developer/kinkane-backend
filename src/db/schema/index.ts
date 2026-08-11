@@ -1,6 +1,7 @@
 export * from './users';
 export * from './countries';
 export * from './referrals';
+export * from './payments';
 export * from './books';
 export * from './book-excerpts';
 export * from './ingestion';
@@ -25,3 +26,4 @@ export * from './gardners-firm-sale';
 export * from './gardners-isbn-slips';
 export * from './gardners-market-restrictions';
 export * from './gardners-dropship-orders';
+export * from './commerce';

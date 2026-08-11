@@ -20,6 +20,9 @@ import notificationsRoutes from './notifications.routes';
 import deviceTokensRoutes from './device-tokens.routes';
 import reportsRoutes from './reports.routes';
 import referralsRoutes from './referrals.routes';
+import paymentsRoutes from './payments.routes';
+import cartRoutes from './cart.routes';
+import ordersRoutes from './orders.routes';
 
 const router = Router();
 
@@ -52,6 +55,12 @@ v1.use('/reports', reportsRoutes);
 // Open to every signed-up user — the router itself deliberately applies
 // requireAuth without requirePlus. See referrals.routes.ts.
 v1.use('/referrals', referralsRoutes);
+// Payment confirmation by reference — covers subscriptions and book orders alike.
+v1.use('/payments', paymentsRoutes);
+// The shop. Deliberately requireAuth only, with no requirePlus anywhere —
+// buying is open to every signed-up user.
+v1.use('/cart', cartRoutes);
+v1.use('/orders', ordersRoutes);
 v1.use('/unsubscribe', unsubscribeRoutes);
 
 router.use('/v1', v1);

@@ -18,10 +18,18 @@ import {
   startInteractionCleanupCron,
   stopInteractionCleanupCron,
 } from './jobs/interaction-cleanup.cron';
+import {
+  startOrderReconciliationCron,
+  stopOrderReconciliationCron,
+  startBestsellerRefreshCron,
+  stopBestsellerRefreshCron,
+} from './jobs/order-reconciliation.cron';
 import { startEmailWorker, stopEmailWorker } from './workers/email.worker';
+import { startFulfilmentWorker, stopFulfilmentWorker } from './workers/fulfilment.worker';
 import { startPushWorker, stopPushWorker } from './workers/push.worker';
 import { emailQueue, bullConnection } from './lib/email-queue';
 import { pushQueue } from './lib/push-queue';
+import { fulfilmentQueue } from './lib/fulfilment-queue';
 
 async function main(): Promise<void> {
   await connectRedis();
@@ -33,8 +41,11 @@ async function main(): Promise<void> {
   const subscriptionReconciliationTask = startSubscriptionReconciliationCron();
   const preferenceHistoryCleanupTask = startPreferenceHistoryCleanupCron();
   const interactionCleanupTask = startInteractionCleanupCron();
+  const orderReconciliationTask = startOrderReconciliationCron();
+  const bestsellerRefreshTask = startBestsellerRefreshCron();
   const emailWorker = startEmailWorker();
   const pushWorker = startPushWorker();
+  const fulfilmentWorker = startFulfilmentWorker();
 
   const server = app.listen(config.port, () => {
     logger.info('kinkane-server started', { port: config.port, env: config.nodeEnv });
@@ -49,6 +60,8 @@ async function main(): Promise<void> {
     stopSubscriptionReconciliationCron(subscriptionReconciliationTask);
     stopPreferenceHistoryCleanupCron(preferenceHistoryCleanupTask);
     stopInteractionCleanupCron(interactionCleanupTask);
+    stopOrderReconciliationCron(orderReconciliationTask);
+    stopBestsellerRefreshCron(bestsellerRefreshTask);
     // server.close() stops accepting new connections and waits for in-flight
     // requests to finish — disconnect Redis only after they drain so that any
     // in-flight cache/rate-limit call can still reach Redis.
@@ -58,6 +71,10 @@ async function main(): Promise<void> {
       await emailQueue.close();
       await stopPushWorker(pushWorker);
       await pushQueue.close();
+      // Waits for an in-flight Gardners submission to finish: killing one
+      // mid-SFTP-write would leave a partial .ORD file on their server.
+      await stopFulfilmentWorker(fulfilmentWorker);
+      await fulfilmentQueue.close();
       await bullConnection.quit();
       await disconnectRedis();
       process.exit(0);
