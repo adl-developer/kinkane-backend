@@ -19,14 +19,29 @@ export const CROCKFORD_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
  * worth leaving behind.
  */
 export function randomCode(length: number, alphabet: string = CROCKFORD_ALPHABET): string {
+  if (alphabet.length < 2 || alphabet.length > 256) {
+    throw new Error('randomCode alphabet must be between 2 and 256 characters');
+  }
+
   const max = Math.floor(256 / alphabet.length) * alphabet.length;
   let out = '';
-  while (out.length < length) {
+
+  // Bounded so a pathological alphabet can't spin forever. With the shipped
+  // 32-character alphabet nothing is ever rejected, and even the worst legal
+  // alphabet (129 characters, ~50% rejection) finishes inside this in every
+  // practical case — so exhausting it means the random source is broken, which
+  // is worth an error rather than a hang.
+  for (let round = 0; out.length < length && round < 1000; round++) {
     for (const byte of crypto.randomBytes(length)) {
       if (byte >= max) continue;
       out += alphabet[byte % alphabet.length];
       if (out.length === length) break;
     }
   }
+
+  if (out.length < length) {
+    throw new Error('randomCode could not gather enough unbiased random bytes');
+  }
+
   return out;
 }

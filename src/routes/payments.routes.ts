@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.middleware';
+import { paymentConfirmLimiter } from '../middleware/rate-limit.middleware';
 import { paymentsController } from '../controllers/payments.controller';
 import { wrap } from '../lib/route-helpers';
 
@@ -26,8 +27,9 @@ router.use(requireAuth);
  * Returns 200: { reference, kind, status, paid, amountCents, currency, orderId, paidAt, reason }
  *   status: 'pending' | 'succeeded' | 'failed' | 'expired' | 'cancelled'
  *   kind:   'subscription' | 'order'
- * Errors: 400 malformed reference | 401 unauthenticated | 404 unknown reference, or not the caller's
+ * Errors: 400 malformed reference | 401 unauthenticated | 404 unknown reference, or not the caller's |
+ *         429 polled too fast (60/min — see paymentConfirmLimiter)
  */
-router.get('/:reference', wrap(paymentsController.confirm));
+router.get('/:reference', paymentConfirmLimiter, wrap(paymentsController.confirm));
 
 export default router;

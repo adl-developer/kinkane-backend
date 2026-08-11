@@ -4,6 +4,7 @@ import { countries } from '../db/schema';
 import type { Continent } from '../db/schema';
 import { config } from '../config';
 import { logger } from '../lib/logger';
+import { normalizeCountryCode } from '../lib/country';
 
 /**
  * "Where in the world is this request coming from?"
@@ -108,14 +109,8 @@ async function getMaxmindReader(): Promise<MaxmindReader | null> {
   return maxmindReader;
 }
 
-function normalizeCode(raw: string | undefined | null): string | null {
-  if (!raw) return null;
-  const code = raw.trim().toUpperCase();
-  // Two ASCII letters. Cloudflare sends 'XX' for unresolvable and 'T1' for Tor;
-  // neither is a country, and both fail this test.
-  if (!/^[A-Z]{2}$/.test(code) || code === 'XX') return null;
-  return code;
-}
+// Shared with commerce pricing — see lib/country for why this is one function.
+const normalizeCode = normalizeCountryCode;
 
 export const geoService = {
   /**

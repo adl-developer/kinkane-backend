@@ -16,6 +16,7 @@ import type { Request } from 'express';
 import { config } from '../../config';
 import { geoService } from '../geo.service';
 import { convertFromGbpPence, percentOf, toStripeAmount } from '../../lib/money';
+import { normalizeCountryCode } from '../../lib/country';
 
 /**
  * EU member states, used only to resolve the `EU` shipping/VAT bucket when a
@@ -33,13 +34,11 @@ const REST_OF_WORLD = 'ROW';
 
 // ── Country ───────────────────────────────────────────────────────────────────
 
-/** Two ASCII letters. Cloudflare sends 'XX' for unresolvable and 'T1' for Tor. */
-export function normalizeCountry(raw: string | undefined | null): string | null {
-  if (!raw) return null;
-  const code = raw.trim().toUpperCase();
-  if (!/^[A-Z]{2}$/.test(code) || code === 'XX') return null;
-  return code;
-}
+/**
+ * Re-exported under the name commerce already uses. The rule itself is shared
+ * with geo resolution — see lib/country.
+ */
+export const normalizeCountry = normalizeCountryCode;
 
 /**
  * Best guess at where an inbound request is coming from, for *presentation*

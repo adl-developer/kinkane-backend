@@ -19,6 +19,7 @@ import { db } from '../../db';
 import { users, carts, cartItems, orders, orderItems, type Order } from '../../db/schema';
 import { config } from '../../config';
 import { stripe, assertStripeConfigured } from '../../lib/stripe';
+import { withQueryParam } from '../../lib/url';
 import { logger } from '../../lib/logger';
 import { checkoutService as subscriptionCheckoutService } from '../subscriptions/checkout.service';
 import { paymentsService } from '../payments.service';
@@ -348,8 +349,8 @@ export const commerceCheckoutService = {
       // `kind` is what lets the shared webhook tell an order apart from a
       // subscription without inspecting line items.
       metadata: { kind: 'order', orderId: String(order.id), userId: String(userId) },
-      success_url: `${config.commerce.orderSuccessUrl}&orderId=${order.id}`,
-      cancel_url: `${config.commerce.orderCancelUrl}&orderId=${order.id}`,
+      success_url: withQueryParam(config.commerce.orderSuccessUrl, 'orderId', String(order.id)),
+      cancel_url: withQueryParam(config.commerce.orderCancelUrl, 'orderId', String(order.id)),
     });
   },
 
