@@ -5,7 +5,7 @@
 
 ### Features
 
-* count referral link taps that open the app directly ([1a29aec](https://adl.github.com/adl-developer/kinkane-backend/commit/1a29aecc8ae6587bd4a0abc33e51ae3eeefde752)) — [details](changelog/2026-08-11-referral-app-clicks.md)
+* count referral link taps that open the app directly ([9f46d86](https://adl.github.com/adl-developer/kinkane-backend/commit/9f46d86797fe45667bdc9dc2ee62240807d07f4b)) — [details](changelog/2026-08-11-referral-app-clicks.md)
 * count referral clicks as people rather than raw hits ([8a41e91](https://adl.github.com/adl-developer/kinkane-backend/commit/8a41e911e15941dc082a2b8891299621707a764a)) — [details](changelog/2026-08-11-referral-app-clicks.md)
 
 ### Bug Fixes

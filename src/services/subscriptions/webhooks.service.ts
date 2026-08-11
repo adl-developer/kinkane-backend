@@ -9,6 +9,8 @@ import { logger } from '../../lib/logger';
 import { enqueueEmail } from '../../lib/email-queue';
 import { subscriptionStateService } from './state.service';
 import { entitlementsService } from './entitlements.service';
+import { orderWebhooksService } from '../commerce/order-webhooks.service';
+import { paymentsService } from '../payments.service';
 
 /**
  * Stripe webhook ingestion.
@@ -131,7 +133,31 @@ export const webhooksService = {
   async handleEvent(event: Stripe.Event): Promise<void> {
     switch (event.type) {
       case 'checkout.session.completed':
+        // One endpoint serves both products. `mode` is the discriminator:
+        // 'subscription' is Kinkané Plus, 'payment' is a book order. Each
+        // handler returns immediately if the session is not its own, so adding
+        // a second webhook endpoint (and a second idempotency table) was never
+        // necessary.
         await this.onCheckoutCompleted(event, event.data.object as Stripe.Checkout.Session);
+        await orderWebhooksService.onCheckoutCompleted(
+          event,
+          event.data.object as Stripe.Checkout.Session,
+        );
+        break;
+      case 'checkout.session.expired': {
+        // Applies to both kinds: the order handler ignores subscription
+        // sessions, while the payment reference is settled for either.
+        const expired = event.data.object as Stripe.Checkout.Session;
+        await paymentsService.markFromSession(
+          expired.id,
+          'expired',
+          'The payment window closed before it was completed',
+        );
+        await orderWebhooksService.onCheckoutExpired(expired);
+        break;
+      }
+      case 'payment_intent.payment_failed':
+        await orderWebhooksService.onPaymentFailed(event.data.object as Stripe.PaymentIntent);
         break;
       case 'customer.subscription.created':
       case 'customer.subscription.updated':
@@ -150,6 +176,7 @@ export const webhooksService = {
         break;
       case 'charge.refunded':
         await this.onChargeRefunded(event, event.data.object as Stripe.Charge);
+        await orderWebhooksService.onChargeRefunded(event.data.object as Stripe.Charge);
         break;
       default:
         logger.info('Ignoring unhandled Stripe event type', { type: event.type, eventId: event.id });
@@ -195,6 +222,12 @@ export const webhooksService = {
    */
   async onCheckoutCompleted(event: Stripe.Event, session: Stripe.Checkout.Session): Promise<void> {
     if (session.mode !== 'subscription') return;
+
+    // The client-facing payment reference. Settled here rather than deeper in
+    // the flow so it resolves even if subscription resolution below bails out —
+    // the money did arrive, and the app asking "did my payment work" deserves
+    // the true answer regardless of what we then failed to do with it.
+    await paymentsService.markFromSession(session.id, 'succeeded');
 
     const stripeCustomerId = customerId(session.customer);
     const userId =

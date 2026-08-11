@@ -10,7 +10,17 @@
  * order normally but never creates real order lines — safe to run against
  * production credentials.
  *
- * Usage: npx tsx scripts/gardners-dropship-test.ts
+ * NOTE: Gardners is blocked entirely while NODE_ENV is 'development' (see
+ * services/gardners-dropship/connection.service.ts) — that guard is what stops
+ * a local checkout from posting real order files to a real supplier. This
+ * script is the one thing that legitimately needs to bypass it, so it has to be
+ * run with the opt-out set explicitly:
+ *
+ *   GARDNERS_DROPSHIP_ALLOW_IN_DEV=true npx tsx scripts/gardners-dropship-test.ts
+ *
+ * Without it the script fails fast with a message saying exactly this.
+ *
+ * Usage: GARDNERS_DROPSHIP_ALLOW_IN_DEV=true npx tsx scripts/gardners-dropship-test.ts
  */
 import 'dotenv/config';
 import { eq } from 'drizzle-orm';

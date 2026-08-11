@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import express from 'express';
 import { requireAuth } from '../middleware/auth.middleware';
-import { wrap } from '../lib/route-helpers';
+import { wrap, wrapHttp } from '../lib/route-helpers';
 import { checkoutLimiter } from '../middleware/rate-limit.middleware';
 import { subscriptionsController } from '../controllers/subscriptions.controller';
 
@@ -65,6 +65,43 @@ router.post(
   checkoutLimiter,
   wrap(subscriptionsController.createCheckoutSession),
 );
+
+/**
+ * POST /api/v1/user/subscription/cancel
+ *
+ * Cancels the subscription from inside the app — no Stripe-hosted page, no
+ * webview. Sending someone out to a Stripe-branded site to stop paying is a
+ * poor experience, and cancellation is a single flag rather than one of the
+ * genuinely hard billing flows (proration, dunning, SCA) that stay in the
+ * portal.
+ *
+ * Takes effect at the END of the paid period, never immediately: the user has
+ * already paid for this term, and revoking it on click both destroys value they
+ * bought and invites refund requests. They keep Plus until `accessEndsAt`.
+ *
+ * Idempotent — cancelling twice returns the same state rather than an error.
+ *
+ * Returns 200: { cancelAtPeriodEnd: true, accessEndsAt, tier, status }
+ * Errors: 401 unauthenticated | 404 no subscription |
+ *         409 NO_PAID_SUBSCRIPTION (trialing or free — the trial is ours, not
+ *         Stripe's, so there is nothing to cancel) | 503 payments not configured
+ */
+router.post('/cancel', requireAuth, wrapHttp(subscriptionsController.cancel));
+
+/**
+ * POST /api/v1/user/subscription/reactivate
+ *
+ * Undoes a scheduled cancellation while the period is still running — the
+ * request that always follows a cancel button. Without it, a user who cancelled
+ * by accident can only return via a fresh checkout, which means a new billing
+ * date and, during the launch window, losing their Founding Member price.
+ *
+ * Returns 200: { cancelAtPeriodEnd: false, accessEndsAt, tier, status }
+ * Errors: 401 unauthenticated | 404 no subscription |
+ *         409 NO_PAID_SUBSCRIPTION | 409 SUBSCRIPTION_ENDED (the period already
+ *         elapsed and Stripe deleted it — start a new one) | 503 not configured
+ */
+router.post('/reactivate', requireAuth, wrapHttp(subscriptionsController.reactivate));
 
 /**
  * POST /api/v1/user/subscription/portal-session

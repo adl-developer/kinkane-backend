@@ -109,6 +109,27 @@ export const subscriptionsController = {
     res.status(200).json(result);
   },
 
+  /**
+   * POST /api/v1/user/subscription/cancel
+   *
+   * Cancels in-app, without sending the user to Stripe. Takes effect at the end
+   * of the period they have already paid for.
+   */
+  async cancel(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const result = await checkoutService.cancel(req.user.id);
+    res.status(200).json(result);
+  },
+
+  /**
+   * POST /api/v1/user/subscription/reactivate
+   *
+   * Undoes a scheduled cancellation while the period is still running.
+   */
+  async reactivate(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const result = await checkoutService.reactivate(req.user.id);
+    res.status(200).json(result);
+  },
+
   /** POST /api/v1/user/subscription/portal-session */
   async createPortalSession(req: AuthenticatedRequest, res: Response): Promise<void> {
     const parsed = portalSchema.safeParse(req.body ?? {});

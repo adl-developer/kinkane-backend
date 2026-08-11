@@ -1,3 +1,4 @@
+import type Stripe from 'stripe';
 import { eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { users, userSubscriptions } from '../../db/schema';
@@ -6,19 +7,39 @@ import { config } from '../../config';
 import { stripe, assertStripeConfigured, resolvePrice, isFoundingWindowOpen } from '../../lib/stripe';
 import { logger } from '../../lib/logger';
 import { subscriptionStateService } from './state.service';
+import { entitlementsService } from './entitlements.service';
+import { paymentsService } from '../payments.service';
 
 /**
- * Creating Stripe Checkout and Billing Portal sessions.
+ * Creating Stripe Checkout and Billing Portal sessions, plus in-app
+ * cancellation.
  *
- * Cancellation, card updates and plan switches are deliberately *not*
- * implemented here — they go through Stripe's hosted Billing Portal. Rebuilding
- * them would mean reimplementing proration, dunning and SCA, and every one of
- * those flows already has to be handled on the webhook side regardless.
+ * Card updates, plan switches and invoice history are still the hosted Billing
+ * Portal's job — rebuilding those means reimplementing proration, dunning and
+ * SCA. **Cancellation is the exception**, and is implemented here: it is a
+ * single boolean on the subscription, it is the one billing action users
+ * routinely need, and sending someone out to a Stripe-branded web page to stop
+ * paying is a bad experience in a native app.
  */
+
+/** What the client needs to re-render the account screen after cancel/resume. */
+export interface CancellationResult {
+  cancelAtPeriodEnd: boolean;
+  /** When Plus actually stops. Null only if Stripe has no period on record. */
+  accessEndsAt: Date | null;
+  tier: string;
+  status: string;
+}
 
 export interface CheckoutSessionResult {
   url: string;
   sessionId: string;
+  /**
+   * Our own payment reference — the one the client stores and later exchanges
+   * for a status via GET /payments/:reference. Returned with the URL so the app
+   * has it before the user ever leaves for Stripe.
+   */
+  paymentReference: string;
   plan: SubscriptionPlan;
   isFounding: boolean;
 }
@@ -131,6 +152,18 @@ export const checkoutService = {
       throw Object.assign(new Error('Stripe did not return a checkout URL'), { statusCode: 502 });
     }
 
+    // The reference the client holds. Minted here so the mobile app gets one
+    // identifier back with the URL and can later confirm the payment without
+    // knowing anything about Stripe or about which flow it went through — book
+    // checkout mints its reference the same way.
+    const payment = await paymentsService.create({
+      userId,
+      kind: 'subscription',
+      stripeCheckoutSessionId: session.id,
+      amountCents: session.amount_total,
+      currency: session.currency?.toUpperCase() ?? null,
+    });
+
     logger.info('Created Stripe checkout session', {
       userId,
       plan,
@@ -138,9 +171,16 @@ export const checkoutService = {
       priceId,
       standardPriceId,
       sessionId: session.id,
+      paymentReference: payment.reference,
     });
 
-    return { url: session.url, sessionId: session.id, plan, isFounding };
+    return {
+      url: session.url,
+      sessionId: session.id,
+      paymentReference: payment.reference,
+      plan,
+      isFounding,
+    };
   },
 
   /**
@@ -210,4 +250,149 @@ export const checkoutService = {
       plans,
     };
   },
+
+
+  /**
+   * Cancels at the end of the paid period.
+   *
+   * Deliberately **not** an immediate cancellation. The user has already paid
+   * for the current term, and taking access away the moment they click cancel
+   * both loses them value they bought and generates refund requests. Stripe
+   * stops billing, they keep Plus until `currentPeriodEnd`, and the app renders
+   * that from `cancelAtPeriodEnd` + `currentPeriodEnd`.
+   *
+   * Idempotent: cancelling an already-cancelling subscription returns the same
+   * state rather than erroring, because a double-tap on a Cancel button is not
+   * a mistake worth surfacing.
+   */
+  async cancel(userId: number): Promise<CancellationResult> {
+    assertStripeConfigured();
+
+    const sub = await subscriptionStateService.getCurrent(userId);
+    if (!sub) {
+      throw Object.assign(new Error('Subscription not found'), { statusCode: 404 });
+    }
+
+    if (!sub.stripeSubscriptionId) {
+      // Trialing or free. The 90-day trial is ours, not Stripe's, so there is
+      // nothing to cancel — and saying so plainly is better than a 500 from
+      // Stripe about a missing subscription.
+      throw Object.assign(
+        new Error('You do not have a paid subscription to cancel'),
+        { statusCode: 409, code: 'NO_PAID_SUBSCRIPTION' },
+      );
+    }
+
+    const updated = await stripe().subscriptions.update(sub.stripeSubscriptionId, {
+      cancel_at_period_end: true,
+    });
+
+    // Mirror it locally rather than waiting for customer.subscription.updated.
+    // The webhook will still arrive and write the same thing — these handlers
+    // write the state the event describes rather than applying a delta, so the
+    // two agreeing is the normal case, not a conflict.
+    const state = await subscriptionStateService.applyState(
+      userId,
+      {
+        tier: sub.tier,
+        status: sub.status,
+        plan: sub.plan,
+        priceId: sub.priceId,
+        isFoundingMember: sub.isFoundingMember,
+        currentPeriodEnd: periodEndOf(updated) ?? sub.currentPeriodEnd,
+        cancelAtPeriodEnd: true,
+        stripeCustomerId: sub.stripeCustomerId,
+        stripeSubscriptionId: sub.stripeSubscriptionId,
+      },
+      { reason: 'subscription_updated' },
+    );
+
+    await entitlementsService.invalidate(userId);
+
+    logger.info('Subscription cancellation scheduled', {
+      userId,
+      stripeSubscriptionId: sub.stripeSubscriptionId,
+      accessEndsAt: state?.currentPeriodEnd ?? sub.currentPeriodEnd,
+    });
+
+    return {
+      cancelAtPeriodEnd: true,
+      accessEndsAt: state?.currentPeriodEnd ?? sub.currentPeriodEnd ?? null,
+      tier: state?.tier ?? sub.tier,
+      status: state?.status ?? sub.status,
+    };
+  },
+
+  /**
+   * Undoes a scheduled cancellation, while the period is still running.
+   *
+   * The request that always follows cancellation. Without it the only way back
+   * is a fresh checkout, which for a user who cancelled by accident means a new
+   * subscription, a new billing date, and — during the launch window — the loss
+   * of their Founding Member price.
+   */
+  async reactivate(userId: number): Promise<CancellationResult> {
+    assertStripeConfigured();
+
+    const sub = await subscriptionStateService.getCurrent(userId);
+    if (!sub) {
+      throw Object.assign(new Error('Subscription not found'), { statusCode: 404 });
+    }
+
+    if (!sub.stripeSubscriptionId) {
+      throw Object.assign(
+        new Error('You do not have a paid subscription to resume'),
+        { statusCode: 409, code: 'NO_PAID_SUBSCRIPTION' },
+      );
+    }
+
+    // Once the period has ended Stripe has genuinely deleted the subscription,
+    // and there is nothing left to flip — that user needs a new checkout.
+    if (sub.status === 'cancelled' || sub.status === 'expired') {
+      throw Object.assign(
+        new Error('This subscription has already ended — start a new one to resume Plus'),
+        { statusCode: 409, code: 'SUBSCRIPTION_ENDED' },
+      );
+    }
+
+    const updated = await stripe().subscriptions.update(sub.stripeSubscriptionId, {
+      cancel_at_period_end: false,
+    });
+
+    const state = await subscriptionStateService.applyState(
+      userId,
+      {
+        tier: sub.tier,
+        status: sub.status,
+        plan: sub.plan,
+        priceId: sub.priceId,
+        isFoundingMember: sub.isFoundingMember,
+        currentPeriodEnd: periodEndOf(updated) ?? sub.currentPeriodEnd,
+        cancelAtPeriodEnd: false,
+        stripeCustomerId: sub.stripeCustomerId,
+        stripeSubscriptionId: sub.stripeSubscriptionId,
+      },
+      { reason: 'subscription_updated' },
+    );
+
+    await entitlementsService.invalidate(userId);
+
+    logger.info('Subscription cancellation reversed', {
+      userId,
+      stripeSubscriptionId: sub.stripeSubscriptionId,
+    });
+
+    return {
+      cancelAtPeriodEnd: false,
+      accessEndsAt: state?.currentPeriodEnd ?? sub.currentPeriodEnd ?? null,
+      tier: state?.tier ?? sub.tier,
+      status: state?.status ?? sub.status,
+    };
+  },
 };
+
+/** Stripe moved the period end onto the subscription item. */
+function periodEndOf(subscription: Stripe.Subscription): Date | null {
+  const seconds = subscription.items.data[0]?.current_period_end;
+  return typeof seconds === 'number' ? new Date(seconds * 1000) : null;
+}

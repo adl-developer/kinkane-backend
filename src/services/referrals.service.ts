@@ -12,6 +12,7 @@ import type { Referral } from '../db/schema';
 import { config } from '../config';
 import { logger } from '../lib/logger';
 import { isBotUserAgent } from '../lib/user-agent';
+import { randomCode } from '../lib/random-code';
 import {
   activeCampaign,
   shortMessage,
@@ -33,29 +34,18 @@ import { referralScoringService, MAX_DEPTH } from './referral-scoring.service';
 // Crockford base32 minus the characters people misread or mistype when copying a
 // code off a screen: I, L, O and U are absent. A code is read aloud and retyped
 // far more often than a password is.
-const CODE_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 const CODE_LENGTH = 10;
 
 /**
  * A random code, never derived from the user id — a derivable code is an
  * enumerable one, and enumerating codes would expose the user list.
  *
- * Rejection sampling rather than `% alphabet.length`: 256 is not a multiple of
- * 32 in general (it is here, but the alphabet is a constant someone will edit),
- * and a modulo bias in the one function that has to be unpredictable is not
- * worth leaving as a trap.
+ * The alphabet and the unbiased sampling live in lib/random-code, shared with
+ * payment references: both are identifiers a human has to read off a screen and
+ * retype, so both want the same ambiguous characters left out.
  */
 export function generateCode(length = CODE_LENGTH): string {
-  const max = Math.floor(256 / CODE_ALPHABET.length) * CODE_ALPHABET.length;
-  let out = '';
-  while (out.length < length) {
-    for (const byte of crypto.randomBytes(length)) {
-      if (byte >= max) continue;
-      out += CODE_ALPHABET[byte % CODE_ALPHABET.length];
-      if (out.length === length) break;
-    }
-  }
-  return out;
+  return randomCode(length);
 }
 
 // ── Slug ──────────────────────────────────────────────────────────────────────

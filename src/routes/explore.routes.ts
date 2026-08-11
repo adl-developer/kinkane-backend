@@ -25,6 +25,29 @@ const router = Router();
 router.get('/trending', optionalAuth, exploreController.getTrending);
 
 /**
+ * GET /api/v1/explore/bestsellers?window=30d&limit=10
+ *
+ * The books most copies have actually been bought of, in that order.
+ *
+ * Built from our own order history: Gardners supplies price, stock and
+ * availability but no sales rank or units-sold data of any kind, so there is no
+ * external chart to read. `gardners_promotions` is deliberately not used —
+ * promotional titles are publisher marketing spend, not sales performance.
+ *
+ * Returns an EMPTY `books` array when nothing has sold in the window. It never
+ * substitutes another feed — a discovery list presented as a sales chart would
+ * be indistinguishable from a real one, and untrue. Clients should hide the
+ * section when the list is empty. Cached for an hour, cleared nightly.
+ *
+ * Query params: window — 7d | 30d | 90d | all_time (default 30d)
+ *               limit  — 1–20 (default 10)
+ * Returns 200: { window, source: 'orders', books: [...] }
+ * Public — no auth required. The ranking is factual and identical for everyone,
+ * so nothing is filtered per viewer.
+ */
+router.get('/bestsellers', optionalAuth, exploreController.getBestsellers);
+
+/**
  * GET /api/v1/explore/personalized?limit=10
  *
  * Returns books ranked by cosine similarity to the authenticated user's

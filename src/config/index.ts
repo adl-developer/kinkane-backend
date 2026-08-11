@@ -151,6 +151,98 @@ const envSchema = z.object({
     .string()
     .default('true')
     .transform((v) => v === 'true'),
+  // Escape hatch for the one legitimate case of talking to Gardners from a
+  // developer machine: scripts/gardners-dropship-test.ts. While NODE_ENV is
+  // 'development' and this is false, nothing reaches Gardners' Home Delivery
+  // SFTP at all — no order file, no ack poll — regardless of credentials or of
+  // the per-order TESTING flag. See connection.service.ts.
+  GARDNERS_DROPSHIP_ALLOW_IN_DEV: z
+    .string()
+    .default('false')
+    .transform((v) => v === 'true'),
+
+  // ── Commerce ────────────────────────────────────────────────────────────────
+  // Cart, checkout and order pricing. Everything here is policy, not law we
+  // control, which is why it is configuration rather than code: shipping is our
+  // own pricing decision, and VAT is an external rule that changes on someone
+  // else's timetable. See docs/ecommerce-plan.md.
+
+  // Country resolution is NOT configured here — commerce reads it from
+  // geoService, which owns GEO_COUNTRY_HEADER and MAXMIND_DB_PATH above.
+  // Currency display and referral scoring must agree about where a request
+  // comes from; two independent header lookups would eventually disagree.
+
+  // Currencies we are willing to present prices in. Kept deliberately short:
+  // every entry is a live FX exposure and another rounding surface.
+  SUPPORTED_CURRENCIES: z.string().default('USD,GBP,EUR'),
+  DEFAULT_CURRENCY: z.string().length(3).default('USD'),
+  // country -> currency. Anything unlisted falls back to DEFAULT_CURRENCY.
+  CURRENCY_BY_COUNTRY: z
+    .string()
+    .default('GB:GBP,IE:EUR,DE:EUR,FR:EUR,ES:EUR,IT:EUR,NL:EUR,BE:EUR,PT:EUR,AT:EUR,FI:EUR,GR:EUR'),
+
+  // Gardners quotes GBP and only GBP, so every non-GBP price is a conversion.
+  // A static table is the launch trade: no external dependency inside the
+  // checkout path, at the cost of drift. FX_BUFFER_PERCENT pads the rate so a
+  // few weeks of drift eats the buffer rather than the margin.
+  FX_RATES_FROM_GBP: z.string().default('USD:1.27,EUR:1.17'),
+  FX_BUFFER_PERCENT: z.coerce.number().min(0).max(25).default(3),
+
+  // Shipping, in GBP pence, resolved most-specific-first:
+  // country code -> region (EU/ROW) -> ROW. Gardners bills us per line, so a
+  // flat per-order rate on a large basket is a deliberate margin decision.
+  SHIPPING_RATES: z.string().default('GB:299,IE:599,EU:699,US:899,ROW:1199'),
+  SHIPPING_PER_ITEM_GBP_PENCE: z.coerce.number().int().min(0).default(0),
+  // Order subtotal (GBP pence) at or above which shipping is free. Unset = never.
+  SHIPPING_FREE_THRESHOLD_GBP_PENCE: z.coerce.number().int().min(0).optional(),
+
+  // VAT by destination country, as a percentage. Physical books are zero-rated
+  // in the UK and Ireland, which is why the launch default is genuinely 0 and
+  // not a simplification. This table cannot express EU OSS thresholds, US sales
+  // tax nexus, or import duty — it is a documented stopgap, and `tax_source` is
+  // stored per order so a later correction can find the affected rows.
+  VAT_RATES: z.string().default('GB:0,IE:0,US:0'),
+  VAT_DEFAULT_RATE_PERCENT: z.coerce.number().min(0).max(100).default(0),
+  // false => tax is added on top of the book price at checkout.
+  // true  => the book price is treated as already including it, so a non-zero
+  //          rate comes out of our margin rather than the customer's total.
+  // Defaults to false: silently absorbing a destination's tax is a decision
+  // that should be made on purpose, not inherited.
+  VAT_PRICES_INCLUDE_TAX: z
+    .string()
+    .default('false')
+    .transform((v) => v === 'true'),
+
+  // ISO country -> Gardners region code(s) from REGIONS.CSV, pipe-separated
+  // where a country sits in more than one region (e.g. 'GH:AFR|WAF').
+  //
+  // Ships EMPTY on purpose. Gardners' region vocabulary is its own and does not
+  // line up with ISO-3166, and a guessed mapping is worse than none: it would
+  // silently authorise sales into territories nobody has checked the rights
+  // for. While this is empty, any title that *has* market restrictions is
+  // blocked from sale (titles with no restriction rows — the vast majority —
+  // are unaffected). Populate it before selling restricted titles abroad.
+  GARDNERS_REGION_BY_COUNTRY: z.string().default(''),
+
+  // ISO country -> the country NAME Gardners expects in ICOUNTRY/DCOUNTRY.
+  // Overrides and extends the built-in table in
+  // services/commerce/gardners-countries.ts, e.g.
+  //   GARDNERS_COUNTRY_NAMES_EXTRA=US:UNITED STATES OF AMERICA,TR:TURKIYE
+  //
+  // Exists because the authoritative list ("I12d FTP Country List.txt") is NOT
+  // in the specification PDF — it is sent separately on request from
+  // ITServices@gardners.com. Most of the built-in table is therefore an
+  // educated guess, and this lets the real names be applied without a deploy.
+  GARDNERS_COUNTRY_NAMES_EXTRA: z.string().default(''),
+
+  // Per-line and per-cart quantity ceilings. This is a bookshop on a home
+  // delivery service, not a trade counter.
+  CART_MAX_QUANTITY_PER_LINE: z.coerce.number().int().min(1).default(10),
+  CART_MAX_ITEMS: z.coerce.number().int().min(1).default(20),
+
+  // Where Stripe returns the buyer after a one-time order checkout.
+  STRIPE_ORDER_SUCCESS_URL: z.string().url().optional(),
+  STRIPE_ORDER_CANCEL_URL: z.string().url().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -161,6 +253,48 @@ if (!parsed.success) {
 }
 
 const env = parsed.data;
+
+/**
+ * Parsers for the `A,B,C` and `KEY:VALUE,KEY:VALUE` env formats used by the
+ * commerce settings.
+ *
+ * These deliberately **throw at boot** on anything malformed rather than
+ * skipping the bad entry. Every one of these tables is money: a typo'd FX rate
+ * that silently parses to NaN, or a shipping rule that quietly disappears,
+ * shows up as a wrong charge on a real customer's card long before anyone
+ * notices it in a log. A server that refuses to start is the cheap failure.
+ */
+function parseList(raw: string): string[] {
+  return raw
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function parseMap<T>(raw: string, coerce: (value: string) => T): Record<string, T> {
+  const out: Record<string, T> = {};
+
+  for (const entry of parseList(raw)) {
+    const separator = entry.indexOf(':');
+    if (separator === -1) {
+      throw new Error(`Malformed key:value config entry "${entry}" — expected KEY:VALUE`);
+    }
+
+    const key = entry.slice(0, separator).trim().toUpperCase();
+    const value = coerce(entry.slice(separator + 1).trim());
+
+    if (!key) {
+      throw new Error(`Malformed key:value config entry "${entry}" — empty key`);
+    }
+    if (typeof value === 'number' && !Number.isFinite(value)) {
+      throw new Error(`Malformed key:value config entry "${entry}" — value is not a number`);
+    }
+
+    out[key] = value;
+  }
+
+  return out;
+}
 
 type FirebaseCredentials = {
   projectId: string;
@@ -296,6 +430,34 @@ export const config = {
     },
     accountCode: env.GARDNERS_DROPSHIP_ACCOUNT_CODE,
     defaultTesting: env.GARDNERS_DROPSHIP_DEFAULT_TESTING,
+    allowInDev: env.GARDNERS_DROPSHIP_ALLOW_IN_DEV,
+  },
+  commerce: {
+    currency: {
+      supported: parseList(env.SUPPORTED_CURRENCIES).map((c) => c.toUpperCase()),
+      default: env.DEFAULT_CURRENCY.toUpperCase(),
+      byCountry: parseMap(env.CURRENCY_BY_COUNTRY, (v) => v.toUpperCase()),
+      fxFromGbp: parseMap(env.FX_RATES_FROM_GBP, Number),
+      bufferPercent: env.FX_BUFFER_PERCENT,
+    },
+    shipping: {
+      rates: parseMap(env.SHIPPING_RATES, Number),
+      perItemGbpPence: env.SHIPPING_PER_ITEM_GBP_PENCE,
+      freeThresholdGbpPence: env.SHIPPING_FREE_THRESHOLD_GBP_PENCE,
+    },
+    tax: {
+      rates: parseMap(env.VAT_RATES, Number),
+      defaultRatePercent: env.VAT_DEFAULT_RATE_PERCENT,
+      pricesIncludeTax: env.VAT_PRICES_INCLUDE_TAX,
+    },
+    gardnersRegionByCountry: parseMap(env.GARDNERS_REGION_BY_COUNTRY, (v) => v.toUpperCase()),
+    gardnersCountryNamesExtra: parseMap(env.GARDNERS_COUNTRY_NAMES_EXTRA, (v) => v.toUpperCase()),
+    cart: {
+      maxQuantityPerLine: env.CART_MAX_QUANTITY_PER_LINE,
+      maxItems: env.CART_MAX_ITEMS,
+    },
+    orderSuccessUrl: env.STRIPE_ORDER_SUCCESS_URL ?? `${env.APP_URL}/orders?checkout=success`,
+    orderCancelUrl: env.STRIPE_ORDER_CANCEL_URL ?? `${env.APP_URL}/cart?checkout=cancelled`,
   },
 } as const;
 
