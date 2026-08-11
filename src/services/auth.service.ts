@@ -700,9 +700,14 @@ export const authService = {
     });
   },
 
-  async deleteAccount(userId: number, password: string): Promise<void> {
+  /**
+   * Confirms a sensitive action is really being taken by the account owner,
+   * not just whoever is holding a valid session token. Shared by every
+   * password-confirmed flow (account deletion, changing subscription plan).
+   */
+  async verifyPassword(userId: number, password: string): Promise<void> {
     const [user] = await db
-      .select({ id: users.id, name: users.name, email: users.email, passwordHash: users.passwordHash })
+      .select({ passwordHash: users.passwordHash })
       .from(users)
       .where(eq(users.id, userId))
       .limit(1);
@@ -722,6 +727,20 @@ export const authService = {
     if (!valid) {
       throw Object.assign(new Error('Incorrect password'), { statusCode: 401 });
     }
+  },
+
+  async deleteAccount(userId: number, password: string): Promise<void> {
+    const [user] = await db
+      .select({ id: users.id, name: users.name, email: users.email })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+
+    if (!user) {
+      throw Object.assign(new Error('User not found'), { statusCode: 404 });
+    }
+
+    await this.verifyPassword(userId, password);
 
     // Stop billing BEFORE the row goes. Deleting the user cascades away
     // user_subscriptions, and with it the only record of which Stripe

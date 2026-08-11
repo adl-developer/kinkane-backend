@@ -55,6 +55,8 @@ export interface SubscriptionState {
   trialExpiredAt?: Date | null;
   currentPeriodEnd?: Date | null;
   cancelAtPeriodEnd?: boolean;
+  /** A plan switch scheduled for `currentPeriodEnd`, or null when none is pending. */
+  pendingPlan?: SubscriptionPlan | null;
   stripeCustomerId?: string | null;
   stripeSubscriptionId?: string | null;
 }
@@ -84,6 +86,7 @@ function isSameState(row: SubscriptionStateHistory, next: UserSubscription): boo
     row.priceId === next.priceId &&
     row.isFoundingMember === next.isFoundingMember &&
     row.cancelAtPeriodEnd === next.cancelAtPeriodEnd &&
+    row.pendingPlan === next.pendingPlan &&
     row.stripeSubscriptionId === next.stripeSubscriptionId &&
     sameTime(row.currentPeriodEnd, next.currentPeriodEnd) &&
     sameTime(row.trialEndsAt, next.trialEndsAt)
@@ -133,6 +136,7 @@ export const subscriptionStateService = {
           ...(next.trialExpiredAt !== undefined && { trialExpiredAt: next.trialExpiredAt }),
           ...(next.currentPeriodEnd !== undefined && { currentPeriodEnd: next.currentPeriodEnd }),
           ...(next.cancelAtPeriodEnd !== undefined && { cancelAtPeriodEnd: next.cancelAtPeriodEnd }),
+          ...(next.pendingPlan !== undefined && { pendingPlan: next.pendingPlan }),
           ...(next.stripeCustomerId !== undefined && { stripeCustomerId: next.stripeCustomerId }),
           ...(next.stripeSubscriptionId !== undefined && {
             stripeSubscriptionId: next.stripeSubscriptionId,
@@ -196,6 +200,7 @@ export const subscriptionStateService = {
       trialEndsAt: row.trialEndsAt,
       currentPeriodEnd: row.currentPeriodEnd,
       cancelAtPeriodEnd: row.cancelAtPeriodEnd,
+      pendingPlan: row.pendingPlan,
       stripeSubscriptionId: row.stripeSubscriptionId,
       reason,
       sourceEventId,

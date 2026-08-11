@@ -5,12 +5,21 @@ import { userBooksService } from '../services/user-books.service';
 import { interactionsService } from '../services/interactions.service';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 
+// z.coerce.boolean() would treat the literal string "false" as truthy (any non-empty
+// string coerces to true), so accepted values are explicit — see refreshQuerySchema in
+// recommendations.controller.ts for the same pattern.
+const dedupeParam = z.enum(['true', 'false']).default('false').transform((v) => v === 'true');
+
 const suggestionsSchema = z.object({
   q: z.string().min(1, 'Query must not be empty').max(100),
   limit: z.coerce.number().int().min(1).max(15).default(8),
   // Defaults to matching both title and author. The single-sided values stay accepted so
   // existing callers that pass type=title or type=author keep their current behaviour.
   type: z.enum(['all', 'title', 'author']).default('all'),
+  // Opt-in: collapses same-titled editions down to the best one (cover > complete dataset >
+  // newest publication date > has a price). Off by default so the web app can show every
+  // edition; the mobile app passes ?dedupe=true.
+  dedupe: dedupeParam,
 });
 
 const similarSchema = z.object({
@@ -27,6 +36,8 @@ const listSchema = z.object({
   sort: z.enum(['asc', 'desc']).optional(),
   limit: z.coerce.number().int().min(1).max(50).default(20),
   offset: z.coerce.number().int().min(0).default(0),
+  // Opt-in: collapses same-titled editions down to the best one — see dedupeParam above.
+  dedupe: dedupeParam,
 });
 
 export const booksController = {
@@ -38,7 +49,7 @@ export const booksController = {
     }
 
     try {
-      const results = await booksService.suggestions(parsed.data.q, parsed.data.limit, parsed.data.type);
+      const results = await booksService.suggestions(parsed.data.q, parsed.data.limit, parsed.data.type, parsed.data.dedupe);
       res.status(200).json({ suggestions: results, type: parsed.data.type });
     } catch (err: unknown) {
       const e = err as Error;

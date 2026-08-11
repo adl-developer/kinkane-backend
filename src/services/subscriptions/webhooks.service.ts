@@ -9,7 +9,7 @@ import { logger } from '../../lib/logger';
 import { enqueueEmail } from '../../lib/email-queue';
 import { subscriptionStateService } from './state.service';
 import { entitlementsService } from './entitlements.service';
-import { schedulesService } from './schedules.service';
+import { schedulesService, scheduleIdOf } from './schedules.service';
 import { orderWebhooksService } from '../commerce/order-webhooks.service';
 import { paymentsService } from '../payments.service';
 
@@ -368,6 +368,12 @@ export const webhooksService = {
     const status = mapStatus(subscription.status);
     const plan = planForPriceId(priceId);
     const planChanged = Boolean(existing && existing.priceId && existing.priceId !== priceId);
+    // No schedule left managing this subscription means any pending Change
+    // Plan switch has either taken effect (phase advanced) or been abandoned
+    // (released elsewhere) — either way it's no longer pending. `undefined`
+    // while a schedule is still running leaves whatever is already stored
+    // untouched, since this generic handler didn't set it in the first place.
+    const scheduleId = scheduleIdOf(subscription);
 
     const updated = await subscriptionStateService.applyState(
       userId,
@@ -379,6 +385,7 @@ export const webhooksService = {
         isFoundingMember: existing?.isFoundingMember || isFoundingPriceId(priceId),
         currentPeriodEnd: periodEnd(subscription),
         cancelAtPeriodEnd: subscription.cancel_at_period_end,
+        pendingPlan: scheduleId ? undefined : null,
         stripeCustomerId,
         stripeSubscriptionId: subscription.id,
       },

@@ -1,7 +1,7 @@
 import type Stripe from 'stripe';
 import { eq } from 'drizzle-orm';
 import { db } from '../../db';
-import { users, userSubscriptions } from '../../db/schema';
+import { users, userSubscriptions, subscriptionEvents } from '../../db/schema';
 import type { SubscriptionPlan } from '../../db/schema';
 import { config } from '../../config';
 import {
@@ -18,15 +18,12 @@ import { schedulesService } from './schedules.service';
 import { paymentsService } from '../payments.service';
 
 /**
- * Creating Stripe Checkout and Billing Portal sessions, plus in-app
- * cancellation.
- *
- * Card updates, plan switches and invoice history are still the hosted Billing
- * Portal's job — rebuilding those means reimplementing proration, dunning and
- * SCA. **Cancellation is the exception**, and is implemented here: it is a
- * single boolean on the subscription, it is the one billing action users
- * routinely need, and sending someone out to a Stripe-branded web page to stop
- * paying is a bad experience in a native app.
+ * Creating Stripe Checkout sessions, plus in-app plan changes and
+ * cancellation — cancel, change plan, and reactivate are all handled here
+ * rather than via the Stripe-hosted Billing Portal, since sending someone out
+ * to a Stripe-branded web page for routine billing actions is a bad
+ * experience in a native app. Card updates and invoice history remain out of
+ * scope: rebuilding those means reimplementing proration, dunning and SCA.
  */
 
 /** What the client needs to re-render the account screen after cancel/resume. */
@@ -34,6 +31,25 @@ export interface CancellationResult {
   cancelAtPeriodEnd: boolean;
   /** When Plus actually stops. Null only if Stripe has no period on record. */
   accessEndsAt: Date | null;
+  tier: string;
+  status: string;
+}
+
+/** The reasons offered on the Cancel Subscription screen. */
+export type CancelReason = 'not_using' | 'accidental' | 'too_expensive' | 'other';
+
+const CANCEL_REASON_LABELS: Record<Exclude<CancelReason, 'other'>, string> = {
+  not_using: "I don't use Kinkané enough",
+  accidental: 'I subscribed by accident',
+  too_expensive: 'Too expensive',
+};
+
+/** What the client needs to render "Manage your plan" after a Change Plan request. */
+export interface PlanChangeResult {
+  currentPlan: SubscriptionPlan | null;
+  /** The plan it will switch to at `effectiveAt`, or null if nothing is pending. */
+  pendingPlan: SubscriptionPlan | null;
+  effectiveAt: Date | null;
   tier: string;
   status: string;
 }
@@ -191,26 +207,6 @@ export const checkoutService = {
   },
 
   /**
-   * Billing Portal session — cancel, change card, switch plan, download
-   * invoices. Everything that happens in there comes back to us as a webhook.
-   */
-  async createPortalSession(userId: number, returnUrl?: string): Promise<{ url: string }> {
-    assertStripeConfigured();
-
-    const sub = await subscriptionStateService.get(userId);
-    if (!sub?.stripeCustomerId) {
-      throw Object.assign(new Error('No billing account found for this user'), { statusCode: 404 });
-    }
-
-    const session = await stripe().billingPortal.sessions.create({
-      customer: sub.stripeCustomerId,
-      return_url: returnUrl ?? config.stripe.portalReturnUrl,
-    });
-
-    return { url: session.url };
-  },
-
-  /**
    * The plans to show on the paywall, priced from Stripe rather than from
    * anything hardcoded here — the amounts live in exactly one place, and a
    * price change in the dashboard doesn't need a deploy.
@@ -272,7 +268,11 @@ export const checkoutService = {
    * state rather than erroring, because a double-tap on a Cancel button is not
    * a mistake worth surfacing.
    */
-  async cancel(userId: number): Promise<CancellationResult> {
+  async cancel(
+    userId: number,
+    reason?: CancelReason,
+    reasonOther?: string,
+  ): Promise<CancellationResult> {
     assertStripeConfigured();
 
     const sub = await subscriptionStateService.getCurrent(userId);
@@ -318,11 +318,27 @@ export const checkoutService = {
         isFoundingMember: sub.isFoundingMember,
         currentPeriodEnd: periodEndOf(updated) ?? sub.currentPeriodEnd,
         cancelAtPeriodEnd: true,
+        // A cancellation abandons any pending Change Plan schedule — releasing
+        // it above already detached it from Stripe's side.
+        pendingPlan: null,
         stripeCustomerId: sub.stripeCustomerId,
         stripeSubscriptionId: sub.stripeSubscriptionId,
       },
       { reason: 'subscription_updated' },
     );
+
+    // Recorded here, immediately, rather than left to the webhook: by the time
+    // customer.subscription.updated arrives, cancelAtPeriodEnd is already true
+    // on our row, so onSubscriptionChanged's own "just started cancelling"
+    // check is false and it won't insert a second, reason-less 'cancelled'
+    // event for the same transition.
+    if (reason) {
+      await db.insert(subscriptionEvents).values({
+        userId,
+        event: 'cancelled',
+        reason: reason === 'other' ? (reasonOther ?? 'Other') : CANCEL_REASON_LABELS[reason],
+      });
+    }
 
     await entitlementsService.invalidate(userId);
 
@@ -476,6 +492,121 @@ export const checkoutService = {
     return {
       cancelAtPeriodEnd: false,
       accessEndsAt: state?.currentPeriodEnd ?? sub.currentPeriodEnd ?? null,
+      tier: state?.tier ?? sub.tier,
+      status: state?.status ?? sub.status,
+    };
+  },
+
+  /**
+   * Schedules a switch to a different plan for the end of the current period.
+   *
+   * `plan: 'free'` is simply `cancel()` under this name — the Change Plan
+   * picker's "Free Plan" option is the same backend action as the dedicated
+   * Cancel Subscription flow, just confirmed with a password instead of a
+   * reason. Password verification itself happens in the controller, before
+   * this is called.
+   */
+  async changePlan(userId: number, plan: SubscriptionPlan | 'free'): Promise<PlanChangeResult> {
+    assertStripeConfigured();
+
+    const sub = await subscriptionStateService.getCurrent(userId);
+    if (!sub) {
+      throw Object.assign(new Error('Subscription not found'), { statusCode: 404 });
+    }
+
+    if (!sub.stripeSubscriptionId || (sub.status !== 'active' && sub.status !== 'past_due')) {
+      throw Object.assign(
+        new Error('You do not have a paid subscription to change'),
+        { statusCode: 409, code: 'NO_PAID_SUBSCRIPTION' },
+      );
+    }
+
+    // A schedule mid-price-change and a subscription mid-cancellation is an
+    // ambiguous state — make them reactivate first.
+    if (sub.cancelAtPeriodEnd) {
+      throw Object.assign(
+        new Error('Reactivate your subscription before changing plans'),
+        { statusCode: 409, code: 'PENDING_CANCELLATION' },
+      );
+    }
+
+    if (plan === 'free') {
+      const cancelled = await this.cancel(userId);
+      return {
+        currentPlan: sub.plan,
+        pendingPlan: null,
+        effectiveAt: cancelled.accessEndsAt,
+        tier: cancelled.tier,
+        status: cancelled.status,
+      };
+    }
+
+    if (plan === sub.plan) {
+      if (!sub.pendingPlan) {
+        throw Object.assign(new Error('You are already on this plan'), { statusCode: 409 });
+      }
+
+      // Picking their current plan again undoes an earlier pending switch.
+      await schedulesService.releaseFrom(sub.stripeSubscriptionId, userId);
+      const state = await subscriptionStateService.applyState(
+        userId,
+        {
+          tier: sub.tier,
+          status: sub.status,
+          plan: sub.plan,
+          priceId: sub.priceId,
+          isFoundingMember: sub.isFoundingMember,
+          currentPeriodEnd: sub.currentPeriodEnd,
+          cancelAtPeriodEnd: sub.cancelAtPeriodEnd,
+          pendingPlan: null,
+          stripeCustomerId: sub.stripeCustomerId,
+          stripeSubscriptionId: sub.stripeSubscriptionId,
+        },
+        { reason: 'subscription_updated' },
+      );
+
+      logger.info('Pending plan change undone', { userId, stripeSubscriptionId: sub.stripeSubscriptionId });
+
+      return {
+        currentPlan: state?.plan ?? sub.plan,
+        pendingPlan: null,
+        effectiveAt: state?.currentPeriodEnd ?? sub.currentPeriodEnd ?? null,
+        tier: state?.tier ?? sub.tier,
+        status: state?.status ?? sub.status,
+      };
+    }
+
+    await schedulesService.schedulePlanChange(sub.stripeSubscriptionId, userId, plan);
+
+    const state = await subscriptionStateService.applyState(
+      userId,
+      {
+        tier: sub.tier,
+        status: sub.status,
+        plan: sub.plan,
+        priceId: sub.priceId,
+        isFoundingMember: sub.isFoundingMember,
+        currentPeriodEnd: sub.currentPeriodEnd,
+        cancelAtPeriodEnd: sub.cancelAtPeriodEnd,
+        pendingPlan: plan,
+        stripeCustomerId: sub.stripeCustomerId,
+        stripeSubscriptionId: sub.stripeSubscriptionId,
+      },
+      { reason: 'subscription_updated' },
+    );
+
+    logger.info('Plan change scheduled', {
+      userId,
+      stripeSubscriptionId: sub.stripeSubscriptionId,
+      fromPlan: sub.plan,
+      toPlan: plan,
+      effectiveAt: state?.currentPeriodEnd ?? sub.currentPeriodEnd,
+    });
+
+    return {
+      currentPlan: state?.plan ?? sub.plan,
+      pendingPlan: state?.pendingPlan ?? plan,
+      effectiveAt: state?.currentPeriodEnd ?? sub.currentPeriodEnd ?? null,
       tier: state?.tier ?? sub.tier,
       status: state?.status ?? sub.status,
     };
