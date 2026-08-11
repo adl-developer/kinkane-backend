@@ -11,6 +11,8 @@
 
 ### Bug Fixes
 
+* stop user-keyed rate limiters erroring when a request has no account ([6301042](https://adl.github.com/adl-developer/kinkane-backend/commit/630104253437ed545299338b20f6b6e5cb7f3327)) — [details](changelog/2026-08-11-rate-limiter-missing-user.md)
+* stop book checkout failing when the return URL has no query string ([b98f28e](https://adl.github.com/adl-developer/kinkane-backend/commit/b98f28e6808a8d7c0118aaba1adb677a0b3a0758)) — [details](changelog/2026-08-11-checkout-redirect-url.md)
 * stop charging people who delete their account ([43827d8](https://adl.github.com/adl-developer/kinkane-backend/commit/43827d801a511ff821a99c88e6bff4d43998b871)) — [details](changelog/2026-08-11-stop-billing-deleted-accounts.md)
 * let Founding Members cancel their subscription ([3f4a003](https://adl.github.com/adl-developer/kinkane-backend/commit/3f4a003a6ab8b96ecb016bc7b209d5f04e2736ec)) — [details](changelog/2026-08-11-founding-member-cancellation.md)
 * show the real reason a subscription checkout was refused ([ea8e133](https://adl.github.com/adl-developer/kinkane-backend/commit/ea8e133729ca26ba386e9131d669da97456caac8)) — [details](changelog/2026-08-11-referral-app-clicks.md)

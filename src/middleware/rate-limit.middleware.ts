@@ -1,4 +1,4 @@
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { RedisStore } from 'rate-limit-redis';
 import type { Request } from 'express';
 import { redis } from '../lib/redis';
@@ -6,6 +6,24 @@ import type { AuthenticatedRequest } from './auth.middleware';
 
 const json429 = (_req: unknown, res: { status: (n: number) => { json: (b: unknown) => void } }) =>
   res.status(429).json({ error: 'Too many requests — please try again later' });
+
+/**
+ * Keys a limiter by the authenticated user, falling back to their IP.
+ *
+ * Every limiter using this sits behind `requireAuth`, so the fallback should be
+ * unreachable. It exists because the alternative — reading `.user.id` off a
+ * request that doesn't have one — throws a TypeError inside express-rate-limit
+ * and surfaces as an unexplained 500. A limiter is a safety control, and it
+ * should degrade to limiting *more* narrowly rather than failing the request.
+ *
+ * `ipKeyGenerator` rather than raw `req.ip`: it collapses IPv6 addresses to
+ * their /56 prefix, so a client with a whole address range can't sidestep the
+ * limit by changing the low bits of its address on every request.
+ */
+const byUser = (req: Request): string => {
+  const id = (req as AuthenticatedRequest).user?.id;
+  return id !== undefined ? String(id) : ipKeyGenerator(req.ip ?? '');
+};
 
 const sendCommand = (...args: string[]) =>
   (redis as unknown as { call: (...a: string[]) => Promise<unknown> }).call(...args) as Promise<import('rate-limit-redis').RedisReply>;
@@ -71,7 +89,7 @@ export const checkoutLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   handler: json429,
-  keyGenerator: (req: Request) => String((req as AuthenticatedRequest).user.id),
+  keyGenerator: byUser,
   store: new RedisStore({ prefix: 'rl:checkout:', sendCommand }),
 });
 
@@ -95,7 +113,7 @@ export const verifyEmailOtpLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   handler: json429,
-  keyGenerator: (req: Request) => String((req as AuthenticatedRequest).user.id),
+  keyGenerator: byUser,
   store: new RedisStore({ prefix: 'rl:email-verify-otp:', sendCommand }),
 });
 
@@ -108,7 +126,7 @@ export const resendVerificationEmailLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   handler: json429,
-  keyGenerator: (req: Request) => String((req as AuthenticatedRequest).user.id),
+  keyGenerator: byUser,
   store: new RedisStore({ prefix: 'rl:email-verify-resend:', sendCommand }),
 });
 
@@ -132,6 +150,6 @@ export const followRequestLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   handler: json429,
-  keyGenerator: (req: Request) => String((req as AuthenticatedRequest).user.id),
+  keyGenerator: byUser,
   store: new RedisStore({ prefix: 'rl:follow-request:', sendCommand }),
 });
