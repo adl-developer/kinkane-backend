@@ -89,11 +89,10 @@ const envSchema = z.object({
   // the launch promotion is over (or hasn't been configured), and everyone
   // gets standard pricing.
   FOUNDING_OFFER_ENDS_AT: z.coerce.date().optional(),
-  // Where Stripe returns the user after checkout / billing portal. Default to
-  // the app URL so a minimal config still works end to end.
+  // Where Stripe returns the user after checkout. Default to the app URL so a
+  // minimal config still works end to end.
   STRIPE_CHECKOUT_SUCCESS_URL: z.string().url().optional(),
   STRIPE_CHECKOUT_CANCEL_URL: z.string().url().optional(),
-  STRIPE_PORTAL_RETURN_URL: z.string().url().optional(),
 
   // ── Referrals & the "Around the World" competition ─────────────────────────
   // Marketing video linked from every invite. Placeholder default until the
@@ -418,7 +417,6 @@ export const config = {
     foundingOfferEndsAt: env.FOUNDING_OFFER_ENDS_AT,
     checkoutSuccessUrl: env.STRIPE_CHECKOUT_SUCCESS_URL ?? `${env.APP_URL}/account/subscription?checkout=success`,
     checkoutCancelUrl: env.STRIPE_CHECKOUT_CANCEL_URL ?? `${env.APP_URL}/account/subscription?checkout=cancelled`,
-    portalReturnUrl: env.STRIPE_PORTAL_RETURN_URL ?? `${env.APP_URL}/account/subscription`,
   },
   gatingEnabled: env.GATING_ENABLED,
   gardnersDropship: {

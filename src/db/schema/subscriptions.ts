@@ -87,6 +87,11 @@ export const userSubscriptions = pgTable(
     // cancel_at_period_end subscriber actually loses access.
     currentPeriodEnd: timestamp('current_period_end', { withTimezone: true }),
     cancelAtPeriodEnd: boolean('cancel_at_period_end').notNull().default(false),
+    // Set when a Change Plan request has scheduled a switch for the end of the
+    // current period (see schedulesService.schedulePlanChange). Null the rest
+    // of the time. The effective date is always `currentPeriodEnd` — there is
+    // deliberately no separate `pendingPlanEffectiveAt` column to duplicate it.
+    pendingPlan: subscriptionPlanEnum('pending_plan'),
     stripeCustomerId: varchar('stripe_customer_id', { length: 256 }),
     // Presence of this column is load-bearing: it is the guard that stops the
     // trial-expiry sweep from downgrading someone who has paid. Never write it
@@ -133,6 +138,7 @@ export const subscriptionStateHistory = pgTable(
     trialEndsAt: timestamp('trial_ends_at', { withTimezone: true }),
     currentPeriodEnd: timestamp('current_period_end', { withTimezone: true }),
     cancelAtPeriodEnd: boolean('cancel_at_period_end').notNull().default(false),
+    pendingPlan: subscriptionPlanEnum('pending_plan'),
     stripeSubscriptionId: varchar('stripe_subscription_id', { length: 256 }),
     // Why this state began — 'signup', 'trial_expired', 'checkout_completed',
     // 'invoice_paid', 'subscription_updated', 'subscription_deleted',

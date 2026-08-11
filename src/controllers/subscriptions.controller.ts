@@ -8,6 +8,7 @@ import { isStripeConfigured, isFoundingWindowOpen } from '../lib/stripe';
 import { subscriptionStateService } from '../services/subscriptions/state.service';
 import { checkoutService } from '../services/subscriptions/checkout.service';
 import { webhooksService } from '../services/subscriptions/webhooks.service';
+import { authService } from '../services/auth.service';
 
 const checkoutSchema = z.object({
   plan: z.enum(['monthly', 'annual']),
@@ -19,9 +20,20 @@ const checkoutSchema = z.object({
   cancelUrl: z.string().url().optional(),
 });
 
-const portalSchema = z.object({
-  returnUrl: z.string().url().optional(),
+const changePlanSchema = z.object({
+  plan: z.enum(['monthly', 'annual', 'free']),
+  password: z.string().min(1, 'Password is required'),
 });
+
+const cancelSchema = z
+  .object({
+    reason: z.enum(['not_using', 'accidental', 'too_expensive', 'other']),
+    reasonOther: z.string().trim().min(1).max(500).optional(),
+  })
+  .refine((data) => data.reason !== 'other' || Boolean(data.reasonOther), {
+    message: 'reasonOther is required when reason is "other"',
+    path: ['reasonOther'],
+  });
 
 function assertSameOrigin(url: string | undefined, label: string): string | undefined {
   if (!url) return undefined;
@@ -59,6 +71,7 @@ export const subscriptionsController = {
       trialDaysLeft,
       currentPeriodEnd: sub.currentPeriodEnd,
       cancelAtPeriodEnd: sub.cancelAtPeriodEnd,
+      pendingPlan: sub.pendingPlan,
       isFoundingMember: sub.isFoundingMember,
       hasBillingAccount: Boolean(sub.stripeCustomerId),
       foundingOfferActive: isFoundingWindowOpen(),
@@ -79,6 +92,7 @@ export const subscriptionsController = {
         plan: row.plan,
         isFoundingMember: row.isFoundingMember,
         cancelAtPeriodEnd: row.cancelAtPeriodEnd,
+        pendingPlan: row.pendingPlan,
         reason: row.reason,
         effectiveFrom: row.effectiveFrom,
         effectiveTo: row.effectiveTo,
@@ -116,7 +130,38 @@ export const subscriptionsController = {
    * of the period they have already paid for.
    */
   async cancel(req: AuthenticatedRequest, res: Response): Promise<void> {
-    const result = await checkoutService.cancel(req.user.id);
+    const parsed = cancelSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Invalid request', details: parsed.error.flatten().fieldErrors });
+      return;
+    }
+
+    const result = await checkoutService.cancel(
+      req.user.id,
+      parsed.data.reason,
+      parsed.data.reasonOther,
+    );
+    res.status(200).json(result);
+  },
+
+  /**
+   * POST /api/v1/user/subscription/change
+   *
+   * The "Change Plan" flow — switches monthly/annual/free for the end of the
+   * current period, confirmed with the account password rather than a reason
+   * (that's the Cancel Subscription flow's job). Password verification
+   * happens here, before checkoutService ever touches Stripe, so a wrong
+   * password never triggers a schedule call.
+   */
+  async changePlan(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const parsed = changePlanSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Invalid request', details: parsed.error.flatten().fieldErrors });
+      return;
+    }
+
+    await authService.verifyPassword(req.user.id, parsed.data.password);
+    const result = await checkoutService.changePlan(req.user.id, parsed.data.plan);
     res.status(200).json(result);
   },
 
@@ -127,21 +172,6 @@ export const subscriptionsController = {
    */
   async reactivate(req: AuthenticatedRequest, res: Response): Promise<void> {
     const result = await checkoutService.reactivate(req.user.id);
-    res.status(200).json(result);
-  },
-
-  /** POST /api/v1/user/subscription/portal-session */
-  async createPortalSession(req: AuthenticatedRequest, res: Response): Promise<void> {
-    const parsed = portalSchema.safeParse(req.body ?? {});
-    if (!parsed.success) {
-      res.status(400).json({ error: 'Invalid request' });
-      return;
-    }
-
-    const result = await checkoutService.createPortalSession(
-      req.user.id,
-      assertSameOrigin(parsed.data.returnUrl, 'returnUrl'),
-    );
     res.status(200).json(result);
   },
 

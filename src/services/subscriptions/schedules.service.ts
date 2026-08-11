@@ -1,6 +1,7 @@
 import type Stripe from 'stripe';
 import { stripe, planForPriceId, resolvePrice } from '../../lib/stripe';
 import { logger } from '../../lib/logger';
+import type { SubscriptionPlan } from '../../db/schema';
 
 /**
  * Subscription schedules — the two-phase Founding Member price rollover, and
@@ -34,6 +35,11 @@ export function scheduleIdOf(subscription: Stripe.Subscription): string | null {
   const schedule = subscription.schedule;
   if (!schedule) return null;
   return typeof schedule === 'string' ? schedule : schedule.id;
+}
+
+/** A schedule phase item's price id, whether or not Stripe expanded it. */
+function phaseItemPriceId(item: Stripe.SubscriptionSchedule.Phase.Item): string {
+  return typeof item.price === 'string' ? item.price : item.price.id;
 }
 
 export const schedulesService = {
@@ -122,5 +128,60 @@ export const schedulesService = {
     });
 
     return scheduleId;
+  },
+
+  /**
+   * Schedules a switch to `targetPlan`'s standard price for the end of the
+   * current phase — the user-initiated counterpart to `attachFounding`.
+   *
+   * Always targets standard pricing, never a founding price: a plan switch
+   * forfeits any founding rate going forward, even mid-term. If the
+   * subscription is already schedule-managed (a Founding rollover still in
+   * progress, or an earlier pending change), the existing schedule's final
+   * phase is rewritten rather than creating a second schedule — Stripe allows
+   * only one per subscription. Errors are rethrown: unlike `attachFounding`,
+   * this runs on a path the user is actively waiting on a confirmation for.
+   */
+  async schedulePlanChange(
+    subscriptionId: string,
+    userId: number,
+    targetPlan: SubscriptionPlan,
+  ): Promise<void> {
+    const subscription = await stripe().subscriptions.retrieve(subscriptionId);
+    const { standardPriceId: targetPriceId } = resolvePrice(targetPlan);
+    const scheduleId = scheduleIdOf(subscription);
+
+    if (scheduleId) {
+      const schedule = await stripe().subscriptionSchedules.retrieve(scheduleId);
+      const phases = schedule.phases.map((phase, i) =>
+        i === schedule.phases.length - 1
+          ? { items: [{ price: targetPriceId, quantity: 1 }] }
+          : {
+              items: phase.items.map((it) => ({
+                price: phaseItemPriceId(it),
+                quantity: it.quantity ?? 1,
+              })),
+              start_date: phase.start_date,
+              end_date: phase.end_date,
+            },
+      );
+      await stripe().subscriptionSchedules.update(scheduleId, { end_behavior: 'release', phases });
+    } else {
+      const priceId = firstPriceId(subscription);
+      const schedule = await stripe().subscriptionSchedules.create({ from_subscription: subscriptionId });
+      await stripe().subscriptionSchedules.update(schedule.id, {
+        end_behavior: 'release',
+        phases: [
+          {
+            items: [{ price: priceId!, quantity: 1 }],
+            start_date: schedule.phases[0].start_date,
+            end_date: schedule.phases[0].end_date,
+          },
+          { items: [{ price: targetPriceId, quantity: 1 }] },
+        ],
+      });
+    }
+
+    logger.info('Scheduled plan change', { userId, subscriptionId, targetPlan, targetPriceId });
   },
 };

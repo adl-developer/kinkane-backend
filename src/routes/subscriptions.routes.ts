@@ -89,6 +89,28 @@ router.post(
 router.post('/cancel', requireAuth, wrapHttp(subscriptionsController.cancel));
 
 /**
+ * POST /api/v1/user/subscription/change
+ *
+ * Switches plan (monthly/annual/free) for the end of the current period,
+ * confirmed with the account password. `plan: 'free'` is the same action as
+ * POST /cancel, just reached from the Change Plan picker instead of the
+ * dedicated Cancel Subscription flow, so it carries no reason.
+ *
+ * Body: { plan: 'monthly'|'annual'|'free', password }
+ * Returns 200: { currentPlan, pendingPlan, effectiveAt, tier, status }
+ * Errors: 400 validation | 401 unauthenticated | 401 incorrect password |
+ *         404 no subscription | 409 NO_PAID_SUBSCRIPTION |
+ *         409 PENDING_CANCELLATION (reactivate first) |
+ *         409 already on this plan | 503 payments not configured
+ */
+router.post(
+  '/change',
+  requireAuth,
+  checkoutLimiter,
+  wrapHttp(subscriptionsController.changePlan),
+);
+
+/**
  * POST /api/v1/user/subscription/reactivate
  *
  * Undoes a scheduled cancellation while the period is still running — the
@@ -102,25 +124,6 @@ router.post('/cancel', requireAuth, wrapHttp(subscriptionsController.cancel));
  *         elapsed and Stripe deleted it — start a new one) | 503 not configured
  */
 router.post('/reactivate', requireAuth, wrapHttp(subscriptionsController.reactivate));
-
-/**
- * POST /api/v1/user/subscription/portal-session
- *
- * Stripe Billing Portal link — cancel, switch plan, update card, download
- * invoices. Those flows are Stripe's rather than ours; everything the user does
- * in there comes back as a webhook.
- *
- * Body: { returnUrl? } — must be on the Kinkané origin.
- * Returns 200: { url }
- * Errors: 401 unauthenticated | 404 no billing account | 429 rate limit |
- *         503 payments not configured
- */
-router.post(
-  '/portal-session',
-  requireAuth,
-  checkoutLimiter,
-  wrapHttp(subscriptionsController.createPortalSession),
-);
 
 export default router;
 

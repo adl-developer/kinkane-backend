@@ -5,6 +5,7 @@
 
 ### Features
 
+* pick the best edition of a book, and make deduping optional on browse/search ([ef53afb](https://adl.github.com/adl-developer/kinkane-backend/commit/ef53afbb4d3f4f9a376072426c3635187775575a)) — [details](changelog/2026-08-11-subscription-change-plan-cancel-reason.md)
 * throttle how fast the payment confirmation screen can be polled ([4f84009](https://adl.github.com/adl-developer/kinkane-backend/commit/4f84009c853da2d72e8df8953207e2152d4451d7)) — [details](changelog/2026-08-11-payment-confirm-throttle.md)
 * let readers buy books and manage payments without leaving the app ([8c3107a](https://adl.github.com/adl-developer/kinkane-backend/commit/8c3107aac48fb1057373202bdf30f73850fe02d8)) — [details](changelog/2026-08-11-dedupe-priority-and-opt-in.md)
 * count referral link taps that open the app directly ([9f46d86](https://adl.github.com/adl-developer/kinkane-backend/commit/9f46d86797fe45667bdc9dc2ee62240807d07f4b)) — [details](changelog/2026-08-11-referral-app-clicks.md)
@@ -13,11 +14,11 @@
 ### Bug Fixes
 
 * bound the loop that generates referral codes and payment references ([1cdaf10](https://adl.github.com/adl-developer/kinkane-backend/commit/1cdaf10cea896608eb90f1afcbb5d94168f606ce)) — [details](changelog/2026-08-11-dedupe-priority-and-opt-in.md)
-* stop user-keyed rate limiters erroring when a request has no account ([0fa159d](https://adl.github.com/adl-developer/kinkane-backend/commit/0fa159dcc03081e9c11d9c88108733d259f8752e)) — [details](changelog/2026-08-11-rate-limiter-missing-user.md)
+* stop user-keyed rate limiters erroring when a request has no account ([0fa159d](https://adl.github.com/adl-developer/kinkane-backend/commit/0fa159dcc03081e9c11d9c88108733d259f8752e)) — [details](changelog/2026-08-11-subscription-change-plan-cancel-reason.md)
 * stop book checkout failing when the return URL has no query string ([b98f28e](https://adl.github.com/adl-developer/kinkane-backend/commit/b98f28e6808a8d7c0118aaba1adb677a0b3a0758)) — [details](changelog/2026-08-11-checkout-redirect-url.md)
 * stop charging people who delete their account ([43827d8](https://adl.github.com/adl-developer/kinkane-backend/commit/43827d801a511ff821a99c88e6bff4d43998b871)) — [details](changelog/2026-08-11-stop-billing-deleted-accounts.md)
 * let Founding Members cancel their subscription ([3f4a003](https://adl.github.com/adl-developer/kinkane-backend/commit/3f4a003a6ab8b96ecb016bc7b209d5f04e2736ec)) — [details](changelog/2026-08-11-founding-member-cancellation.md)
-* show the real reason a subscription checkout was refused ([ea8e133](https://adl.github.com/adl-developer/kinkane-backend/commit/ea8e133729ca26ba386e9131d669da97456caac8)) — [details](changelog/2026-08-11-referral-app-clicks.md)
+* show the real reason a subscription checkout was refused ([ea8e133](https://adl.github.com/adl-developer/kinkane-backend/commit/ea8e133729ca26ba386e9131d669da97456caac8)) — [details](changelog/2026-08-11-subscription-change-plan-cancel-reason.md)
 * return referral point totals with camelCase keys ([f2350e3](https://adl.github.com/adl-developer/kinkane-backend/commit/f2350e34846e485c6192cb5a799c28024d8b7ff5)) — [details](changelog/2026-08-11-referral-camelcase-keys.md)
 
 
