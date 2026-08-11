@@ -5,6 +5,7 @@
 
 ### Features
 
+* throttle how fast the payment confirmation screen can be polled ([4f84009](https://adl.github.com/adl-developer/kinkane-backend/commit/4f84009c853da2d72e8df8953207e2152d4451d7)) — [details](changelog/2026-08-11-payment-confirm-throttle.md)
 * let readers buy books and manage payments without leaving the app ([8c3107a](https://adl.github.com/adl-developer/kinkane-backend/commit/8c3107aac48fb1057373202bdf30f73850fe02d8)) — [details](changelog/2026-08-11-payment-confirm-throttle.md)
 * count referral link taps that open the app directly ([9f46d86](https://adl.github.com/adl-developer/kinkane-backend/commit/9f46d86797fe45667bdc9dc2ee62240807d07f4b)) — [details](changelog/2026-08-11-referral-app-clicks.md)
 * count referral clicks as people rather than raw hits ([8a41e91](https://adl.github.com/adl-developer/kinkane-backend/commit/8a41e911e15941dc082a2b8891299621707a764a)) — [details](changelog/2026-08-11-referral-app-clicks.md)
