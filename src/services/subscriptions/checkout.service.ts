@@ -4,10 +4,17 @@ import { db } from '../../db';
 import { users, userSubscriptions } from '../../db/schema';
 import type { SubscriptionPlan } from '../../db/schema';
 import { config } from '../../config';
-import { stripe, assertStripeConfigured, resolvePrice, isFoundingWindowOpen } from '../../lib/stripe';
+import {
+  stripe,
+  assertStripeConfigured,
+  isStripeConfigured,
+  resolvePrice,
+  isFoundingWindowOpen,
+} from '../../lib/stripe';
 import { logger } from '../../lib/logger';
 import { subscriptionStateService } from './state.service';
 import { entitlementsService } from './entitlements.service';
+import { schedulesService } from './schedules.service';
 import { paymentsService } from '../payments.service';
 
 /**
@@ -283,6 +290,16 @@ export const checkoutService = {
       );
     }
 
+    // A Founding Member's subscription is managed by a price schedule, and
+    // Stripe rejects any cancellation set on the subscription directly while
+    // that is true ("...updating any cancelation behavior directly is not
+    // allowed"). Releasing detaches the schedule and leaves the subscription
+    // untouched — it is not itself a cancellation, and it is a no-op for
+    // everyone who has no schedule attached.
+    //
+    // The founding rollover is re-attached if they reactivate; see reactivate().
+    await schedulesService.releaseFrom(sub.stripeSubscriptionId, userId);
+
     const updated = await stripe().subscriptions.update(sub.stripeSubscriptionId, {
       cancel_at_period_end: true,
     });
@@ -324,6 +341,66 @@ export const checkoutService = {
   },
 
   /**
+   * Stops billing for an account that is being deleted.
+   *
+   * Unlike `cancel`, this ends the subscription **immediately** rather than at
+   * period end: there is no one left to preserve access for, and leaving a
+   * cancel-at-period-end subscription behind would bill nobody's account for a
+   * term nobody can use.
+   *
+   * The Stripe Customer is deliberately kept. Deleting it would take the
+   * invoice and payment history with it, which the business still needs for
+   * accounting and tax long after the user is gone.
+   *
+   * Returns whether anything was actually cancelled. **Never throws** — see the
+   * call site in auth.service.deleteAccount for why account deletion must not
+   * be blocked by Stripe being unreachable.
+   */
+  async terminateForAccountDeletion(userId: number): Promise<boolean> {
+    const sub = await subscriptionStateService.get(userId);
+    if (!sub?.stripeSubscriptionId) return false;
+
+    // Already over — Stripe would reject a second cancellation, and there is
+    // nothing left to stop.
+    if (sub.status === 'cancelled' || sub.status === 'expired') return false;
+
+    if (!isStripeConfigured()) {
+      logger.error('Cannot stop billing for a deleted account — Stripe is not configured', {
+        userId,
+        stripeSubscriptionId: sub.stripeSubscriptionId,
+        stripeCustomerId: sub.stripeCustomerId,
+      });
+      return false;
+    }
+
+    try {
+      // A schedule-managed subscription rejects cancellation set on the
+      // subscription itself, exactly as it does for the ordinary cancel path.
+      await schedulesService.releaseFrom(sub.stripeSubscriptionId, userId);
+      await stripe().subscriptions.cancel(sub.stripeSubscriptionId);
+
+      logger.info('Stopped billing for a deleted account', {
+        userId,
+        stripeSubscriptionId: sub.stripeSubscriptionId,
+      });
+      return true;
+    } catch (err) {
+      // Deletion proceeds anyway, so this log is the only remaining trace of a
+      // subscription that may still be billing — the user row, and with it the
+      // subscription id, is about to be gone. It carries every identifier
+      // needed to find and cancel it by hand, and is an error rather than a
+      // warning because it needs a human.
+      logger.error('FAILED to stop billing for a deleted account — may still be charged', {
+        userId,
+        stripeSubscriptionId: sub.stripeSubscriptionId,
+        stripeCustomerId: sub.stripeCustomerId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return false;
+    }
+  },
+
+  /**
    * Undoes a scheduled cancellation, while the period is still running.
    *
    * The request that always follows cancellation. Without it the only way back
@@ -358,6 +435,20 @@ export const checkoutService = {
     const updated = await stripe().subscriptions.update(sub.stripeSubscriptionId, {
       cancel_at_period_end: false,
     });
+
+    // Cancelling released a Founding Member from their price schedule, so put
+    // it back — otherwise someone who cancelled and changed their mind would
+    // keep the introductory price indefinitely instead of rolling onto standard
+    // pricing after their term.
+    //
+    // Deliberately after the update, not before: a schedule created from a
+    // subscription inherits its cancellation behaviour, so attaching while the
+    // flag was still set would bake the cancellation into the new schedule.
+    // attachFounding is a no-op for anyone who already rolled over to standard
+    // pricing, or who still has a schedule attached.
+    if (sub.isFoundingMember) {
+      await schedulesService.attachFounding(updated, userId);
+    }
 
     const state = await subscriptionStateService.applyState(
       userId,

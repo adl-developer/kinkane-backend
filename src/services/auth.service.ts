@@ -13,6 +13,7 @@ import { buildPreferenceText } from './recommendations.service';
 import { preferenceHistoryService } from './preference-history.service';
 import { dislikedBooksService } from './disliked-books.service';
 import { subscriptionStateService } from './subscriptions/state.service';
+import { checkoutService } from './subscriptions/checkout.service';
 import { referralsService } from './referrals.service';
 import { referralScoringService } from './referral-scoring.service';
 import type { CountrySource } from './geo.service';
@@ -721,6 +722,18 @@ export const authService = {
     if (!valid) {
       throw Object.assign(new Error('Incorrect password'), { statusCode: 401 });
     }
+
+    // Stop billing BEFORE the row goes. Deleting the user cascades away
+    // user_subscriptions, and with it the only record of which Stripe
+    // subscription belonged to them — so a subscription not cancelled by this
+    // point carries on charging a card forever, with nothing left in our
+    // database tying it back to anyone.
+    //
+    // This never throws. Deletion is a right the user is exercising, and
+    // Stripe being unreachable is our problem, not a reason to refuse it; a
+    // failure is logged loudly with every identifier needed to finish the job
+    // by hand.
+    await checkoutService.terminateForAccountDeletion(userId);
 
     // Explicitly revoke tokens before deleting the user row so there is no
     // window where a valid token exists for a non-existent account (regardless
