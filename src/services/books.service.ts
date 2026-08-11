@@ -55,6 +55,13 @@ const FEED_POOL_MAX = 100;
 // list without inflating every cache entry for the majority of users who have
 // rejected nothing.
 const FEED_EXCLUSION_HEADROOM = 10;
+// list()'s ?dedupe=true over-fetches this many extra rows per page so that collapsing
+// same-titled editions still tends to leave a full page of distinct titles. Unlike the feeds
+// above, list() doesn't scale this with the requested limit (up to 50) — a fixed headroom
+// keeps the plain-browse path's cheap LIMIT/OFFSET scan cheap regardless of how deep the
+// page is, at the cost of not *guaranteeing* a full page back when duplicate editions are
+// unusually clustered at a given offset.
+const DEDUPE_POOL_HEADROOM = 20;
 // Hard ceiling on how many rows a search's result count is willing to examine. Counting
 // a search's full match set is unbounded work — on the production catalogue (1.1M rows)
 // a single common term like "the" matches ~322k rows, and EXPLAIN (ANALYZE, BUFFERS)
@@ -80,6 +87,9 @@ export interface ListBooksOptions {
   sort?: 'asc' | 'desc';
   limit: number;
   offset: number;
+  // Opt-in: collapses same-titled editions down to the best one (cover > complete dataset >
+  // newest publication date > has a price). See dedupeByTitle in lib/dedupe.ts.
+  dedupe?: boolean;
 }
 
 // Columns returned in the list view (no descriptions — keep payloads small)
@@ -157,6 +167,21 @@ export interface TrendingBookItem {
   contributors: Pick<BookContributor, 'role' | 'personName' | 'sequenceNumber'>[];
   genres: Pick<Genre, 'name' | 'slug'>[];
   excerpt: BookExcerptInfo | null;
+}
+
+// TrendingBookItem plus the fields dedupeByTitle needs to pick the best of several
+// same-titled editions — fetched alongside the public fields but stripped before a
+// feed's rows are cached/returned, since none of them are part of the public shape.
+interface FeedScoringRow extends TrendingBookItem {
+  shortDescription: string | null;
+  availabilityCode: string | null;
+  genreCount: number;
+  hasPrice: boolean;
+}
+
+function stripFeedScoring(row: FeedScoringRow): TrendingBookItem {
+  const { shortDescription: _shortDescription, availabilityCode: _availabilityCode, genreCount: _genreCount, hasPrice: _hasPrice, ...item } = row;
+  return item;
 }
 
 export interface BookDetail extends BookListItem {
@@ -609,8 +634,11 @@ async function fetchSearchPage(
   tier: 'fast' | 'cheap' | 'broad',
   titleWhere: SQL | undefined,
   titleOrderBy: (SQL | PgColumn)[],
+  // The page size to fetch per branch — opts.limit normally, or opts.limit +
+  // DEDUPE_POOL_HEADROOM when the caller is about to dedupe the merged result.
+  pageSize: number,
 ) {
-  const branchLimit = opts.offset + opts.limit + 1;
+  const branchLimit = opts.offset + pageSize + 1;
 
   const titleQuery = (conn: Pick<typeof db, 'select'>) =>
     conn.select(LIST_COLUMNS).from(books).where(titleWhere).orderBy(...titleOrderBy).limit(branchLimit);
@@ -661,7 +689,10 @@ export const booksService = {
     // rather than letting them deserialize into the wrong shape.
     // v3: searches now match on author name too, so the same key yields a different (and
     // larger) result set than anything cached under v2.
-    const rowsCacheKey = `books:list:v3:${createHash('sha256').update(JSON.stringify(opts)).digest('hex')}`;
+    // v4: opts now includes `dedupe`, which changes both which rows come back and how many
+    // — every request now hashes it (even dedupe:false, since the schema always supplies a
+    // default), so bumping avoids a generation of guaranteed-stale v3 lookups post-deploy.
+    const rowsCacheKey = `books:list:v4:${createHash('sha256').update(JSON.stringify(opts)).digest('hex')}`;
     // Keyed only on the fields that affect the count (not limit/offset/sort) so every
     // page of the same filter — and every sort direction — shares one cached total.
     const countCacheKey = `books:count:v3:${createHash('sha256')
@@ -794,6 +825,11 @@ export const booksService = {
         ? [opts.sort === 'desc' ? desc(books.title) : asc(books.title)]
         : [books.updatedAt];
 
+    // With dedupe on, over-fetch a headroom pool per page so collapsing same-titled
+    // editions still tends to leave a full page — see DEDUPE_POOL_HEADROOM. Without it,
+    // this is exactly opts.limit and every branch below reproduces prior behaviour.
+    const overfetchLimit = opts.dedupe ? opts.limit + DEDUPE_POOL_HEADROOM : opts.limit;
+
     const pagePromise: Promise<{ rows: BookListItem[]; hasMore: boolean }> = cachedRows
       ? Promise.resolve(JSON.parse(cachedRows) as { rows: BookListItem[]; hasMore: boolean }).then((parsed) => {
           for (const b of parsed.rows) {
@@ -804,29 +840,56 @@ export const booksService = {
         })
       : (async () => {
           const fetched = opts.q
-            ? await fetchSearchPage(opts, opts.q, rowsTier, rowsWhere, rowsOrderBy)
+            ? await fetchSearchPage(opts, opts.q, rowsTier, rowsWhere, rowsOrderBy, overfetchLimit)
             : await db
                 .select(LIST_COLUMNS)
                 .from(books)
                 .where(rowsWhere)
                 .orderBy(...rowsOrderBy)
-                // One row beyond the page, so `hasMore` is known without a second query —
-                // this is what callers should paginate on now that `total` may be capped.
-                .limit(opts.limit + 1)
+                // One row beyond the (possibly overfetched) page, so `hasMore` is known
+                // without a second query — this is what callers should paginate on now
+                // that `total` may be capped or, with dedupe, approximate.
+                .limit(overfetchLimit + 1)
                 .offset(opts.offset);
 
-          const hasMore = fetched.length > opts.limit;
-          const rows = hasMore ? fetched.slice(0, opts.limit) : fetched;
+          const rawHasMore = fetched.length > overfetchLimit;
+          const rawRows = rawHasMore ? fetched.slice(0, overfetchLimit) : fetched;
 
-          const [relations, excerptMap] = await Promise.all([
-            attachRelationsToList(rows),
-            getExcerptsByIsbns(rows.map((r) => r.isbn13)),
+          const [relations, excerptMap, descriptionById] = await Promise.all([
+            attachRelationsToList(rawRows),
+            getExcerptsByIsbns(rawRows.map((r) => r.isbn13)),
+            // Only needed for dedupe scoring — BookListItem never exposes it, and
+            // fetching it for every plain page would undo the "keep payloads small"
+            // reason LIST_COLUMNS leaves it out.
+            opts.dedupe && rawRows.length > 0
+              ? db
+                  .select({ id: books.id, shortDescription: books.shortDescription })
+                  .from(books)
+                  .where(inArray(books.id, rawRows.map((r) => r.id)))
+                  .then((rows) => new Map(rows.map((r) => [r.id, r.shortDescription])))
+              : Promise.resolve(new Map<number, string | null>()),
           ]);
-          const result = rows.map((r) => ({
+          const enriched = rawRows.map((r) => ({
             ...r,
             ...relations.get(r.id)!,
             excerpt: pickExcerpt(r.isbn13, excerptMap),
           }));
+
+          let hasMore = rawHasMore;
+          let result: BookListItem[];
+          if (opts.dedupe) {
+            const scored = enriched.map((r) => ({
+              ...r,
+              shortDescription: descriptionById.get(r.id) ?? null,
+              genreCount: r.genres.length,
+              hasPrice: r.prices.length > 0,
+            }));
+            const deduped = dedupeByTitle(scored);
+            hasMore = hasMore || deduped.length > opts.limit;
+            result = deduped.slice(0, opts.limit).map(({ shortDescription: _shortDescription, genreCount: _genreCount, hasPrice: _hasPrice, ...item }) => item);
+          } else {
+            result = enriched;
+          }
 
           const page = { rows: result, hasMore };
           await redis.set(rowsCacheKey, JSON.stringify(page), 'EX', LIST_TTL);
@@ -861,15 +924,19 @@ export const booksService = {
         })();
 
     const [page, total] = await Promise.all([pagePromise, totalPromise]);
-    // Derived rather than stored so it stays correct when `total` came from cache.
-    const totalIsApproximate = !!opts.q && total >= SEARCH_COUNT_CAP;
+    // Derived rather than stored so it stays correct when `total` came from cache. `total`
+    // counts raw rows, not distinct titles — computing an exact distinct-title count would
+    // mean an unbounded GROUP BY over the same 1M+-row table SEARCH_COUNT_CAP exists to
+    // avoid scanning, so dedupe forces this the same way a capped search count does: a
+    // lower bound, with `hasMore` as the real pagination signal.
+    const totalIsApproximate = (!!opts.q && total >= SEARCH_COUNT_CAP) || !!opts.dedupe;
     return { books: page.rows, total, hasMore: page.hasMore, totalIsApproximate };
   },
 
-  async suggestions(q: string, limit: number, type: SuggestionType = 'all'): Promise<SuggestionItem[]> {
-    // v2: `all` is the new default and the merge reserves a share of the list for author
-    // matches, so entries cached under the old title-only behaviour would now be wrong.
-    const cacheKey = `suggestions:v2:${type}:${createHash('sha256').update(`${q}:${limit}`).digest('hex')}`;
+  async suggestions(q: string, limit: number, type: SuggestionType = 'all', dedupe = false): Promise<SuggestionItem[]> {
+    // v3: results now depend on `dedupe` too (added below) — v2 entries predate the flag
+    // and were always deduped, so they'd be wrongly served as the non-deduped default.
+    const cacheKey = `suggestions:v3:${type}:${dedupe}:${createHash('sha256').update(`${q}:${limit}`).digest('hex')}`;
     const cached = await redis.get(cacheKey);
     if (cached) return JSON.parse(cached) as SuggestionItem[];
 
@@ -895,6 +962,10 @@ export const booksService = {
     // inner ordering is served by idx_book_contributors_person_name_lower_pattern.
     // Each step only reaches the next when the current one doesn't already fill the pool.
     const poolSize = Math.min(limit * FEED_POOL_MULTIPLIER, FEED_POOL_MAX);
+    // shortDescription/availabilityCode/publicationDate are plain columns on `books` (no
+    // join, negligible cost) fetched for every request — they're only ever used for the
+    // dedupe scoring below and stripped from `results` before it's cached/returned, so
+    // callers that don't pass dedupe never see them.
     const selectColumns = {
       id: books.id,
       title: books.title,
@@ -902,6 +973,9 @@ export const booksService = {
       isbn13: books.isbn13,
       productForm: books.productForm,
       coverUrl: books.coverUrl,
+      shortDescription: books.shortDescription,
+      availabilityCode: books.availabilityCode,
+      publicationDate: books.publicationDate,
     };
 
     type SuggestionRow = {
@@ -911,6 +985,9 @@ export const booksService = {
       isbn13: string | null;
       productForm: string | null;
       coverUrl: string | null;
+      shortDescription: string | null;
+      availabilityCode: string | null;
+      publicationDate: string | null;
     };
     const wantsTitle = type !== 'author';
     const wantsAuthor = type !== 'title';
@@ -998,9 +1075,41 @@ export const booksService = {
       });
     }
 
-    const titleRows = dedupeByTitleAndSubtitle(titlePool);
-    const titleIds = new Set(titleRows.map((r) => r.id));
-    const authorRows = dedupeByTitleAndSubtitle(authorPool).filter((r) => !titleIds.has(r.id));
+    // Title-grouping (picking the best of several same-titled editions) only runs when the
+    // caller opts in — plain id-overlap between the two branches still gets collapsed either
+    // way, since that's the same book appearing twice, not different editions of a work.
+    let titleRows: SuggestionRow[];
+    let authorRows: SuggestionRow[];
+    if (dedupe) {
+      const poolIds = [...new Set([...titlePool, ...authorPool].map((r) => r.id))];
+      const [genreCounts, priceRows] = poolIds.length > 0
+        ? await Promise.all([
+            db
+              .select({ bookId: bookGenres.bookId, count: sql<number>`COUNT(*)::int` })
+              .from(bookGenres)
+              .where(inArray(bookGenres.bookId, poolIds))
+              .groupBy(bookGenres.bookId),
+            db.selectDistinct({ bookId: bookPrices.bookId }).from(bookPrices).where(inArray(bookPrices.bookId, poolIds)),
+          ])
+        : [[], []];
+      const genreCountById = new Map(genreCounts.map((g) => [g.bookId, g.count]));
+      const priceIds = new Set(priceRows.map((p) => p.bookId));
+      const withScoring = (r: SuggestionRow) => ({
+        ...r,
+        genreCount: genreCountById.get(r.id) ?? 0,
+        hasPrice: priceIds.has(r.id),
+      });
+
+      const dedupedTitle = dedupeByTitleAndSubtitle(titlePool.map(withScoring));
+      const titleIds = new Set(dedupedTitle.map((r) => r.id));
+      const dedupedAuthor = dedupeByTitleAndSubtitle(authorPool.map(withScoring)).filter((r) => !titleIds.has(r.id));
+      titleRows = dedupedTitle;
+      authorRows = dedupedAuthor;
+    } else {
+      const titleIds = new Set(titlePool.map((r) => r.id));
+      titleRows = titlePool;
+      authorRows = authorPool.filter((r) => !titleIds.has(r.id));
+    }
 
     // Same rule as the paginated search (see fetchSearchPage): titles lead, unless nothing
     // matched a title with any confidence and the author side did. A fuzzy title match is
@@ -1047,7 +1156,7 @@ export const booksService = {
 
     const excerptMap = await getExcerptsByIsbns(rows.map((r) => r.isbn13));
 
-    const results = rows.map((r) => ({
+    const results = rows.map(({ shortDescription: _shortDescription, availabilityCode: _availabilityCode, publicationDate: _publicationDate, ...r }) => ({
       ...r,
       authors: authorMap.get(r.id) ?? [],
       excerpt: pickExcerpt(r.isbn13, excerptMap),
@@ -1337,7 +1446,7 @@ export const booksService = {
       return [];
     }
 
-    const [bookRows, contributors, genreRows] = await Promise.all([
+    const [bookRows, contributors, genreRows, priceRows] = await Promise.all([
       db
         .select({
           id: books.id,
@@ -1347,6 +1456,8 @@ export const booksService = {
           isbn13: books.isbn13,
           productForm: books.productForm,
           publicationDate: books.publicationDate,
+          shortDescription: books.shortDescription,
+          availabilityCode: books.availabilityCode,
         })
         .from(books)
         .where(inArray(books.id, bookIds)),
@@ -1371,17 +1482,37 @@ export const booksService = {
         .from(bookGenres)
         .innerJoin(genres, eq(genres.id, bookGenres.genreId))
         .where(inArray(bookGenres.bookId, bookIds)),
+
+      db
+        .selectDistinct({ bookId: bookPrices.bookId })
+        .from(bookPrices)
+        .where(inArray(bookPrices.bookId, bookIds)),
     ]);
 
     const excerptMap = await getExcerptsByIsbns(bookRows.map((b) => b.isbn13));
 
-    const bookMap = new Map(bookRows.map((b) => [b.id, { ...b, contributors: [] as TrendingBookItem['contributors'], genres: [] as TrendingBookItem['genres'], excerpt: pickExcerpt(b.isbn13, excerptMap) }]));
+    const bookMap = new Map(
+      bookRows.map((b) => [
+        b.id,
+        { ...b, contributors: [] as TrendingBookItem['contributors'], genres: [] as TrendingBookItem['genres'], genreCount: 0, hasPrice: false, excerpt: pickExcerpt(b.isbn13, excerptMap) },
+      ]),
+    );
     for (const c of contributors) bookMap.get(c.bookId)?.contributors.push({ role: c.role, personName: c.personName, sequenceNumber: c.sequenceNumber });
-    for (const g of genreRows) bookMap.get(g.bookId)?.genres.push({ name: g.name, slug: g.slug });
+    for (const g of genreRows) {
+      const entry = bookMap.get(g.bookId);
+      if (entry) {
+        entry.genres.push({ name: g.name, slug: g.slug });
+        entry.genreCount++;
+      }
+    }
+    for (const p of priceRows) {
+      const entry = bookMap.get(p.bookId);
+      if (entry) entry.hasPrice = true;
+    }
 
     // Preserve the score-ordered sequence from bookIds
-    const ordered = bookIds.map((id) => bookMap.get(id)).filter((b): b is TrendingBookItem => b !== undefined);
-    const pool = dedupeByTitle(ordered).slice(0, cacheTarget);
+    const ordered = bookIds.map((id) => bookMap.get(id)).filter((b): b is FeedScoringRow => b !== undefined);
+    const pool = dedupeByTitle(ordered).slice(0, cacheTarget).map(stripFeedScoring);
 
     // The pool is shared across all viewers; each one gets their own filtered
     // view of it.
@@ -1436,6 +1567,8 @@ export const booksService = {
           isbn13: books.isbn13,
           productForm: books.productForm,
           publicationDate: books.publicationDate,
+          shortDescription: books.shortDescription,
+          availabilityCode: books.availabilityCode,
         })
         .from(books)
         .where(whereClause)
@@ -1449,7 +1582,7 @@ export const booksService = {
     }
 
     const ids = rows.map((r) => r.id);
-    const [contributors, genreRows, excerptMap] = await Promise.all([
+    const [contributors, genreRows, priceRows, excerptMap] = await Promise.all([
       db
         .select({
           bookId: bookContributors.bookId,
@@ -1467,18 +1600,33 @@ export const booksService = {
         .innerJoin(genres, eq(genres.id, bookGenres.genreId))
         .where(inArray(bookGenres.bookId, ids)),
 
+      db.selectDistinct({ bookId: bookPrices.bookId }).from(bookPrices).where(inArray(bookPrices.bookId, ids)),
+
       getExcerptsByIsbns(rows.map((r) => r.isbn13)),
     ]);
 
     const bookMap = new Map(
-      rows.map((b) => [b.id, { ...b, contributors: [] as TrendingBookItem['contributors'], genres: [] as TrendingBookItem['genres'], excerpt: pickExcerpt(b.isbn13, excerptMap) }]),
+      rows.map((b) => [
+        b.id,
+        { ...b, contributors: [] as TrendingBookItem['contributors'], genres: [] as TrendingBookItem['genres'], genreCount: 0, hasPrice: false, excerpt: pickExcerpt(b.isbn13, excerptMap) },
+      ]),
     );
     for (const c of contributors) bookMap.get(c.bookId)?.contributors.push({ role: c.role, personName: c.personName, sequenceNumber: c.sequenceNumber });
-    for (const g of genreRows) bookMap.get(g.bookId)?.genres.push({ name: g.name, slug: g.slug });
+    for (const g of genreRows) {
+      const entry = bookMap.get(g.bookId);
+      if (entry) {
+        entry.genres.push({ name: g.name, slug: g.slug });
+        entry.genreCount++;
+      }
+    }
+    for (const p of priceRows) {
+      const entry = bookMap.get(p.bookId);
+      if (entry) entry.hasPrice = true;
+    }
 
     // Preserve cosine similarity order from rows
-    const ordered = rows.map((r) => bookMap.get(r.id)).filter((b): b is TrendingBookItem => b !== undefined);
-    const results = dedupeByTitle(ordered).slice(0, limit);
+    const ordered = rows.map((r) => bookMap.get(r.id)).filter((b): b is FeedScoringRow => b !== undefined);
+    const results = dedupeByTitle(ordered).slice(0, limit).map(stripFeedScoring);
 
     await redis.set(cacheKey, JSON.stringify(results), 'EX', PERSONALIZED_TTL);
     return results;
@@ -1536,6 +1684,8 @@ export const booksService = {
           isbn13: books.isbn13,
           productForm: books.productForm,
           publicationDate: books.publicationDate,
+          shortDescription: books.shortDescription,
+          availabilityCode: books.availabilityCode,
         })
         .from(books)
         .where(
@@ -1554,7 +1704,7 @@ export const booksService = {
     }
 
     const ids = rows.map((r) => r.id);
-    const [contributors, genreRows, excerptMap] = await Promise.all([
+    const [contributors, genreRows, priceRows, excerptMap] = await Promise.all([
       db
         .select({
           bookId: bookContributors.bookId,
@@ -1572,18 +1722,33 @@ export const booksService = {
         .innerJoin(genres, eq(genres.id, bookGenres.genreId))
         .where(inArray(bookGenres.bookId, ids)),
 
+      db.selectDistinct({ bookId: bookPrices.bookId }).from(bookPrices).where(inArray(bookPrices.bookId, ids)),
+
       getExcerptsByIsbns(rows.map((r) => r.isbn13)),
     ]);
 
     const bookMap = new Map(
-      rows.map((b) => [b.id, { ...b, contributors: [] as TrendingBookItem['contributors'], genres: [] as TrendingBookItem['genres'], excerpt: pickExcerpt(b.isbn13, excerptMap) }]),
+      rows.map((b) => [
+        b.id,
+        { ...b, contributors: [] as TrendingBookItem['contributors'], genres: [] as TrendingBookItem['genres'], genreCount: 0, hasPrice: false, excerpt: pickExcerpt(b.isbn13, excerptMap) },
+      ]),
     );
     for (const c of contributors) bookMap.get(c.bookId)?.contributors.push({ role: c.role, personName: c.personName, sequenceNumber: c.sequenceNumber });
-    for (const g of genreRows) bookMap.get(g.bookId)?.genres.push({ name: g.name, slug: g.slug });
+    for (const g of genreRows) {
+      const entry = bookMap.get(g.bookId);
+      if (entry) {
+        entry.genres.push({ name: g.name, slug: g.slug });
+        entry.genreCount++;
+      }
+    }
+    for (const p of priceRows) {
+      const entry = bookMap.get(p.bookId);
+      if (entry) entry.hasPrice = true;
+    }
 
     // Preserve cosine similarity order from rows
-    const ordered = rows.map((r) => bookMap.get(r.id)).filter((b): b is TrendingBookItem => b !== undefined);
-    const pool = dedupeByTitle(ordered).slice(0, cacheTarget);
+    const ordered = rows.map((r) => bookMap.get(r.id)).filter((b): b is FeedScoringRow => b !== undefined);
+    const pool = dedupeByTitle(ordered).slice(0, cacheTarget).map(stripFeedScoring);
 
     // The pool is what gets cached and shared across users; the caller gets
     // their own filtered view of it.

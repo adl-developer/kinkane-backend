@@ -5,6 +5,7 @@ import {
   books,
   bookContributors,
   bookGenres,
+  bookPrices,
   genres,
   userBooks,
   userInteractions,
@@ -355,20 +356,66 @@ function buildFormatCondition(intent: 'fiction' | 'non-fiction' | null) {
  * match quality. `baseConditions` (dislikes, format, already-owned books)
  * applies identically to both passes.
  */
+type CandidateRow = { id: number; title: string };
+
+// The columns dedupeByTitle needs to pick the best of several same-titled candidates,
+// fetched alongside id/title and stripped before this function's callers ever see them —
+// none of them are part of the {id, title} contract downstream code relies on.
+type ScoredCandidateRow = CandidateRow & {
+  subtitle: null;
+  coverUrl: string | null;
+  shortDescription: string | null;
+  availabilityCode: string | null;
+  publicationDate: string | null;
+  genreCount: number;
+  hasPrice: boolean;
+};
+
 async function fetchCandidateBooks(
   vectorLiteral: string,
   baseConditions: SQL[],
-): Promise<{ id: number; title: string }[]> {
+): Promise<CandidateRow[]> {
   const distanceExpr = sql`${books.embedding} <=> ${vectorLiteral}::vector`;
+  const candidateColumns = {
+    id: books.id,
+    title: books.title,
+    coverUrl: books.coverUrl,
+    shortDescription: books.shortDescription,
+    availabilityCode: books.availabilityCode,
+    publicationDate: books.publicationDate,
+  };
 
-  const primaryRows = await db
-    .select({ id: books.id, title: books.title })
-    .from(books)
-    .where(and(sql`${distanceExpr} < ${SIMILARITY_THRESHOLD}`, ...baseConditions))
-    .orderBy(distanceExpr)
-    .limit(FETCH_POOL);
+  const fetchRows = (where: SQL | undefined, limit: number) =>
+    db.select(candidateColumns).from(books).where(where).orderBy(distanceExpr).limit(limit);
 
-  const primaryCandidates = dedupeByTitle(primaryRows).slice(0, TARGET_RESULTS);
+  // Attaches genreCount/hasPrice (the two DedupeCandidate fields not directly on `books`)
+  // via one batched IN query each, so dedupeByTitle can score the pool — same pattern as
+  // FeedScoringRow in books.service.ts.
+  const withScoring = async (rows: Awaited<ReturnType<typeof fetchRows>>): Promise<ScoredCandidateRow[]> => {
+    if (rows.length === 0) return [];
+    const ids = rows.map((r) => r.id);
+    const [genreCounts, priceRows] = await Promise.all([
+      db
+        .select({ bookId: bookGenres.bookId, count: sql<number>`COUNT(*)::int` })
+        .from(bookGenres)
+        .where(inArray(bookGenres.bookId, ids))
+        .groupBy(bookGenres.bookId),
+      db.selectDistinct({ bookId: bookPrices.bookId }).from(bookPrices).where(inArray(bookPrices.bookId, ids)),
+    ]);
+    const genreCountById = new Map(genreCounts.map((g) => [g.bookId, g.count]));
+    const priceIds = new Set(priceRows.map((p) => p.bookId));
+    return rows.map((r) => ({
+      ...r,
+      subtitle: null,
+      genreCount: genreCountById.get(r.id) ?? 0,
+      hasPrice: priceIds.has(r.id),
+    }));
+  };
+
+  const stripScoring = (r: ScoredCandidateRow): CandidateRow => ({ id: r.id, title: r.title });
+
+  const primaryRows = await fetchRows(and(sql`${distanceExpr} < ${SIMILARITY_THRESHOLD}`, ...baseConditions), FETCH_POOL);
+  const primaryCandidates = dedupeByTitle(await withScoring(primaryRows)).slice(0, TARGET_RESULTS).map(stripScoring);
 
   if (primaryCandidates.length >= TARGET_RESULTS) {
     return primaryCandidates;
@@ -378,26 +425,26 @@ async function fetchCandidateBooks(
   const excludeIds = primaryCandidates.map((r) => r.id);
   const seenTitles = new Set(primaryCandidates.map((r) => r.title.trim().toLowerCase()));
 
-  const backfillRows = await db
-    .select({ id: books.id, title: books.title })
-    .from(books)
-    .where(
-      and(
-        sql`${distanceExpr} >= ${SIMILARITY_THRESHOLD}`,
-        sql`${distanceExpr} < ${BACKFILL_SIMILARITY_THRESHOLD}`,
-        ...baseConditions,
-        ...(excludeIds.length > 0 ? [notInArray(books.id, excludeIds)] : []),
-      ),
-    )
-    .orderBy(distanceExpr)
-    .limit(FETCH_POOL);
+  const backfillRows = await fetchRows(
+    and(
+      sql`${distanceExpr} >= ${SIMILARITY_THRESHOLD}`,
+      sql`${distanceExpr} < ${BACKFILL_SIMILARITY_THRESHOLD}`,
+      ...baseConditions,
+      ...(excludeIds.length > 0 ? [notInArray(books.id, excludeIds)] : []),
+    ),
+    FETCH_POOL,
+  );
 
-  const backfillCandidates: { id: number; title: string }[] = [];
+  // Backfill candidates are a strictly worse-match pool, only reached because the primary
+  // pass came up short — they exist to top the list off, not to be scored against each
+  // other, so this keeps the simple first-seen-title rule rather than the full priority
+  // scoring above.
+  const backfillCandidates: CandidateRow[] = [];
   for (const row of backfillRows) {
     const key = row.title.trim().toLowerCase();
     if (seenTitles.has(key)) continue;
     seenTitles.add(key);
-    backfillCandidates.push(row);
+    backfillCandidates.push({ id: row.id, title: row.title });
     if (backfillCandidates.length >= stillNeeded) break;
   }
 

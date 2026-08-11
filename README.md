@@ -845,6 +845,7 @@ Typeahead suggestions. Designed to be called on every keystroke. Returns up to 1
 |-------|------|-------------|
 | `q` | string | The text being typed. Min 2, max 100 chars |
 | `limit` | number | Max suggestions. 1–15, default `8` |
+| `dedupe` | `true`/`false` | Collapse same-titled editions down to the best one. Default `false` — pass `true` (e.g. the mobile app) to avoid showing the same book twice under different ISBNs |
 
 **Response `200`**
 ```json
@@ -883,12 +884,15 @@ Paginated book list with optional filters and full-text search.
 | `publisher` | string | Partial match on publisher name |
 | `limit` | number | 1–50, default `20` |
 | `offset` | number | Default `0` |
+| `dedupe` | `true`/`false` | Collapse same-titled editions down to the best one (has a cover > has a description + genre + is available to order > newest publication date > has a price). Default `false` — pass `true` (e.g. the mobile app) so browsing/search doesn't show the same title once per ISBN. When on, `totalIsApproximate` is always `true`: paginate on `hasMore`, not `total` |
 
 **Response `200`**
 ```json
 {
   "books": [ { "id": 42, "title": "...", "contributors": [], "genres": [], "prices": [] } ],
   "total": 1,
+  "totalIsApproximate": false,
+  "hasMore": false,
   "limit": 20,
   "offset": 0
 }
