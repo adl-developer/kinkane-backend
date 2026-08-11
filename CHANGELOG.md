@@ -5,6 +5,7 @@
 
 ### Features
 
+* let subscribers switch plans and give a reason when cancelling, in-app ([d30209b](https://adl.github.com/adl-developer/kinkane-backend/commit/d30209ba9f6afa1811c9bf227c336248e0128410)) — [details](changelog/2026-08-11-subscription-change-plan-cancel-reason.md)
 * pick the best edition of a book, and make deduping optional on browse/search ([ef53afb](https://adl.github.com/adl-developer/kinkane-backend/commit/ef53afbb4d3f4f9a376072426c3635187775575a)) — [details](changelog/2026-08-11-subscription-change-plan-cancel-reason.md)
 * throttle how fast the payment confirmation screen can be polled ([4f84009](https://adl.github.com/adl-developer/kinkane-backend/commit/4f84009c853da2d72e8df8953207e2152d4451d7)) — [details](changelog/2026-08-11-payment-confirm-throttle.md)
 * let readers buy books and manage payments without leaving the app ([8c3107a](https://adl.github.com/adl-developer/kinkane-backend/commit/8c3107aac48fb1057373202bdf30f73850fe02d8)) — [details](changelog/2026-08-11-dedupe-priority-and-opt-in.md)
