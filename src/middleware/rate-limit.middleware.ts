@@ -93,6 +93,22 @@ export const checkoutLimiter = rateLimit({
   store: new RedisStore({ prefix: 'rl:checkout:', sendCommand }),
 });
 
+// Payment confirmation: 60 per minute per user. This endpoint is polled by a
+// client sitting on a "confirming your payment" spinner, so it has to tolerate
+// a tight loop — but a pending payment falls through to a live Stripe lookup,
+// and the 2-second re-check guard on the payment row is written *after* the
+// call returns, so simultaneous polls can each start their own request before
+// any of them records the attempt. This bounds that.
+export const paymentConfirmLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: json429,
+  keyGenerator: byUser,
+  store: new RedisStore({ prefix: 'rl:payment-confirm:', sendCommand }),
+});
+
 // Password reset: 5 per hour — prevents email bombing and brute-forcing reset tokens
 export const passwordResetLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
