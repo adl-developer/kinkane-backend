@@ -1,11 +1,18 @@
 # Changelog
 
 
+## 2026-08-11
+
+### Bug Fixes
+
+* return referral point totals with camelCase keys ([86349e0](https://adl.github.com/adl-developer/kinkane-backend/commit/86349e0c08371267369c0d698d3fac71bc6040e2)) — [details](changelog/2026-08-11-referral-camelcase-keys.md)
+
+
 ## 2026-08-10
 
 ### Features
 
-* reward second-degree referrals, and make going around the world harder ([aab7569](https://adl.github.com/adl-developer/kinkane-backend/commit/aab75691d0b026c4238c0e86b57b8971037c6122)) — [details](changelog/2026-08-10-referral-competition.md)
+* reward second-degree referrals, and make going around the world harder ([593fcfb](https://adl.github.com/adl-developer/kinkane-backend/commit/593fcfb07d1b1c712546b6d39840ae03f13e445d)) — [details](changelog/2026-08-10-referral-competition.md)
 * use the Around the World invite wording, and switch it off when the campaign ends ([281e33b](https://adl.github.com/adl-developer/kinkane-backend/commit/281e33bef1cba09c5413ff8bd6fb625187c2d2b4)) — [details](changelog/2026-08-10-referral-competition.md)
 * invite a friend and compete to send Kinkané around the world ([50131fd](https://adl.github.com/adl-developer/kinkane-backend/commit/50131fd8e225114ba6c109751fd34227313ee296)) — [details](changelog/2026-08-10-referral-competition.md)
 
