@@ -5,6 +5,7 @@
 
 ### Bug Fixes
 
+* stop the account screen showing a plan change that has already happened ([d75a761](https://adl.github.com/adl-developer/kinkane-backend/commit/d75a76118dd83d4e72f4db2fc552a6910ab07343))
 * keep a cart's timestamp in step with its line changes ([f623b4b](https://adl.github.com/adl-developer/kinkane-backend/commit/f623b4b8865a2bf214492beac055e303f5805747))
 * keep the order and its payment record in step with each other ([3e739ad](https://adl.github.com/adl-developer/kinkane-backend/commit/3e739adcb15e4f7d1c99babce2cf529aed09ce5f))
 * keep every subscription state change and its audit row in one transaction ([9310c44](https://adl.github.com/adl-developer/kinkane-backend/commit/9310c44622cd4b26c59bdb942b13c65a6ab8a249))

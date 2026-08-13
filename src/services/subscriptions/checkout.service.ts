@@ -511,7 +511,12 @@ export const checkoutService = {
    * reason. Password verification itself happens in the controller, before
    * this is called.
    */
-  async changePlan(userId: number, plan: SubscriptionPlan | 'free'): Promise<PlanChangeResult> {
+  async changePlan(
+    userId: number,
+    plan: SubscriptionPlan | 'free',
+    reason?: CancelReason,
+    reasonOther?: string,
+  ): Promise<PlanChangeResult> {
     assertStripeConfigured();
 
     const sub = await subscriptionStateService.getCurrent(userId);
@@ -536,7 +541,7 @@ export const checkoutService = {
     }
 
     if (plan === 'free') {
-      const cancelled = await this.cancel(userId);
+      const cancelled = await this.cancel(userId, reason, reasonOther);
       return {
         currentPlan: sub.plan,
         pendingPlan: null,
