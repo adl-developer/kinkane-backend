@@ -14,6 +14,15 @@ import { orderWebhooksService } from '../commerce/order-webhooks.service';
 import { paymentsService } from '../payments.service';
 
 /**
+ * How long a claim can hold before it's considered abandoned and re-runnable.
+ * Set to comfortably longer than any handler could plausibly take (the slowest
+ * involve a small handful of Stripe API calls, well under 30s), and shorter
+ * than Stripe's redelivery cadence, so a still-running instance is never
+ * preempted by a redelivery that races with it.
+ */
+const STALE_CLAIM_SECONDS = 60;
+
+/**
  * Stripe webhook ingestion.
  *
  * Stripe is the source of truth for billing; this file's whole job is to keep
@@ -103,21 +112,39 @@ export const webhooksService = {
   },
 
   /**
-   * Claims an event id. Returns false if it was already claimed, meaning this
-   * is a duplicate delivery and the caller should do nothing.
+   * Claims an event id, returning true when this delivery should be handled.
+   *
+   * Three cases:
+   *   1. No row exists → insert one and claim (first delivery).
+   *   2. Row exists with `processed_at` set → skip (handler already ran to
+   *      completion — this is a genuine duplicate).
+   *   3. Row exists with `processed_at` NULL — a prior attempt started but
+   *      didn't reach `markProcessed`. If it's older than STALE_CLAIM_SECONDS,
+   *      the process holding it has almost certainly died (Stripe's own
+   *      redelivery cadence is > that), so reclaim and re-run. Otherwise
+   *      another instance is currently processing this event, so skip.
+   *
+   * The reclaim path is what makes Stripe's automatic redelivery actually
+   * work as a crash-recovery mechanism. Without it, a handler crash between
+   * the claim and `markProcessed` leaves half-completed side effects that
+   * never get finished, since every future delivery is dropped as duplicate.
    */
   async claimEvent(event: Stripe.Event): Promise<boolean> {
-    const inserted = await db
+    const claimed = await db
       .insert(stripeWebhookEvents)
       .values({
         eventId: event.id,
         type: event.type,
         payload: event.data.object as unknown as Record<string, unknown>,
       })
-      .onConflictDoNothing({ target: stripeWebhookEvents.eventId })
+      .onConflictDoUpdate({
+        target: stripeWebhookEvents.eventId,
+        set: { receivedAt: sql`now()`, payload: sql`EXCLUDED.payload` },
+        setWhere: sql`${stripeWebhookEvents.processedAt} IS NULL AND ${stripeWebhookEvents.receivedAt} < now() - interval '${sql.raw(String(STALE_CLAIM_SECONDS))} seconds'`,
+      })
       .returning({ eventId: stripeWebhookEvents.eventId });
 
-    return inserted.length > 0;
+    return claimed.length > 0;
   },
 
   async markProcessed(eventId: string, error?: string): Promise<void> {
