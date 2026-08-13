@@ -85,9 +85,21 @@ export const schedulesService = {
    * webhook-driven housekeeping step and a Stripe blip must not turn a
    * successful renewal into a retried webhook.
    */
-  async scheduleFoundingRollover(subscriptionId: string, userId: number): Promise<void> {
+  async scheduleFoundingRollover(
+    subscriptionOrId: string | Stripe.Subscription,
+    userId: number,
+  ): Promise<void> {
     try {
-      const subscription = await stripe().subscriptions.retrieve(subscriptionId);
+      // Accept either an id (from a webhook callsite that has only the id) or
+      // an already-fetched Subscription (from `reactivate`, which has just
+      // updated it and knows its own state). Avoids one round-trip and, more
+      // importantly, avoids racing against the write that produced it.
+      const subscription =
+        typeof subscriptionOrId === 'string'
+          ? await stripe().subscriptions.retrieve(subscriptionOrId)
+          : subscriptionOrId;
+      const subscriptionId = subscription.id;
+
       if (scheduleIdOf(subscription)) return;
 
       const priceId = firstPriceId(subscription);
@@ -129,7 +141,7 @@ export const schedulesService = {
     } catch (err) {
       logger.error('Failed to schedule founding rollover — subscription still active', {
         userId,
-        subscriptionId,
+        subscriptionId: typeof subscriptionOrId === 'string' ? subscriptionOrId : subscriptionOrId.id,
         error: err instanceof Error ? err.message : String(err),
       });
     }

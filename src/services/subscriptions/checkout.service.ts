@@ -465,7 +465,11 @@ export const checkoutService = {
     // webhook when the window has actually shut. Attaching too early would
     // schedule a rollover that shouldn't happen yet.
     if (sub.isFoundingMember && !isFoundingWindowOpen()) {
-      await schedulesService.scheduleFoundingRollover(sub.stripeSubscriptionId, userId);
+      // Pass the just-updated subscription rather than its id, so
+      // scheduleFoundingRollover uses the version with `cancel_at_period_end`
+      // already cleared — a schedule created from a subscription inherits the
+      // cancellation behaviour of whatever version Stripe reads.
+      await schedulesService.scheduleFoundingRollover(updated, userId);
     }
 
     const state = await subscriptionStateService.applyState(
