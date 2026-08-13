@@ -285,29 +285,34 @@ export const cartService = {
 
     const quantity = Math.max(1, Math.min(target, ceiling));
 
-    const [row] = await db
-      .insert(cartItems)
-      .values({
-        cartId,
-        bookId,
-        isbn13: live.isbn13,
-        quantity,
-        unitPriceGbpPence: live.unitPriceGbpPence,
-        priceCapturedAt: new Date(),
-      })
-      .onConflictDoUpdate({
-        target: [cartItems.cartId, cartItems.bookId],
-        set: {
-          quantity,
+    // Line change and cart-timestamp bump in one transaction so cart.updatedAt
+    // can't be left stale by a crash between the two writes (the timestamp is
+    // what drives "recently modified" ordering elsewhere).
+    const row = await db.transaction(async (tx) => {
+      const [inserted] = await tx
+        .insert(cartItems)
+        .values({
+          cartId,
+          bookId,
           isbn13: live.isbn13,
+          quantity,
           unitPriceGbpPence: live.unitPriceGbpPence,
           priceCapturedAt: new Date(),
-          updatedAt: new Date(),
-        },
-      })
-      .returning();
-
-    await this.touch(cartId);
+        })
+        .onConflictDoUpdate({
+          target: [cartItems.cartId, cartItems.bookId],
+          set: {
+            quantity,
+            isbn13: live.isbn13,
+            unitPriceGbpPence: live.unitPriceGbpPence,
+            priceCapturedAt: new Date(),
+            updatedAt: new Date(),
+          },
+        })
+        .returning();
+      await tx.update(carts).set({ updatedAt: new Date() }).where(eq(carts.id, cartId));
+      return inserted;
+    });
 
     return {
       ...row,
@@ -319,23 +324,23 @@ export const cartService = {
 
   async removeItem(userId: number, bookId: number): Promise<void> {
     const cart = await this.getOrCreate(userId);
-    await db
-      .delete(cartItems)
-      .where(and(eq(cartItems.cartId, cart.id), eq(cartItems.bookId, bookId)));
-    await this.touch(cart.id);
+    await db.transaction(async (tx) => {
+      await tx
+        .delete(cartItems)
+        .where(and(eq(cartItems.cartId, cart.id), eq(cartItems.bookId, bookId)));
+      await tx.update(carts).set({ updatedAt: new Date() }).where(eq(carts.id, cart.id));
+    });
   },
 
   async clear(userId: number): Promise<number> {
     const cart = await this.getOrCreate(userId);
-    const deleted = await db
-      .delete(cartItems)
-      .where(eq(cartItems.cartId, cart.id))
-      .returning({ id: cartItems.id });
-    await this.touch(cart.id);
-    return deleted.length;
-  },
-
-  async touch(cartId: number): Promise<void> {
-    await db.update(carts).set({ updatedAt: new Date() }).where(eq(carts.id, cartId));
+    return db.transaction(async (tx) => {
+      const deleted = await tx
+        .delete(cartItems)
+        .where(eq(cartItems.cartId, cart.id))
+        .returning({ id: cartItems.id });
+      await tx.update(carts).set({ updatedAt: new Date() }).where(eq(carts.id, cart.id));
+      return deleted.length;
+    });
   },
 };
