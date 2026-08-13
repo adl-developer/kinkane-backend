@@ -5,6 +5,7 @@
 
 ### Bug Fixes
 
+* ask for a cancellation reason on every path that cancels ([f1f8520](https://adl.github.com/adl-developer/kinkane-backend/commit/f1f85206a0e24b674209aa06742104919a1da93f))
 * stop the account screen showing a plan change that has already happened ([d75a761](https://adl.github.com/adl-developer/kinkane-backend/commit/d75a76118dd83d4e72f4db2fc552a6910ab07343))
 * keep a cart's timestamp in step with its line changes ([f623b4b](https://adl.github.com/adl-developer/kinkane-backend/commit/f623b4b8865a2bf214492beac055e303f5805747))
 * keep the order and its payment record in step with each other ([3e739ad](https://adl.github.com/adl-developer/kinkane-backend/commit/3e739adcb15e4f7d1c99babce2cf529aed09ce5f))

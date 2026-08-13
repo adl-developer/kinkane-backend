@@ -21,6 +21,15 @@ import type { SubscriptionTier, SubscriptionStatus, SubscriptionPlan } from '../
 
 const BCRYPT_ROUNDS = 12;
 
+/**
+ * How old a Firebase ID token's `auth_time` may be and still count as "fresh"
+ * proof of ownership for a sensitive action. Set generously — the client has
+ * to prompt a re-auth, wait for the OS provider sheet, and post — but well
+ * inside a Firebase ID token's own 1-hour validity so a cached token can't
+ * stand in for a real just-now sign-in.
+ */
+const MAX_TOKEN_AGE_SECONDS = 5 * 60;
+
 export interface TokenPair {
   accessToken: string;
   refreshToken: string;
@@ -698,6 +707,81 @@ export const authService = {
         error: (err as Error).message,
       });
     });
+  },
+
+  /**
+   * Confirms a sensitive action is really being taken by the account owner,
+   * not just whoever is holding a valid session token. Accepts either the
+   * account password (for password-based accounts) or a fresh Firebase ID
+   * token from the same social provider they signed up with (for accounts
+   * with no password).
+   *
+   * "Fresh" is enforced by the caller's promise that this ID token comes
+   * from a re-authentication the app just prompted for. Firebase's own
+   * `auth_time` claim is checked against `MAX_TOKEN_AGE_SECONDS` below so a
+   * long-lived token cached elsewhere on the device can't stand in for a
+   * fresh sign-in.
+   */
+  async verifyOwnership(
+    userId: number,
+    credential: { password?: string; idToken?: string },
+  ): Promise<void> {
+    if (credential.password) {
+      await this.verifyPassword(userId, credential.password);
+      return;
+    }
+    if (credential.idToken) {
+      await this.verifyFreshIdToken(userId, credential.idToken);
+      return;
+    }
+    throw Object.assign(new Error('A password or a fresh sign-in is required'), {
+      statusCode: 400,
+    });
+  },
+
+  /**
+   * Verifies a fresh Firebase ID token and confirms it belongs to a provider
+   * account already linked to `userId`. Same guarantee as `verifyPassword`
+   * for accounts that never had one.
+   */
+  async verifyFreshIdToken(userId: number, idToken: string): Promise<void> {
+    let decoded: admin.auth.DecodedIdToken;
+    try {
+      decoded = await admin.auth().verifyIdToken(idToken);
+    } catch {
+      throw Object.assign(new Error('Invalid or expired sign-in token'), { statusCode: 401 });
+    }
+
+    // Freshness — a Firebase ID token stays valid for an hour, so `auth_time`
+    // (when the user actually signed in) is what says whether this reflects
+    // a real just-now re-auth or an hour-old cached login.
+    const authTime = decoded.auth_time * 1000;
+    if (Date.now() - authTime > MAX_TOKEN_AGE_SECONDS * 1000) {
+      throw Object.assign(new Error('Sign in again to confirm this change'), { statusCode: 401 });
+    }
+
+    const provider = decoded.firebase.sign_in_provider;
+    const providerUid = decoded.uid;
+
+    const [linked] = await db
+      .select({ id: userProviders.id })
+      .from(userProviders)
+      .where(
+        and(
+          eq(userProviders.userId, userId),
+          eq(userProviders.provider, provider),
+          eq(userProviders.providerUid, providerUid),
+        ),
+      )
+      .limit(1);
+
+    if (!linked) {
+      // The token is valid Firebase but belongs to a different account
+      // than the caller's session — treat identically to a wrong password,
+      // so probing this endpoint can't reveal which provider account maps
+      // to which internal user.
+      throw Object.assign(new Error('Incorrect sign-in'), { statusCode: 401 });
+    }
   },
 
   /**

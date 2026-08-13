@@ -30,16 +30,24 @@ const cancelReasonSchema = z
     path: ['reasonOther'],
   });
 
+// A plan change is confirmed with either the account password (for password
+// accounts) or a fresh Firebase ID token from the same social provider they
+// signed in with (for accounts that never had one). Exactly one of the two
+// is required — a request carrying neither, or both, is rejected up front.
+//
 // A plan change to 'free' is the same underlying action as POST /cancel, so
-// the client has to provide the same reason data. The refine below enforces
-// that: if the target is 'free', reason/reasonOther must be supplied and
-// obey the cancel schema; if it's monthly/annual, they must not be.
+// the client also has to provide the same reason data in that case.
 const changePlanSchema = z
   .object({
     plan: z.enum(['monthly', 'annual', 'free']),
-    password: z.string().min(1, 'Password is required'),
+    password: z.string().min(1).optional(),
+    idToken: z.string().min(1).optional(),
     reason: z.enum(['not_using', 'accidental', 'too_expensive', 'other']).optional(),
     reasonOther: z.string().trim().min(1).max(500).optional(),
+  })
+  .refine((data) => Boolean(data.password) !== Boolean(data.idToken), {
+    message: 'Provide exactly one of password or idToken',
+    path: ['password'],
   })
   .refine((data) => data.plan !== 'free' || Boolean(data.reason), {
     message: 'reason is required when plan is "free"',
@@ -184,7 +192,10 @@ export const subscriptionsController = {
       return;
     }
 
-    await authService.verifyPassword(req.user.id, parsed.data.password);
+    await authService.verifyOwnership(req.user.id, {
+      password: parsed.data.password,
+      idToken: parsed.data.idToken,
+    });
     const result = await checkoutService.changePlan(
       req.user.id,
       parsed.data.plan,

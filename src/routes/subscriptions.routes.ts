@@ -91,16 +91,24 @@ router.post('/cancel', requireAuth, wrapHttp(subscriptionsController.cancel));
 /**
  * POST /api/v1/user/subscription/change
  *
- * Switches plan (monthly/annual/free) for the end of the current period,
- * confirmed with the account password. `plan: 'free'` is the same action as
- * POST /cancel, just reached from the Change Plan picker instead of the
- * dedicated Cancel Subscription flow, so it carries no reason.
+ * Switches plan (monthly/annual/free) for the end of the current period.
+ * Confirmed with either the account password (password accounts) or a fresh
+ * Firebase ID token from the same provider they signed in with (social
+ * accounts, which have no password). Exactly one of `password` or `idToken`
+ * is required. A social ID token counts as "fresh" only when its auth_time
+ * is within 5 minutes — the client is expected to prompt a re-sign-in.
  *
- * Body: { plan: 'monthly'|'annual'|'free', password }
+ * `plan: 'free'` is the same underlying action as POST /cancel, so it also
+ * requires a `reason` (and `reasonOther` when reason is 'other'). Every
+ * cancellation flows through the reasons ledger regardless of which button
+ * reached it.
+ *
+ * Body: { plan: 'monthly'|'annual'|'free', password? | idToken?,
+ *         reason? (required if plan=free), reasonOther? }
  * Returns 200: { currentPlan, pendingPlan, effectiveAt, tier, status }
  * Errors: 400 validation | 401 unauthenticated | 401 incorrect password |
- *         404 no subscription | 409 NO_PAID_SUBSCRIPTION |
- *         409 PENDING_CANCELLATION (reactivate first) |
+ *         401 expired sign-in token | 404 no subscription |
+ *         409 NO_PAID_SUBSCRIPTION | 409 PENDING_CANCELLATION (reactivate first) |
  *         409 already on this plan | 503 payments not configured
  */
 router.post(
