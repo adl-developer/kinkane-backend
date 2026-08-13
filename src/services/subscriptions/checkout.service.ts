@@ -616,6 +616,22 @@ export const checkoutService = {
       { reason: 'subscription_updated' },
     );
 
+    // If applyState returned null, a concurrent writer moved the row on
+    // between the getCurrent above and here — likely a webhook. The schedule
+    // is already attached in Stripe, so its `customer.subscription.updated`
+    // will land shortly and set pendingPlan correctly via the webhook's own
+    // reconciliation. Log at error with the correlation ids so the (rare)
+    // case where the webhook also fails is findable, but don't roll back the
+    // Stripe write: the user's intent was recorded, and Stripe is the source
+    // of truth for what will actually be billed.
+    if (!state) {
+      logger.error('Plan change written to Stripe but local state race prevented mirror', {
+        userId,
+        stripeSubscriptionId: sub.stripeSubscriptionId,
+        toPlan: plan,
+      });
+    }
+
     logger.info('Plan change scheduled', {
       userId,
       stripeSubscriptionId: sub.stripeSubscriptionId,
