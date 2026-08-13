@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-08-13
+
+### Bug Fixes
+
+* recover from a webhook handler crash on Stripe's next retry ([36ea9ef](https://adl.github.com/adl-developer/kinkane-backend/commit/36ea9ef44c069795160d2da0453405829f27ca03))
+
+
 ## 2026-08-11
 
 ### Features
