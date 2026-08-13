@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
-import { booksService } from '../services/books.service';
+import { booksService, decodeDedupeCursor } from '../services/books.service';
 import { userBooksService } from '../services/user-books.service';
 import { interactionsService } from '../services/interactions.service';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
@@ -38,6 +38,13 @@ const listSchema = z.object({
   offset: z.coerce.number().int().min(0).default(0),
   // Opt-in: collapses same-titled editions down to the best one — see dedupeParam above.
   dedupe: dedupeParam,
+  /**
+   * Opaque pagination token, only meaningful when dedupe=true. When supplied
+   * the server resumes at the raw position it encodes and filters out any
+   * titles the previous page returned, so a title cannot appear twice
+   * across pages. Ignored (with no error) when dedupe is off.
+   */
+  cursor: z.string().min(1).max(4096).optional(),
 });
 
 export const booksController = {
@@ -81,7 +88,12 @@ export const booksController = {
     }
 
     try {
-      const result = await booksService.list(parsed.data);
+      // Cursor is only meaningful with dedupe. Silently ignoring it in the
+      // offset-only path is more forgiving than a 400 and keeps a hand-crafted
+      // request working when someone drops the flag.
+      const cursor = parsed.data.dedupe ? decodeDedupeCursor(parsed.data.cursor) : null;
+
+      const result = await booksService.list({ ...parsed.data, cursor });
       res.status(200).json({
         books: result.books,
         total: result.total,
@@ -92,6 +104,10 @@ export const booksController = {
         hasMore: result.hasMore,
         limit: parsed.data.limit,
         offset: parsed.data.offset,
+        // Present only for dedupe requests. Pass this back as ?cursor= for the
+        // next page — offset-style pagination on the dedupe path could return
+        // the same title on consecutive pages, which cursors prevent.
+        nextCursor: result.nextCursor,
       });
     } catch (err: unknown) {
       const e = err as Error;

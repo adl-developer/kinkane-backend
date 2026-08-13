@@ -9,6 +9,7 @@
 
 ### Bug Fixes
 
+* log a loud warning when a plan change races the webhook that mirrors it ([2bdcf62](https://adl.github.com/adl-developer/kinkane-backend/commit/2bdcf629b7db0a472a29f50a3547c8e497f4d038))
 * keep founding members on their founding price for every renewal ([445e499](https://adl.github.com/adl-developer/kinkane-backend/commit/445e499c6c1745aac2b6a18742a0c187b53e2cf7))
 * ask for a cancellation reason on every path that cancels ([f1f8520](https://adl.github.com/adl-developer/kinkane-backend/commit/f1f85206a0e24b674209aa06742104919a1da93f))
 * stop the account screen showing a plan change that has already happened ([d75a761](https://adl.github.com/adl-developer/kinkane-backend/commit/d75a76118dd83d4e72f4db2fc552a6910ab07343))

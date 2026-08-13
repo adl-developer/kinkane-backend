@@ -24,15 +24,23 @@ router.get('/search', booksController.suggestions);
 
 /**
  * GET /books
- * Query params: q, genre, availability, productForm, publishingStatus, publisher, limit, offset, dedupe
+ * Query params: q, genre, availability, productForm, publishingStatus, publisher, limit, offset, dedupe, cursor
+ *
  * `q` matches both title and author name. Title matches rank first, except when
  * nothing matched a title properly — then an exact author match outranks the
  * fuzzy title near-misses. `total` stays capped for searches (see
- * totalIsApproximate); paginate on `hasMore`. `dedupe=true` collapses
- * same-titled editions down to the best one (see dedupeByTitle in
- * lib/dedupe.ts) — off by default so every edition stays visible; when on,
- * totalIsApproximate is always true, since the row count no longer matches
- * the deduped item count.
+ * totalIsApproximate); paginate on `hasMore`.
+ *
+ * `dedupe=true` collapses same-titled editions down to the best one (see
+ * dedupeByTitle in lib/dedupe.ts) — off by default so every edition stays
+ * visible; when on, totalIsApproximate is always true, since the row count no
+ * longer matches the deduped item count. Deduped requests should paginate
+ * with `cursor` rather than offset — the response carries `nextCursor` which
+ * is either an opaque token to pass back or null when the end is reached.
+ * Cursor pagination guarantees a title cannot appear on two pages; naive
+ * offset pagination on the deduped path could, because two raw editions of
+ * one book can straddle a page boundary.
+ *
  * Public — no auth required.
  */
 router.get('/', booksController.list);
