@@ -308,6 +308,13 @@ export const checkoutService = {
     // The webhook will still arrive and write the same thing — these handlers
     // write the state the event describes rather than applying a delta, so the
     // two agreeing is the normal case, not a conflict.
+    //
+    // The reason is inserted inside the same transaction so a crash between
+    // the state write and the audit write can't leave the cancellation
+    // recorded with no reason attached — and by writing 'cancelled' here,
+    // immediately, onSubscriptionChanged's "just started cancelling" branch
+    // is a no-op when its webhook arrives (existing.cancelAtPeriodEnd is
+    // already true), so no reason-less duplicate is inserted alongside it.
     const state = await subscriptionStateService.applyState(
       userId,
       {
@@ -324,21 +331,19 @@ export const checkoutService = {
         stripeCustomerId: sub.stripeCustomerId,
         stripeSubscriptionId: sub.stripeSubscriptionId,
       },
-      { reason: 'subscription_updated' },
+      {
+        reason: 'subscription_updated',
+        inSameTx: reason
+          ? async (tx) => {
+              await tx.insert(subscriptionEvents).values({
+                userId,
+                event: 'cancelled',
+                reason: reason === 'other' ? (reasonOther ?? 'Other') : CANCEL_REASON_LABELS[reason],
+              });
+            }
+          : undefined,
+      },
     );
-
-    // Recorded here, immediately, rather than left to the webhook: by the time
-    // customer.subscription.updated arrives, cancelAtPeriodEnd is already true
-    // on our row, so onSubscriptionChanged's own "just started cancelling"
-    // check is false and it won't insert a second, reason-less 'cancelled'
-    // event for the same transition.
-    if (reason) {
-      await db.insert(subscriptionEvents).values({
-        userId,
-        event: 'cancelled',
-        reason: reason === 'other' ? (reasonOther ?? 'Other') : CANCEL_REASON_LABELS[reason],
-      });
-    }
 
     await entitlementsService.invalidate(userId);
 

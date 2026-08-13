@@ -301,7 +301,20 @@ export const webhooksService = {
         // trial_ends_at is deliberately left alone — it's the historical record
         // of the in-app trial, not a live billing field.
       },
-      { reason: 'checkout_completed', sourceEventId: event.id },
+      {
+        reason: 'checkout_completed',
+        sourceEventId: event.id,
+        inSameTx: async (tx) => {
+          await tx.insert(subscriptionEvents).values({
+            userId,
+            event: 'converted',
+            amountCents: session.amount_total,
+            currency: session.currency,
+            stripeEventId: event.id,
+            reason: isFounding ? 'Founding Member checkout' : 'Checkout completed',
+          });
+        },
+      },
     );
 
     if (!updated) {
@@ -311,15 +324,6 @@ export const webhooksService = {
       });
       return;
     }
-
-    await db.insert(subscriptionEvents).values({
-      userId,
-      event: 'converted',
-      amountCents: session.amount_total,
-      currency: session.currency,
-      stripeEventId: event.id,
-      reason: isFounding ? 'Founding Member checkout' : 'Checkout completed',
-    });
 
     await entitlementsService.invalidate(userId);
 
@@ -402,6 +406,9 @@ export const webhooksService = {
     // untouched, since this generic handler didn't set it in the first place.
     const scheduleId = scheduleIdOf(subscription);
 
+    const startedCancelling = subscription.cancel_at_period_end && !existing?.cancelAtPeriodEnd;
+    const resumed = !subscription.cancel_at_period_end && !!existing?.cancelAtPeriodEnd;
+
     const updated = await subscriptionStateService.applyState(
       userId,
       {
@@ -416,31 +423,47 @@ export const webhooksService = {
         stripeCustomerId,
         stripeSubscriptionId: subscription.id,
       },
-      { reason: 'subscription_updated', sourceEventId: event.id },
+      {
+        reason: 'subscription_updated',
+        sourceEventId: event.id,
+        inSameTx: async (tx) => {
+          if (planChanged) {
+            await tx.insert(subscriptionEvents).values({
+              userId,
+              event: 'plan_changed',
+              stripeEventId: event.id,
+              reason: `Price changed from ${existing?.priceId} to ${priceId}`,
+            });
+          }
+          if (startedCancelling) {
+            await tx.insert(subscriptionEvents).values({
+              userId,
+              event: 'cancelled',
+              stripeEventId: event.id,
+              reason: 'Cancellation scheduled for end of the current period',
+            });
+          }
+          if (resumed) {
+            await tx.insert(subscriptionEvents).values({
+              userId,
+              event: 'resumed',
+              stripeEventId: event.id,
+              reason: 'Cancellation reversed before the period ended',
+            });
+          }
+        },
+      },
     );
 
     if (!updated) return;
     await entitlementsService.invalidate(userId);
 
-    if (planChanged) {
-      await db.insert(subscriptionEvents).values({
-        userId,
-        event: 'plan_changed',
-        stripeEventId: event.id,
-        reason: `Price changed from ${existing?.priceId} to ${priceId}`,
-      });
-    }
-
-    // Scheduled cancellation — they keep access until the period ends, so this
-    // is recorded now but doesn't change their tier yet.
-    if (subscription.cancel_at_period_end && !existing?.cancelAtPeriodEnd) {
-      await db.insert(subscriptionEvents).values({
-        userId,
-        event: 'cancelled',
-        stripeEventId: event.id,
-        reason: 'Cancellation scheduled for end of the current period',
-      });
-
+    // Email is intentionally outside the transaction: enqueueing it is a
+    // Redis write, and a Redis blip must not roll back a Stripe-driven state
+    // change we've already committed to. If the email fails to enqueue the
+    // record of the cancellation itself is still there, and the log tells
+    // support what to do about it.
+    if (startedCancelling) {
       const [user] = await db
         .select({ email: users.email, name: users.name })
         .from(users)
@@ -459,16 +482,6 @@ export const webhooksService = {
           });
         });
       }
-    }
-
-    // Reactivated before the period ended.
-    if (!subscription.cancel_at_period_end && existing?.cancelAtPeriodEnd) {
-      await db.insert(subscriptionEvents).values({
-        userId,
-        event: 'resumed',
-        stripeEventId: event.id,
-        reason: 'Cancellation reversed before the period ended',
-      });
     }
   },
 
@@ -508,18 +521,22 @@ export const webhooksService = {
         // traced back to its Stripe history, and clearing it would make the
         // trial-expiry guard treat a former subscriber as a fresh trialist.
       },
-      { reason: 'subscription_deleted', sourceEventId: event.id },
+      {
+        reason: 'subscription_deleted',
+        sourceEventId: event.id,
+        inSameTx: async (tx) => {
+          await tx.insert(subscriptionEvents).values({
+            userId,
+            event: 'cancelled',
+            stripeEventId: event.id,
+            reason: 'Subscription ended',
+          });
+        },
+      },
     );
 
     if (!updated) return;
     await entitlementsService.invalidate(userId);
-
-    await db.insert(subscriptionEvents).values({
-      userId,
-      event: 'cancelled',
-      stripeEventId: event.id,
-      reason: 'Subscription ended',
-    });
 
     logger.info('Subscription ended', { userId, subscriptionId: subscription.id });
   },
@@ -549,19 +566,23 @@ export const webhooksService = {
         stripeCustomerId,
         stripeSubscriptionId: subscription.id,
       },
-      { reason: 'invoice_paid', sourceEventId: event.id },
+      {
+        reason: 'invoice_paid',
+        sourceEventId: event.id,
+        inSameTx: async (tx) => {
+          await tx.insert(subscriptionEvents).values({
+            userId,
+            event: 'renewed',
+            amountCents: invoice.amount_paid,
+            currency: invoice.currency,
+            stripeInvoiceId: invoice.id,
+            stripeEventId: event.id,
+          });
+        },
+      },
     );
 
     if (updated) await entitlementsService.invalidate(userId);
-
-    await db.insert(subscriptionEvents).values({
-      userId,
-      event: 'renewed',
-      amountCents: invoice.amount_paid,
-      currency: invoice.currency,
-      stripeInvoiceId: invoice.id,
-      stripeEventId: event.id,
-    });
   },
 
   /**
@@ -584,20 +605,24 @@ export const webhooksService = {
         tier: 'plus',
         status: 'past_due',
       },
-      { reason: 'payment_failed', sourceEventId: event.id },
+      {
+        reason: 'payment_failed',
+        sourceEventId: event.id,
+        inSameTx: async (tx) => {
+          await tx.insert(subscriptionEvents).values({
+            userId,
+            event: 'payment_failed',
+            amountCents: invoice.amount_due,
+            currency: invoice.currency,
+            stripeInvoiceId: invoice.id,
+            stripeEventId: event.id,
+            reason: 'Invoice payment failed',
+          });
+        },
+      },
     );
 
     if (updated) await entitlementsService.invalidate(userId);
-
-    await db.insert(subscriptionEvents).values({
-      userId,
-      event: 'payment_failed',
-      amountCents: invoice.amount_due,
-      currency: invoice.currency,
-      stripeInvoiceId: invoice.id,
-      stripeEventId: event.id,
-      reason: 'Invoice payment failed',
-    });
 
     const [user] = await db
       .select({ email: users.email, name: users.name })

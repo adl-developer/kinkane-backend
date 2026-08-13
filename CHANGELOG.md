@@ -5,6 +5,7 @@
 
 ### Bug Fixes
 
+* finish paid orders even when the webhook has to be retried ([1af0560](https://adl.github.com/adl-developer/kinkane-backend/commit/1af0560d7e312f35150b67f5332b604180fb1442))
 * recover from a webhook handler crash on Stripe's next retry ([36ea9ef](https://adl.github.com/adl-developer/kinkane-backend/commit/36ea9ef44c069795160d2da0453405829f27ca03))
 
 
