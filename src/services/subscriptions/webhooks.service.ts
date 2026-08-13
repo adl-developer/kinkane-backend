@@ -4,7 +4,7 @@ import { db } from '../../db';
 import { users, subscriptionEvents, stripeWebhookEvents } from '../../db/schema';
 import type { SubscriptionStatus, SubscriptionPlan } from '../../db/schema';
 import { config } from '../../config';
-import { stripe, planForPriceId, isFoundingPriceId, resolvePrice } from '../../lib/stripe';
+import { stripe, planForPriceId, isFoundingPriceId, resolvePrice, isFoundingWindowOpen } from '../../lib/stripe';
 import { logger } from '../../lib/logger';
 import { enqueueEmail } from '../../lib/email-queue';
 import { subscriptionStateService } from './state.service';
@@ -327,9 +327,13 @@ export const webhooksService = {
 
     await entitlementsService.invalidate(userId);
 
-    if (isFounding) {
-      await schedulesService.attachFounding(subscription, userId);
-    }
+    // Deliberately NO price rollover attached here. Founding pricing continues
+    // for every renewal while the offer window is open, so no schedule is
+    // needed at signup. The rollover is scheduled from onInvoicePaid the first
+    // time a renewal is billed after the window has closed — that way, a
+    // founding member who signed up on the very last day of the window gets
+    // their whole first term at the founding price without an inadvertent
+    // early rollover.
 
     const [user] = await db
       .select({ email: users.email, name: users.name })
@@ -589,6 +593,16 @@ export const webhooksService = {
     );
 
     if (updated) await entitlementsService.invalidate(userId);
+
+    // A founding member who just renewed at the founding price, past the end
+    // of the offer window, needs a rollover set up so their NEXT renewal
+    // moves them to standard pricing. Guarded checks inside
+    // scheduleFoundingRollover mean this is a no-op for anyone else, and for
+    // a renewal that happens while the window is still open — so it's safe
+    // to run on every invoice.paid without inspecting the situation here.
+    if (isFoundingPriceId(priceId) && !isFoundingWindowOpen()) {
+      await schedulesService.scheduleFoundingRollover(subscription.id, userId);
+    }
   },
 
   /**

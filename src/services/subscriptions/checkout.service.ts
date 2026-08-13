@@ -457,18 +457,15 @@ export const checkoutService = {
       cancel_at_period_end: false,
     });
 
-    // Cancelling released a Founding Member from their price schedule, so put
-    // it back — otherwise someone who cancelled and changed their mind would
-    // keep the introductory price indefinitely instead of rolling onto standard
-    // pricing after their term.
-    //
-    // Deliberately after the update, not before: a schedule created from a
-    // subscription inherits its cancellation behaviour, so attaching while the
-    // flag was still set would bake the cancellation into the new schedule.
-    // attachFounding is a no-op for anyone who already rolled over to standard
-    // pricing, or who still has a schedule attached.
-    if (sub.isFoundingMember) {
-      await schedulesService.attachFounding(updated, userId);
+    // A founding member who cancelled had their schedule released to make the
+    // cancellation possible. If they reactivate, we may need to reattach the
+    // rollover — but only if the founding window has already closed. While the
+    // window is still open, founding pricing continues indefinitely without any
+    // schedule, and the rollover gets attached later by the invoice.paid
+    // webhook when the window has actually shut. Attaching too early would
+    // schedule a rollover that shouldn't happen yet.
+    if (sub.isFoundingMember && !isFoundingWindowOpen()) {
+      await schedulesService.scheduleFoundingRollover(sub.stripeSubscriptionId, userId);
     }
 
     const state = await subscriptionStateService.applyState(
@@ -557,7 +554,16 @@ export const checkoutService = {
       }
 
       // Picking their current plan again undoes an earlier pending switch.
+      // releaseFrom detaches the entire schedule — including any
+      // founding-to-standard rollover that was part of it — so if the user
+      // is a founding member past the offer window, reattach the rollover
+      // immediately or they'd keep the founding price with no rollover at
+      // all, indefinitely.
       await schedulesService.releaseFrom(sub.stripeSubscriptionId, userId);
+      if (sub.isFoundingMember && !isFoundingWindowOpen()) {
+        await schedulesService.scheduleFoundingRollover(sub.stripeSubscriptionId, userId);
+      }
+
       const state = await subscriptionStateService.applyState(
         userId,
         {
@@ -586,7 +592,12 @@ export const checkoutService = {
       };
     }
 
-    await schedulesService.schedulePlanChange(sub.stripeSubscriptionId, userId, plan);
+    await schedulesService.schedulePlanChange(
+      sub.stripeSubscriptionId,
+      userId,
+      plan,
+      sub.isFoundingMember,
+    );
 
     const state = await subscriptionStateService.applyState(
       userId,

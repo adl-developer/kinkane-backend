@@ -3,6 +3,10 @@
 
 ## 2026-08-13
 
+### Features
+
+* let social-login accounts change their plan with a fresh sign-in ([1e69091](https://adl.github.com/adl-developer/kinkane-backend/commit/1e69091a33e4a6a64ae5eb9021b679b0e7e3f1a4))
+
 ### Bug Fixes
 
 * ask for a cancellation reason on every path that cancels ([f1f8520](https://adl.github.com/adl-developer/kinkane-backend/commit/f1f85206a0e24b674209aa06742104919a1da93f))
