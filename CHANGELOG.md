@@ -5,20 +5,20 @@
 
 ### Features
 
-* let social-login accounts change their plan with a fresh sign-in ([1e69091](https://adl.github.com/adl-developer/kinkane-backend/commit/1e69091a33e4a6a64ae5eb9021b679b0e7e3f1a4))
+* let social-login accounts change their plan with a fresh sign-in ([1e69091](https://adl.github.com/adl-developer/kinkane-backend/commit/1e69091a33e4a6a64ae5eb9021b679b0e7e3f1a4)) — [details](changelog/2026-08-13-pending-plan-clears-after-effect.md)
 
 ### Bug Fixes
 
-* stop a book appearing on two pages when browsing with dedupe on ([58a9c2c](https://adl.github.com/adl-developer/kinkane-backend/commit/58a9c2c742ff6a4b2071c071af7ddd9252b1df03))
-* log a loud warning when a plan change races the webhook that mirrors it ([2bdcf62](https://adl.github.com/adl-developer/kinkane-backend/commit/2bdcf629b7db0a472a29f50a3547c8e497f4d038))
-* keep founding members on their founding price for every renewal ([445e499](https://adl.github.com/adl-developer/kinkane-backend/commit/445e499c6c1745aac2b6a18742a0c187b53e2cf7))
-* ask for a cancellation reason on every path that cancels ([f1f8520](https://adl.github.com/adl-developer/kinkane-backend/commit/f1f85206a0e24b674209aa06742104919a1da93f))
-* stop the account screen showing a plan change that has already happened ([d75a761](https://adl.github.com/adl-developer/kinkane-backend/commit/d75a76118dd83d4e72f4db2fc552a6910ab07343))
-* keep a cart's timestamp in step with its line changes ([f623b4b](https://adl.github.com/adl-developer/kinkane-backend/commit/f623b4b8865a2bf214492beac055e303f5805747))
-* keep the order and its payment record in step with each other ([3e739ad](https://adl.github.com/adl-developer/kinkane-backend/commit/3e739adcb15e4f7d1c99babce2cf529aed09ce5f))
-* keep every subscription state change and its audit row in one transaction ([9310c44](https://adl.github.com/adl-developer/kinkane-backend/commit/9310c44622cd4b26c59bdb942b13c65a6ab8a249))
-* finish paid orders even when the webhook has to be retried ([1af0560](https://adl.github.com/adl-developer/kinkane-backend/commit/1af0560d7e312f35150b67f5332b604180fb1442))
-* recover from a webhook handler crash on Stripe's next retry ([36ea9ef](https://adl.github.com/adl-developer/kinkane-backend/commit/36ea9ef44c069795160d2da0453405829f27ca03))
+* stop a book appearing on two pages when browsing with dedupe on ([58a9c2c](https://adl.github.com/adl-developer/kinkane-backend/commit/58a9c2c742ff6a4b2071c071af7ddd9252b1df03)) — [details](changelog/2026-08-13-atomic-state-audit-writes.md)
+* log a loud warning when a plan change races the webhook that mirrors it ([2bdcf62](https://adl.github.com/adl-developer/kinkane-backend/commit/2bdcf629b7db0a472a29f50a3547c8e497f4d038)) — [details](changelog/2026-08-13-atomic-state-audit-writes.md)
+* keep founding members on their founding price for every renewal ([445e499](https://adl.github.com/adl-developer/kinkane-backend/commit/445e499c6c1745aac2b6a18742a0c187b53e2cf7)) — [details](changelog/2026-08-13-cancel-reason-every-path.md)
+* ask for a cancellation reason on every path that cancels ([f1f8520](https://adl.github.com/adl-developer/kinkane-backend/commit/f1f85206a0e24b674209aa06742104919a1da93f)) — [details](changelog/2026-08-13-cancel-reason-every-path.md)
+* stop the account screen showing a plan change that has already happened ([d75a761](https://adl.github.com/adl-developer/kinkane-backend/commit/d75a76118dd83d4e72f4db2fc552a6910ab07343)) — [details](changelog/2026-08-13-atomic-state-audit-writes.md)
+* keep a cart's timestamp in step with its line changes ([f623b4b](https://adl.github.com/adl-developer/kinkane-backend/commit/f623b4b8865a2bf214492beac055e303f5805747)) — [details](changelog/2026-08-13-atomic-state-audit-writes.md)
+* keep the order and its payment record in step with each other ([3e739ad](https://adl.github.com/adl-developer/kinkane-backend/commit/3e739adcb15e4f7d1c99babce2cf529aed09ce5f)) — [details](changelog/2026-08-13-founding-lifetime-pricing.md)
+* keep every subscription state change and its audit row in one transaction ([9310c44](https://adl.github.com/adl-developer/kinkane-backend/commit/9310c44622cd4b26c59bdb942b13c65a6ab8a249)) — [details](changelog/2026-08-13-atomic-state-audit-writes.md)
+* finish paid orders even when the webhook has to be retried ([1af0560](https://adl.github.com/adl-developer/kinkane-backend/commit/1af0560d7e312f35150b67f5332b604180fb1442)) — [details](changelog/2026-08-13-order-payment-atomic.md)
+* recover from a webhook handler crash on Stripe's next retry ([36ea9ef](https://adl.github.com/adl-developer/kinkane-backend/commit/36ea9ef44c069795160d2da0453405829f27ca03)) — [details](changelog/2026-08-13-atomic-state-audit-writes.md)
 
 
 ## 2026-08-11
