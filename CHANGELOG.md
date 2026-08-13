@@ -5,6 +5,7 @@
 
 ### Bug Fixes
 
+* keep a cart's timestamp in step with its line changes ([f623b4b](https://adl.github.com/adl-developer/kinkane-backend/commit/f623b4b8865a2bf214492beac055e303f5805747))
 * keep the order and its payment record in step with each other ([3e739ad](https://adl.github.com/adl-developer/kinkane-backend/commit/3e739adcb15e4f7d1c99babce2cf529aed09ce5f))
 * keep every subscription state change and its audit row in one transaction ([9310c44](https://adl.github.com/adl-developer/kinkane-backend/commit/9310c44622cd4b26c59bdb942b13c65a6ab8a249))
 * finish paid orders even when the webhook has to be retried ([1af0560](https://adl.github.com/adl-developer/kinkane-backend/commit/1af0560d7e312f35150b67f5332b604180fb1442))

@@ -399,12 +399,18 @@ export const webhooksService = {
     const status = mapStatus(subscription.status);
     const plan = planForPriceId(priceId);
     const planChanged = Boolean(existing && existing.priceId && existing.priceId !== priceId);
-    // No schedule left managing this subscription means any pending Change
-    // Plan switch has either taken effect (phase advanced) or been abandoned
-    // (released elsewhere) — either way it's no longer pending. `undefined`
-    // while a schedule is still running leaves whatever is already stored
-    // untouched, since this generic handler didn't set it in the first place.
+    // Two ways a pending Change Plan is no longer pending:
+    //   • the schedule has been released elsewhere (scheduleId is now null), or
+    //   • the schedule advanced and the subscription is now on the plan we
+    //     were waiting for (current plan matches the pending one).
+    // The second case is what stops "pending change to Annual" showing on the
+    // account screen indefinitely after the switch has actually happened —
+    // Stripe releases the schedule only when its LAST phase ends, and a
+    // rollover schedule's last phase is open-ended, so scheduleId keeps coming
+    // back non-null forever without this second check.
     const scheduleId = scheduleIdOf(subscription);
+    const pendingPlanCleared = plan && existing?.pendingPlan && plan === existing.pendingPlan;
+    const nextPendingPlan = !scheduleId || pendingPlanCleared ? null : undefined;
 
     const startedCancelling = subscription.cancel_at_period_end && !existing?.cancelAtPeriodEnd;
     const resumed = !subscription.cancel_at_period_end && !!existing?.cancelAtPeriodEnd;
@@ -419,7 +425,7 @@ export const webhooksService = {
         isFoundingMember: existing?.isFoundingMember || isFoundingPriceId(priceId),
         currentPeriodEnd: periodEnd(subscription),
         cancelAtPeriodEnd: subscription.cancel_at_period_end,
-        pendingPlan: scheduleId ? undefined : null,
+        pendingPlan: nextPendingPlan,
         stripeCustomerId,
         stripeSubscriptionId: subscription.id,
       },
