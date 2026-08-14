@@ -16,6 +16,7 @@ import adminReferralsRoutes from './routes/admin-referrals.routes';
 import { referralsController } from './controllers/referrals.controller';
 import { wrap } from './lib/route-helpers';
 import { webhookRouter as stripeWebhookRouter } from './routes/subscriptions.routes';
+import docsRoutes from './routes/docs.routes';
 
 const app = express();
 
@@ -87,6 +88,24 @@ app.patch('/admin/users/:id/country', requireAdminToken, wrap(referralsControlle
 // path registered as the universal/app link, so an installed app opens straight
 // through with the code.
 app.use('/r', referralRedirectRoutes);
+
+// ── API documentation ─────────────────────────────────────────────────────────
+// Interactive OpenAPI reference at /docs, behind a password (SWAGGER_PASSWORD).
+//
+// Mounted only when that password is set. That is the security control rather
+// than an optimisation: this page executes real requests against the database
+// this process is configured with, so a deployment that never chose a password
+// should not publish a browsable, executable map of the entire API. Unset means
+// /docs simply 404s along with everything else.
+//
+// Outside the /api rate limiter by design — a docs page loads dozens of static
+// assets and would exhaust an API budget on its own.
+if (config.swagger.enabled) {
+  app.use('/docs', docsRoutes);
+  logger.info('API documentation mounted at /docs');
+} else {
+  logger.info('SWAGGER_PASSWORD not set — API documentation is disabled');
+}
 
 app.use('/api', apiRoutes);
 

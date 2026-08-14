@@ -64,6 +64,19 @@ const envSchema = z.object({
   // Must be at least 32 characters. Generate with: openssl rand -hex 32
   ADMIN_TOKEN: z.string().min(32),
 
+  // Password for the interactive API documentation at /docs. Optional, and
+  // that is the security control: when it is unset the docs are not mounted at
+  // all, so a deployment that never configured one does not quietly publish a
+  // browsable, executable map of the whole API. Set it deliberately.
+  //
+  // Minimum 12 characters — this guards a UI whose "Try it out" button issues
+  // real requests against whatever DATABASE_URL this process is pointed at.
+  // Generate with: openssl rand -base64 24
+  SWAGGER_PASSWORD: z.string().min(12).optional(),
+
+  // How long a /docs sign-in lasts before the password is asked for again.
+  SWAGGER_SESSION_TTL_HOURS: z.coerce.number().int().min(1).max(720).default(8),
+
   // Secret used to sign one-way unsubscribe tokens embedded in email footers.
   // Must be at least 32 characters. Generate with: openssl rand -hex 32
   UNSUBSCRIBE_SECRET: z.string().min(32),
@@ -402,6 +415,12 @@ export const config = {
   },
   adminToken: env.ADMIN_TOKEN,
   unsubscribeSecret: env.UNSUBSCRIBE_SECRET,
+  swagger: {
+    password: env.SWAGGER_PASSWORD,
+    sessionTtlHours: env.SWAGGER_SESSION_TTL_HOURS,
+    // Absence of a password is what disables the docs — see the schema above.
+    enabled: env.SWAGGER_PASSWORD !== undefined,
+  },
   cloudinary: {
     cloudName: env.CLOUDINARY_CLOUD_NAME,
   },
