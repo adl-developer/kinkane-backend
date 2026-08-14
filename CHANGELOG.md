@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-08-14
+
+### Features
+
+* document every endpoint in a private, browsable API reference ([171b4ad](https://adl.github.com/adl-developer/kinkane-backend/commit/171b4ad095735709d10cb71c49ee3f2a08a2ee1b)) — [details](changelog/2026-08-14-swagger-api-docs.md)
+
+
 ## 2026-08-13
 
 ### Features
