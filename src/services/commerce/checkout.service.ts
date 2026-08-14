@@ -239,21 +239,30 @@ export const commerceCheckoutService = {
       unitPriceMinor: line.unitPriceMinor,
     })));
 
-    await db
-      .update(orders)
-      .set({ stripeCheckoutSessionId: session.id, updatedAt: new Date() })
-      .where(eq(orders.id, order.id));
+    // Order-side link back to the Stripe session and the payment row that
+    // fronts it. Both writes are committed together: if only one landed, a
+    // webhook arriving before the follow-up either couldn't find the order
+    // for its session id (session id column not set) or couldn't find the
+    // payment behind the reference we handed the client (payment row not
+    // inserted) — the client would see 'payment not found' for a checkout
+    // that in fact went through.
+    const payment = await db.transaction(async (tx) => {
+      await tx
+        .update(orders)
+        .set({ stripeCheckoutSessionId: session.id, updatedAt: new Date() })
+        .where(eq(orders.id, order.id));
 
-    // Minted after the session exists, so the reference always points at a real
-    // Stripe object. `orderId` is carried on the payment row so the confirm
-    // response can hand the app straight back to the order it just paid for.
-    const payment = await paymentsService.create({
-      userId,
-      kind: 'order',
-      stripeCheckoutSessionId: session.id,
-      amountCents: quote.totalMinor,
-      currency: quote.currency,
-      orderId: order.id,
+      return paymentsService.create(
+        {
+          userId,
+          kind: 'order',
+          stripeCheckoutSessionId: session.id,
+          amountCents: quote.totalMinor,
+          currency: quote.currency,
+          orderId: order.id,
+        },
+        tx,
+      );
     });
 
     logger.info('Checkout session created', {

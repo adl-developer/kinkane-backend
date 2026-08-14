@@ -4,7 +4,7 @@ import { db } from '../../db';
 import { users, subscriptionEvents, stripeWebhookEvents } from '../../db/schema';
 import type { SubscriptionStatus, SubscriptionPlan } from '../../db/schema';
 import { config } from '../../config';
-import { stripe, planForPriceId, isFoundingPriceId, resolvePrice } from '../../lib/stripe';
+import { stripe, planForPriceId, isFoundingPriceId, resolvePrice, isFoundingWindowOpen } from '../../lib/stripe';
 import { logger } from '../../lib/logger';
 import { enqueueEmail } from '../../lib/email-queue';
 import { subscriptionStateService } from './state.service';
@@ -12,6 +12,15 @@ import { entitlementsService } from './entitlements.service';
 import { schedulesService, scheduleIdOf } from './schedules.service';
 import { orderWebhooksService } from '../commerce/order-webhooks.service';
 import { paymentsService } from '../payments.service';
+
+/**
+ * How long a claim can hold before it's considered abandoned and re-runnable.
+ * Set to comfortably longer than any handler could plausibly take (the slowest
+ * involve a small handful of Stripe API calls, well under 30s), and shorter
+ * than Stripe's redelivery cadence, so a still-running instance is never
+ * preempted by a redelivery that races with it.
+ */
+const STALE_CLAIM_SECONDS = 60;
 
 /**
  * Stripe webhook ingestion.
@@ -103,21 +112,39 @@ export const webhooksService = {
   },
 
   /**
-   * Claims an event id. Returns false if it was already claimed, meaning this
-   * is a duplicate delivery and the caller should do nothing.
+   * Claims an event id, returning true when this delivery should be handled.
+   *
+   * Three cases:
+   *   1. No row exists → insert one and claim (first delivery).
+   *   2. Row exists with `processed_at` set → skip (handler already ran to
+   *      completion — this is a genuine duplicate).
+   *   3. Row exists with `processed_at` NULL — a prior attempt started but
+   *      didn't reach `markProcessed`. If it's older than STALE_CLAIM_SECONDS,
+   *      the process holding it has almost certainly died (Stripe's own
+   *      redelivery cadence is > that), so reclaim and re-run. Otherwise
+   *      another instance is currently processing this event, so skip.
+   *
+   * The reclaim path is what makes Stripe's automatic redelivery actually
+   * work as a crash-recovery mechanism. Without it, a handler crash between
+   * the claim and `markProcessed` leaves half-completed side effects that
+   * never get finished, since every future delivery is dropped as duplicate.
    */
   async claimEvent(event: Stripe.Event): Promise<boolean> {
-    const inserted = await db
+    const claimed = await db
       .insert(stripeWebhookEvents)
       .values({
         eventId: event.id,
         type: event.type,
         payload: event.data.object as unknown as Record<string, unknown>,
       })
-      .onConflictDoNothing({ target: stripeWebhookEvents.eventId })
+      .onConflictDoUpdate({
+        target: stripeWebhookEvents.eventId,
+        set: { receivedAt: sql`now()`, payload: sql`EXCLUDED.payload` },
+        setWhere: sql`${stripeWebhookEvents.processedAt} IS NULL AND ${stripeWebhookEvents.receivedAt} < now() - interval '${sql.raw(String(STALE_CLAIM_SECONDS))} seconds'`,
+      })
       .returning({ eventId: stripeWebhookEvents.eventId });
 
-    return inserted.length > 0;
+    return claimed.length > 0;
   },
 
   async markProcessed(eventId: string, error?: string): Promise<void> {
@@ -274,7 +301,20 @@ export const webhooksService = {
         // trial_ends_at is deliberately left alone — it's the historical record
         // of the in-app trial, not a live billing field.
       },
-      { reason: 'checkout_completed', sourceEventId: event.id },
+      {
+        reason: 'checkout_completed',
+        sourceEventId: event.id,
+        inSameTx: async (tx) => {
+          await tx.insert(subscriptionEvents).values({
+            userId,
+            event: 'converted',
+            amountCents: session.amount_total,
+            currency: session.currency,
+            stripeEventId: event.id,
+            reason: isFounding ? 'Founding Member checkout' : 'Checkout completed',
+          });
+        },
+      },
     );
 
     if (!updated) {
@@ -285,20 +325,15 @@ export const webhooksService = {
       return;
     }
 
-    await db.insert(subscriptionEvents).values({
-      userId,
-      event: 'converted',
-      amountCents: session.amount_total,
-      currency: session.currency,
-      stripeEventId: event.id,
-      reason: isFounding ? 'Founding Member checkout' : 'Checkout completed',
-    });
-
     await entitlementsService.invalidate(userId);
 
-    if (isFounding) {
-      await schedulesService.attachFounding(subscription, userId);
-    }
+    // Deliberately NO price rollover attached here. Founding pricing continues
+    // for every renewal while the offer window is open, so no schedule is
+    // needed at signup. The rollover is scheduled from onInvoicePaid the first
+    // time a renewal is billed after the window has closed — that way, a
+    // founding member who signed up on the very last day of the window gets
+    // their whole first term at the founding price without an inadvertent
+    // early rollover.
 
     const [user] = await db
       .select({ email: users.email, name: users.name })
@@ -368,12 +403,21 @@ export const webhooksService = {
     const status = mapStatus(subscription.status);
     const plan = planForPriceId(priceId);
     const planChanged = Boolean(existing && existing.priceId && existing.priceId !== priceId);
-    // No schedule left managing this subscription means any pending Change
-    // Plan switch has either taken effect (phase advanced) or been abandoned
-    // (released elsewhere) — either way it's no longer pending. `undefined`
-    // while a schedule is still running leaves whatever is already stored
-    // untouched, since this generic handler didn't set it in the first place.
+    // Two ways a pending Change Plan is no longer pending:
+    //   • the schedule has been released elsewhere (scheduleId is now null), or
+    //   • the schedule advanced and the subscription is now on the plan we
+    //     were waiting for (current plan matches the pending one).
+    // The second case is what stops "pending change to Annual" showing on the
+    // account screen indefinitely after the switch has actually happened —
+    // Stripe releases the schedule only when its LAST phase ends, and a
+    // rollover schedule's last phase is open-ended, so scheduleId keeps coming
+    // back non-null forever without this second check.
     const scheduleId = scheduleIdOf(subscription);
+    const pendingPlanCleared = plan && existing?.pendingPlan && plan === existing.pendingPlan;
+    const nextPendingPlan = !scheduleId || pendingPlanCleared ? null : undefined;
+
+    const startedCancelling = subscription.cancel_at_period_end && !existing?.cancelAtPeriodEnd;
+    const resumed = !subscription.cancel_at_period_end && !!existing?.cancelAtPeriodEnd;
 
     const updated = await subscriptionStateService.applyState(
       userId,
@@ -385,35 +429,51 @@ export const webhooksService = {
         isFoundingMember: existing?.isFoundingMember || isFoundingPriceId(priceId),
         currentPeriodEnd: periodEnd(subscription),
         cancelAtPeriodEnd: subscription.cancel_at_period_end,
-        pendingPlan: scheduleId ? undefined : null,
+        pendingPlan: nextPendingPlan,
         stripeCustomerId,
         stripeSubscriptionId: subscription.id,
       },
-      { reason: 'subscription_updated', sourceEventId: event.id },
+      {
+        reason: 'subscription_updated',
+        sourceEventId: event.id,
+        inSameTx: async (tx) => {
+          if (planChanged) {
+            await tx.insert(subscriptionEvents).values({
+              userId,
+              event: 'plan_changed',
+              stripeEventId: event.id,
+              reason: `Price changed from ${existing?.priceId} to ${priceId}`,
+            });
+          }
+          if (startedCancelling) {
+            await tx.insert(subscriptionEvents).values({
+              userId,
+              event: 'cancelled',
+              stripeEventId: event.id,
+              reason: 'Cancellation scheduled for end of the current period',
+            });
+          }
+          if (resumed) {
+            await tx.insert(subscriptionEvents).values({
+              userId,
+              event: 'resumed',
+              stripeEventId: event.id,
+              reason: 'Cancellation reversed before the period ended',
+            });
+          }
+        },
+      },
     );
 
     if (!updated) return;
     await entitlementsService.invalidate(userId);
 
-    if (planChanged) {
-      await db.insert(subscriptionEvents).values({
-        userId,
-        event: 'plan_changed',
-        stripeEventId: event.id,
-        reason: `Price changed from ${existing?.priceId} to ${priceId}`,
-      });
-    }
-
-    // Scheduled cancellation — they keep access until the period ends, so this
-    // is recorded now but doesn't change their tier yet.
-    if (subscription.cancel_at_period_end && !existing?.cancelAtPeriodEnd) {
-      await db.insert(subscriptionEvents).values({
-        userId,
-        event: 'cancelled',
-        stripeEventId: event.id,
-        reason: 'Cancellation scheduled for end of the current period',
-      });
-
+    // Email is intentionally outside the transaction: enqueueing it is a
+    // Redis write, and a Redis blip must not roll back a Stripe-driven state
+    // change we've already committed to. If the email fails to enqueue the
+    // record of the cancellation itself is still there, and the log tells
+    // support what to do about it.
+    if (startedCancelling) {
       const [user] = await db
         .select({ email: users.email, name: users.name })
         .from(users)
@@ -432,16 +492,6 @@ export const webhooksService = {
           });
         });
       }
-    }
-
-    // Reactivated before the period ended.
-    if (!subscription.cancel_at_period_end && existing?.cancelAtPeriodEnd) {
-      await db.insert(subscriptionEvents).values({
-        userId,
-        event: 'resumed',
-        stripeEventId: event.id,
-        reason: 'Cancellation reversed before the period ended',
-      });
     }
   },
 
@@ -481,18 +531,22 @@ export const webhooksService = {
         // traced back to its Stripe history, and clearing it would make the
         // trial-expiry guard treat a former subscriber as a fresh trialist.
       },
-      { reason: 'subscription_deleted', sourceEventId: event.id },
+      {
+        reason: 'subscription_deleted',
+        sourceEventId: event.id,
+        inSameTx: async (tx) => {
+          await tx.insert(subscriptionEvents).values({
+            userId,
+            event: 'cancelled',
+            stripeEventId: event.id,
+            reason: 'Subscription ended',
+          });
+        },
+      },
     );
 
     if (!updated) return;
     await entitlementsService.invalidate(userId);
-
-    await db.insert(subscriptionEvents).values({
-      userId,
-      event: 'cancelled',
-      stripeEventId: event.id,
-      reason: 'Subscription ended',
-    });
 
     logger.info('Subscription ended', { userId, subscriptionId: subscription.id });
   },
@@ -522,19 +576,33 @@ export const webhooksService = {
         stripeCustomerId,
         stripeSubscriptionId: subscription.id,
       },
-      { reason: 'invoice_paid', sourceEventId: event.id },
+      {
+        reason: 'invoice_paid',
+        sourceEventId: event.id,
+        inSameTx: async (tx) => {
+          await tx.insert(subscriptionEvents).values({
+            userId,
+            event: 'renewed',
+            amountCents: invoice.amount_paid,
+            currency: invoice.currency,
+            stripeInvoiceId: invoice.id,
+            stripeEventId: event.id,
+          });
+        },
+      },
     );
 
     if (updated) await entitlementsService.invalidate(userId);
 
-    await db.insert(subscriptionEvents).values({
-      userId,
-      event: 'renewed',
-      amountCents: invoice.amount_paid,
-      currency: invoice.currency,
-      stripeInvoiceId: invoice.id,
-      stripeEventId: event.id,
-    });
+    // A founding member who just renewed at the founding price, past the end
+    // of the offer window, needs a rollover set up so their NEXT renewal
+    // moves them to standard pricing. Guarded checks inside
+    // scheduleFoundingRollover mean this is a no-op for anyone else, and for
+    // a renewal that happens while the window is still open — so it's safe
+    // to run on every invoice.paid without inspecting the situation here.
+    if (isFoundingPriceId(priceId) && !isFoundingWindowOpen()) {
+      await schedulesService.scheduleFoundingRollover(subscription.id, userId);
+    }
   },
 
   /**
@@ -557,20 +625,24 @@ export const webhooksService = {
         tier: 'plus',
         status: 'past_due',
       },
-      { reason: 'payment_failed', sourceEventId: event.id },
+      {
+        reason: 'payment_failed',
+        sourceEventId: event.id,
+        inSameTx: async (tx) => {
+          await tx.insert(subscriptionEvents).values({
+            userId,
+            event: 'payment_failed',
+            amountCents: invoice.amount_due,
+            currency: invoice.currency,
+            stripeInvoiceId: invoice.id,
+            stripeEventId: event.id,
+            reason: 'Invoice payment failed',
+          });
+        },
+      },
     );
 
     if (updated) await entitlementsService.invalidate(userId);
-
-    await db.insert(subscriptionEvents).values({
-      userId,
-      event: 'payment_failed',
-      amountCents: invoice.amount_due,
-      currency: invoice.currency,
-      stripeInvoiceId: invoice.id,
-      stripeEventId: event.id,
-      reason: 'Invoice payment failed',
-    });
 
     const [user] = await db
       .select({ email: users.email, name: users.name })

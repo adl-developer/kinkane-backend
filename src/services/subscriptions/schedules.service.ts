@@ -1,33 +1,43 @@
 import type Stripe from 'stripe';
-import { stripe, planForPriceId, resolvePrice } from '../../lib/stripe';
+import { stripe, planForPriceId, resolvePrice, isFoundingWindowOpen, isFoundingPriceId } from '../../lib/stripe';
 import { logger } from '../../lib/logger';
 import type { SubscriptionPlan } from '../../db/schema';
 
 /**
- * Subscription schedules — the two-phase Founding Member price rollover, and
- * getting a subscription back out from under one.
+ * Subscription schedules — deferring price changes to the next natural billing
+ * boundary, and getting a subscription back out from under one.
  *
- * A schedule is how a Founding Member's introductory price is held for exactly
- * one term and then rolled onto standard pricing. The cost of that is that
- * Stripe then treats the schedule as the owner of the subscription's lifecycle:
+ * A schedule is Stripe's way of expressing "this subscription is at price A
+ * for a while, then price B". It costs one hard rule that shapes every path
+ * in and out of this file: while a schedule is attached, Stripe rejects any
+ * cancellation set on the subscription directly:
  *
  *     The subscription is managed by the subscription schedule
  *     `sub_sched_...`, and updating any cancelation behavior directly is not
  *     allowed. Please update the schedule instead.
  *
- * So a schedule-managed subscription cannot be cancelled through the
- * Subscriptions API at all — the call is rejected outright. Releasing the
- * schedule first is what makes cancellation possible again: release leaves the
- * subscription exactly as it is and only detaches the remaining phases.
+ * So a schedule-managed subscription can only be cancelled after the schedule
+ * is released. Release leaves the subscription running exactly as it is — it
+ * just detaches the future price changes we had planned.
  *
- * Kept in its own module because both ends of that need it — checkout wiring
- * the schedule up, cancellation tearing it down — and having cancellation
- * import the webhook service to reach it had the dependency the wrong way
- * round.
+ * The two rollovers that use this file are:
+ *
+ *   1. **Founding → standard.** Founding members keep founding pricing on
+ *      every renewal until the offer window closes AND their current period
+ *      ends. See `scheduleFoundingRollover`, called from the invoice.paid
+ *      webhook once both conditions hold.
+ *   2. **Plan change (monthly ↔ annual, or into/out of founding).** Deferred
+ *      to the next natural renewal so nobody is billed the new plan's rate
+ *      mid-cycle. See `schedulePlanChange`.
  */
 
 function firstPriceId(subscription: Stripe.Subscription): string | null {
   return subscription.items.data[0]?.price?.id ?? null;
+}
+
+function currentPeriodEndOf(subscription: Stripe.Subscription): number | null {
+  const seconds = subscription.items.data[0]?.current_period_end;
+  return typeof seconds === 'number' ? seconds : null;
 }
 
 /** The schedule managing this subscription, if one currently is. */
@@ -42,62 +52,96 @@ function phaseItemPriceId(item: Stripe.SubscriptionSchedule.Phase.Item): string 
   return typeof item.price === 'string' ? item.price : item.price.id;
 }
 
+/**
+ * The price id to switch to when a founding member changes plans mid-flight,
+ * or when we're scheduling a new plan for anyone else.
+ *
+ * The rule: if the founding offer window is still open AND this subscriber
+ * is already a founding member, keep them on founding pricing for the new
+ * plan too. Otherwise fall back to standard pricing. Every founding rate is
+ * eligibility-gated on the current window, so once it closes nobody can be
+ * granted founding — including via a plan change from another founding plan.
+ */
+function pickTargetPriceId(targetPlan: SubscriptionPlan, isFoundingMember: boolean): string {
+  const resolved = resolvePrice(targetPlan);
+  if (isFoundingMember && resolved.isFounding && resolved.priceId !== resolved.standardPriceId) {
+    return resolved.priceId;
+  }
+  return resolved.standardPriceId;
+}
+
 export const schedulesService = {
   /**
-   * Converts a new Founding Member's subscription into a two-phase schedule:
-   * their introductory price for exactly one term, then standard pricing.
+   * Attaches a rollover from a founding price to its standard equivalent,
+   * timed to happen at the subscriber's very next renewal.
    *
-   * Done after checkout rather than during it because a schedule can only be
-   * created from a subscription that already exists. A failure is logged but
-   * never rethrown — the customer has paid and must not be left un-entitled
-   * because a future price rollover couldn't be arranged; the daily
-   * reconciliation surfaces any that didn't take.
+   * Called from the invoice.paid webhook once the founding window has closed
+   * and a renewal has been billed — the subscriber's current period runs to
+   * completion on founding pricing, and the next one starts at standard. A
+   * no-op when a schedule is already attached (an earlier call, or a pending
+   * plan change) so it's safe to invoke every renewal.
+   *
+   * Errors are swallowed with a loud log rather than rethrown: this is a
+   * webhook-driven housekeeping step and a Stripe blip must not turn a
+   * successful renewal into a retried webhook.
    */
-  async attachFounding(subscription: Stripe.Subscription, userId: number): Promise<void> {
+  async scheduleFoundingRollover(
+    subscriptionOrId: string | Stripe.Subscription,
+    userId: number,
+  ): Promise<void> {
     try {
-      // Already managed — `from_subscription` would be rejected, and a second
-      // schedule is never what we want.
+      // Accept either an id (from a webhook callsite that has only the id) or
+      // an already-fetched Subscription (from `reactivate`, which has just
+      // updated it and knows its own state). Avoids one round-trip and, more
+      // importantly, avoids racing against the write that produced it.
+      const subscription =
+        typeof subscriptionOrId === 'string'
+          ? await stripe().subscriptions.retrieve(subscriptionOrId)
+          : subscriptionOrId;
+      const subscriptionId = subscription.id;
+
       if (scheduleIdOf(subscription)) return;
 
       const priceId = firstPriceId(subscription);
+      if (!isFoundingPriceId(priceId)) return;
+
       const plan = planForPriceId(priceId);
       if (!plan) return;
 
       const { standardPriceId } = resolvePrice(plan);
-      // Already on standard pricing — there is no rollover left to schedule.
-      if (!standardPriceId || standardPriceId === priceId) return;
+      if (standardPriceId === priceId) return;
 
       const schedule = await stripe().subscriptionSchedules.create({
-        from_subscription: subscription.id,
+        from_subscription: subscriptionId,
       });
 
+      // The default schedule from `from_subscription` gives one phase that
+      // matches the current subscription, ending at current_period_end.
+      // Rewrite it as a two-phase run: keep phase 1 exactly as-is (founding
+      // until this period ends) and append standard forever after.
       await stripe().subscriptionSchedules.update(schedule.id, {
         end_behavior: 'release',
         phases: [
-          // Phase 1: the locked-in founding price, one term only.
           {
             items: [{ price: priceId!, quantity: 1 }],
             start_date: schedule.phases[0].start_date,
             end_date: schedule.phases[0].end_date,
           },
-          // Phase 2: standard pricing, open-ended.
-          {
-            items: [{ price: standardPriceId, quantity: 1 }],
-          },
+          { items: [{ price: standardPriceId, quantity: 1 }] },
         ],
       });
 
-      logger.info('Attached Founding Member price schedule', {
+      logger.info('Scheduled founding-to-standard rollover for next renewal', {
         userId,
-        subscriptionId: subscription.id,
+        subscriptionId,
         scheduleId: schedule.id,
         foundingPriceId: priceId,
         standardPriceId,
       });
     } catch (err) {
-      logger.error('Failed to attach Founding Member price schedule — subscription still active', {
+      logger.error('Failed to schedule founding rollover — subscription still active', {
         userId,
-        subscriptionId: subscription.id,
+        subscriptionId: typeof subscriptionOrId === 'string' ? subscriptionOrId : subscriptionOrId.id,
         error: err instanceof Error ? err.message : String(err),
       });
     }
@@ -107,12 +151,10 @@ export const schedulesService = {
    * Detaches whatever schedule is managing a subscription, so cancellation
    * behaviour can be set on the subscription directly.
    *
-   * Returns the released schedule id, or null when there was nothing attached —
-   * which is the normal case for everyone who isn't a Founding Member.
-   *
-   * Unlike `attachFounding`, a failure here **is** rethrown. This runs on the
-   * cancellation path, and a swallowed error would mean telling a user their
-   * subscription is cancelled while Stripe carries on billing them.
+   * Returns the released schedule id, or null when there was nothing attached.
+   * A failure is rethrown: this runs on the cancellation path, and a
+   * swallowed error would mean telling a user their subscription is cancelled
+   * while Stripe carries on billing them.
    */
   async releaseFrom(subscriptionId: string, userId: number): Promise<string | null> {
     const subscription = await stripe().subscriptions.retrieve(subscriptionId);
@@ -131,57 +173,115 @@ export const schedulesService = {
   },
 
   /**
-   * Schedules a switch to `targetPlan`'s standard price for the end of the
-   * current phase — the user-initiated counterpart to `attachFounding`.
+   * Schedules a switch to `targetPlan` for the end of the current billing
+   * period — never mid-cycle.
    *
-   * Always targets standard pricing, never a founding price: a plan switch
-   * forfeits any founding rate going forward, even mid-term. If the
-   * subscription is already schedule-managed (a Founding rollover still in
-   * progress, or an earlier pending change), the existing schedule's final
-   * phase is rewritten rather than creating a second schedule — Stripe allows
-   * only one per subscription. Errors are rethrown: unlike `attachFounding`,
-   * this runs on a path the user is actively waiting on a confirmation for.
+   * Two shapes of write, both with the same guarantee:
+   *
+   *   1. **No schedule yet** — create a fresh two-phase schedule where phase 1
+   *      matches the current price and ends at current_period_end, phase 2
+   *      is the target price open-ended.
+   *   2. **Already schedule-managed** — keep past and current phases exactly
+   *      as they are (with the current phase's open end pinned to
+   *      current_period_end if it had none) and append one new future phase
+   *      for the target price. Any *future* phases that were pending get
+   *      dropped: the user's latest intent wins.
+   *
+   * Never rewrites the currently active phase, which would cause Stripe to
+   * pro-rate the switch and bill the new plan mid-cycle. The target price
+   * comes from `pickTargetPriceId` so founding members changing plans during
+   * the window stay on founding — see there for why.
    */
   async schedulePlanChange(
     subscriptionId: string,
     userId: number,
     targetPlan: SubscriptionPlan,
+    isFoundingMember: boolean,
   ): Promise<void> {
     const subscription = await stripe().subscriptions.retrieve(subscriptionId);
-    const { standardPriceId: targetPriceId } = resolvePrice(targetPlan);
+    const targetPriceId = pickTargetPriceId(targetPlan, isFoundingMember);
     const scheduleId = scheduleIdOf(subscription);
+    const currentPeriodEnd = currentPeriodEndOf(subscription);
 
-    if (scheduleId) {
-      const schedule = await stripe().subscriptionSchedules.retrieve(scheduleId);
-      const phases = schedule.phases.map((phase, i) =>
-        i === schedule.phases.length - 1
-          ? { items: [{ price: targetPriceId, quantity: 1 }] }
-          : {
-              items: phase.items.map((it) => ({
-                price: phaseItemPriceId(it),
-                quantity: it.quantity ?? 1,
-              })),
-              start_date: phase.start_date,
-              end_date: phase.end_date,
-            },
-      );
-      await stripe().subscriptionSchedules.update(scheduleId, { end_behavior: 'release', phases });
-    } else {
-      const priceId = firstPriceId(subscription);
-      const schedule = await stripe().subscriptionSchedules.create({ from_subscription: subscriptionId });
+    if (!scheduleId) {
+      const currentPriceId = firstPriceId(subscription);
+      const schedule = await stripe().subscriptionSchedules.create({
+        from_subscription: subscriptionId,
+      });
       await stripe().subscriptionSchedules.update(schedule.id, {
         end_behavior: 'release',
         phases: [
           {
-            items: [{ price: priceId!, quantity: 1 }],
+            items: [{ price: currentPriceId!, quantity: 1 }],
             start_date: schedule.phases[0].start_date,
             end_date: schedule.phases[0].end_date,
           },
           { items: [{ price: targetPriceId, quantity: 1 }] },
         ],
       });
+
+      logger.info('Scheduled plan change (new schedule)', {
+        userId,
+        subscriptionId,
+        targetPlan,
+        targetPriceId,
+      });
+      return;
     }
 
-    logger.info('Scheduled plan change', { userId, subscriptionId, targetPlan, targetPriceId });
+    const schedule = await stripe().subscriptionSchedules.retrieve(scheduleId);
+    const now = Math.floor(Date.now() / 1000);
+    const currentPhaseIndex = schedule.phases.findIndex(
+      (p) => p.start_date <= now && (p.end_date === null || p.end_date > now),
+    );
+
+    if (currentPhaseIndex === -1) {
+      // No active phase means the schedule is in a state Stripe should have
+      // released. Refuse rather than write something we can't reason about.
+      throw Object.assign(new Error('Subscription is between schedule phases'), {
+        statusCode: 409,
+      });
+    }
+
+    const preserved = schedule.phases.slice(0, currentPhaseIndex).map((phase) => ({
+      items: phase.items.map((it) => ({
+        price: phaseItemPriceId(it),
+        quantity: it.quantity ?? 1,
+      })),
+      start_date: phase.start_date,
+      end_date: phase.end_date ?? undefined,
+    }));
+
+    const currentPhase = schedule.phases[currentPhaseIndex];
+    const currentPhaseEnd = currentPhase.end_date ?? currentPeriodEnd;
+    if (!currentPhaseEnd) {
+      throw Object.assign(new Error('Cannot determine when the current phase ends'), {
+        statusCode: 502,
+      });
+    }
+    const currentPreserved = {
+      items: currentPhase.items.map((it) => ({
+        price: phaseItemPriceId(it),
+        quantity: it.quantity ?? 1,
+      })),
+      start_date: currentPhase.start_date,
+      end_date: currentPhaseEnd,
+    };
+
+    const newFuture = { items: [{ price: targetPriceId, quantity: 1 }] };
+
+    await stripe().subscriptionSchedules.update(scheduleId, {
+      end_behavior: 'release',
+      phases: [...preserved, currentPreserved, newFuture],
+    });
+
+    logger.info('Scheduled plan change (rewrote schedule)', {
+      userId,
+      subscriptionId,
+      targetPlan,
+      targetPriceId,
+      preservedPhases: preserved.length + 1,
+    });
   },
 };
+

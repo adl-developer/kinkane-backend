@@ -20,12 +20,7 @@ const checkoutSchema = z.object({
   cancelUrl: z.string().url().optional(),
 });
 
-const changePlanSchema = z.object({
-  plan: z.enum(['monthly', 'annual', 'free']),
-  password: z.string().min(1, 'Password is required'),
-});
-
-const cancelSchema = z
+const cancelReasonSchema = z
   .object({
     reason: z.enum(['not_using', 'accidental', 'too_expensive', 'other']),
     reasonOther: z.string().trim().min(1).max(500).optional(),
@@ -33,6 +28,38 @@ const cancelSchema = z
   .refine((data) => data.reason !== 'other' || Boolean(data.reasonOther), {
     message: 'reasonOther is required when reason is "other"',
     path: ['reasonOther'],
+  });
+
+// A plan change is confirmed with either the account password (for password
+// accounts) or a fresh Firebase ID token from the same social provider they
+// signed in with (for accounts that never had one). Exactly one of the two
+// is required — a request carrying neither, or both, is rejected up front.
+//
+// A plan change to 'free' is the same underlying action as POST /cancel, so
+// the client also has to provide the same reason data in that case.
+const changePlanSchema = z
+  .object({
+    plan: z.enum(['monthly', 'annual', 'free']),
+    password: z.string().min(1).optional(),
+    idToken: z.string().min(1).optional(),
+    reason: z.enum(['not_using', 'accidental', 'too_expensive', 'other']).optional(),
+    reasonOther: z.string().trim().min(1).max(500).optional(),
+  })
+  .refine((data) => Boolean(data.password) !== Boolean(data.idToken), {
+    message: 'Provide exactly one of password or idToken',
+    path: ['password'],
+  })
+  .refine((data) => data.plan !== 'free' || Boolean(data.reason), {
+    message: 'reason is required when plan is "free"',
+    path: ['reason'],
+  })
+  .refine((data) => data.reason !== 'other' || Boolean(data.reasonOther), {
+    message: 'reasonOther is required when reason is "other"',
+    path: ['reasonOther'],
+  })
+  .refine((data) => data.plan === 'free' || (!data.reason && !data.reasonOther), {
+    message: 'reason/reasonOther only apply when plan is "free"',
+    path: ['reason'],
   });
 
 function assertSameOrigin(url: string | undefined, label: string): string | undefined {
@@ -130,7 +157,7 @@ export const subscriptionsController = {
    * of the period they have already paid for.
    */
   async cancel(req: AuthenticatedRequest, res: Response): Promise<void> {
-    const parsed = cancelSchema.safeParse(req.body);
+    const parsed = cancelReasonSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: 'Invalid request', details: parsed.error.flatten().fieldErrors });
       return;
@@ -148,10 +175,15 @@ export const subscriptionsController = {
    * POST /api/v1/user/subscription/change
    *
    * The "Change Plan" flow — switches monthly/annual/free for the end of the
-   * current period, confirmed with the account password rather than a reason
-   * (that's the Cancel Subscription flow's job). Password verification
+   * current period, confirmed with the account password. Password verification
    * happens here, before checkoutService ever touches Stripe, so a wrong
    * password never triggers a schedule call.
+   *
+   * `plan: 'free'` reaches the same code path as POST /cancel, so it also
+   * requires a reason (and reasonOther for 'other'). Every cancellation goes
+   * through the reason picker regardless of which screen it was reached from
+   * — otherwise the reasons ledger would be missing every user who picked
+   * Free Plan out of the Change Plan menu.
    */
   async changePlan(req: AuthenticatedRequest, res: Response): Promise<void> {
     const parsed = changePlanSchema.safeParse(req.body);
@@ -160,8 +192,16 @@ export const subscriptionsController = {
       return;
     }
 
-    await authService.verifyPassword(req.user.id, parsed.data.password);
-    const result = await checkoutService.changePlan(req.user.id, parsed.data.plan);
+    await authService.verifyOwnership(req.user.id, {
+      password: parsed.data.password,
+      idToken: parsed.data.idToken,
+    });
+    const result = await checkoutService.changePlan(
+      req.user.id,
+      parsed.data.plan,
+      parsed.data.reason,
+      parsed.data.reasonOther,
+    );
     res.status(200).json(result);
   },
 

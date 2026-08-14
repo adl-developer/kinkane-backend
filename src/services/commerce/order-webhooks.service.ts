@@ -84,7 +84,7 @@ export const orderWebhooksService = {
     // gets the right answer even if the order side was already processed.
     await paymentsService.markFromSession(session.id, 'succeeded');
 
-    const transitioned = await ordersService.markPaid(orderId, {
+    await ordersService.markPaid(orderId, {
       paymentIntentId,
       shipping: {
         name: shipping?.name,
@@ -97,10 +97,15 @@ export const orderWebhooksService = {
       },
     });
 
-    // A duplicate delivery stops here. Everything below spends money or writes
-    // signals that must happen exactly once.
-    if (!transitioned) return;
-
+    // Deliberately no `if (transitioned)` gate here. `markPaid` returns false
+    // on a redelivery because the order is already `paid` — but each of the
+    // three side effects below is naturally idempotent (cart convert is a
+    // WHERE-status='active' no-op, purchase signals use onConflictDoNothing,
+    // fulfilment uses jobId dedup in BullMQ), and gating them on a
+    // first-transition flag meant a crash between markPaid and this line
+    // permanently left the cart un-converted, the signals unrecorded and the
+    // order never sent to the supplier — Stripe would redeliver, but by then
+    // the transition had happened on the earlier attempt and the retry gave up.
     await ordersService.convertCart(order.userId);
     await ordersService.recordPurchaseSignals(order.userId, orderId);
 

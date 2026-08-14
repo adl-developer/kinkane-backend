@@ -7,6 +7,9 @@ import { stripe, isStripeConfigured } from '../lib/stripe';
 import { randomCode } from '../lib/random-code';
 import { logger } from '../lib/logger';
 
+/** Either the root db handle or an open transaction. */
+type DbHandle = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+
 /**
  * "Did the payment I just made go through?"
  *
@@ -100,23 +103,33 @@ export const paymentsService = {
    * Called by both checkout flows. Idempotent on the session id: creating the
    * same session twice returns the existing reference rather than minting a
    * second one for the same money.
+   *
+   * Accepts an optional transaction so the caller can commit this alongside
+   * another write — the order-checkout flow uses that to keep the order's
+   * stripe_checkout_session_id column and the payment row atomic, since one
+   * without the other means the webhook can't correlate the order back to
+   * the payment (or vice versa).
    */
-  async create(params: {
-    userId: number;
-    kind: PaymentKind;
-    stripeCheckoutSessionId: string;
-    amountCents?: number | null;
-    currency?: string | null;
-    orderId?: number | null;
-  }): Promise<Payment> {
-    const [existing] = await db
+  async create(
+    params: {
+      userId: number;
+      kind: PaymentKind;
+      stripeCheckoutSessionId: string;
+      amountCents?: number | null;
+      currency?: string | null;
+      orderId?: number | null;
+    },
+    tx?: DbHandle,
+  ): Promise<Payment> {
+    const handle = tx ?? db;
+    const [existing] = await handle
       .select()
       .from(payments)
       .where(eq(payments.stripeCheckoutSessionId, params.stripeCheckoutSessionId))
       .limit(1);
     if (existing) return existing;
 
-    const [row] = await db
+    const [row] = await handle
       .insert(payments)
       .values({
         reference: generateReference(),

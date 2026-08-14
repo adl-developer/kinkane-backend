@@ -308,6 +308,13 @@ export const checkoutService = {
     // The webhook will still arrive and write the same thing — these handlers
     // write the state the event describes rather than applying a delta, so the
     // two agreeing is the normal case, not a conflict.
+    //
+    // The reason is inserted inside the same transaction so a crash between
+    // the state write and the audit write can't leave the cancellation
+    // recorded with no reason attached — and by writing 'cancelled' here,
+    // immediately, onSubscriptionChanged's "just started cancelling" branch
+    // is a no-op when its webhook arrives (existing.cancelAtPeriodEnd is
+    // already true), so no reason-less duplicate is inserted alongside it.
     const state = await subscriptionStateService.applyState(
       userId,
       {
@@ -324,21 +331,19 @@ export const checkoutService = {
         stripeCustomerId: sub.stripeCustomerId,
         stripeSubscriptionId: sub.stripeSubscriptionId,
       },
-      { reason: 'subscription_updated' },
+      {
+        reason: 'subscription_updated',
+        inSameTx: reason
+          ? async (tx) => {
+              await tx.insert(subscriptionEvents).values({
+                userId,
+                event: 'cancelled',
+                reason: reason === 'other' ? (reasonOther ?? 'Other') : CANCEL_REASON_LABELS[reason],
+              });
+            }
+          : undefined,
+      },
     );
-
-    // Recorded here, immediately, rather than left to the webhook: by the time
-    // customer.subscription.updated arrives, cancelAtPeriodEnd is already true
-    // on our row, so onSubscriptionChanged's own "just started cancelling"
-    // check is false and it won't insert a second, reason-less 'cancelled'
-    // event for the same transition.
-    if (reason) {
-      await db.insert(subscriptionEvents).values({
-        userId,
-        event: 'cancelled',
-        reason: reason === 'other' ? (reasonOther ?? 'Other') : CANCEL_REASON_LABELS[reason],
-      });
-    }
 
     await entitlementsService.invalidate(userId);
 
@@ -452,18 +457,19 @@ export const checkoutService = {
       cancel_at_period_end: false,
     });
 
-    // Cancelling released a Founding Member from their price schedule, so put
-    // it back — otherwise someone who cancelled and changed their mind would
-    // keep the introductory price indefinitely instead of rolling onto standard
-    // pricing after their term.
-    //
-    // Deliberately after the update, not before: a schedule created from a
-    // subscription inherits its cancellation behaviour, so attaching while the
-    // flag was still set would bake the cancellation into the new schedule.
-    // attachFounding is a no-op for anyone who already rolled over to standard
-    // pricing, or who still has a schedule attached.
-    if (sub.isFoundingMember) {
-      await schedulesService.attachFounding(updated, userId);
+    // A founding member who cancelled had their schedule released to make the
+    // cancellation possible. If they reactivate, we may need to reattach the
+    // rollover — but only if the founding window has already closed. While the
+    // window is still open, founding pricing continues indefinitely without any
+    // schedule, and the rollover gets attached later by the invoice.paid
+    // webhook when the window has actually shut. Attaching too early would
+    // schedule a rollover that shouldn't happen yet.
+    if (sub.isFoundingMember && !isFoundingWindowOpen()) {
+      // Pass the just-updated subscription rather than its id, so
+      // scheduleFoundingRollover uses the version with `cancel_at_period_end`
+      // already cleared — a schedule created from a subscription inherits the
+      // cancellation behaviour of whatever version Stripe reads.
+      await schedulesService.scheduleFoundingRollover(updated, userId);
     }
 
     const state = await subscriptionStateService.applyState(
@@ -506,7 +512,12 @@ export const checkoutService = {
    * reason. Password verification itself happens in the controller, before
    * this is called.
    */
-  async changePlan(userId: number, plan: SubscriptionPlan | 'free'): Promise<PlanChangeResult> {
+  async changePlan(
+    userId: number,
+    plan: SubscriptionPlan | 'free',
+    reason?: CancelReason,
+    reasonOther?: string,
+  ): Promise<PlanChangeResult> {
     assertStripeConfigured();
 
     const sub = await subscriptionStateService.getCurrent(userId);
@@ -531,7 +542,7 @@ export const checkoutService = {
     }
 
     if (plan === 'free') {
-      const cancelled = await this.cancel(userId);
+      const cancelled = await this.cancel(userId, reason, reasonOther);
       return {
         currentPlan: sub.plan,
         pendingPlan: null,
@@ -547,7 +558,16 @@ export const checkoutService = {
       }
 
       // Picking their current plan again undoes an earlier pending switch.
+      // releaseFrom detaches the entire schedule — including any
+      // founding-to-standard rollover that was part of it — so if the user
+      // is a founding member past the offer window, reattach the rollover
+      // immediately or they'd keep the founding price with no rollover at
+      // all, indefinitely.
       await schedulesService.releaseFrom(sub.stripeSubscriptionId, userId);
+      if (sub.isFoundingMember && !isFoundingWindowOpen()) {
+        await schedulesService.scheduleFoundingRollover(sub.stripeSubscriptionId, userId);
+      }
+
       const state = await subscriptionStateService.applyState(
         userId,
         {
@@ -576,7 +596,12 @@ export const checkoutService = {
       };
     }
 
-    await schedulesService.schedulePlanChange(sub.stripeSubscriptionId, userId, plan);
+    await schedulesService.schedulePlanChange(
+      sub.stripeSubscriptionId,
+      userId,
+      plan,
+      sub.isFoundingMember,
+    );
 
     const state = await subscriptionStateService.applyState(
       userId,
@@ -594,6 +619,22 @@ export const checkoutService = {
       },
       { reason: 'subscription_updated' },
     );
+
+    // If applyState returned null, a concurrent writer moved the row on
+    // between the getCurrent above and here — likely a webhook. The schedule
+    // is already attached in Stripe, so its `customer.subscription.updated`
+    // will land shortly and set pendingPlan correctly via the webhook's own
+    // reconciliation. Log at error with the correlation ids so the (rare)
+    // case where the webhook also fails is findable, but don't roll back the
+    // Stripe write: the user's intent was recorded, and Stripe is the source
+    // of truth for what will actually be billed.
+    if (!state) {
+      logger.error('Plan change written to Stripe but local state race prevented mirror', {
+        userId,
+        stripeSubscriptionId: sub.stripeSubscriptionId,
+        toPlan: plan,
+      });
+    }
 
     logger.info('Plan change scheduled', {
       userId,

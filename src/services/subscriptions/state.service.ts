@@ -75,6 +75,19 @@ export interface ApplyStateOptions {
   expectStatus?: SubscriptionStatus;
   /** Only write if the row has no Stripe subscription attached. */
   expectNoStripeSubscription?: boolean;
+  /**
+   * Side effects that must succeed or fail together with the state write.
+   *
+   * Runs inside the same transaction as the row update and history insert,
+   * after both have committed at the tx level, only when the state write
+   * actually happened (guards matched). Callers use this to keep audit rows
+   * — a cancellation reason, a renewal event, a plan_changed marker — from
+   * drifting out of step with the subscription state they describe.
+   *
+   * Not called on a null return: nothing changed, so there is nothing to
+   * record alongside it.
+   */
+  inSameTx?: (tx: DbHandle, updated: UserSubscription) => Promise<void>;
 }
 
 /** The subset of history columns that decide whether state actually changed. */
@@ -151,6 +164,14 @@ export const subscriptionStateService = {
       if (!updated) return null;
 
       await this.recordHistory(tx, updated, options.reason, options.sourceEventId ?? null, now);
+
+      // Run any caller-supplied side effects inside the same transaction, so an
+      // audit row for this transition can't commit without its underlying
+      // state change or vice versa. A throw here rolls the whole thing back.
+      if (options.inSameTx) {
+        await options.inSameTx(tx, updated);
+      }
+
       return updated;
     };
 

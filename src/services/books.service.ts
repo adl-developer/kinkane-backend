@@ -90,6 +90,49 @@ export interface ListBooksOptions {
   // Opt-in: collapses same-titled editions down to the best one (cover > complete dataset >
   // newest publication date > has a price). See dedupeByTitle in lib/dedupe.ts.
   dedupe?: boolean;
+  /**
+   * For dedupe=true only. When supplied it overrides `offset`: the server
+   * resumes at the raw-row position the token encodes and also filters out any
+   * titles carried from the previous page's tail, so a title returned on page N
+   * cannot be returned again on page N+1.
+   */
+  cursor?: DedupeCursor | null;
+}
+
+/** Opaque token that survives a JSON round-trip via base64url. */
+export interface DedupeCursor {
+  /** The raw-row offset to resume scanning at. */
+  o: number;
+  /** Case-folded titles carried from the previous page's tail, to filter here. */
+  t: string[];
+}
+
+/** How many recent titles to remember in the cursor for cross-page filtering. */
+const CURSOR_TAIL_TITLES = 100;
+
+export function encodeDedupeCursor(cursor: DedupeCursor): string {
+  return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
+}
+
+export function decodeDedupeCursor(raw: string | undefined | null): DedupeCursor | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8')) as unknown;
+    if (
+      parsed === null ||
+      typeof parsed !== 'object' ||
+      typeof (parsed as DedupeCursor).o !== 'number' ||
+      !Array.isArray((parsed as DedupeCursor).t)
+    ) {
+      return null;
+    }
+    const c = parsed as DedupeCursor;
+    if (!Number.isInteger(c.o) || c.o < 0 || c.o > 10_000) return null;
+    if (c.t.some((title) => typeof title !== 'string')) return null;
+    return { o: c.o, t: c.t.slice(0, CURSOR_TAIL_TITLES) };
+  } catch {
+    return null;
+  }
 }
 
 // Columns returned in the list view (no descriptions — keep payloads small)
@@ -683,7 +726,23 @@ async function fetchSearchPage(
 export const booksService = {
   async list(
     opts: ListBooksOptions,
-  ): Promise<{ books: BookListItem[]; total: number; hasMore: boolean; totalIsApproximate: boolean }> {
+  ): Promise<{
+    books: BookListItem[];
+    total: number;
+    hasMore: boolean;
+    totalIsApproximate: boolean;
+    /**
+     * Opaque token to pass back as `?cursor=` for the next page.
+     *
+     * Only meaningful when `dedupe=true` — offset pagination on the dedupe
+     * path can return the same title on consecutive pages, since two raw
+     * editions of the same book can sit either side of a page boundary.
+     * The cursor stops that by carrying a small tail of already-returned
+     * titles into the next request as a hard filter, plus the raw offset
+     * to resume at. Null when dedupe is off or no more pages remain.
+     */
+    nextCursor: string | null;
+  }> {
     // v2: the cached row payload changed shape (now { rows, hasMore }) and the cached
     // count is now capped for searches — bumping the prefix retires incompatible entries
     // rather than letting them deserialize into the wrong shape.
@@ -829,9 +888,13 @@ export const booksService = {
     // editions still tends to leave a full page — see DEDUPE_POOL_HEADROOM. Without it,
     // this is exactly opts.limit and every branch below reproduces prior behaviour.
     const overfetchLimit = opts.dedupe ? opts.limit + DEDUPE_POOL_HEADROOM : opts.limit;
+    // Cursor-driven pagination is dedupe-only. `cursor.o` overrides `offset`
+    // so the client hands back a resume position rather than tracking one.
+    const effectiveOffset = opts.dedupe && opts.cursor ? opts.cursor.o : opts.offset;
+    const carryOverTitles = new Set(opts.cursor?.t ?? []);
 
-    const pagePromise: Promise<{ rows: BookListItem[]; hasMore: boolean }> = cachedRows
-      ? Promise.resolve(JSON.parse(cachedRows) as { rows: BookListItem[]; hasMore: boolean }).then((parsed) => {
+    const pagePromise: Promise<{ rows: BookListItem[]; hasMore: boolean; nextCursor: string | null }> = cachedRows
+      ? Promise.resolve(JSON.parse(cachedRows) as { rows: BookListItem[]; hasMore: boolean; nextCursor: string | null }).then((parsed) => {
           for (const b of parsed.rows) {
             b.createdAt = new Date(b.createdAt);
             b.updatedAt = new Date(b.updatedAt);
@@ -840,7 +903,7 @@ export const booksService = {
         })
       : (async () => {
           const fetched = opts.q
-            ? await fetchSearchPage(opts, opts.q, rowsTier, rowsWhere, rowsOrderBy, overfetchLimit)
+            ? await fetchSearchPage({ ...opts, offset: effectiveOffset }, opts.q, rowsTier, rowsWhere, rowsOrderBy, overfetchLimit)
             : await db
                 .select(LIST_COLUMNS)
                 .from(books)
@@ -850,7 +913,7 @@ export const booksService = {
                 // without a second query — this is what callers should paginate on now
                 // that `total` may be capped or, with dedupe, approximate.
                 .limit(overfetchLimit + 1)
-                .offset(opts.offset);
+                .offset(effectiveOffset);
 
           const rawHasMore = fetched.length > overfetchLimit;
           const rawRows = rawHasMore ? fetched.slice(0, overfetchLimit) : fetched;
@@ -877,8 +940,16 @@ export const booksService = {
 
           let hasMore = rawHasMore;
           let result: BookListItem[];
+          let nextCursor: string | null = null;
+
           if (opts.dedupe) {
-            const scored = enriched.map((r) => ({
+            // Drop any rows whose title was already returned on the previous
+            // page. Same case-folded key that dedupeByTitle uses, so a match
+            // here is exactly a match there.
+            const carryOverFiltered = enriched.filter(
+              (r) => !carryOverTitles.has(r.title.trim().toLowerCase()),
+            );
+            const scored = carryOverFiltered.map((r) => ({
               ...r,
               shortDescription: descriptionById.get(r.id) ?? null,
               genreCount: r.genres.length,
@@ -887,11 +958,26 @@ export const booksService = {
             const deduped = dedupeByTitle(scored);
             hasMore = hasMore || deduped.length > opts.limit;
             result = deduped.slice(0, opts.limit).map(({ shortDescription: _shortDescription, genreCount: _genreCount, hasPrice: _hasPrice, ...item }) => item);
+
+            if (hasMore) {
+              // Advance past everything we scanned and carry the returned
+              // titles forward — those two guarantees together mean any raw
+              // edition of a title on this page that lives past the page
+              // boundary is filtered as a duplicate on the next request.
+              const returnedKeys = result.map((r) => r.title.trim().toLowerCase());
+              const nextTail = Array.from(
+                new Set([...returnedKeys, ...(opts.cursor?.t ?? [])]),
+              ).slice(-CURSOR_TAIL_TITLES);
+              nextCursor = encodeDedupeCursor({
+                o: effectiveOffset + rawRows.length,
+                t: nextTail,
+              });
+            }
           } else {
             result = enriched;
           }
 
-          const page = { rows: result, hasMore };
+          const page = { rows: result, hasMore, nextCursor };
           await redis.set(rowsCacheKey, JSON.stringify(page), 'EX', LIST_TTL);
           return page;
         })();
@@ -930,7 +1016,13 @@ export const booksService = {
     // avoid scanning, so dedupe forces this the same way a capped search count does: a
     // lower bound, with `hasMore` as the real pagination signal.
     const totalIsApproximate = (!!opts.q && total >= SEARCH_COUNT_CAP) || !!opts.dedupe;
-    return { books: page.rows, total, hasMore: page.hasMore, totalIsApproximate };
+    return {
+      books: page.rows,
+      total,
+      hasMore: page.hasMore,
+      totalIsApproximate,
+      nextCursor: page.nextCursor,
+    };
   },
 
   async suggestions(q: string, limit: number, type: SuggestionType = 'all', dedupe = false): Promise<SuggestionItem[]> {
