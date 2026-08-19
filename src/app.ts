@@ -25,8 +25,12 @@ const app = express();
 app.set('trust proxy', 1);
 
 app.use(helmet());
+// In development, accept any origin so local clients (Expo, LAN devices,
+// alternate ports) can call the API without APP_URL churn. `origin: true`
+// reflects the request's Origin header, which stays valid with credentials —
+// a literal '*' would not.
 app.use(cors({
-  origin: [config.appUrl],
+  origin: config.nodeEnv === 'development' ? true : [config.appUrl],
   credentials: true,
   exposedHeaders: ['X-New-Access-Token'],
 }));
