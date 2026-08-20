@@ -239,6 +239,8 @@ basket appears to empty on login.
 | `DELETE` | `/api/v1/saved-books/:bookId` | required |
 | `GET` | `/api/v1/authors/:slug` | none |
 | `GET` | `/api/v1/authors/:slug/books` | none |
+| `GET` | `/api/v1/books/facets` | none |
+| `GET` | `/api/v1/books/recommendations` | optional |
 
 ### Saved Books follows the same rule as the basket
 

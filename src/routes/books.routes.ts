@@ -23,6 +23,41 @@ const router = Router();
 router.get('/search', booksController.suggestions);
 
 /**
+ * GET /books/facets?shoppable=true&genre=...
+ *
+ * The Filters panel: which genres, formats and price bands are actually worth
+ * offering for the current query, and roughly how many books sit behind each.
+ *
+ * Takes the same filters as GET /books, and the counts reflect them — with
+ * `shoppable=true` removing over half the catalogue, a static filter list would
+ * offer categories where every buyable book has already been filtered out.
+ *
+ * Counts come from a capped sample; `countsAreApproximate` says when the cap
+ * was hit. Treat them as proportions worth showing, not as exact totals.
+ *
+ * Public — no auth required.
+ */
+router.get('/facets', booksController.facets);
+
+/**
+ * GET /books/recommendations?bookIds=1,2,3&limit=8
+ *
+ * "You may also like" for a whole basket — the cart page's carousel. Averages
+ * the basket's embeddings and returns the nearest titles to that centre, which
+ * is why it is not the per-book endpoint run several times and merged: a basket
+ * of one cookbook and two thrillers should suggest something for the shopper,
+ * not three unrelated lists stapled together.
+ *
+ * Stateless: the basket arrives as ids, because before sign-in it lives on the
+ * client and there is no cart to read. Books already in the basket are never
+ * returned. Empty list when nothing in the basket has an embedding yet.
+ *
+ * Public — no auth required. A token additionally filters out books the caller
+ * has already rejected.
+ */
+router.get('/recommendations', optionalAuth, booksController.basketRecommendations);
+
+/**
  * GET /books
  * Query params: q, genre, availability, productForm, publishingStatus, publisher, limit, offset, dedupe, shoppable, cursor
  *

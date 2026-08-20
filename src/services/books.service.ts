@@ -8,6 +8,7 @@ import {
   bookGenres,
   bookPrices,
   bookSubjects,
+  gardnersStock,
   genres,
   userInteractions,
   userPreferences,
@@ -72,6 +73,21 @@ const DEDUPE_POOL_HEADROOM = 20;
 // distinguish via `totalIsApproximate`. Comfortably above the max page size (50) so
 // ordinary pagination never notices.
 const SEARCH_COUNT_CAP = 1000;
+/**
+ * How many matching books a facet count will look at before giving up on being
+ * exact.
+ *
+ * Facets are a `GROUP BY` over whatever the current filters match, and on a
+ * ~2M-row catalogue an unbounded one is the same full scan SEARCH_COUNT_CAP
+ * exists to avoid — except run three times, once per facet. Capping the
+ * candidate set keeps the cost flat and fixed; when the cap bites, the response
+ * says so via `countsAreApproximate` rather than quietly reporting a number
+ * that is wrong.
+ *
+ * 5000 is chosen so the proportions stay useful: a genre holding 40% of the
+ * matches still reads as roughly 40% of the sample.
+ */
+const FACET_SCAN_CAP = 5000;
 // Ceiling on how many author matches a search will pull from book_contributors before
 // ranking them — see buildAuthorMatchCondition. Sized well above any real author's
 // catalogue (the most prolific names in the catalogue are in the low hundreds of titles)
@@ -1796,6 +1812,211 @@ export const booksService = {
    * this particular book can still come up short — an acceptable outcome for a
    * secondary shelf, and strictly better than showing them the rejects.
    */
+  /**
+   * Filter values with counts, for the catalogue's Filters panel.
+   *
+   * Computed against the *current* query rather than the whole catalogue, which
+   * is the entire point: with `shoppable=true` removing over half the
+   * catalogue, a static filter list offers genres where every buyable book has
+   * already been filtered out. The user picks one, gets nothing, and concludes
+   * the shop is broken.
+   *
+   * Counts come from a capped sample (see FACET_SCAN_CAP) and the response says
+   * when that cap was hit. A facet panel's job is to show what is *worth*
+   * clicking and roughly how much is behind it — being exact matters far less
+   * than being fast enough to render alongside the results.
+   */
+  async facets(opts: ListBooksOptions): Promise<{
+    genres: { slug: string; name: string; count: number }[];
+    productForms: { code: string; count: number }[];
+    priceBands: { label: string; minMinor: number; maxMinor: number | null; count: number }[];
+    sampled: number;
+    countsAreApproximate: boolean;
+  }> {
+    const cacheKey = `books:facets:v1:${createHash('sha256')
+      .update(JSON.stringify({
+        q: opts.q,
+        genre: opts.genre,
+        availability: opts.availability,
+        productForm: opts.productForm,
+        publishingStatus: opts.publishingStatus,
+        publisher: opts.publisher,
+        shoppable: opts.shoppable,
+      }))
+      .digest('hex')}`;
+
+    const cached = await redis.get(cacheKey);
+    if (cached) return JSON.parse(cached);
+
+    const where = buildWhereClause(
+      opts,
+      opts.q ? buildTitlePrefixCondition(opts.q) : undefined,
+    );
+
+    // One bounded candidate set, aggregated three ways. Materialising it once
+    // means the filter predicate is evaluated once rather than per facet.
+    const candidates = sql`
+      WITH candidates AS MATERIALIZED (
+        SELECT ${books.id} AS id, ${books.productForm} AS product_form, ${books.isbn13} AS isbn13
+        FROM ${books}
+        WHERE ${where ?? sql`TRUE`}
+        LIMIT ${FACET_SCAN_CAP}
+      )`;
+
+    const [genreRows, formRows, priceRows, sampleRow] = await Promise.all([
+      db.execute<{ slug: string; name: string; count: number }>(sql`
+        ${candidates}
+        SELECT g.slug, g.name, COUNT(*)::int AS count
+        FROM candidates c
+        JOIN ${bookGenres} bg ON bg.book_id = c.id
+        JOIN ${genres} g ON g.id = bg.genre_id
+        GROUP BY g.slug, g.name
+        ORDER BY count DESC, g.name ASC
+        LIMIT 40`),
+      db.execute<{ code: string; count: number }>(sql`
+        ${candidates}
+        SELECT product_form AS code, COUNT(*)::int AS count
+        FROM candidates
+        WHERE product_form IS NOT NULL
+        GROUP BY product_form
+        ORDER BY count DESC
+        LIMIT 20`),
+      // Bands are in GBP pence against the live supplier price — the same
+      // figure the shop charges, not the ONIX metadata price.
+      db.execute<{ label: string; min_minor: number; max_minor: number | null; count: number }>(sql`
+        ${candidates}
+        SELECT band AS label, min_minor, max_minor, COUNT(*)::int AS count
+        FROM (
+          SELECT
+            CASE
+              WHEN gs.rrp_gbp < 10 THEN 'under-10'
+              WHEN gs.rrp_gbp < 20 THEN '10-20'
+              WHEN gs.rrp_gbp < 35 THEN '20-35'
+              ELSE 'over-35'
+            END AS band,
+            CASE
+              WHEN gs.rrp_gbp < 10 THEN 0
+              WHEN gs.rrp_gbp < 20 THEN 1000
+              WHEN gs.rrp_gbp < 35 THEN 2000
+              ELSE 3500
+            END AS min_minor,
+            CASE
+              WHEN gs.rrp_gbp < 10 THEN 1000
+              WHEN gs.rrp_gbp < 20 THEN 2000
+              WHEN gs.rrp_gbp < 35 THEN 3500
+              ELSE NULL
+            END AS max_minor
+          FROM candidates c
+          JOIN ${gardnersStock} gs ON gs.isbn13 = c.isbn13
+          WHERE gs.rrp_gbp > 0
+        ) banded
+        GROUP BY band, min_minor, max_minor
+        ORDER BY min_minor ASC`),
+      db.execute<{ count: number }>(sql`${candidates} SELECT COUNT(*)::int AS count FROM candidates`),
+    ]);
+
+    const asRows = <T,>(r: unknown): T[] => r as unknown as T[];
+    const sampled = asRows<{ count: number }>(sampleRow)[0]?.count ?? 0;
+
+    const result = {
+      genres: asRows<{ slug: string; name: string; count: number }>(genreRows).map((r) => ({
+        slug: r.slug,
+        name: r.name,
+        count: Number(r.count),
+      })),
+      productForms: asRows<{ code: string; count: number }>(formRows).map((r) => ({
+        code: r.code,
+        count: Number(r.count),
+      })),
+      priceBands: asRows<{ label: string; min_minor: number; max_minor: number | null; count: number }>(priceRows).map((r) => ({
+        label: r.label,
+        minMinor: Number(r.min_minor),
+        maxMinor: r.max_minor === null ? null : Number(r.max_minor),
+        count: Number(r.count),
+      })),
+      sampled,
+      countsAreApproximate: sampled >= FACET_SCAN_CAP,
+    };
+
+    await redis.set(cacheKey, JSON.stringify(result), 'EX', COUNT_TTL);
+    return result;
+  },
+
+  /**
+   * "You may also like" for a whole basket rather than a single book.
+   *
+   * Averages the basket's embeddings and finds the nearest neighbours to that
+   * centroid, which is why it is not just `similar()` run per book and merged:
+   * a basket of one cookbook and two thrillers should surface something that
+   * suits the *shopper*, not three separate lists stapled together.
+   *
+   * Stateless by design — the basket arrives as ids, because before sign-in it
+   * lives on the client and there is no cart row to read.
+   */
+  async basketRecommendations(
+    bookIds: number[],
+    limit: number,
+    userId?: number,
+  ): Promise<BookListItem[]> {
+    if (bookIds.length === 0) return [];
+
+    const seeds = await db
+      .select({ embedding: books.embedding })
+      .from(books)
+      .where(and(inArray(books.id, bookIds), eq(books.isRemoved, false)));
+
+    const vectors = seeds.map((s) => s.embedding).filter((e): e is number[] => Array.isArray(e));
+    // Every book in the basket is still awaiting its embedding — an empty list
+    // is the honest answer, and the caller hides the section.
+    if (vectors.length === 0) return [];
+
+    const dimensions = vectors[0].length;
+    const centroid = new Array<number>(dimensions).fill(0);
+    for (const vector of vectors) {
+      for (let i = 0; i < dimensions; i++) centroid[i] += vector[i];
+    }
+    for (let i = 0; i < dimensions; i++) centroid[i] /= vectors.length;
+
+    const vectorLiteral = `[${centroid.join(',')}]`;
+    const poolSize = Math.min((limit + FEED_EXCLUSION_HEADROOM) * FEED_POOL_MULTIPLIER, FEED_POOL_MAX);
+
+    // Ids only here, then hydrated through listByIds — the same serializer every
+    // other book list uses, rather than a second one that drifts from it.
+    const rows = await db.transaction(async (tx) => {
+      await tx.execute(sql.raw(`SET LOCAL hnsw.ef_search = ${HNSW_EF_SEARCH}`));
+      return tx
+        .select({ id: books.id })
+        .from(books)
+        .where(
+          and(
+            sql`${books.embedding} IS NOT NULL`,
+            eq(books.isRemoved, false),
+            // Never recommend what is already in the basket.
+            notInArray(books.id, bookIds),
+          ),
+        )
+        .orderBy(sql`${books.embedding} <=> ${vectorLiteral}::vector`)
+        .limit(poolSize);
+    });
+
+    if (rows.length === 0) return [];
+
+    const hydrated = await booksService.listByIds(rows.map((row) => row.id));
+    // listByIds makes no ordering promise, so re-impose similarity order.
+    const byId = new Map(hydrated.map((book) => [book.id, book]));
+    const ordered = rows
+      .map((row) => byId.get(row.id))
+      .filter((book): book is BookListItem => Boolean(book));
+
+    // Signed-in shoppers do not get recommended books they have already
+    // rejected. Guests have no exclusions to apply, which is the common case
+    // here since the basket is client-held until sign-in.
+    if (userId === undefined) return ordered.slice(0, limit);
+
+    const exclusions = await getUserExclusions(userId);
+    return filterExcludedWorks(ordered, exclusions).slice(0, limit);
+  },
+
   async similar(bookId: number, limit: number, userId?: number): Promise<TrendingBookItem[]> {
     // Over-fetch target, so per-user filtering below has spare rows to eat.
     const cacheTarget = limit + FEED_EXCLUSION_HEADROOM;

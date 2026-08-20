@@ -148,6 +148,84 @@ export const cataloguePaths = {
     },
   },
 
+  '/api/v1/books/facets': {
+    get: {
+      tags: [TAG],
+      ...publicEndpoint,
+      summary: 'Filter options with counts',
+      description: [
+        'What the Filters panel should offer for the **current** query, and roughly how much sits behind each option.',
+        '',
+        'Takes the same filters as `GET /books`, and the counts reflect them. That is the point: with `shoppable=true` removing over half the catalogue, a hardcoded genre list offers categories where every buyable book has already been filtered out — the user picks one, gets an empty grid, and concludes the shop is broken.',
+        '',
+        '### Counts are a sample, not a total',
+        'Facets are three `GROUP BY`s over whatever the filters match, and on a multi-million-row catalogue an unbounded one is a full scan run three times. Counts come from a capped sample of matching books — `sampled` says how many were looked at, and **`countsAreApproximate` is true when the cap was hit**. Show them as proportions ("Poetry, 88") not as promises, and never compute a total by summing them.',
+        '',
+        'Price bands are in GBP pence against the live supplier price — the figure the shop actually charges.',
+      ].join('\n'),
+      parameters: [
+        param('q', 'query', { type: 'string', maxLength: 200 }, 'Same search as GET /books.'),
+        param('genre', 'query', { type: 'string', maxLength: 300 }, 'Same as GET /books.'),
+        param('productForm', 'query', { type: 'string', maxLength: 10 }, 'Same as GET /books.'),
+        param('publishingStatus', 'query', { type: 'string', minLength: 2, maxLength: 2 }, 'Same as GET /books.'),
+        param('publisher', 'query', { type: 'string', maxLength: 200 }, 'Same as GET /books.'),
+        param('shoppable', 'query', { type: 'string', enum: ['true', 'false'], default: 'false' },
+          'Restrict to books the shop can list. Almost always what you want here.'),
+      ],
+      responses: {
+        200: json('Filter options for this query.', object({
+          genres: arrayOf(object({
+            slug: { type: 'string', example: 'literary-fiction' },
+            name: { type: 'string', example: 'Literary Fiction' },
+            count: { type: 'integer', example: 227 },
+          })),
+          productForms: arrayOf(object({
+            code: { type: 'string', description: 'ONIX product form — BC paperback, BB hardback.', example: 'BC' },
+            count: { type: 'integer', example: 3339 },
+          })),
+          priceBands: arrayOf(object({
+            label: { type: 'string', enum: ['under-10', '10-20', '20-35', 'over-35'], example: '10-20' },
+            minMinor: { type: 'integer', example: 1000 },
+            maxMinor: { type: 'integer', nullable: true, description: 'Null on the open-ended top band.', example: 2000 },
+            count: { type: 'integer', example: 1866 },
+          })),
+          sampled: { type: 'integer', description: 'How many matching books the counts were computed from.', example: 5000 },
+          countsAreApproximate: { type: 'boolean', example: true },
+        })),
+        400: resp('ValidationError'),
+      },
+    },
+  },
+
+  '/api/v1/books/recommendations': {
+    get: {
+      tags: [TAG],
+      ...publicEndpoint,
+      summary: '"You may also like" for a whole basket',
+      description: [
+        'The cart page carousel. Averages the embeddings of everything in the basket and returns the nearest titles to that centre.',
+        '',
+        'Not the same as calling `/books/{id}/similar` for each item and merging: a basket of one cookbook and two thrillers should suggest something that suits the *shopper*, rather than three unrelated lists stapled together.',
+        '',
+        '**Stateless** — the basket arrives as ids, because before sign-in it lives on the client and there is no cart to read. Books already in the basket are never returned.',
+        '',
+        'Returns an **empty list, not an error**, when nothing in the basket has an embedding yet. Treat empty as "hide the section".',
+        '',
+        'Public. A token additionally filters out books the caller has already swiped away.',
+      ].join('\n'),
+      parameters: [
+        param('bookIds', 'query', { type: 'string' },
+          'Comma-separated book ids — the basket. Duplicates are ignored.', { example: '48213,50127' }),
+        param('limit', 'query', { type: 'integer', minimum: 1, maximum: 20, default: 8 }, 'How many to return.'),
+      ],
+      responses: {
+        200: json('Recommendations, most relevant first. May be empty.',
+          object({ books: arrayOf(ref('BookSummary')) })),
+        400: resp('ValidationError'),
+      },
+    },
+  },
+
   '/api/v1/authors/{slug}': {
     get: {
       tags: [TAG],
