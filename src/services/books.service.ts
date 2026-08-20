@@ -26,6 +26,8 @@ import {
 import { redis } from '../lib/redis';
 import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-excerpts.service';
 import { TRENDING_SCORED_TYPES, trendingScoreSql } from './interactions.service';
+import { availabilityService } from './commerce/availability.service';
+import { buildShoppableCondition } from '../lib/shoppable';
 
 const BOOK_DETAIL_TTL    = 60 * 60;    // 1 hour
 const LIST_TTL           = 5 * 60;     // 5 minutes
@@ -90,6 +92,12 @@ export interface ListBooksOptions {
   // Opt-in: collapses same-titled editions down to the best one (cover > complete dataset >
   // newest publication date > has a price). See dedupeByTitle in lib/dedupe.ts.
   dedupe?: boolean;
+  /**
+   * Opt-in: restricts results to books the shop can actually list — see
+   * buildShoppableCondition for exactly what that means and what it
+   * deliberately does not check.
+   */
+  shoppable?: boolean;
   /**
    * For dedupe=true only. When supplied it overrides `offset`: the server
    * resumes at the raw-row position the token encodes and also filters out any
@@ -176,6 +184,16 @@ export interface BookListItem {
   genres: Pick<Genre, 'name' | 'slug'>[];
   prices: Pick<BookPrice, 'priceType' | 'priceAmount' | 'currencyCode'>[];
   excerpt: BookExcerptInfo | null;
+  /**
+   * Whether Gardners currently has stock. Only populated on `shoppable=true`
+   * requests — optional rather than nullable so the other twenty-odd places
+   * that build a BookListItem don't have to invent a value for a field their
+   * callers never read. A shoppable result with `inStock: false` is a book the
+   * shop should list with an out-of-stock badge, not hide: stock moves hourly,
+   * and a title flickering in and out of the catalogue is worse for the user
+   * than a title that is visibly, temporarily unavailable.
+   */
+  inStock?: boolean;
 }
 
 // Which side of the catalogue a typeahead query is matched against. 'all' (the default)
@@ -524,6 +542,18 @@ function buildPersonNamePrefixOrderBy(q: string): SQL[] {
 function buildWhereClause(opts: ListBooksOptions, searchCondition?: SQL): SQL | undefined {
   const conditions: SQL[] = [];
 
+  // Titles Gardners has withdrawn (ONIX notification '05') are never browsable.
+  // The row survives the withdrawal on purpose — it still anchors a user's
+  // posts, reviews and reading-list entries, see books.isRemoved — but it must
+  // not appear in a catalogue listing. listByIds() already filtered this and
+  // list() did not, so withdrawn books were reachable through browse and
+  // search while being 404-shaped everywhere else.
+  //
+  // Applied here rather than at each call site so it covers every list path at
+  // once: the title branch, the author branch (fetchAuthorBranch), all three
+  // search tiers, and the count probes that must agree with them.
+  conditions.push(eq(books.isRemoved, false));
+
   if (searchCondition) {
     conditions.push(searchCondition);
   }
@@ -552,6 +582,10 @@ function buildWhereClause(opts: ListBooksOptions, searchCondition?: SQL): SQL | 
 
   if (opts.publisher) {
     conditions.push(ilike(books.publisherName, `%${opts.publisher}%`));
+  }
+
+  if (opts.shoppable) {
+    conditions.push(buildShoppableCondition());
   }
 
   return conditions.length > 0 ? and(...conditions) : undefined;
@@ -751,20 +785,30 @@ export const booksService = {
     // v4: opts now includes `dedupe`, which changes both which rows come back and how many
     // — every request now hashes it (even dedupe:false, since the schema always supplies a
     // default), so bumping avoids a generation of guaranteed-stale v3 lookups post-deploy.
-    const rowsCacheKey = `books:list:v4:${createHash('sha256').update(JSON.stringify(opts)).digest('hex')}`;
+    // v5: withdrawn titles (is_removed) are filtered out of every list path now, so a v4
+    // entry can hold rows and totals that include books this endpoint must no longer
+    // return. Bumping retires them instead of serving them until their TTL lapses.
+    const rowsCacheKey = `books:list:v5:${createHash('sha256').update(JSON.stringify(opts)).digest('hex')}`;
     // Keyed only on the fields that affect the count (not limit/offset/sort) so every
     // page of the same filter — and every sort direction — shares one cached total.
-    const countCacheKey = `books:count:v3:${createHash('sha256')
-      .update(
-        JSON.stringify({
-          q: opts.q,
-          genre: opts.genre,
-          availability: opts.availability,
-          productForm: opts.productForm,
-          publishingStatus: opts.publishingStatus,
-          publisher: opts.publisher,
-        }),
-      )
+    //
+    // Derived by *removing* the page-shape fields rather than by listing the filters,
+    // because the enumerated version was a silent-wrong-answer waiting to happen: a new
+    // filter added to ListBooksOptions and to buildWhereClause but forgotten here would
+    // hash to the same key as the unfiltered request, and every filtered page would report
+    // the whole catalogue's total. Rest-destructuring means a new filter is counted
+    // correctly the moment it exists, and only a genuinely page-shaped field has to be
+    // added to this list.
+    const {
+      sort: _sort,
+      limit: _limit,
+      offset: _offset,
+      dedupe: _dedupe,
+      cursor: _cursor,
+      ...countFilters
+    } = opts;
+    const countCacheKey = `books:count:v4:${createHash('sha256')
+      .update(JSON.stringify(countFilters))
       .digest('hex')}`;
 
     const [cachedRows, cachedCount] = await Promise.all([
@@ -918,7 +962,7 @@ export const booksService = {
           const rawHasMore = fetched.length > overfetchLimit;
           const rawRows = rawHasMore ? fetched.slice(0, overfetchLimit) : fetched;
 
-          const [relations, excerptMap, descriptionById] = await Promise.all([
+          const [relations, excerptMap, descriptionById, stockByIsbn] = await Promise.all([
             attachRelationsToList(rawRows),
             getExcerptsByIsbns(rawRows.map((r) => r.isbn13)),
             // Only needed for dedupe scoring — BookListItem never exposes it, and
@@ -931,11 +975,25 @@ export const booksService = {
                   .where(inArray(books.id, rawRows.map((r) => r.id)))
                   .then((rows) => new Map(rows.map((r) => [r.id, r.shortDescription])))
               : Promise.resolve(new Map<number, string | null>()),
+            // Only the shop needs the badge, so only the shop pays for the lookup.
+            // One batched query over the page's ISBNs, not a column on LIST_COLUMNS:
+            // adding it there would put the stock table into every tier's plan,
+            // including the fast title-prefix scan whose speed comes from touching
+            // nothing but its own index.
+            opts.shoppable && rawRows.length > 0
+              ? availabilityService.inStockByIsbns(rawRows.map((r) => r.isbn13))
+              : Promise.resolve(new Map<string, boolean>()),
           ]);
           const enriched = rawRows.map((r) => ({
             ...r,
             ...relations.get(r.id)!,
             excerpt: pickExcerpt(r.isbn13, excerptMap),
+            // Absent entirely unless asked for. Every row here already cleared
+            // buildShoppableCondition, so a missing stock entry would mean the row
+            // vanished between the two queries — `false` is the safe reading.
+            ...(opts.shoppable
+              ? { inStock: r.isbn13 ? (stockByIsbn.get(r.isbn13) ?? false) : false }
+              : {}),
           }));
 
           let hasMore = rawHasMore;

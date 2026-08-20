@@ -39,6 +39,15 @@ const listSchema = z.object({
   // Opt-in: collapses same-titled editions down to the best one — see dedupeParam above.
   dedupe: dedupeParam,
   /**
+   * Opt-in: drops books the shop cannot list — no ISBN13, no price, or an
+   * unsuppliable Gardners report code. Off by default: discovery, search and
+   * reading lists browse the whole catalogue, and only the e-commerce section
+   * wants the narrowed view. Out-of-stock books are kept and carry `inStock`
+   * so the shop can badge them. See buildShoppableCondition in books.service
+   * for what this does and does not check.
+   */
+  shoppable: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
+  /**
    * Opaque pagination token, only meaningful when dedupe=true. When supplied
    * the server resumes at the raw position it encodes and filters out any
    * titles the previous page returned, so a title cannot appear twice

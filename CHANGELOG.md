@@ -5,7 +5,7 @@
 
 ### Features
 
-* document every endpoint in a private, browsable API reference ([171b4ad](https://adl.github.com/adl-developer/kinkane-backend/commit/171b4ad095735709d10cb71c49ee3f2a08a2ee1b)) — [details](changelog/2026-08-14-swagger-api-docs.md)
+* document every endpoint in a private, browsable API reference ([aa7a9ab](https://adl.github.com/adl-developer/kinkane-backend/commit/aa7a9abdd691ba2202e44d4901706623d72f4a92)) — [details](changelog/2026-08-14-swagger-api-docs.md)
 
 
 ## 2026-08-13

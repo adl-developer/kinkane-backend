@@ -24,7 +24,7 @@ router.get('/search', booksController.suggestions);
 
 /**
  * GET /books
- * Query params: q, genre, availability, productForm, publishingStatus, publisher, limit, offset, dedupe, cursor
+ * Query params: q, genre, availability, productForm, publishingStatus, publisher, limit, offset, dedupe, shoppable, cursor
  *
  * `q` matches both title and author name. Title matches rank first, except when
  * nothing matched a title properly — then an exact author match outranks the
@@ -40,6 +40,14 @@ router.get('/search', booksController.suggestions);
  * Cursor pagination guarantees a title cannot appear on two pages; naive
  * offset pagination on the deduped path could, because two raw editions of
  * one book can straddle a page boundary.
+ *
+ * `shoppable=true` narrows the results to what the e-commerce section can
+ * list: an ISBN13, a live Gardners price, and no unsuppliable report code.
+ * Out-of-stock titles are kept — each result carries `inStock` for the shop to
+ * badge — because stock moves hourly and a book vanishing from the catalogue
+ * mid-browse is worse than one shown as temporarily unavailable. It is not a
+ * sellability guarantee: market restrictions need a destination country, which
+ * this public endpoint does not have, so they stay enforced at add-to-cart.
  *
  * Public — no auth required.
  */

@@ -4,6 +4,7 @@ export * from './referrals';
 export * from './payments';
 export * from './books';
 export * from './book-excerpts';
+export * from './book-promotions';
 export * from './ingestion';
 export * from './recommendations';
 export * from './onboarding';

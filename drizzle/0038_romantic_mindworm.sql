@@ -1,0 +1,1 @@
+CREATE INDEX IF NOT EXISTS "idx_gardners_stock_shoppable" ON "gardners_stock" USING btree ("isbn13") WHERE "gardners_stock"."rrp_gbp" > 0 AND ("gardners_stock"."report_code" IS NULL OR upper(btrim("gardners_stock"."report_code")) NOT IN ('NYP', 'OSI', 'O/P', 'OP', 'CNC', 'R/P', 'RP', 'GXC', 'M/D', 'MD', 'POS', 'REF'));
