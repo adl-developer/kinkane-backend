@@ -1,5 +1,5 @@
 {
-  "id": "985f9e96-a281-46ee-99cc-5375aeec0d49",
+  "id": "ace9a35c-e5d0-41c8-8322-c58bfb5451cb",
   "prevId": "a6471597-cc26-4476-97b3-f6332e00616b",
   "version": "7",
   "dialect": "postgresql",
@@ -1335,21 +1335,6 @@
               "expression": "book_id",
               "isExpression": false,
               "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_book_contributors_author_slug": {
-          "name": "idx_book_contributors_author_slug",
-          "columns": [
-            {
-              "expression": "btrim(lower(regexp_replace(\"person_name\", '[^a-zA-Z0-9]+', '-', 'g')), '-')",
-              "asc": true,
-              "isExpression": true,
               "nulls": "last"
             }
           ],

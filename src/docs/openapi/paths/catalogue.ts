@@ -148,55 +148,6 @@ export const cataloguePaths = {
     },
   },
 
-  '/api/v1/books/facets': {
-    get: {
-      tags: [TAG],
-      ...publicEndpoint,
-      summary: 'Filter options with counts',
-      description: [
-        'What the Filters panel should offer for the **current** query, and roughly how much sits behind each option.',
-        '',
-        'Takes the same filters as `GET /books`, and the counts reflect them. That is the point: with `shoppable=true` removing over half the catalogue, a hardcoded genre list offers categories where every buyable book has already been filtered out — the user picks one, gets an empty grid, and concludes the shop is broken.',
-        '',
-        '### Counts are a sample, not a total',
-        'Facets are three `GROUP BY`s over whatever the filters match, and on a multi-million-row catalogue an unbounded one is a full scan run three times. Counts come from a capped sample of matching books — `sampled` says how many were looked at, and **`countsAreApproximate` is true when the cap was hit**. Show them as proportions ("Poetry, 88") not as promises, and never compute a total by summing them.',
-        '',
-        'Price bands are in GBP pence against the live supplier price — the figure the shop actually charges.',
-      ].join('\n'),
-      parameters: [
-        param('q', 'query', { type: 'string', maxLength: 200 }, 'Same search as GET /books.'),
-        param('genre', 'query', { type: 'string', maxLength: 300 }, 'Same as GET /books.'),
-        param('productForm', 'query', { type: 'string', maxLength: 10 }, 'Same as GET /books.'),
-        param('publishingStatus', 'query', { type: 'string', minLength: 2, maxLength: 2 }, 'Same as GET /books.'),
-        param('publisher', 'query', { type: 'string', maxLength: 200 }, 'Same as GET /books.'),
-        param('shoppable', 'query', { type: 'string', enum: ['true', 'false'], default: 'false' },
-          'Restrict to books the shop can list. Almost always what you want here.'),
-      ],
-      responses: {
-        200: json('Filter options for this query.', object({
-          genres: arrayOf(object({
-            slug: { type: 'string', example: 'literary-fiction' },
-            name: { type: 'string', example: 'Literary Fiction' },
-            count: { type: 'integer', example: 227 },
-          })),
-          productForms: arrayOf(object({
-            code: { type: 'string', description: 'ONIX product form — BC paperback, BB hardback.', example: 'BC' },
-            count: { type: 'integer', example: 3339 },
-          })),
-          priceBands: arrayOf(object({
-            label: { type: 'string', enum: ['under-10', '10-20', '20-35', 'over-35'], example: '10-20' },
-            minMinor: { type: 'integer', example: 1000 },
-            maxMinor: { type: 'integer', nullable: true, description: 'Null on the open-ended top band.', example: 2000 },
-            count: { type: 'integer', example: 1866 },
-          })),
-          sampled: { type: 'integer', description: 'How many matching books the counts were computed from.', example: 5000 },
-          countsAreApproximate: { type: 'boolean', example: true },
-        })),
-        400: resp('ValidationError'),
-      },
-    },
-  },
-
   '/api/v1/books/recommendations': {
     get: {
       tags: [TAG],
@@ -222,63 +173,6 @@ export const cataloguePaths = {
         200: json('Recommendations, most relevant first. May be empty.',
           object({ books: arrayOf(ref('BookSummary')) })),
         400: resp('ValidationError'),
-      },
-    },
-  },
-
-  '/api/v1/authors/{slug}': {
-    get: {
-      tags: [TAG],
-      ...publicEndpoint,
-      summary: 'One author',
-      description: [
-        'An author page, addressed by the slug of their name — `tayari-jones`, `n-k-jemisin`.',
-        '',
-        '**There is no authors table.** An author here is a distinct contributor name, so the slug *is* the identity. Build it from the displayed name by lowercasing, replacing every run of non-alphanumeric characters with a single hyphen, and trimming hyphens from both ends. Accents count as separators (`Adichié` → `adichi`), because the database index that resolves this cannot fold them.',
-        '',
-        'Scoped to primary authors (ONIX role A01) — an illustrator or translator does not get a page from that contribution. Two different people who share a name share one page; the catalogue holds nothing that could tell them apart.',
-      ].join('\n'),
-      parameters: [
-        param('slug', 'path', { type: 'string', maxLength: 200 }, 'Slugified author name.',
-          { example: 'tayari-jones' }),
-      ],
-      responses: {
-        200: json('The author.', object({
-          slug: { type: 'string', example: 'tayari-jones' },
-          name: {
-            type: 'string',
-            description: 'The prevailing spelling, when several map to one slug.',
-            example: 'Tayari Jones',
-          },
-          bookCount: { type: 'integer', example: 4 },
-        })),
-        400: json('Malformed slug.', ref('Error'), { error: 'Invalid author slug' }),
-        404: json('No such author, or every one of their titles has been withdrawn.', ref('Error'),
-          { error: 'Author not found' }),
-      },
-    },
-  },
-
-  '/api/v1/authors/{slug}/books': {
-    get: {
-      tags: [TAG],
-      ...publicEndpoint,
-      summary: 'That author’s books',
-      description: 'Newest first, undated titles last. Same book shape as every other list in the API.',
-      parameters: [
-        param('slug', 'path', { type: 'string', maxLength: 200 }, 'Slugified author name.',
-          { example: 'tayari-jones' }),
-        param('limit', 'query', { type: 'integer', minimum: 1, maximum: 50, default: 20 }, 'Items per page.'),
-        param('offset', 'query', { type: 'integer', minimum: 0, default: 0 }, 'Items to skip.'),
-      ],
-      responses: {
-        200: json('A page of the author’s books.', object({
-          books: arrayOf(ref('BookSummary')),
-          total: { type: 'integer', example: 4 },
-          hasMore: { type: 'boolean', example: false },
-        })),
-        400: resp('ValidationError'),
-        404: json('No such author.', ref('Error'), { error: 'Author not found' }),
       },
     },
   },

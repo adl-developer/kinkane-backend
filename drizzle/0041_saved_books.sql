@@ -18,5 +18,4 @@ EXCEPTION
 END $$;
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idx_saved_books_user_id" ON "saved_books" USING btree ("user_id","created_at");--> statement-breakpoint
-CREATE UNIQUE INDEX IF NOT EXISTS "uq_saved_books_user_book" ON "saved_books" USING btree ("user_id","book_id");--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "idx_book_contributors_author_slug" ON "book_contributors" USING btree (btrim(lower(regexp_replace("person_name", '[^a-zA-Z0-9]+', '-', 'g')), '-'));
+CREATE UNIQUE INDEX IF NOT EXISTS "uq_saved_books_user_book" ON "saved_books" USING btree ("user_id","book_id");

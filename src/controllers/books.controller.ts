@@ -57,11 +57,6 @@ const listSchema = z.object({
   cursor: z.string().min(1).max(4096).optional(),
 });
 
-const facetsSchema = listSchema.pick({
-  q: true, genre: true, availability: true, productForm: true,
-  publishingStatus: true, publisher: true, shoppable: true,
-});
-
 const basketRecsSchema = z.object({
   // Comma-separated so this stays a cacheable GET. Bounded to the same ceiling
   // as a cart, because a basket cannot legitimately be larger than one.
@@ -81,18 +76,6 @@ const basketRecsSchema = z.object({
 });
 
 export const booksController = {
-  /** GET /api/v1/books/facets */
-  async facets(req: Request, res: Response): Promise<void> {
-    const parsed = facetsSchema.safeParse(req.query);
-    if (!parsed.success) {
-      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
-      return;
-    }
-
-    const facets = await booksService.facets({ ...parsed.data, limit: 1, offset: 0 });
-    res.status(200).json(facets);
-  },
-
   /** GET /api/v1/books/recommendations?bookIds=1,2,3 */
   async basketRecommendations(req: Request, res: Response): Promise<void> {
     const parsed = basketRecsSchema.safeParse(req.query);
