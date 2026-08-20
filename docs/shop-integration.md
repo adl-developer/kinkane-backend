@@ -187,6 +187,37 @@ each line into the stored cart with `POST /api/v1/cart/items`, then clear its
 local copy. **There is no server-side merge.** If this is skipped, the user's
 basket appears to empty on login.
 
+## Out of stock is a state to render, not a reason to hide
+
+A book that is out of stock **stays in every response** and is flagged rather
+than dropped. This is deliberate: supplier stock moves hourly, and a title
+vanishing from the catalogue mid-browse reads as a bug, where a visible
+"out of stock" state reads as a shop. The Figma has a design for this state —
+build it rather than filtering these books out client-side.
+
+Three places carry the signal, and they mean slightly different things:
+
+| Where | Field | Meaning |
+| --- | --- | --- |
+| `GET /books?shoppable=true` | `inStock: false` | Listed and priced, but not in stock right now. Show the card with the out-of-stock treatment; do not remove it. |
+| `POST /cart/price` | `availableQuantity` < `quantity` | Partial stock. They asked for 3, we can ship 2. Say so rather than silently reducing the stepper. |
+| `POST /cart/price` | `unavailable: true` + `unavailableReason` | Cannot be bought at all right now. `out_of_stock` is temporary; `unsuppliable`, `no_price` and `market_restricted` are not. |
+| `GET /saved-books` | `inStock`, `unavailable` | Same treatment. A saved book that has become unbuyable is kept and flagged so it never silently disappears from someone's list. |
+
+Two consequences worth designing for:
+
+- **An out-of-stock line still has a price.** `unitPriceMinor` is populated, so
+  the card renders normally — it is the buy action that changes, not the layout.
+- **Totals already exclude what cannot ship.** `subtotalMinor` and `itemCount`
+  on `POST /cart/price` count only sellable quantity, so a basket containing an
+  out-of-stock line will show a total lower than the line prices suggest. That
+  is intentional; showing a total that includes unshippable copies sets up a
+  surprise at checkout.
+
+`shoppable=true` never returns books that are permanently unsellable — no ISBN,
+no price, or a supplier code saying it cannot be supplied. Those are filtered
+out entirely. Only *temporary* unavailability surfaces as a flag.
+
 ## Errors worth handling explicitly
 
 | Code | Status | What to do |
