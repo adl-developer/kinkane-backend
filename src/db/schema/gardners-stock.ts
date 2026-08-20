@@ -53,7 +53,7 @@ export const gardnersStock = pgTable(
     shoppableIdx: index('idx_gardners_stock_shoppable')
       .on(t.isbn13)
       .where(
-        sql`${t.rrpGbp} > 0 AND (${t.reportCode} IS NULL OR upper(btrim(${t.reportCode})) NOT IN ('NYP', 'OSI', 'O/P', 'OP', 'CNC', 'R/P', 'RP', 'GXC', 'M/D', 'MD', 'POS', 'REF'))`,
+        sql`${t.rrpGbp} > 0 AND (${t.reportCode} IS NULL OR upper(btrim(${t.reportCode})) NOT IN ('NYP', 'OSI', 'O/P', 'OP', 'CNC', 'R/P', 'RP', 'POS', 'REF'))`,
       ),
   }),
 );

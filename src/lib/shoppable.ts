@@ -17,17 +17,34 @@ import { books, gardnersStock } from '../db/schema';
  * the stock number says.
  *
  * NYP (not yet published), OSI (out of stock indefinitely), O/P (out of print),
- * CNC (cancelled), R/P (reprinting), GXC (Gardners cancelled), M/D (may be
- * discontinued), POS (postponed), REF (refer to publisher).
+ * CNC (cancelled), R/P (reprinting), POS (postponed), REF (refer to publisher).
  *
- * Verify against Gardners' current code list before treating this as complete —
- * it was assembled from the codes observed in the Inventory feed, and at the
- * checkout gate an unrecognised code fails *open* (we assume it is sellable),
- * so a genuinely dead code missing here surfaces as a rejected dropship line
- * rather than as a lost sale.
+ * **GXC and M/D are deliberately absent.** They were in this list, and between
+ * them they hid roughly a third of the catalogue. The I12 specification
+ * (EDI_docs) settles it:
+ *
+ *   "Print On Demand titles (POD/MD) and Gardners Extended Catalogue titles
+ *    (GXC) are never killed as these are items that we do not carry stock."
+ *
+ * GXC is the *extended catalogue* — titles Gardners does not stock but will
+ * supply to order — and M/D is print on demand. Both are exempt from Fill/Kill
+ * precisely *because* they remain orderable. They carry `stock_qty = 0`, so
+ * they now surface as out of stock rather than unsellable, which is what they
+ * actually are. Expect longer lead times on them than on stocked titles.
+ *
+ * NYP and R/P are confirmed by that same document ("the current Report, where
+ * known, will be given. E.g. NYP or R/P"). The rest — OSI, O/P, CNC, POS, REF —
+ * are *not* in the specification and remain inferred from codes observed in the
+ * Inventory feed. None of them currently excludes a single book, so the cost of
+ * being wrong about them is nil today; confirm them against Gardners' full code
+ * list before that changes.
+ *
+ * At the checkout gate an unrecognised code fails *open* (assumed sellable), so
+ * a genuinely dead code missing here surfaces as a rejected dropship line
+ * rather than as a lost sale — the safer direction to err in.
  */
 export const UNSUPPLIABLE_REPORT_CODES = [
-  'NYP', 'OSI', 'O/P', 'OP', 'CNC', 'R/P', 'RP', 'GXC', 'M/D', 'MD', 'POS', 'REF',
+  'NYP', 'OSI', 'O/P', 'OP', 'CNC', 'R/P', 'RP', 'POS', 'REF',
 ] as const;
 
 export const UNSUPPLIABLE_REPORT_CODE_SET: ReadonlySet<string> = new Set(UNSUPPLIABLE_REPORT_CODES);
