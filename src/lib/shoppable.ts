@@ -50,6 +50,34 @@ export const UNSUPPLIABLE_REPORT_CODES = [
 export const UNSUPPLIABLE_REPORT_CODE_SET: ReadonlySet<string> = new Set(UNSUPPLIABLE_REPORT_CODES);
 
 /**
+ * Codes for titles Gardners does not stock but will supply to order.
+ *
+ * From the I12 specification: "Print On Demand titles (POD/MD) and Gardners
+ * Extended Catalogue titles (GXC) are never killed as these are items that we
+ * do not carry stock." Being exempt from Fill/Kill is precisely what makes them
+ * orderable — they are the opposite of unsuppliable.
+ *
+ * These rows carry `stock_qty = 0`, because there genuinely is no shelf. That
+ * is why they cannot be gated on stock the way a stocked title is: doing so
+ * blocks roughly 27,000 sellable books at add-to-cart.
+ *
+ * `POD` is a plausible sibling of `M/D` given the wording above, but it has not
+ * been observed in the Inventory feed and is deliberately left out — adding a
+ * code here makes titles buyable, so it is the direction to be conservative in.
+ */
+export const SUPPLY_TO_ORDER_REPORT_CODES = ['GXC', 'M/D', 'MD'] as const;
+
+export const SUPPLY_TO_ORDER_REPORT_CODE_SET: ReadonlySet<string> = new Set(
+  SUPPLY_TO_ORDER_REPORT_CODES,
+);
+
+/** True when this report code means "not stocked, but orderable". */
+export function isSupplyToOrder(reportCode: string | null | undefined): boolean {
+  if (!reportCode) return false;
+  return SUPPLY_TO_ORDER_REPORT_CODE_SET.has(reportCode.trim().toUpperCase());
+}
+
+/**
  * Restricts a catalogue query to books the e-commerce section can legitimately
  * list.
  *

@@ -242,13 +242,16 @@ export const commerceCheckoutService = {
         });
       }
 
-      if (live.stockQty < item.quantity) {
+      // orderableQuantity, not stockQty: a supply-to-order title reports zero
+      // stock and is still buyable, so clamping on the shelf figure would
+      // reduce every one of those lines to nothing.
+      if (live.orderableQuantity < item.quantity) {
         changes.push({
           bookId: item.bookId,
           title: live.title,
           kind: 'quantity_reduced',
           previousQuantity: item.quantity,
-          quantity: live.stockQty,
+          quantity: live.orderableQuantity,
         });
       }
     }
@@ -531,7 +534,7 @@ export const commerceCheckoutService = {
   async repairCart(
     cartId: number,
     items: { bookId: number; quantity: number }[],
-    buyable: Map<number, { isbn13: string; unitPriceGbpPence: number; stockQty: number }>,
+    buyable: Map<number, { isbn13: string; unitPriceGbpPence: number; orderableQuantity: number }>,
   ): Promise<void> {
     await db.transaction(async (tx) => {
       for (const item of items) {
@@ -549,7 +552,7 @@ export const commerceCheckoutService = {
           .set({
             unitPriceGbpPence: live.unitPriceGbpPence,
             priceCapturedAt: new Date(),
-            quantity: Math.max(1, Math.min(item.quantity, live.stockQty)),
+            quantity: Math.max(1, Math.min(item.quantity, live.orderableQuantity)),
             updatedAt: new Date(),
           })
           .where(and(eq(cartItems.cartId, cartId), eq(cartItems.bookId, item.bookId)));

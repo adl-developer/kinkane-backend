@@ -47,6 +47,11 @@ export interface CartLineView {
   unavailableReason: string | null;
   /** Live stock, so the client can cap the quantity stepper. */
   stockQty: number | null;
+  /**
+   * Not stocked, but orderable. Show "available to order", not an out-of-stock
+   * badge — and expect a longer lead time than a stocked title.
+   */
+  supplyToOrder: boolean;
 }
 
 export interface CartView {
@@ -89,6 +94,8 @@ export interface PricedLine {
    * revealing nothing about the shelf behind it.
    */
   availableQuantity: number;
+  /** Not stocked, but orderable. See CartLineView.supplyToOrder. */
+  supplyToOrder: boolean;
   unitPriceMinor: number | null;
   lineTotalMinor: number | null;
   /** Struck-through "was" price, or null when not on sale. */
@@ -159,7 +166,7 @@ export const cartService = {
     const lines: PricedLine[] = [...merged.entries()].map(([bookId, quantity]) => {
       const live = buyable.get(bookId);
       const reason = live ? null : (rejected.get(bookId) ?? 'not_found');
-      const availableQuantity = live ? Math.min(quantity, live.stockQty) : 0;
+      const availableQuantity = live ? Math.min(quantity, live.orderableQuantity) : 0;
 
       return {
         bookId,
@@ -169,6 +176,7 @@ export const cartService = {
         coverUrl: live?.coverUrl ?? null,
         quantity,
         availableQuantity,
+        supplyToOrder: live?.supplyToOrder ?? false,
         unitPriceMinor: live ? toPresentment(live.unitPriceGbpPence, currency) : null,
         // Priced on what can actually be supplied, not on what was asked for —
         // a total that includes two copies we cannot ship is a surprise waiting
@@ -192,7 +200,7 @@ export const cartService = {
     const subtotalGbpPence = [...merged.entries()].reduce((sum, [bookId, quantity]) => {
       const live = buyable.get(bookId);
       if (!live) return sum;
-      return sum + live.unitPriceGbpPence * Math.min(quantity, live.stockQty);
+      return sum + live.unitPriceGbpPence * Math.min(quantity, live.orderableQuantity);
     }, 0);
 
     let estimatedShippingMinor: number | null = null;
@@ -318,6 +326,7 @@ export const cartService = {
         unavailable: Boolean(reason),
         unavailableReason: reason,
         stockQty: live?.stockQty ?? null,
+        supplyToOrder: live?.supplyToOrder ?? false,
       };
     });
 
@@ -433,7 +442,7 @@ export const cartService = {
    * time the user actively touched the line.
    */
   async writeQuantity(cartId: number, bookId: number, target: number, live: BuyableBook) {
-    const ceiling = Math.min(config.commerce.cart.maxQuantityPerLine, live.stockQty);
+    const ceiling = Math.min(config.commerce.cart.maxQuantityPerLine, live.orderableQuantity);
 
     if (ceiling <= 0) {
       throw httpError('This book is out of stock', 409, 'OUT_OF_STOCK');

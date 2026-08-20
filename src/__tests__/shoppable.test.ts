@@ -71,3 +71,40 @@ describe('buildShoppableCondition', () => {
     expect(sql).not.toContain('market_restrictions');
   });
 });
+
+describe('supply-to-order report codes', () => {
+  it('never overlaps the unsuppliable list', async () => {
+    const { UNSUPPLIABLE_REPORT_CODE_SET, SUPPLY_TO_ORDER_REPORT_CODES } = await import('../lib/shoppable');
+    // A code in both lists would be simultaneously "cannot be supplied" and
+    // "supplied to order" — whichever check ran first would decide, silently.
+    for (const code of SUPPLY_TO_ORDER_REPORT_CODES) {
+      expect(UNSUPPLIABLE_REPORT_CODE_SET.has(code)).toBe(false);
+    }
+  });
+
+  it('recognises the codes Gardners documents as never killed', async () => {
+    const { isSupplyToOrder } = await import('../lib/shoppable');
+    // "Print On Demand titles (POD/MD) and Gardners Extended Catalogue titles
+    // (GXC) are never killed" — I12 specification.
+    expect(isSupplyToOrder('GXC')).toBe(true);
+    expect(isSupplyToOrder('M/D')).toBe(true);
+    expect(isSupplyToOrder('MD')).toBe(true);
+  });
+
+  it('folds case and whitespace, matching the feed', async () => {
+    const { isSupplyToOrder } = await import('../lib/shoppable');
+    expect(isSupplyToOrder(' gxc ')).toBe(true);
+    expect(isSupplyToOrder('m/d')).toBe(true);
+  });
+
+  it('treats an absent or unknown code as stocked', async () => {
+    const { isSupplyToOrder } = await import('../lib/shoppable');
+    // Erring this way keeps the stock gate on: an unknown code does not become
+    // silently orderable with no shelf behind it.
+    expect(isSupplyToOrder(null)).toBe(false);
+    expect(isSupplyToOrder(undefined)).toBe(false);
+    expect(isSupplyToOrder('')).toBe(false);
+    expect(isSupplyToOrder('NYP')).toBe(false);
+    expect(isSupplyToOrder('WAT')).toBe(false);
+  });
+});

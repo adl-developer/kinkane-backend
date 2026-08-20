@@ -24,6 +24,8 @@ export interface SavedBookView {
   unitPriceMinor: number | null;
   compareAtMinor: number | null;
   inStock: boolean;
+  /** Not stocked, but orderable — show "available to order", not out of stock. */
+  supplyToOrder: boolean;
   unavailable: boolean;
   unavailableReason: string | null;
 }
@@ -114,6 +116,7 @@ export const savedBooksService = {
               ? toPresentment(live.compareAtGbpPence, currency)
               : null,
           inStock: (live?.stockQty ?? 0) > 0,
+          supplyToOrder: live?.supplyToOrder ?? false,
           unavailable: !live,
           unavailableReason: reason,
         };

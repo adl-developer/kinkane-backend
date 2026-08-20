@@ -187,6 +187,25 @@ each line into the stored cart with `POST /api/v1/cart/items`, then clear its
 local copy. **There is no server-side merge.** If this is skipped, the user's
 basket appears to empty on login.
 
+## Three availability states, not two
+
+A book is not simply in stock or out of it. Roughly 40% of the catalogue is
+**supplied to order** — Gardners' extended catalogue and print-on-demand titles,
+which they never hold stock of but will always order in.
+
+| State | Signal | What to show |
+| --- | --- | --- |
+| In stock | `supplyToOrder: false`, stock above zero | Normal card, normal buy button |
+| **Supplied to order** | `supplyToOrder: true` | "Available to order" — buyable, **not** an out-of-stock badge. Expect a longer lead time. |
+| Out of stock | `supplyToOrder: false`, `unavailableReason: "out_of_stock"` | The out-of-stock treatment |
+
+A supply-to-order title legitimately reports `stockQty: 0`. **Do not gate the
+buy button on that number** — use `availableQuantity` on `POST /cart/price`, or
+simply the absence of `unavailable`. Showing an out-of-stock badge on these
+would mislabel a large part of the shop as unbuyable.
+
+`supplyToOrder` appears on cart lines, `POST /cart/price` lines, and saved books.
+
 ## Out of stock is a state to render, not a reason to hide
 
 A book that is out of stock **stays in every response** and is flagged rather

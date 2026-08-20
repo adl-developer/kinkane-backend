@@ -26,7 +26,7 @@ import { logger } from '../../lib/logger';
 import { normalizeCountry } from './pricing';
 // Shared with the catalogue's `shoppable` filter so browse and checkout can
 // never disagree about which report codes mean "cannot be supplied".
-import { UNSUPPLIABLE_REPORT_CODE_SET } from '../../lib/shoppable';
+import { UNSUPPLIABLE_REPORT_CODE_SET, isSupplyToOrder } from '../../lib/shoppable';
 
 export type UnbuyableReason =
   | 'not_found'
@@ -52,7 +52,25 @@ export interface BuyableBook {
    * saves nothing is a false claim, so those are dropped rather than shown.
    */
   compareAtGbpPence: number | null;
+  /**
+   * The supplier's real stock figure. Zero is normal and not a blocker for a
+   * supply-to-order title — see `supplyToOrder`. Use `orderableQuantity` for
+   * anything that caps what a customer may buy.
+   */
   stockQty: number;
+  /**
+   * Gardners does not stock this title but will supply it to order (extended
+   * catalogue, print on demand). Distinct from both "in stock" and "out of
+   * stock": it is buyable, just slower. The UI should say "available to order"
+   * rather than showing an out-of-stock badge.
+   */
+  supplyToOrder: boolean;
+  /**
+   * How many may actually be bought. Equal to `stockQty` for a stocked title;
+   * for a supply-to-order title there is no shelf to exhaust, so it is capped
+   * at the per-line maximum instead of at zero.
+   */
+  orderableQuantity: number;
 }
 
 export interface AvailabilityResult {
@@ -240,7 +258,13 @@ export const availabilityService = {
         continue;
       }
 
-      if ((row.stockQty ?? 0) <= 0) {
+      // Stock is only a gate for titles Gardners actually stocks. An extended
+      // catalogue or print-on-demand title legitimately reports zero and is
+      // still orderable; rejecting on that blocked ~27,000 sellable books.
+      const supplyToOrder = isSupplyToOrder(row.reportCode);
+      const stockQty = row.stockQty ?? 0;
+
+      if (!supplyToOrder && stockQty <= 0) {
         rejected.set(row.bookId, 'out_of_stock');
         continue;
       }
@@ -258,7 +282,9 @@ export const availabilityService = {
         coverUrl: row.coverUrl ?? null,
         unitPriceGbpPence,
         compareAtGbpPence,
-        stockQty: row.stockQty ?? 0,
+        stockQty,
+        supplyToOrder,
+        orderableQuantity: supplyToOrder ? config.commerce.cart.maxQuantityPerLine : stockQty,
       });
     }
 
