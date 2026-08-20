@@ -261,6 +261,38 @@ export interface BookDetail extends BookListItem {
   subjects: Pick<BookSubject, 'schemeIdentifier' | 'subjectCode' | 'subjectHeadingText' | 'isMainSubject'>[];
 }
 
+
+/**
+ * The predicate every discovery feed applies to the books it returns.
+ *
+ * Two things, both of which the feeds were missing:
+ *
+ *  - **Withdrawn titles are never surfaced.** `list()` has excluded them since
+ *    the browse fix, but trending, personalized and similar each build their
+ *    own query and none of them did — so a book Gardners had withdrawn could
+ *    still headline the homepage.
+ *  - **`shoppable` is opt-in per feed.** Every one of these appears in the
+ *    designs with a price and an Add button, so a feed that surfaces an
+ *    unsellable book produces a button that cannot work. Off by default, so
+ *    existing callers are unaffected.
+ */
+function buildFeedCondition(shoppable?: boolean): SQL {
+  const removed = eq(books.isRemoved, false);
+  return shoppable ? and(removed, buildShoppableCondition())! : removed;
+}
+
+/**
+ * How wide to cast the net before filtering.
+ *
+ * Roughly a fifth of the catalogue is unsellable, and these feeds fetch a
+ * bounded pool then trim — so filtering afterwards can leave a "top 10" holding
+ * three. Widening the pool when `shoppable` is on keeps the section full
+ * without changing behaviour for callers that don't ask for it.
+ */
+function feedPoolMultiplier(shoppable?: boolean): number {
+  return shoppable ? FEED_POOL_MULTIPLIER * 2 : FEED_POOL_MULTIPLIER;
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function buildSearchCondition(q: string): SQL {
@@ -1534,12 +1566,14 @@ export const booksService = {
    * also like", the shared list is filtered per viewer after the cache read
    * rather than being computed per user. Anonymous callers get the list as-is.
    */
-  async trending(limit: number, userId?: number): Promise<TrendingBookItem[]> {
+  async trending(limit: number, userId?: number, shoppable?: boolean): Promise<TrendingBookItem[]> {
     const cacheTarget = limit + FEED_EXCLUSION_HEADROOM;
     // v3: the cached value is a pool of cacheTarget items rather than exactly
     // `limit`, so per-viewer filtering has spare rows to eat. (v2 reweighted
     // scores per interaction type; v1 was the flat unweighted ranking.)
-    const cacheKey = `trending:v3:${limit}`;
+    // shoppable is part of the key: the filtered and unfiltered feeds are
+    // different lists and must not overwrite one another.
+    const cacheKey = `trending:v4:${limit}:${shoppable ? 'shop' : 'all'}`;
     const cached = await redis.get(cacheKey);
     if (cached) {
       return applyUserExclusions(JSON.parse(cached) as TrendingBookItem[], userId, limit);
@@ -1548,7 +1582,7 @@ export const booksService = {
     const since = new Date();
     since.setDate(since.getDate() - TRENDING_WINDOW_DAYS);
 
-    const poolSize = Math.min(cacheTarget * FEED_POOL_MULTIPLIER, FEED_POOL_MAX);
+    const poolSize = Math.min(cacheTarget * feedPoolMultiplier(shoppable), FEED_POOL_MAX);
 
     // Aggregate interaction signals over the last 30 days into a ranked list of book
     // IDs. Weighting and time decay both live in trendingScoreSql — see
@@ -1583,6 +1617,7 @@ export const booksService = {
           and(
             sql`${books.id} NOT IN (${sql.join(exclude.map((id) => sql`${id}`), sql`, `)})`,
             sql`${books.publicationDate} IS NOT NULL`,
+            buildFeedCondition(shoppable),
           ),
         )
         .orderBy(desc(books.publicationDate))
@@ -1610,7 +1645,7 @@ export const booksService = {
           availabilityCode: books.availabilityCode,
         })
         .from(books)
-        .where(inArray(books.id, bookIds)),
+        .where(and(inArray(books.id, bookIds), buildFeedCondition(shoppable))),
 
       db
         .select({
@@ -1670,8 +1705,8 @@ export const booksService = {
     return applyUserExclusions(pool, userId, limit);
   },
 
-  async personalized(userId: number, limit: number): Promise<TrendingBookItem[]> {
-    const cacheKey = `personalized:v1:${userId}:${limit}`;
+  async personalized(userId: number, limit: number, shoppable?: boolean): Promise<TrendingBookItem[]> {
+    const cacheKey = `personalized:v2:${userId}:${limit}:${shoppable ? 'shop' : 'all'}`;
     const cached = await redis.get(cacheKey);
     if (cached) return JSON.parse(cached) as TrendingBookItem[];
 
@@ -1701,7 +1736,7 @@ export const booksService = {
       buildWorkExclusionCondition(exclusions.works),
     );
 
-    const poolSize = Math.min(limit * FEED_POOL_MULTIPLIER, FEED_POOL_MAX);
+    const poolSize = Math.min(limit * feedPoolMultiplier(shoppable), FEED_POOL_MAX);
 
     // SET LOCAL scopes the raised ef_search to just this query, inside a
     // transaction — a bare SET would stick to the pooled connection and leak
@@ -1811,6 +1846,7 @@ export const booksService = {
     bookIds: number[],
     limit: number,
     userId?: number,
+    shoppable?: boolean,
   ): Promise<BookListItem[]> {
     if (bookIds.length === 0) return [];
 
@@ -1832,7 +1868,7 @@ export const booksService = {
     for (let i = 0; i < dimensions; i++) centroid[i] /= vectors.length;
 
     const vectorLiteral = `[${centroid.join(',')}]`;
-    const poolSize = Math.min((limit + FEED_EXCLUSION_HEADROOM) * FEED_POOL_MULTIPLIER, FEED_POOL_MAX);
+    const poolSize = Math.min((limit + FEED_EXCLUSION_HEADROOM) * feedPoolMultiplier(shoppable), FEED_POOL_MAX);
 
     // Ids only here, then hydrated through listByIds — the same serializer every
     // other book list uses, rather than a second one that drifts from it.
@@ -1844,7 +1880,7 @@ export const booksService = {
         .where(
           and(
             sql`${books.embedding} IS NOT NULL`,
-            eq(books.isRemoved, false),
+            buildFeedCondition(shoppable),
             // Never recommend what is already in the basket.
             notInArray(books.id, bookIds),
           ),
@@ -1871,12 +1907,12 @@ export const booksService = {
     return filterExcludedWorks(ordered, exclusions).slice(0, limit);
   },
 
-  async similar(bookId: number, limit: number, userId?: number): Promise<TrendingBookItem[]> {
+  async similar(bookId: number, limit: number, userId?: number, shoppable?: boolean): Promise<TrendingBookItem[]> {
     // Over-fetch target, so per-user filtering below has spare rows to eat.
     const cacheTarget = limit + FEED_EXCLUSION_HEADROOM;
     // v2: the cached value is now a pool of cacheTarget items rather than
     // exactly `limit`, so old v1 entries must not be read back.
-    const cacheKey = `similar:v2:${bookId}:${limit}`;
+    const cacheKey = `similar:v3:${bookId}:${limit}:${shoppable ? 'shop' : 'all'}`;
     const cached = await redis.get(cacheKey);
     if (cached) {
       return applyUserExclusions(JSON.parse(cached) as TrendingBookItem[], userId, limit);
@@ -1893,7 +1929,7 @@ export const booksService = {
 
     const vectorLiteral = `[${target.embedding.join(',')}]`;
 
-    const poolSize = Math.min(cacheTarget * FEED_POOL_MULTIPLIER, FEED_POOL_MAX);
+    const poolSize = Math.min(cacheTarget * feedPoolMultiplier(shoppable), FEED_POOL_MAX);
 
     // SET LOCAL scopes the raised ef_search to just this query, inside a
     // transaction — a bare SET would stick to the pooled connection and leak
@@ -1917,6 +1953,7 @@ export const booksService = {
           and(
             sql`(${books.embedding} <=> ${vectorLiteral}::vector) < ${PERSONALIZED_SIMILARITY_THRESHOLD}`,
             notInArray(books.id, [bookId]),
+            buildFeedCondition(shoppable),
           ),
         )
         .orderBy(sql`${books.embedding} <=> ${vectorLiteral}::vector`)

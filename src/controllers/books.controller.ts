@@ -25,6 +25,9 @@ const suggestionsSchema = z.object({
 
 const similarSchema = z.object({
   limit: z.coerce.number().int().min(1).max(20).default(10),
+  // See the note on shoppable in listSchema — a PDP's "you may also like"
+  // carries Add buttons, so the shop should pass true.
+  shoppable: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
 });
 
 const listSchema = z.object({
@@ -73,6 +76,7 @@ const basketRecsSchema = z.object({
     return [...new Set(ids)];
   }),
   limit: z.coerce.number().int().min(1).max(20).default(8),
+  shoppable: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
 });
 
 export const booksController = {
@@ -91,6 +95,7 @@ export const booksController = {
       parsed.data.bookIds,
       parsed.data.limit,
       userId,
+      parsed.data.shoppable,
     );
 
     res.status(200).json({ books });
@@ -234,7 +239,7 @@ export const booksController = {
       // have already rejected; when there isn't, everyone sees the same
       // similarity ranking.
       const userId = (req as AuthenticatedRequest).user?.id;
-      const results = await booksService.similar(id, parsed.data.limit, userId);
+      const results = await booksService.similar(id, parsed.data.limit, userId, parsed.data.shoppable);
       res.status(200).json({ books: results });
     } catch (err: unknown) {
       const e = err as Error;

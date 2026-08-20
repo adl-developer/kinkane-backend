@@ -138,6 +138,8 @@ export const cataloguePaths = {
         bookIdParam,
         param('limit', 'query', { type: 'integer', minimum: 1, maximum: 20, default: 10 },
           'How many to return (1–20).'),
+        param('shoppable', 'query', { type: 'string', enum: ['true', 'false'], default: 'false' },
+          'Restrict to books the shop can sell. **Pass `true` from any surface with an Add button** — otherwise this feed can offer a book the cart will refuse. Off by default so existing callers are unaffected.'),
       ],
       responses: {
         200: json('Similar books, most similar first. May be empty.',

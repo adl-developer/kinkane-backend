@@ -12,6 +12,7 @@
 
 ### Bug Fixes
 
+* let customers actually buy the titles Gardners supplies to order ([bb45a13](https://adl.github.com/adl-developer/kinkane-backend/commit/bb45a136be83b4b9ae51fe2a1bb3b6aa37896456)) — [details](changelog/2026-08-20-client-held-guest-basket.md)
 * stop hiding a third of the catalogue that Gardners can actually supply ([05f458d](https://adl.github.com/adl-developer/kinkane-backend/commit/05f458da1f1202a707a8d66f23080098cb06bfd3)) — [details](changelog/2026-08-20-client-held-guest-basket.md)
 * get the wholesaler feed importing again, and stop asking people to sign in for recommendations ([611924e](https://adl.github.com/adl-developer/kinkane-backend/commit/611924e973647ea45336d74e779b15735ad58122)) — [details](changelog/2026-08-20-client-held-guest-basket.md)
 

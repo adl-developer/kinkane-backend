@@ -187,6 +187,28 @@ each line into the stored cart with `POST /api/v1/cart/items`, then clear its
 local copy. **There is no server-side merge.** If this is skipped, the user's
 basket appears to empty on login.
 
+## `shoppable` applies to the feeds too, and is off by default
+
+Every discovery feed takes the same `shoppable=true` flag as `GET /books`:
+
+| Endpoint | Where it appears |
+| --- | --- |
+| `GET /explore/trending` | Homepage "Trending Now" |
+| `GET /explore/personalized` | Personalised recommendations |
+| `GET /books/:id/similar` | PDP "You may also like" |
+| `GET /books/recommendations` | Cart "You may also like" |
+
+**Pass `true` from any surface that renders an Add button.** These feeds default
+to `false` for backward compatibility, so a client that forgets will show books
+the cart then refuses — a button that cannot work.
+
+`GET /explore/bestsellers` is the exception: it ranks by what people actually
+bought, and silently dropping an unsellable title would leave a "top 10" showing
+seven. Those results are hydrated with the same availability fields, so render
+the state rather than removing the row.
+
+Withdrawn titles are now excluded from every feed regardless of the flag.
+
 ## Three availability states, not two
 
 A book is not simply in stock or out of it. Roughly 40% of the catalogue is
