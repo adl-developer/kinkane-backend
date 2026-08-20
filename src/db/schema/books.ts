@@ -7,6 +7,7 @@
  * preDeployCommand, and onix_ingester's own removed drizzle.config.ts for
  * the actual convention.)
  */
+import { sql } from 'drizzle-orm';
 import {
   pgTable,
   serial,
@@ -125,6 +126,20 @@ export const bookContributors = pgTable(
   },
   (t) => ({
     bookIdIdx: index('idx_book_contributors_book_id').on(t.bookId),
+    /**
+     * Author pages are addressed by slug (`tayari-jones`), and there is no
+     * authors table to key off — an "author" here is a distinct person_name
+     * across 88k+ contributor rows. Without this, resolving a slug means
+     * computing it for every row in the table on every page view.
+     *
+     * lower(), regexp_replace() and btrim() are all IMMUTABLE, which is what
+     * makes the expression legal in an index. It must stay character-for-
+     * character identical to authorSlug() in lib/author-slug.ts — if the two
+     * drift, lookups silently stop using the index and start seq-scanning.
+     */
+    authorSlugIdx: index('idx_book_contributors_author_slug').on(
+      sql`btrim(lower(regexp_replace(${t.personName}, '[^a-zA-Z0-9]+', '-', 'g')), '-')`,
+    ),
   }),
 );
 

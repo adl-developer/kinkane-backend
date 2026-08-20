@@ -5,6 +5,7 @@ export * from './payments';
 export * from './books';
 export * from './book-excerpts';
 export * from './book-promotions';
+export * from './saved-books';
 export * from './ingestion';
 export * from './recommendations';
 export * from './onboarding';

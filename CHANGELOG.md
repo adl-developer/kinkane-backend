@@ -8,6 +8,10 @@
 * let people buy without an account, and give every order a trackable reference ([e7e97b6](https://adl.github.com/adl-developer/kinkane-backend/commit/e7e97b6a9f1052700645bf349238d7242bcefb34)) — [details](changelog/2026-08-20-client-held-guest-basket.md)
 * hide books the shop cannot sell, and stop withdrawn titles appearing in search ([27097a3](https://adl.github.com/adl-developer/kinkane-backend/commit/27097a3ff7f2a20f3baabf04c49273369e53ff05)) — [details](changelog/2026-08-20-client-held-guest-basket.md)
 
+### Bug Fixes
+
+* get the wholesaler feed importing again, and stop asking people to sign in for recommendations ([611924e](https://adl.github.com/adl-developer/kinkane-backend/commit/611924e973647ea45336d74e779b15735ad58122)) — [details](changelog/2026-08-20-client-held-guest-basket.md)
+
 
 ## 2026-08-14
 

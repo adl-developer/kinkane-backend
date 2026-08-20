@@ -148,6 +148,63 @@ export const cataloguePaths = {
     },
   },
 
+  '/api/v1/authors/{slug}': {
+    get: {
+      tags: [TAG],
+      ...publicEndpoint,
+      summary: 'One author',
+      description: [
+        'An author page, addressed by the slug of their name — `tayari-jones`, `n-k-jemisin`.',
+        '',
+        '**There is no authors table.** An author here is a distinct contributor name, so the slug *is* the identity. Build it from the displayed name by lowercasing, replacing every run of non-alphanumeric characters with a single hyphen, and trimming hyphens from both ends. Accents count as separators (`Adichié` → `adichi`), because the database index that resolves this cannot fold them.',
+        '',
+        'Scoped to primary authors (ONIX role A01) — an illustrator or translator does not get a page from that contribution. Two different people who share a name share one page; the catalogue holds nothing that could tell them apart.',
+      ].join('\n'),
+      parameters: [
+        param('slug', 'path', { type: 'string', maxLength: 200 }, 'Slugified author name.',
+          { example: 'tayari-jones' }),
+      ],
+      responses: {
+        200: json('The author.', object({
+          slug: { type: 'string', example: 'tayari-jones' },
+          name: {
+            type: 'string',
+            description: 'The prevailing spelling, when several map to one slug.',
+            example: 'Tayari Jones',
+          },
+          bookCount: { type: 'integer', example: 4 },
+        })),
+        400: json('Malformed slug.', ref('Error'), { error: 'Invalid author slug' }),
+        404: json('No such author, or every one of their titles has been withdrawn.', ref('Error'),
+          { error: 'Author not found' }),
+      },
+    },
+  },
+
+  '/api/v1/authors/{slug}/books': {
+    get: {
+      tags: [TAG],
+      ...publicEndpoint,
+      summary: 'That author’s books',
+      description: 'Newest first, undated titles last. Same book shape as every other list in the API.',
+      parameters: [
+        param('slug', 'path', { type: 'string', maxLength: 200 }, 'Slugified author name.',
+          { example: 'tayari-jones' }),
+        param('limit', 'query', { type: 'integer', minimum: 1, maximum: 50, default: 20 }, 'Items per page.'),
+        param('offset', 'query', { type: 'integer', minimum: 0, default: 0 }, 'Items to skip.'),
+      ],
+      responses: {
+        200: json('A page of the author’s books.', object({
+          books: arrayOf(ref('BookSummary')),
+          total: { type: 'integer', example: 4 },
+          hasMore: { type: 'boolean', example: false },
+        })),
+        400: resp('ValidationError'),
+        404: json('No such author.', ref('Error'), { error: 'Author not found' }),
+      },
+    },
+  },
+
   '/api/v1/authors/search': {
     get: {
       tags: [TAG],

@@ -23,6 +23,7 @@ import referralsRoutes from './referrals.routes';
 import paymentsRoutes from './payments.routes';
 import cartRoutes from './cart.routes';
 import ordersRoutes from './orders.routes';
+import savedBooksRoutes from './saved-books.routes';
 
 const router = Router();
 
@@ -61,6 +62,8 @@ v1.use('/payments', paymentsRoutes);
 // buying is open to every signed-up user.
 v1.use('/cart', cartRoutes);
 v1.use('/orders', ordersRoutes);
+// The shop's purchase wishlist. requireAuth only — never requirePlus.
+v1.use('/saved-books', savedBooksRoutes);
 v1.use('/unsubscribe', unsubscribeRoutes);
 
 router.use('/v1', v1);

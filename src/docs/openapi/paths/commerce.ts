@@ -280,6 +280,84 @@ export const commercePaths = {
 
   // ── Orders ─────────────────────────────────────────────────────────────────
 
+  '/api/v1/saved-books': {
+    get: {
+      tags: [TAG],
+      summary: 'The purchase wishlist',
+      description: [
+        '"Saved Books" — titles the customer marked to buy later. **Not the same as the reading list** in `/user-books`, which is about books they read; this is about books they intend to buy.',
+        '',
+        'Newest first, and **priced live through the same gate that charges at checkout**, so a saved book shows the price it will actually cost rather than the price it cost when saved.',
+        '',
+        'A title that has since become unbuyable is **kept and flagged** (`unavailable` with a reason), never dropped — someone who saved a book deserves to be told it is gone rather than watching it silently vanish.',
+        '',
+        'Requires a signed-in user but **not a subscription**. Nothing is stored for a guest: keep saved books on the device and replay them here after sign-in, exactly as with the basket.',
+      ].join('\n'),
+      parameters: [
+        param('limit', 'query', { type: 'integer', minimum: 1, maximum: 50, default: 20 }, 'Items per page.'),
+        param('offset', 'query', { type: 'integer', minimum: 0, default: 0 }, 'Items to skip.'),
+        currencyParam,
+      ],
+      responses: {
+        200: json('The wishlist.', object({
+          books: arrayOf(object({
+            bookId: { type: 'integer', example: 48213 },
+            isbn13: { type: 'string', nullable: true, example: '9780241988268' },
+            title: { type: 'string', example: 'Girl, Woman, Other' },
+            contributor: { type: 'string', nullable: true, example: 'Bernardine Evaristo' },
+            coverUrl: { type: 'string', format: 'uri', nullable: true },
+            savedAt: { type: 'string', format: 'date-time', example: '2026-08-01T12:00:00.000Z' },
+            unitPriceMinor: {
+              type: 'integer', nullable: true,
+              description: 'Null when the book can no longer be bought.',
+              example: 1299,
+            },
+            compareAtMinor: {
+              type: 'integer', nullable: true,
+              description: 'Marked down from this. Null means not on sale.',
+              example: null,
+            },
+            inStock: { type: 'boolean', example: true },
+            unavailable: { type: 'boolean', example: false },
+            unavailableReason: { type: 'string', nullable: true, example: null },
+          })),
+          total: { type: 'integer', example: 3 },
+          hasMore: { type: 'boolean', example: false },
+        })),
+        400: resp('ValidationError'),
+        ...authErrors,
+      },
+    },
+
+    post: {
+      tags: [TAG],
+      summary: 'Save a book',
+      description: 'Idempotent — saving the same book twice is the same as saving it once, so a double tap on the heart cannot error.',
+      requestBody: body(object({ bookId: { type: 'integer', example: 48213 } }, ['bookId'])),
+      responses: {
+        200: json('Saved.', object({ saved: { type: 'boolean', example: true } })),
+        400: resp('ValidationError'),
+        404: json('No such book, or it has been withdrawn.', ref('Error'), { error: 'Book not found' }),
+        ...authErrors,
+      },
+    },
+  },
+
+  '/api/v1/saved-books/{bookId}': {
+    delete: {
+      tags: [TAG],
+      summary: 'Remove a saved book',
+      description: 'Also idempotent: removing something that was not saved is a success, and `removed` reports which it was.',
+      parameters: [bookIdParam],
+      responses: {
+        200: json('Removed, or was not there.',
+          object({ removed: { type: 'boolean', example: true } })),
+        400: resp('ValidationError'),
+        ...authErrors,
+      },
+    },
+  },
+
   '/api/v1/orders/lookup': {
     post: {
       tags: [ORDERS],

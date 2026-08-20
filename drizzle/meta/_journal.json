@@ -288,6 +288,13 @@
       "when": 1787239903441,
       "tag": "0040_ingestion_chunk_data_key",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1787253957199,
+      "tag": "0041_saved_books_and_author_slug",
+      "breakpoints": true
     }
   ]
 }

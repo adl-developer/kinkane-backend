@@ -233,3 +233,22 @@ basket appears to empty on login.
 | `POST` | `/api/v1/orders/lookup` | none |
 | `POST` | `/api/v1/orders/claim` | required |
 | `GET` | `/api/v1/books?shoppable=true` | none |
+| `GET` | `/api/v1/books/:id/similar` | optional |
+| `GET` | `/api/v1/saved-books` | required |
+| `POST` | `/api/v1/saved-books` | required |
+| `DELETE` | `/api/v1/saved-books/:bookId` | required |
+| `GET` | `/api/v1/authors/:slug` | none |
+| `GET` | `/api/v1/authors/:slug/books` | none |
+
+### Saved Books follows the same rule as the basket
+
+Nothing is stored for a signed-out visitor. Keep saved books on the device and
+replay them into `POST /api/v1/saved-books` after sign-in, then clear the local
+copy — exactly as with the basket. There is no server-side merge.
+
+### Author links
+
+There is no authors table, so the slug is the identity. Build it from the
+displayed name: lowercase, every run of non-alphanumeric characters becomes one
+hyphen, then trim hyphens from both ends. `Tayari Jones` → `tayari-jones`,
+`N. K. Jemisin` → `n-k-jemisin`. Accents count as separators.
