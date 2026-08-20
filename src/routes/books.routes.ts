@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { booksController } from '../controllers/books.controller';
-import { optionalAuth, requireAuth } from '../middleware/auth.middleware';
+import { optionalAuth } from '../middleware/auth.middleware';
 
 const router = Router();
 
@@ -67,8 +67,13 @@ router.get('/:id', optionalAuth, booksController.getById);
  * GET /books/:id/similar?limit=10
  * Returns books ranked by cosine similarity to the given book's embedding
  * ("You May Also Like"). Excludes the book itself. Empty list if the book
- * has no embedding yet. Requires authentication.
+ * has no embedding yet.
+ *
+ * Public — no auth required, because the product page it appears on is public
+ * and a shop cannot ask someone to sign in before it will recommend anything.
+ * A valid access token still improves it: books the caller has already
+ * rejected are filtered out.
  */
-router.get('/:id/similar', requireAuth, booksController.similar);
+router.get('/:id/similar', optionalAuth, booksController.similar);
 
 export default router;

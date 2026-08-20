@@ -130,9 +130,10 @@ export const cataloguePaths = {
   '/api/v1/books/{id}/similar': {
     get: {
       tags: [TAG],
+      ...publicEndpoint,
       summary: 'Books similar to this one ("You may also like")',
       description:
-        'Ranks the catalogue by cosine similarity to this book’s embedding, excluding the book itself and anything the caller has swiped away.\n\nReturns an **empty list, not an error**, when the book has no embedding yet — newly ingested titles are embedded asynchronously. Treat empty as "hide the section".',
+        'Ranks the catalogue by cosine similarity to this book’s embedding, excluding the book itself.\n\n**Public** — the product page this appears on does not require an account. Sending a valid token improves it rather than enabling it: books the caller has already swiped away are filtered out.\n\nReturns an **empty list, not an error**, when the book has no embedding yet — newly ingested titles are embedded asynchronously. Treat empty as "hide the section".',
       parameters: [
         bookIdParam,
         param('limit', 'query', { type: 'integer', minimum: 1, maximum: 20, default: 10 },
@@ -143,7 +144,6 @@ export const cataloguePaths = {
           object({ books: arrayOf(ref('BookSummary')) })),
         400: resp('ValidationError'),
         404: json('No book with that id.', ref('Error'), { error: 'Book not found' }),
-        ...authErrors,
       },
     },
   },

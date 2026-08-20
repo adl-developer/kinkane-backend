@@ -190,10 +190,12 @@ export const booksController = {
         return;
       }
 
-      // Route is behind requireAuth, so the viewer is always known — passed in
-      // so books they've rejected are filtered out of the shelf.
-      const { user } = req as AuthenticatedRequest;
-      const results = await booksService.similar(id, parsed.data.limit, user.id);
+      // Optional-auth: the product page this feeds is public, so there may be
+      // no viewer at all. When there is one, their id filters out books they
+      // have already rejected; when there isn't, everyone sees the same
+      // similarity ranking.
+      const userId = (req as AuthenticatedRequest).user?.id;
+      const results = await booksService.similar(id, parsed.data.limit, userId);
       res.status(200).json({ books: results });
     } catch (err: unknown) {
       const e = err as Error;
