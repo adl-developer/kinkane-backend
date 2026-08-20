@@ -139,6 +139,12 @@ const bookSchemas = {
       publicationDate: { type: 'string', format: 'date', nullable: true, example: '2019-05-02' },
       contributors: { type: 'array', items: { $ref: '#/components/schemas/Contributor' } },
       genres: { type: 'array', items: { $ref: '#/components/schemas/Genre' } },
+      inStock: {
+        type: 'boolean',
+        example: true,
+        description:
+          'Present only on `GET /books?shoppable=true`. Whether the supplier currently has stock. `false` means list it with an out-of-stock badge, not hide it. Absent on every other endpoint — do not treat a missing value as out of stock.',
+      },
     },
   },
 
@@ -384,6 +390,13 @@ const commerceSchemas = {
         example: 1299,
       },
       lineTotalMinor: { type: 'integer', example: 2598 },
+      compareAtMinor: {
+        type: 'integer',
+        nullable: true,
+        description:
+          'The price this line is marked down **from**. Null means not on sale — render a struck-through price only when this is present. Never lower than `unitPriceMinor`.',
+        example: null,
+      },
       stockQty: {
         type: 'integer',
         nullable: true,
@@ -437,17 +450,103 @@ const commerceSchemas = {
     },
   },
 
+  PricedLine: {
+    type: 'object',
+    description:
+      'One line of a client-held basket, priced by the server. Everything here is computed from our own data — prices sent in the request are ignored.',
+    properties: {
+      bookId: { type: 'integer', example: 48213 },
+      isbn13: { type: 'string', nullable: true, example: '9780241988268' },
+      title: { type: 'string', nullable: true, example: 'Girl, Woman, Other' },
+      contributor: { type: 'string', nullable: true, example: 'Bernardine Evaristo' },
+      coverUrl: { type: 'string', format: 'uri', nullable: true },
+      quantity: { type: 'integer', description: 'What was asked for.', example: 3 },
+      availableQuantity: {
+        type: 'integer',
+        description:
+          'How many can actually be supplied, capped at `quantity`. Lower than `quantity` means partial stock — show "only N available" and adjust the stepper. This is **not** the supplier stock level and never exceeds what was requested.',
+        example: 2,
+      },
+      unitPriceMinor: { type: 'integer', nullable: true, example: 1299 },
+      lineTotalMinor: {
+        type: 'integer', nullable: true,
+        description: 'Priced on `availableQuantity`, not `quantity`, so the total never includes copies we cannot ship.',
+        example: 2598,
+      },
+      compareAtMinor: {
+        type: 'integer', nullable: true,
+        description: 'Marked down from this. Null means not on sale.',
+        example: null,
+      },
+      unavailable: { type: 'boolean', example: false },
+      unavailableReason: {
+        type: 'string', nullable: true,
+        enum: ['not_found', 'no_price', 'out_of_stock', 'unsuppliable', 'market_restricted', null],
+        example: null,
+      },
+    },
+  },
+
+  PricedBasket: {
+    type: 'object',
+    description:
+      'A client-held basket priced by the server. Nothing is stored — this is a pure read.',
+    properties: {
+      currency: { type: 'string', example: 'GBP' },
+      lines: { type: 'array', items: { $ref: '#/components/schemas/PricedLine' } },
+      subtotalMinor: { type: 'integer', description: 'Sellable lines only.', example: 2598 },
+      estimatedShippingMinor: {
+        type: 'integer', nullable: true,
+        description: 'Indicative. Null when the country is unknown — the binding figure is quoted at checkout.',
+        example: 399,
+      },
+      totalMinor: { type: 'integer', example: 2997 },
+      itemCount: { type: 'integer', example: 2 },
+      hasIssues: {
+        type: 'boolean',
+        description: 'Some line is unavailable or short on stock. Surface it before checkout.',
+        example: false,
+      },
+    },
+  },
+
   Order: {
     type: 'object',
     properties: {
       id: { type: 'integer', example: 1042 },
+      reference: {
+        type: 'string',
+        description:
+          'The customer-facing order identity — this is what to print on receipts and quote in support. Random, not sequential. **It is an identifier, not a credential**: reading a guest order also requires the access token from checkout.',
+        example: 'ORD-7K2M9QX4',
+      },
       status: {
         type: 'string',
-        enum: ['pending', 'paid', 'submitted', 'shipped', 'cancelled', 'refunded'],
+        enum: [
+          'pending_payment', 'payment_failed', 'expired', 'paid',
+          'submitted_to_supplier', 'acknowledged', 'supplier_rejected',
+          'dispatched', 'delivered', 'refunded', 'cancelled',
+        ],
         description:
-          '`pending` is an unpaid checkout; `submitted` means it reached the wholesaler. `GET /orders` never lists orders that were abandoned before payment.',
+          'The precise internal state. Prefer `statusBucket` for UI — it is stable, while new values may be added here. `GET /orders` never lists orders abandoned before payment.',
         example: 'paid',
       },
+      statusBucket: {
+        type: 'string',
+        enum: ['pending', 'in_progress', 'delivered', 'closed'],
+        description:
+          'The status collapsed for display, and what the order filter tabs map to. `in_progress` covers everything from payment to dispatch; `closed` covers refunded, cancelled and supplier-rejected. Bucket on this rather than on `status`.',
+        example: 'in_progress',
+      },
+      carrier: { type: 'string', nullable: true, example: 'Royal Mail' },
+      trackingNumber: { type: 'string', nullable: true, example: 'AB123456789GB' },
+      trackingUrl: {
+        type: 'string', format: 'uri', nullable: true,
+        description: 'Ready-made link for a "Track parcel" button. Null until the parcel ships — all four tracking fields stay null while the order is being prepared, which is normal, not an error.',
+        example: null,
+      },
+      dispatchedAt: { type: 'string', format: 'date-time', nullable: true, example: null },
+      deliveredAt: { type: 'string', format: 'date-time', nullable: true, example: null },
       currency: { type: 'string', example: 'USD' },
       subtotalMinor: { type: 'integer', example: 2598 },
       shippingMinor: { type: 'integer', example: 899 },
