@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-08-20
+
+### Features
+
+* hide books the shop cannot sell, and stop withdrawn titles appearing in search ([27097a3](https://adl.github.com/adl-developer/kinkane-backend/commit/27097a3ff7f2a20f3baabf04c49273369e53ff05)) — [details](changelog/2026-08-20-client-held-guest-basket.md)
+
+
 ## 2026-08-14
 
 ### Features

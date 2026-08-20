@@ -24,8 +24,35 @@ import { logger } from '../../lib/logger';
 import { checkoutService as subscriptionCheckoutService } from '../subscriptions/checkout.service';
 import { paymentsService } from '../payments.service';
 import { availabilityService, type UnbuyableReason } from './availability.service';
+import type { RequestedLine } from './cart.service';
+import {
+  generateAccessToken,
+  generateOrderReference,
+  hashToken,
+} from '../../lib/order-identity';
 import { isDeliverableCountry } from './gardners-countries';
 import { quoteOrder, resolveCurrency, normalizeCountry, toPresentment } from './pricing';
+
+/**
+ * The address as our own checkout form collects it.
+ *
+ * When supplied, this — not Stripe — is the shipping address of record, and
+ * `countryCode` *is* the destination the order is priced against, so the
+ * mismatch between "the country we quoted" and "the country they typed" cannot
+ * arise: there is only one country and it came from this object.
+ *
+ * When omitted, the older flow still applies: the caller names a country,
+ * Stripe collects the address, and its collection is locked to that country.
+ */
+export interface ShippingAddressInput {
+  name: string;
+  line1: string;
+  line2?: string | null;
+  city: string;
+  region?: string | null;
+  postcode: string;
+  countryCode: string;
+}
 
 export interface CheckoutChange {
   bookId: number;
@@ -51,6 +78,14 @@ export interface CheckoutResult {
   paymentReference: string;
   currency: string;
   totalMinor: number;
+  /** Customer-facing order identity, e.g. `ORD-7K2M9QX4`. Safe to display. */
+  reference: string;
+  /**
+   * Bearer credential for tracking and claiming this order without an account.
+   * Returned in the clear here and nowhere else, ever — only its hash is
+   * stored. Treat it like a password: never log it, never put it in a URL.
+   */
+  accessToken: string;
 }
 
 function httpError(message: string, statusCode: number, code?: string, extra?: object): Error {
@@ -67,12 +102,37 @@ export const commerceCheckoutService = {
    * to rebuild the basket.
    */
   async start(
-    userId: number,
-    options: { destinationCountry: string; currency?: string | null },
+    /** Null for a guest, whose basket arrives in `lines` instead. */
+    userId: number | null,
+    options: {
+      destinationCountry: string;
+      currency?: string | null;
+      address?: ShippingAddressInput | null;
+      /**
+       * Required for a guest — there is no account to read an email from, and
+       * an order with no way to reach the buyer is not an order. Ignored for a
+       * signed-in buyer, whose account email is authoritative: letting a
+       * request name its own contact address would turn checkout into a way to
+       * send someone else's receipt wherever you liked.
+       */
+      contactEmail?: string | null;
+      /**
+       * The guest's basket, straight from the request body. Required when
+       * `userId` is null and ignored otherwise — a signed-in buyer checks out
+       * the cart we hold, so accepting lines for them would let a request buy
+       * something that was never in their basket.
+       *
+       * Only book ids and quantities are read. Every price is computed here.
+       */
+      lines?: RequestedLine[] | null;
+    },
   ): Promise<CheckoutResult> {
     assertStripeConfigured();
 
-    const destinationCountry = normalizeCountry(options.destinationCountry);
+    // The address, when present, is the single source of the destination.
+    const destinationCountry = normalizeCountry(
+      options.address?.countryCode ?? options.destinationCountry,
+    );
     if (!destinationCountry) {
       throw httpError('A valid destination country is required', 400, 'INVALID_COUNTRY');
     }
@@ -95,17 +155,53 @@ export const commerceCheckoutService = {
       );
     }
 
-    const [cart] = await db
-      .select()
-      .from(carts)
-      .where(eq(carts.userId, userId))
-      .limit(1);
+    // Two sources, one shape. A signed-in buyer checks out the cart we store;
+    // a guest checks out the basket their client has been holding. From here
+    // down the flow is identical, and in both cases every price below is read
+    // from our own data rather than from anything the caller sent.
+    let cartId: number | null = null;
+    let items: { bookId: number; quantity: number; unitPriceGbpPence: number }[];
 
-    if (!cart || cart.status !== 'active') {
-      throw httpError('Your cart is empty', 400, 'CART_EMPTY');
+    if (userId !== null) {
+      const [cart] = await db
+        .select()
+        .from(carts)
+        .where(and(eq(carts.userId, userId), eq(carts.status, 'active')))
+        .limit(1);
+
+      if (!cart) throw httpError('Your cart is empty', 400, 'CART_EMPTY');
+
+      cartId = cart.id;
+      items = await db.select().from(cartItems).where(eq(cartItems.cartId, cart.id));
+    } else {
+      // Merge duplicates before the caps apply, so two lines of 8 cannot
+      // smuggle 16 past a per-line limit of 10.
+      const merged = new Map<number, number>();
+      for (const line of options.lines ?? []) {
+        const total = (merged.get(line.bookId) ?? 0) + line.quantity;
+        merged.set(line.bookId, Math.min(total, config.commerce.cart.maxQuantityPerLine));
+      }
+
+      if (merged.size > config.commerce.cart.maxItems) {
+        throw httpError(
+          `A basket can hold at most ${config.commerce.cart.maxItems} different titles`,
+          400,
+          'CART_TOO_LARGE',
+        );
+      }
+
+      items = [...merged.entries()].map(([bookId, quantity]) => ({
+        bookId,
+        quantity,
+        // No captured price exists for a basket we never stored, so there is
+        // nothing to have "changed". Seeding this with the live price below
+        // would be a lie; using the live price as its own baseline simply means
+        // a guest is never told a price moved, which is correct — they were
+        // never quoted one by us.
+        unitPriceGbpPence: -1,
+      }));
     }
 
-    const items = await db.select().from(cartItems).where(eq(cartItems.cartId, cart.id));
     if (items.length === 0) {
       throw httpError('Your cart is empty', 400, 'CART_EMPTY');
     }
@@ -136,7 +232,7 @@ export const commerceCheckoutService = {
         continue;
       }
 
-      if (live.unitPriceGbpPence !== item.unitPriceGbpPence) {
+      if (item.unitPriceGbpPence >= 0 && live.unitPriceGbpPence !== item.unitPriceGbpPence) {
         changes.push({
           bookId: item.bookId,
           title: live.title,
@@ -158,7 +254,9 @@ export const commerceCheckoutService = {
     }
 
     if (changes.length > 0) {
-      await this.repairCart(cart.id, items, buyable);
+      // Only a stored cart can be repaired. A guest's basket lives on their
+      // client, so the changes are reported and the client reconciles.
+      if (cartId !== null) await this.repairCart(cartId, items, buyable);
       throw httpError('Some items in your cart changed', 409, 'CART_CHANGED', {
         details: { changes },
       });
@@ -178,19 +276,38 @@ export const commerceCheckoutService = {
       currency,
     });
 
-    const [user] = await db
-      .select({ email: users.email })
-      .from(users)
-      .where(eq(users.id, userId))
-      .limit(1);
+    // The account's own email for a signed-in buyer; the one they typed for a
+    // guest. Never the request body's value for a signed-in buyer — see the
+    // note on `contactEmail` above.
+    let contactEmail: string;
+    if (userId !== null) {
+      const [user] = await db
+        .select({ email: users.email })
+        .from(users)
+        .where(eq(users.id, userId))
+        .limit(1);
+      if (!user) throw httpError('User not found', 404);
+      contactEmail = user.email;
+    } else {
+      if (!options.contactEmail) {
+        throw httpError('An email address is required to check out', 400, 'EMAIL_REQUIRED');
+      }
+      contactEmail = options.contactEmail;
+    }
 
-    if (!user) throw httpError('User not found', 404);
+    // Handed back to the caller in the clear exactly once; only its hash is
+    // stored. This is what lets the confirmation screen offer "Track My Order"
+    // and "Save your order details" to somebody with no account yet.
+    const accessToken = generateAccessToken();
 
     const order = await db.transaction(async (tx) => {
       const [created] = await tx
         .insert(orders)
         .values({
           userId,
+          cartId,
+          reference: generateOrderReference(),
+          guestAccessTokenHash: hashToken(accessToken),
           status: 'pending_payment',
           subtotalGbpPence: quote.subtotalGbpPence,
           shippingGbpPence: quote.shippingGbpPence,
@@ -207,7 +324,18 @@ export const commerceCheckoutService = {
           taxSource: quote.taxSource,
           shippingRule: quote.shippingRule,
           shippingCountryCode: destinationCountry,
-          contactEmail: user.email,
+          contactEmail,
+          // Written before payment when we collected it ourselves. The paid
+          // webhook will not overwrite these with Stripe's (absent) values —
+          // see definedShipping in orders.service.
+          ...(options.address && {
+            shippingName: options.address.name,
+            shippingLine1: options.address.line1,
+            shippingLine2: options.address.line2 ?? null,
+            shippingCity: options.address.city,
+            shippingRegion: options.address.region ?? null,
+            shippingPostcode: options.address.postcode,
+          }),
         })
         .returning();
 
@@ -281,6 +409,8 @@ export const commerceCheckoutService = {
       paymentReference: payment.reference,
       currency: quote.currency,
       totalMinor: quote.totalMinor,
+      reference: order.reference,
+      accessToken,
     };
   },
 
@@ -293,11 +423,16 @@ export const commerceCheckoutService = {
    * a price of its own choosing.
    */
   async createSession(
-    userId: number,
+    userId: number | null,
     order: Order,
     lines: { name: string; contributor: string | null; quantity: number; unitPriceMinor: number }[],
   ): Promise<Stripe.Checkout.Session> {
-    const customerId = await subscriptionCheckoutService.ensureStripeCustomer(userId);
+    // A guest has no Stripe customer and must not be given one: creating
+    // customer records for people without accounts builds a second, unlinked
+    // identity store that nothing in the app can ever reconcile or delete on
+    // request. Stripe takes the email directly instead.
+    const customerId =
+      userId !== null ? await subscriptionCheckoutService.ensureStripeCustomer(userId) : null;
     const currency = order.presentmentCurrency.toLowerCase();
 
     const lineItems: Stripe.Checkout.SessionCreateParams.LineItem[] = lines.map((line) => ({
@@ -328,21 +463,36 @@ export const commerceCheckoutService = {
       });
     }
 
+    // Already have an address? Then Stripe is a payment processor on this
+    // order and nothing else. Asking it to collect an address we already hold
+    // would mean two addresses to reconcile and a second chance for the
+    // destination to drift away from the one shipping and tax were priced on.
+    const weHoldTheAddress = Boolean(order.shippingLine1);
+
     return stripe().checkout.sessions.create({
       mode: 'payment',
-      customer: customerId,
-      // Lets Stripe write the collected shipping address back onto the
-      // customer, so a returning buyer is not retyping it every time.
-      customer_update: { shipping: 'auto' },
+      ...(customerId
+        ? {
+            customer: customerId,
+            // Lets Stripe write the collected shipping address back onto the
+            // customer, so a returning buyer is not retyping it every time.
+            // Only valid alongside address collection.
+            ...(weHoldTheAddress ? {} : { customer_update: { shipping: 'auto' as const } }),
+          }
+        : { customer_email: order.contactEmail }),
       line_items: lineItems,
       // Locked to the country the order was priced against. The buyer can
       // correct any part of their address except the one that would invalidate
       // the shipping and tax we already quoted.
-      shipping_address_collection: {
-        allowed_countries: [
-          order.shippingCountryCode as Stripe.Checkout.SessionCreateParams.ShippingAddressCollection.AllowedCountry,
-        ],
-      },
+      ...(weHoldTheAddress
+        ? {}
+        : {
+            shipping_address_collection: {
+              allowed_countries: [
+                order.shippingCountryCode as Stripe.Checkout.SessionCreateParams.ShippingAddressCollection.AllowedCountry,
+              ],
+            },
+          }),
       ...(order.shippingMinor > 0 && {
         shipping_options: [
           {
@@ -357,7 +507,14 @@ export const commerceCheckoutService = {
       client_reference_id: String(order.id),
       // `kind` is what lets the shared webhook tell an order apart from a
       // subscription without inspecting line items.
-      metadata: { kind: 'order', orderId: String(order.id), userId: String(userId) },
+      // No userId for a guest. The order id is the durable link the webhook
+      // actually uses; userId is only here for operator triage in the Stripe
+      // dashboard, so its absence costs nothing.
+      metadata: {
+        kind: 'order',
+        orderId: String(order.id),
+        ...(userId !== null && { userId: String(userId) }),
+      },
       success_url: withQueryParam(config.commerce.orderSuccessUrl, 'orderId', String(order.id)),
       cancel_url: withQueryParam(config.commerce.orderCancelUrl, 'orderId', String(order.id)),
     });

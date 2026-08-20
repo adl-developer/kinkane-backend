@@ -47,9 +47,16 @@ export const payments = pgTable(
     // has to know which payment flow it went through, and so the identifier it
     // stores stays stable even if the underlying Stripe object changes shape.
     reference: varchar('reference', { length: 32 }).notNull().unique(),
-    userId: integer('user_id')
-      .notNull()
-      .references(() => users.id, { onDelete: 'cascade' }),
+    /**
+     * Null for a guest order's payment. The payment is still fully identified
+     * by its `reference` and its Stripe session; a user is simply not part of
+     * that identity when nobody was signed in.
+     *
+     * Stays 'cascade': a payment is only ever reachable through its user or its
+     * order, and deleting the account that made it should not leave a row
+     * pointing at a user id that no longer exists.
+     */
+    userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }),
     kind: paymentKindEnum('kind').notNull(),
     status: paymentStatusEnum('status').notNull().default('pending'),
     // Unique: one payment row per Checkout Session, so a retried create can't

@@ -31,6 +31,13 @@ export interface CartLineView {
   unitPriceMinor: number;
   lineTotalMinor: number;
   unitPriceGbpPence: number;
+  /**
+   * The struck-through "was" price in presentment currency, or null when this
+   * line is not on sale. Comes from the same availability check that sets
+   * `unitPriceMinor`, so the badge and the amount charged are computed from one
+   * source and cannot disagree.
+   */
+  compareAtMinor: number | null;
   lineTotalGbpPence: number;
   /** True when the live price differs from the one captured at add time. */
   priceChanged: boolean;
@@ -58,7 +65,161 @@ function httpError(message: string, statusCode: number, code?: string): Error {
   return Object.assign(new Error(message), { statusCode, code });
 }
 
+/** One line of a client-held basket, as submitted for pricing or checkout. */
+export interface RequestedLine {
+  bookId: number;
+  quantity: number;
+}
+
+export interface PricedLine {
+  bookId: number;
+  isbn13: string | null;
+  title: string | null;
+  contributor: string | null;
+  coverUrl: string | null;
+  /** What the buyer asked for. */
+  quantity: number;
+  /**
+   * How many of those can actually be supplied — `min(requested, stock)`.
+   *
+   * Deliberately capped at what was asked for rather than reporting the real
+   * stock level. This endpoint is public, and Gardners' inventory depth is
+   * commercial information that is not ours to publish. Capping still tells the
+   * buyer everything they need ("you can have 2 of the 5 you wanted") while
+   * revealing nothing about the shelf behind it.
+   */
+  availableQuantity: number;
+  unitPriceMinor: number | null;
+  lineTotalMinor: number | null;
+  /** Struck-through "was" price, or null when not on sale. */
+  compareAtMinor: number | null;
+  unavailable: boolean;
+  unavailableReason: string | null;
+}
+
+export interface PricedBasket {
+  currency: string;
+  lines: PricedLine[];
+  subtotalMinor: number;
+  estimatedShippingMinor: number | null;
+  totalMinor: number;
+  itemCount: number;
+  hasIssues: boolean;
+}
+
 export const cartService = {
+  /**
+   * Prices a basket the client is holding, storing nothing.
+   *
+   * Before sign-in the basket lives entirely on the client, so this is how it
+   * gets rendered with live prices, live stock and sale badges. It is a pure
+   * read: no cart row, no token, no trace of anyone who never signs up.
+   *
+   * **Every figure here is computed from our own data.** The request supplies
+   * book ids and quantities and nothing else — no prices are read from it, and
+   * any that were sent would be ignored. That is the same rule checkout
+   * enforces, which is what lets an unauthenticated caller price a basket
+   * without being able to influence what it costs.
+   */
+  async priceBasket(
+    requested: RequestedLine[],
+    options: { currency?: string | null; countryCode?: string | null },
+  ): Promise<PricedBasket> {
+    const currency = resolveCurrency({
+      requested: options.currency,
+      countryCode: options.countryCode,
+    });
+
+    // Collapse repeats rather than rejecting them: a client that sends the same
+    // book twice means "three of these", not an error. Caps are applied after
+    // merging so two lines of 8 cannot smuggle 16 past a limit of 10.
+    const merged = new Map<number, number>();
+    for (const line of requested) {
+      const total = (merged.get(line.bookId) ?? 0) + line.quantity;
+      merged.set(line.bookId, Math.min(total, config.commerce.cart.maxQuantityPerLine));
+    }
+
+    if (merged.size === 0) {
+      return {
+        currency,
+        lines: [],
+        subtotalMinor: 0,
+        estimatedShippingMinor: null,
+        totalMinor: 0,
+        itemCount: 0,
+        hasIssues: false,
+      };
+    }
+
+    const { buyable, rejected } = await availabilityService.check(
+      [...merged.keys()],
+      options.countryCode ?? '',
+    );
+
+    const lines: PricedLine[] = [...merged.entries()].map(([bookId, quantity]) => {
+      const live = buyable.get(bookId);
+      const reason = live ? null : (rejected.get(bookId) ?? 'not_found');
+      const availableQuantity = live ? Math.min(quantity, live.stockQty) : 0;
+
+      return {
+        bookId,
+        isbn13: live?.isbn13 ?? null,
+        title: live?.title ?? null,
+        contributor: live?.contributor ?? null,
+        coverUrl: live?.coverUrl ?? null,
+        quantity,
+        availableQuantity,
+        unitPriceMinor: live ? toPresentment(live.unitPriceGbpPence, currency) : null,
+        // Priced on what can actually be supplied, not on what was asked for —
+        // a total that includes two copies we cannot ship is a surprise waiting
+        // to happen at checkout.
+        lineTotalMinor: live
+          ? toPresentment(live.unitPriceGbpPence * availableQuantity, currency)
+          : null,
+        compareAtMinor:
+          live?.compareAtGbpPence != null
+            ? toPresentment(live.compareAtGbpPence, currency)
+            : null,
+        unavailable: Boolean(reason) || availableQuantity === 0,
+        unavailableReason: reason,
+      };
+    });
+
+    const sellable = lines.filter((line) => !line.unavailable);
+    const subtotalMinor = sellable.reduce((sum, line) => sum + (line.lineTotalMinor ?? 0), 0);
+    const itemCount = sellable.reduce((sum, line) => sum + line.availableQuantity, 0);
+
+    const subtotalGbpPence = [...merged.entries()].reduce((sum, [bookId, quantity]) => {
+      const live = buyable.get(bookId);
+      if (!live) return sum;
+      return sum + live.unitPriceGbpPence * Math.min(quantity, live.stockQty);
+    }, 0);
+
+    let estimatedShippingMinor: number | null = null;
+    if (options.countryCode && itemCount > 0) {
+      try {
+        const shipping = quoteShipping({
+          countryCode: options.countryCode,
+          itemCount,
+          subtotalGbpPence,
+        });
+        estimatedShippingMinor = toPresentment(shipping.gbpPence, currency);
+      } catch {
+        estimatedShippingMinor = null;
+      }
+    }
+
+    return {
+      currency,
+      lines,
+      subtotalMinor,
+      estimatedShippingMinor,
+      totalMinor: subtotalMinor + (estimatedShippingMinor ?? 0),
+      itemCount,
+      hasIssues: lines.some((line) => line.unavailable || line.availableQuantity < line.quantity),
+    };
+  },
+
   /**
    * Returns the user's open cart, creating one if they have none.
    *
@@ -68,11 +229,8 @@ export const cartService = {
    * second cart, and the follow-up select picks up the winner's row.
    */
   async getOrCreate(userId: number): Promise<Cart> {
-    const [existing] = await db
-      .select()
-      .from(carts)
-      .where(and(eq(carts.userId, userId), eq(carts.status, 'active')))
-      .limit(1);
+    const active = and(eq(carts.userId, userId), eq(carts.status, 'active'));
+    const [existing] = await db.select().from(carts).where(active).limit(1);
 
     if (existing) return existing;
 
@@ -84,11 +242,7 @@ export const cartService = {
 
     if (created) return created;
 
-    const [winner] = await db
-      .select()
-      .from(carts)
-      .where(and(eq(carts.userId, userId), eq(carts.status, 'active')))
-      .limit(1);
+    const [winner] = await db.select().from(carts).where(active).limit(1);
 
     if (!winner) {
       throw httpError('Could not open a cart', 500);
@@ -155,6 +309,8 @@ export const cartService = {
         lineTotalMinor: toPresentment(lineTotalGbpPence, currency),
         unitPriceGbpPence,
         lineTotalGbpPence,
+        compareAtMinor:
+          live?.compareAtGbpPence != null ? toPresentment(live.compareAtGbpPence, currency) : null,
         priceChanged,
         previousUnitPriceMinor: priceChanged
           ? toPresentment(item.unitPriceGbpPence, currency)

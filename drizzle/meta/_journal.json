@@ -267,6 +267,20 @@
       "when": 1786476710063,
       "tag": "0037_tiny_colossus",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1787089650679,
+      "tag": "0038_romantic_mindworm",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1787239903440,
+      "tag": "0039_burly_sharon_carter",
+      "breakpoints": true
     }
   ]
 }
