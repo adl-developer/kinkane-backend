@@ -4,6 +4,7 @@ import { booksService, decodeDedupeCursor } from '../services/books.service';
 import { userBooksService } from '../services/user-books.service';
 import { interactionsService } from '../services/interactions.service';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
+import { config } from '../config';
 
 // z.coerce.boolean() would treat the literal string "false" as truthy (any non-empty
 // string coerces to true), so accepted values are explicit — see refreshQuerySchema in
@@ -24,6 +25,9 @@ const suggestionsSchema = z.object({
 
 const similarSchema = z.object({
   limit: z.coerce.number().int().min(1).max(20).default(10),
+  // See the note on shoppable in listSchema — a PDP's "you may also like"
+  // carries Add buttons, so the shop should pass true.
+  shoppable: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
 });
 
 const listSchema = z.object({
@@ -39,6 +43,15 @@ const listSchema = z.object({
   // Opt-in: collapses same-titled editions down to the best one — see dedupeParam above.
   dedupe: dedupeParam,
   /**
+   * Opt-in: drops books the shop cannot list — no ISBN13, no price, or an
+   * unsuppliable Gardners report code. Off by default: discovery, search and
+   * reading lists browse the whole catalogue, and only the e-commerce section
+   * wants the narrowed view. Out-of-stock books are kept and carry `inStock`
+   * so the shop can badge them. See buildShoppableCondition in books.service
+   * for what this does and does not check.
+   */
+  shoppable: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
+  /**
    * Opaque pagination token, only meaningful when dedupe=true. When supplied
    * the server resumes at the raw position it encodes and filters out any
    * titles the previous page returned, so a title cannot appear twice
@@ -47,7 +60,47 @@ const listSchema = z.object({
   cursor: z.string().min(1).max(4096).optional(),
 });
 
+const basketRecsSchema = z.object({
+  // Comma-separated so this stays a cacheable GET. Bounded to the same ceiling
+  // as a cart, because a basket cannot legitimately be larger than one.
+  bookIds: z.string().min(1).transform((v, ctx) => {
+    const ids = v.split(',').map((part) => Number(part.trim()));
+    if (ids.some((id) => !Number.isInteger(id) || id <= 0)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'bookIds must be positive integers' });
+      return z.NEVER;
+    }
+    if (ids.length > config.commerce.cart.maxItems) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Too many books' });
+      return z.NEVER;
+    }
+    return [...new Set(ids)];
+  }),
+  limit: z.coerce.number().int().min(1).max(20).default(8),
+  shoppable: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
+});
+
 export const booksController = {
+  /** GET /api/v1/books/recommendations?bookIds=1,2,3 */
+  async basketRecommendations(req: Request, res: Response): Promise<void> {
+    const parsed = basketRecsSchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+
+    // Optional auth: guests hold their basket client-side, so this is usually
+    // anonymous. A signed-in caller additionally gets rejected books filtered.
+    const userId = (req as AuthenticatedRequest).user?.id;
+    const books = await booksService.basketRecommendations(
+      parsed.data.bookIds,
+      parsed.data.limit,
+      userId,
+      parsed.data.shoppable,
+    );
+
+    res.status(200).json({ books });
+  },
+
   async suggestions(req: Request, res: Response): Promise<void> {
     const parsed = suggestionsSchema.safeParse(req.query);
     if (!parsed.success) {
@@ -181,10 +234,12 @@ export const booksController = {
         return;
       }
 
-      // Route is behind requireAuth, so the viewer is always known — passed in
-      // so books they've rejected are filtered out of the shelf.
-      const { user } = req as AuthenticatedRequest;
-      const results = await booksService.similar(id, parsed.data.limit, user.id);
+      // Optional-auth: the product page this feeds is public, so there may be
+      // no viewer at all. When there is one, their id filters out books they
+      // have already rejected; when there isn't, everyone sees the same
+      // similarity ranking.
+      const userId = (req as AuthenticatedRequest).user?.id;
+      const results = await booksService.similar(id, parsed.data.limit, userId, parsed.data.shoppable);
       res.status(200).json({ books: results });
     } catch (err: unknown) {
       const e = err as Error;

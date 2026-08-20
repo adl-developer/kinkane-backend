@@ -26,6 +26,8 @@ import {
 import { redis } from '../lib/redis';
 import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-excerpts.service';
 import { TRENDING_SCORED_TYPES, trendingScoreSql } from './interactions.service';
+import { availabilityService } from './commerce/availability.service';
+import { buildShoppableCondition } from '../lib/shoppable';
 
 const BOOK_DETAIL_TTL    = 60 * 60;    // 1 hour
 const LIST_TTL           = 5 * 60;     // 5 minutes
@@ -90,6 +92,12 @@ export interface ListBooksOptions {
   // Opt-in: collapses same-titled editions down to the best one (cover > complete dataset >
   // newest publication date > has a price). See dedupeByTitle in lib/dedupe.ts.
   dedupe?: boolean;
+  /**
+   * Opt-in: restricts results to books the shop can actually list — see
+   * buildShoppableCondition for exactly what that means and what it
+   * deliberately does not check.
+   */
+  shoppable?: boolean;
   /**
    * For dedupe=true only. When supplied it overrides `offset`: the server
    * resumes at the raw-row position the token encodes and also filters out any
@@ -176,6 +184,16 @@ export interface BookListItem {
   genres: Pick<Genre, 'name' | 'slug'>[];
   prices: Pick<BookPrice, 'priceType' | 'priceAmount' | 'currencyCode'>[];
   excerpt: BookExcerptInfo | null;
+  /**
+   * Whether Gardners currently has stock. Only populated on `shoppable=true`
+   * requests — optional rather than nullable so the other twenty-odd places
+   * that build a BookListItem don't have to invent a value for a field their
+   * callers never read. A shoppable result with `inStock: false` is a book the
+   * shop should list with an out-of-stock badge, not hide: stock moves hourly,
+   * and a title flickering in and out of the catalogue is worse for the user
+   * than a title that is visibly, temporarily unavailable.
+   */
+  inStock?: boolean;
 }
 
 // Which side of the catalogue a typeahead query is matched against. 'all' (the default)
@@ -241,6 +259,38 @@ export interface BookDetail extends BookListItem {
   returnsCode: string | null;
   orderTime: number | null;
   subjects: Pick<BookSubject, 'schemeIdentifier' | 'subjectCode' | 'subjectHeadingText' | 'isMainSubject'>[];
+}
+
+
+/**
+ * The predicate every discovery feed applies to the books it returns.
+ *
+ * Two things, both of which the feeds were missing:
+ *
+ *  - **Withdrawn titles are never surfaced.** `list()` has excluded them since
+ *    the browse fix, but trending, personalized and similar each build their
+ *    own query and none of them did — so a book Gardners had withdrawn could
+ *    still headline the homepage.
+ *  - **`shoppable` is opt-in per feed.** Every one of these appears in the
+ *    designs with a price and an Add button, so a feed that surfaces an
+ *    unsellable book produces a button that cannot work. Off by default, so
+ *    existing callers are unaffected.
+ */
+function buildFeedCondition(shoppable?: boolean): SQL {
+  const removed = eq(books.isRemoved, false);
+  return shoppable ? and(removed, buildShoppableCondition())! : removed;
+}
+
+/**
+ * How wide to cast the net before filtering.
+ *
+ * Roughly a fifth of the catalogue is unsellable, and these feeds fetch a
+ * bounded pool then trim — so filtering afterwards can leave a "top 10" holding
+ * three. Widening the pool when `shoppable` is on keeps the section full
+ * without changing behaviour for callers that don't ask for it.
+ */
+function feedPoolMultiplier(shoppable?: boolean): number {
+  return shoppable ? FEED_POOL_MULTIPLIER * 2 : FEED_POOL_MULTIPLIER;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -524,6 +574,18 @@ function buildPersonNamePrefixOrderBy(q: string): SQL[] {
 function buildWhereClause(opts: ListBooksOptions, searchCondition?: SQL): SQL | undefined {
   const conditions: SQL[] = [];
 
+  // Titles Gardners has withdrawn (ONIX notification '05') are never browsable.
+  // The row survives the withdrawal on purpose — it still anchors a user's
+  // posts, reviews and reading-list entries, see books.isRemoved — but it must
+  // not appear in a catalogue listing. listByIds() already filtered this and
+  // list() did not, so withdrawn books were reachable through browse and
+  // search while being 404-shaped everywhere else.
+  //
+  // Applied here rather than at each call site so it covers every list path at
+  // once: the title branch, the author branch (fetchAuthorBranch), all three
+  // search tiers, and the count probes that must agree with them.
+  conditions.push(eq(books.isRemoved, false));
+
   if (searchCondition) {
     conditions.push(searchCondition);
   }
@@ -552,6 +614,10 @@ function buildWhereClause(opts: ListBooksOptions, searchCondition?: SQL): SQL | 
 
   if (opts.publisher) {
     conditions.push(ilike(books.publisherName, `%${opts.publisher}%`));
+  }
+
+  if (opts.shoppable) {
+    conditions.push(buildShoppableCondition());
   }
 
   return conditions.length > 0 ? and(...conditions) : undefined;
@@ -751,20 +817,30 @@ export const booksService = {
     // v4: opts now includes `dedupe`, which changes both which rows come back and how many
     // — every request now hashes it (even dedupe:false, since the schema always supplies a
     // default), so bumping avoids a generation of guaranteed-stale v3 lookups post-deploy.
-    const rowsCacheKey = `books:list:v4:${createHash('sha256').update(JSON.stringify(opts)).digest('hex')}`;
+    // v5: withdrawn titles (is_removed) are filtered out of every list path now, so a v4
+    // entry can hold rows and totals that include books this endpoint must no longer
+    // return. Bumping retires them instead of serving them until their TTL lapses.
+    const rowsCacheKey = `books:list:v5:${createHash('sha256').update(JSON.stringify(opts)).digest('hex')}`;
     // Keyed only on the fields that affect the count (not limit/offset/sort) so every
     // page of the same filter — and every sort direction — shares one cached total.
-    const countCacheKey = `books:count:v3:${createHash('sha256')
-      .update(
-        JSON.stringify({
-          q: opts.q,
-          genre: opts.genre,
-          availability: opts.availability,
-          productForm: opts.productForm,
-          publishingStatus: opts.publishingStatus,
-          publisher: opts.publisher,
-        }),
-      )
+    //
+    // Derived by *removing* the page-shape fields rather than by listing the filters,
+    // because the enumerated version was a silent-wrong-answer waiting to happen: a new
+    // filter added to ListBooksOptions and to buildWhereClause but forgotten here would
+    // hash to the same key as the unfiltered request, and every filtered page would report
+    // the whole catalogue's total. Rest-destructuring means a new filter is counted
+    // correctly the moment it exists, and only a genuinely page-shaped field has to be
+    // added to this list.
+    const {
+      sort: _sort,
+      limit: _limit,
+      offset: _offset,
+      dedupe: _dedupe,
+      cursor: _cursor,
+      ...countFilters
+    } = opts;
+    const countCacheKey = `books:count:v4:${createHash('sha256')
+      .update(JSON.stringify(countFilters))
       .digest('hex')}`;
 
     const [cachedRows, cachedCount] = await Promise.all([
@@ -918,7 +994,7 @@ export const booksService = {
           const rawHasMore = fetched.length > overfetchLimit;
           const rawRows = rawHasMore ? fetched.slice(0, overfetchLimit) : fetched;
 
-          const [relations, excerptMap, descriptionById] = await Promise.all([
+          const [relations, excerptMap, descriptionById, stockByIsbn] = await Promise.all([
             attachRelationsToList(rawRows),
             getExcerptsByIsbns(rawRows.map((r) => r.isbn13)),
             // Only needed for dedupe scoring — BookListItem never exposes it, and
@@ -931,11 +1007,25 @@ export const booksService = {
                   .where(inArray(books.id, rawRows.map((r) => r.id)))
                   .then((rows) => new Map(rows.map((r) => [r.id, r.shortDescription])))
               : Promise.resolve(new Map<number, string | null>()),
+            // Only the shop needs the badge, so only the shop pays for the lookup.
+            // One batched query over the page's ISBNs, not a column on LIST_COLUMNS:
+            // adding it there would put the stock table into every tier's plan,
+            // including the fast title-prefix scan whose speed comes from touching
+            // nothing but its own index.
+            opts.shoppable && rawRows.length > 0
+              ? availabilityService.inStockByIsbns(rawRows.map((r) => r.isbn13))
+              : Promise.resolve(new Map<string, boolean>()),
           ]);
           const enriched = rawRows.map((r) => ({
             ...r,
             ...relations.get(r.id)!,
             excerpt: pickExcerpt(r.isbn13, excerptMap),
+            // Absent entirely unless asked for. Every row here already cleared
+            // buildShoppableCondition, so a missing stock entry would mean the row
+            // vanished between the two queries — `false` is the safe reading.
+            ...(opts.shoppable
+              ? { inStock: r.isbn13 ? (stockByIsbn.get(r.isbn13) ?? false) : false }
+              : {}),
           }));
 
           let hasMore = rawHasMore;
@@ -1476,12 +1566,14 @@ export const booksService = {
    * also like", the shared list is filtered per viewer after the cache read
    * rather than being computed per user. Anonymous callers get the list as-is.
    */
-  async trending(limit: number, userId?: number): Promise<TrendingBookItem[]> {
+  async trending(limit: number, userId?: number, shoppable?: boolean): Promise<TrendingBookItem[]> {
     const cacheTarget = limit + FEED_EXCLUSION_HEADROOM;
     // v3: the cached value is a pool of cacheTarget items rather than exactly
     // `limit`, so per-viewer filtering has spare rows to eat. (v2 reweighted
     // scores per interaction type; v1 was the flat unweighted ranking.)
-    const cacheKey = `trending:v3:${limit}`;
+    // shoppable is part of the key: the filtered and unfiltered feeds are
+    // different lists and must not overwrite one another.
+    const cacheKey = `trending:v4:${limit}:${shoppable ? 'shop' : 'all'}`;
     const cached = await redis.get(cacheKey);
     if (cached) {
       return applyUserExclusions(JSON.parse(cached) as TrendingBookItem[], userId, limit);
@@ -1490,7 +1582,7 @@ export const booksService = {
     const since = new Date();
     since.setDate(since.getDate() - TRENDING_WINDOW_DAYS);
 
-    const poolSize = Math.min(cacheTarget * FEED_POOL_MULTIPLIER, FEED_POOL_MAX);
+    const poolSize = Math.min(cacheTarget * feedPoolMultiplier(shoppable), FEED_POOL_MAX);
 
     // Aggregate interaction signals over the last 30 days into a ranked list of book
     // IDs. Weighting and time decay both live in trendingScoreSql — see
@@ -1525,6 +1617,7 @@ export const booksService = {
           and(
             sql`${books.id} NOT IN (${sql.join(exclude.map((id) => sql`${id}`), sql`, `)})`,
             sql`${books.publicationDate} IS NOT NULL`,
+            buildFeedCondition(shoppable),
           ),
         )
         .orderBy(desc(books.publicationDate))
@@ -1552,7 +1645,7 @@ export const booksService = {
           availabilityCode: books.availabilityCode,
         })
         .from(books)
-        .where(inArray(books.id, bookIds)),
+        .where(and(inArray(books.id, bookIds), buildFeedCondition(shoppable))),
 
       db
         .select({
@@ -1612,8 +1705,8 @@ export const booksService = {
     return applyUserExclusions(pool, userId, limit);
   },
 
-  async personalized(userId: number, limit: number): Promise<TrendingBookItem[]> {
-    const cacheKey = `personalized:v1:${userId}:${limit}`;
+  async personalized(userId: number, limit: number, shoppable?: boolean): Promise<TrendingBookItem[]> {
+    const cacheKey = `personalized:v2:${userId}:${limit}:${shoppable ? 'shop' : 'all'}`;
     const cached = await redis.get(cacheKey);
     if (cached) return JSON.parse(cached) as TrendingBookItem[];
 
@@ -1643,7 +1736,7 @@ export const booksService = {
       buildWorkExclusionCondition(exclusions.works),
     );
 
-    const poolSize = Math.min(limit * FEED_POOL_MULTIPLIER, FEED_POOL_MAX);
+    const poolSize = Math.min(limit * feedPoolMultiplier(shoppable), FEED_POOL_MAX);
 
     // SET LOCAL scopes the raised ef_search to just this query, inside a
     // transaction — a bare SET would stick to the pooled connection and leak
@@ -1738,12 +1831,88 @@ export const booksService = {
    * this particular book can still come up short — an acceptable outcome for a
    * secondary shelf, and strictly better than showing them the rejects.
    */
-  async similar(bookId: number, limit: number, userId?: number): Promise<TrendingBookItem[]> {
+    /**
+   * "You may also like" for a whole basket rather than a single book.
+   *
+   * Averages the basket's embeddings and finds the nearest neighbours to that
+   * centroid, which is why it is not just `similar()` run per book and merged:
+   * a basket of one cookbook and two thrillers should surface something that
+   * suits the *shopper*, not three separate lists stapled together.
+   *
+   * Stateless by design — the basket arrives as ids, because before sign-in it
+   * lives on the client and there is no cart row to read.
+   */
+  async basketRecommendations(
+    bookIds: number[],
+    limit: number,
+    userId?: number,
+    shoppable?: boolean,
+  ): Promise<BookListItem[]> {
+    if (bookIds.length === 0) return [];
+
+    const seeds = await db
+      .select({ embedding: books.embedding })
+      .from(books)
+      .where(and(inArray(books.id, bookIds), eq(books.isRemoved, false)));
+
+    const vectors = seeds.map((s) => s.embedding).filter((e): e is number[] => Array.isArray(e));
+    // Every book in the basket is still awaiting its embedding — an empty list
+    // is the honest answer, and the caller hides the section.
+    if (vectors.length === 0) return [];
+
+    const dimensions = vectors[0].length;
+    const centroid = new Array<number>(dimensions).fill(0);
+    for (const vector of vectors) {
+      for (let i = 0; i < dimensions; i++) centroid[i] += vector[i];
+    }
+    for (let i = 0; i < dimensions; i++) centroid[i] /= vectors.length;
+
+    const vectorLiteral = `[${centroid.join(',')}]`;
+    const poolSize = Math.min((limit + FEED_EXCLUSION_HEADROOM) * feedPoolMultiplier(shoppable), FEED_POOL_MAX);
+
+    // Ids only here, then hydrated through listByIds — the same serializer every
+    // other book list uses, rather than a second one that drifts from it.
+    const rows = await db.transaction(async (tx) => {
+      await tx.execute(sql.raw(`SET LOCAL hnsw.ef_search = ${HNSW_EF_SEARCH}`));
+      return tx
+        .select({ id: books.id })
+        .from(books)
+        .where(
+          and(
+            sql`${books.embedding} IS NOT NULL`,
+            buildFeedCondition(shoppable),
+            // Never recommend what is already in the basket.
+            notInArray(books.id, bookIds),
+          ),
+        )
+        .orderBy(sql`${books.embedding} <=> ${vectorLiteral}::vector`)
+        .limit(poolSize);
+    });
+
+    if (rows.length === 0) return [];
+
+    const hydrated = await booksService.listByIds(rows.map((row) => row.id));
+    // listByIds makes no ordering promise, so re-impose similarity order.
+    const byId = new Map(hydrated.map((book) => [book.id, book]));
+    const ordered = rows
+      .map((row) => byId.get(row.id))
+      .filter((book): book is BookListItem => Boolean(book));
+
+    // Signed-in shoppers do not get recommended books they have already
+    // rejected. Guests have no exclusions to apply, which is the common case
+    // here since the basket is client-held until sign-in.
+    if (userId === undefined) return ordered.slice(0, limit);
+
+    const exclusions = await getUserExclusions(userId);
+    return filterExcludedWorks(ordered, exclusions).slice(0, limit);
+  },
+
+  async similar(bookId: number, limit: number, userId?: number, shoppable?: boolean): Promise<TrendingBookItem[]> {
     // Over-fetch target, so per-user filtering below has spare rows to eat.
     const cacheTarget = limit + FEED_EXCLUSION_HEADROOM;
     // v2: the cached value is now a pool of cacheTarget items rather than
     // exactly `limit`, so old v1 entries must not be read back.
-    const cacheKey = `similar:v2:${bookId}:${limit}`;
+    const cacheKey = `similar:v3:${bookId}:${limit}:${shoppable ? 'shop' : 'all'}`;
     const cached = await redis.get(cacheKey);
     if (cached) {
       return applyUserExclusions(JSON.parse(cached) as TrendingBookItem[], userId, limit);
@@ -1760,7 +1929,7 @@ export const booksService = {
 
     const vectorLiteral = `[${target.embedding.join(',')}]`;
 
-    const poolSize = Math.min(cacheTarget * FEED_POOL_MULTIPLIER, FEED_POOL_MAX);
+    const poolSize = Math.min(cacheTarget * feedPoolMultiplier(shoppable), FEED_POOL_MAX);
 
     // SET LOCAL scopes the raised ef_search to just this query, inside a
     // transaction — a bare SET would stick to the pooled connection and leak
@@ -1784,6 +1953,7 @@ export const booksService = {
           and(
             sql`(${books.embedding} <=> ${vectorLiteral}::vector) < ${PERSONALIZED_SIMILARITY_THRESHOLD}`,
             notInArray(books.id, [bookId]),
+            buildFeedCondition(shoppable),
           ),
         )
         .orderBy(sql`${books.embedding} <=> ${vectorLiteral}::vector`)

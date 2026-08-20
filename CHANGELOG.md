@@ -1,11 +1,27 @@
 # Changelog
 
 
+## 2026-08-20
+
+### Features
+
+* make the Filters panel show what is actually there, and suggest books for the whole basket ([5158ca7](https://adl.github.com/adl-developer/kinkane-backend/commit/5158ca777f1e966cf9fa8cfeace7f7e3e43b48ef)) — [details](changelog/2026-08-20-client-held-guest-basket.md)
+* add a shopping wishlist and give every author their own page ([42507c4](https://adl.github.com/adl-developer/kinkane-backend/commit/42507c4cdbccf4e6093dc33e2d76b3ea07183203)) — [details](changelog/2026-08-20-client-held-guest-basket.md)
+* let people buy without an account, and give every order a trackable reference ([e7e97b6](https://adl.github.com/adl-developer/kinkane-backend/commit/e7e97b6a9f1052700645bf349238d7242bcefb34)) — [details](changelog/2026-08-20-client-held-guest-basket.md)
+* hide books the shop cannot sell, and stop withdrawn titles appearing in search ([27097a3](https://adl.github.com/adl-developer/kinkane-backend/commit/27097a3ff7f2a20f3baabf04c49273369e53ff05)) — [details](changelog/2026-08-20-client-held-guest-basket.md)
+
+### Bug Fixes
+
+* let customers actually buy the titles Gardners supplies to order ([bb45a13](https://adl.github.com/adl-developer/kinkane-backend/commit/bb45a136be83b4b9ae51fe2a1bb3b6aa37896456)) — [details](changelog/2026-08-20-client-held-guest-basket.md)
+* stop hiding a third of the catalogue that Gardners can actually supply ([05f458d](https://adl.github.com/adl-developer/kinkane-backend/commit/05f458da1f1202a707a8d66f23080098cb06bfd3)) — [details](changelog/2026-08-20-client-held-guest-basket.md)
+* get the wholesaler feed importing again, and stop asking people to sign in for recommendations ([611924e](https://adl.github.com/adl-developer/kinkane-backend/commit/611924e973647ea45336d74e779b15735ad58122)) — [details](changelog/2026-08-20-client-held-guest-basket.md)
+
+
 ## 2026-08-14
 
 ### Features
 
-* document every endpoint in a private, browsable API reference ([171b4ad](https://adl.github.com/adl-developer/kinkane-backend/commit/171b4ad095735709d10cb71c49ee3f2a08a2ee1b)) — [details](changelog/2026-08-14-swagger-api-docs.md)
+* document every endpoint in a private, browsable API reference ([aa7a9ab](https://adl.github.com/adl-developer/kinkane-backend/commit/aa7a9abdd691ba2202e44d4901706623d72f4a92)) — [details](changelog/2026-08-14-swagger-api-docs.md)
 
 
 ## 2026-08-13

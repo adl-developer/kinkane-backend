@@ -106,8 +106,15 @@ export const orderWebhooksService = {
     // permanently left the cart un-converted, the signals unrecorded and the
     // order never sent to the supplier — Stripe would redeliver, but by then
     // the transition had happened on the earlier attempt and the retry gave up.
-    await ordersService.convertCart(order.userId);
-    await ordersService.recordPurchaseSignals(order.userId, orderId);
+    await ordersService.convertCart(order.cartId);
+    // Personalisation signals need somebody to personalise for. A guest order
+    // simply has nowhere to record them — not an error, just an absence. They
+    // are not replayed if the order is later claimed: the claim happens after
+    // the fact and inferring taste from a months-old purchase is not worth
+    // reaching back into the interaction log for.
+    if (order.userId !== null) {
+      await ordersService.recordPurchaseSignals(order.userId, orderId);
+    }
 
     logger.info('Order paid', {
       orderId,

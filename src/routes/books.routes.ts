@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { booksController } from '../controllers/books.controller';
-import { optionalAuth, requireAuth } from '../middleware/auth.middleware';
+import { optionalAuth } from '../middleware/auth.middleware';
 
 const router = Router();
 
@@ -23,8 +23,26 @@ const router = Router();
 router.get('/search', booksController.suggestions);
 
 /**
+ * GET /books/recommendations?bookIds=1,2,3&limit=8
+ *
+ * "You may also like" for a whole basket — the cart page's carousel. Averages
+ * the basket's embeddings and returns the nearest titles to that centre, which
+ * is why it is not the per-book endpoint run several times and merged: a basket
+ * of one cookbook and two thrillers should suggest something for the shopper,
+ * not three unrelated lists stapled together.
+ *
+ * Stateless: the basket arrives as ids, because before sign-in it lives on the
+ * client and there is no cart to read. Books already in the basket are never
+ * returned. Empty list when nothing in the basket has an embedding yet.
+ *
+ * Public — no auth required. A token additionally filters out books the caller
+ * has already rejected.
+ */
+router.get('/recommendations', optionalAuth, booksController.basketRecommendations);
+
+/**
  * GET /books
- * Query params: q, genre, availability, productForm, publishingStatus, publisher, limit, offset, dedupe, cursor
+ * Query params: q, genre, availability, productForm, publishingStatus, publisher, limit, offset, dedupe, shoppable, cursor
  *
  * `q` matches both title and author name. Title matches rank first, except when
  * nothing matched a title properly — then an exact author match outranks the
@@ -40,6 +58,14 @@ router.get('/search', booksController.suggestions);
  * Cursor pagination guarantees a title cannot appear on two pages; naive
  * offset pagination on the deduped path could, because two raw editions of
  * one book can straddle a page boundary.
+ *
+ * `shoppable=true` narrows the results to what the e-commerce section can
+ * list: an ISBN13, a live Gardners price, and no unsuppliable report code.
+ * Out-of-stock titles are kept — each result carries `inStock` for the shop to
+ * badge — because stock moves hourly and a book vanishing from the catalogue
+ * mid-browse is worse than one shown as temporarily unavailable. It is not a
+ * sellability guarantee: market restrictions need a destination country, which
+ * this public endpoint does not have, so they stay enforced at add-to-cart.
  *
  * Public — no auth required.
  */
@@ -59,8 +85,13 @@ router.get('/:id', optionalAuth, booksController.getById);
  * GET /books/:id/similar?limit=10
  * Returns books ranked by cosine similarity to the given book's embedding
  * ("You May Also Like"). Excludes the book itself. Empty list if the book
- * has no embedding yet. Requires authentication.
+ * has no embedding yet.
+ *
+ * Public — no auth required, because the product page it appears on is public
+ * and a shop cannot ask someone to sign in before it will recommend anything.
+ * A valid access token still improves it: books the caller has already
+ * rejected are filtered out.
  */
-router.get('/:id/similar', requireAuth, booksController.similar);
+router.get('/:id/similar', optionalAuth, booksController.similar);
 
 export default router;

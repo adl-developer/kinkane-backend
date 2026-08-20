@@ -8,8 +8,14 @@ import {
 import { logger } from '../lib/logger';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 
+// Off by default so existing callers are unaffected. Every surface these feeds
+// appear on carries a price and an Add button, so a shop client should pass
+// true — otherwise the feed can offer a book the cart will refuse.
+const shoppableParam = z.enum(['true', 'false']).default('false').transform((v) => v === 'true');
+
 const limitSchema = z.object({
   limit: z.coerce.number().int().min(1).max(20).default(10),
+  shoppable: shoppableParam,
 });
 
 const bestsellersSchema = z.object({
@@ -55,7 +61,7 @@ export const exploreController = {
       // optionalAuth route — anonymous callers have no rejection history, and
       // signed-in ones get their rejected books filtered out of the shared list.
       const userId = (req as Partial<AuthenticatedRequest>).user?.id;
-      const books = await booksService.trending(parsed.data.limit, userId);
+      const books = await booksService.trending(parsed.data.limit, userId, parsed.data.shoppable);
       res.status(200).json({ books });
     } catch (err: unknown) {
       logger.error('Unexpected error fetching trending books', { error: (err as Error).message });
@@ -73,7 +79,7 @@ export const exploreController = {
     const { user } = req as AuthenticatedRequest;
 
     try {
-      const books = await booksService.personalized(user.id, parsed.data.limit);
+      const books = await booksService.personalized(user.id, parsed.data.limit, parsed.data.shoppable);
       res.status(200).json({ books });
     } catch (err: unknown) {
       logger.error('Unexpected error fetching personalized books', { error: (err as Error).message });

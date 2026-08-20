@@ -267,6 +267,41 @@
       "when": 1786476710063,
       "tag": "0037_tiny_colossus",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1787089650679,
+      "tag": "0038_romantic_mindworm",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1787239903440,
+      "tag": "0039_burly_sharon_carter",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1787239903441,
+      "tag": "0040_ingestion_chunk_data_key",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1787256269951,
+      "tag": "0041_saved_books",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1787257820699,
+      "tag": "0042_shoppable_index_extended_catalogue",
+      "breakpoints": true
     }
   ]
 }

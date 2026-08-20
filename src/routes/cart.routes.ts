@@ -1,10 +1,30 @@
 import { Router } from 'express';
-import { requireAuth } from '../middleware/auth.middleware';
+import { requireAuth, optionalAuth } from '../middleware/auth.middleware';
 import { checkoutLimiter } from '../middleware/rate-limit.middleware';
 import { wrapHttp } from '../lib/route-helpers';
 import { cartController } from '../controllers/cart.controller';
 
 const router = Router();
+
+/**
+ * POST /api/v1/cart/price   { lines: [{ bookId, quantity }], currency? }
+ *
+ * Prices a basket the client is holding. **Stores nothing** — no cart row, no
+ * token, no record of a visitor who never signs up. This is what a guest's
+ * basket renders from before they have an account.
+ *
+ * The request carries book ids and quantities only. Every price, sale price and
+ * stock figure in the response is read from our own data, so an anonymous
+ * caller cannot influence what anything costs.
+ *
+ * Public — no auth required. Works signed-in too, without touching the stored
+ * cart.
+ *
+ * Returns 200: { currency, lines: [...], subtotalMinor, estimatedShippingMinor,
+ *                totalMinor, itemCount, hasIssues }
+ * Errors: 400 validation
+ */
+router.post('/price', optionalAuth, wrapHttp(cartController.price));
 
 // Buying is NOT gated behind Kinkané Plus — every authenticated user can fill a
 // cart and check out. Gate the bookshelf, not the till.
@@ -84,6 +104,8 @@ router.delete('/', requireAuth, wrapHttp(cartController.clear));
  * Errors: 400 CART_EMPTY / INVALID_COUNTRY | 401 unauthenticated |
  *         409 CART_CHANGED | 429 rate limit | 503 payments not configured
  */
-router.post('/checkout', requireAuth, checkoutLimiter, wrapHttp(cartController.checkout));
+// optionalAuth: a signed-in buyer checks out the cart we store; a guest sends
+// their basket as `lines`. Either way the server prices every line itself.
+router.post('/checkout', optionalAuth, checkoutLimiter, wrapHttp(cartController.checkout));
 
 export default router;

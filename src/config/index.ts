@@ -251,6 +251,10 @@ const envSchema = z.object({
   // delivery service, not a trade counter.
   CART_MAX_QUANTITY_PER_LINE: z.coerce.number().int().min(1).default(10),
   CART_MAX_ITEMS: z.coerce.number().int().min(1).default(20),
+  // How long a guest cart survives without an account behind it. Long enough
+  // to span a "think about it overnight" gap, short enough that abandoned
+  // guest carts are not an unbounded table. A signed-in cart never expires.
+  GUEST_CART_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(30),
 
   // Where Stripe returns the buyer after a one-time order checkout.
   STRIPE_ORDER_SUCCESS_URL: z.string().url().optional(),
@@ -472,6 +476,7 @@ export const config = {
     cart: {
       maxQuantityPerLine: env.CART_MAX_QUANTITY_PER_LINE,
       maxItems: env.CART_MAX_ITEMS,
+      guestTtlDays: env.GUEST_CART_TTL_DAYS,
     },
     orderSuccessUrl: env.STRIPE_ORDER_SUCCESS_URL ?? `${env.APP_URL}/orders?checkout=success`,
     orderCancelUrl: env.STRIPE_ORDER_CANCEL_URL ?? `${env.APP_URL}/cart?checkout=cancelled`,

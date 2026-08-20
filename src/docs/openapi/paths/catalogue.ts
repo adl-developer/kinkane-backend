@@ -45,6 +45,8 @@ export const cataloguePaths = {
           'Items to skip. **Ignored when `dedupe=true`** — use `cursor` there instead.'),
         param('dedupe', 'query', { type: 'string', enum: ['true', 'false'], default: 'false' },
           'Collapse same-titled editions to one. Off by default so every edition stays visible.'),
+        param('shoppable', 'query', { type: 'string', enum: ['true', 'false'], default: 'false' },
+          'Restrict to books the shop can list — an ISBN13, a live price, and no unsuppliable supplier report code. Out-of-stock titles are **kept**, each carrying `inStock` so you can badge them, because stock moves hourly and a book disappearing mid-browse reads as a bug. Not a guarantee of sellability: rights restrictions depend on a destination country this endpoint has none of, so they are enforced at add-to-cart instead.'),
         param('cursor', 'query', { type: 'string', maxLength: 4096 },
           'Opaque token from the previous response’s `nextCursor`. Only meaningful with `dedupe=true`; silently ignored otherwise.'),
       ],
@@ -128,20 +130,51 @@ export const cataloguePaths = {
   '/api/v1/books/{id}/similar': {
     get: {
       tags: [TAG],
+      ...publicEndpoint,
       summary: 'Books similar to this one ("You may also like")',
       description:
-        'Ranks the catalogue by cosine similarity to this book’s embedding, excluding the book itself and anything the caller has swiped away.\n\nReturns an **empty list, not an error**, when the book has no embedding yet — newly ingested titles are embedded asynchronously. Treat empty as "hide the section".',
+        'Ranks the catalogue by cosine similarity to this book’s embedding, excluding the book itself.\n\n**Public** — the product page this appears on does not require an account. Sending a valid token improves it rather than enabling it: books the caller has already swiped away are filtered out.\n\nReturns an **empty list, not an error**, when the book has no embedding yet — newly ingested titles are embedded asynchronously. Treat empty as "hide the section".',
       parameters: [
         bookIdParam,
         param('limit', 'query', { type: 'integer', minimum: 1, maximum: 20, default: 10 },
           'How many to return (1–20).'),
+        param('shoppable', 'query', { type: 'string', enum: ['true', 'false'], default: 'false' },
+          'Restrict to books the shop can sell. **Pass `true` from any surface with an Add button** — otherwise this feed can offer a book the cart will refuse. Off by default so existing callers are unaffected.'),
       ],
       responses: {
         200: json('Similar books, most similar first. May be empty.',
           object({ books: arrayOf(ref('BookSummary')) })),
         400: resp('ValidationError'),
         404: json('No book with that id.', ref('Error'), { error: 'Book not found' }),
-        ...authErrors,
+      },
+    },
+  },
+
+  '/api/v1/books/recommendations': {
+    get: {
+      tags: [TAG],
+      ...publicEndpoint,
+      summary: '"You may also like" for a whole basket',
+      description: [
+        'The cart page carousel. Averages the embeddings of everything in the basket and returns the nearest titles to that centre.',
+        '',
+        'Not the same as calling `/books/{id}/similar` for each item and merging: a basket of one cookbook and two thrillers should suggest something that suits the *shopper*, rather than three unrelated lists stapled together.',
+        '',
+        '**Stateless** — the basket arrives as ids, because before sign-in it lives on the client and there is no cart to read. Books already in the basket are never returned.',
+        '',
+        'Returns an **empty list, not an error**, when nothing in the basket has an embedding yet. Treat empty as "hide the section".',
+        '',
+        'Public. A token additionally filters out books the caller has already swiped away.',
+      ].join('\n'),
+      parameters: [
+        param('bookIds', 'query', { type: 'string' },
+          'Comma-separated book ids — the basket. Duplicates are ignored.', { example: '48213,50127' }),
+        param('limit', 'query', { type: 'integer', minimum: 1, maximum: 20, default: 8 }, 'How many to return.'),
+      ],
+      responses: {
+        200: json('Recommendations, most relevant first. May be empty.',
+          object({ books: arrayOf(ref('BookSummary')) })),
+        400: resp('ValidationError'),
       },
     },
   },

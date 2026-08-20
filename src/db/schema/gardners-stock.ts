@@ -3,6 +3,7 @@
  * (migrations run here). The onix_ingester service reads/writes these
  * tables but does NOT migrate them.
  */
+import { sql } from 'drizzle-orm';
 import { pgTable, serial, integer, varchar, numeric, date, timestamp, index, uniqueIndex } from 'drizzle-orm/pg-core';
 import { books } from './books';
 
@@ -37,6 +38,23 @@ export const gardnersStock = pgTable(
     isbnUnique: uniqueIndex('uq_gardners_stock_isbn13').on(t.isbn13),
     bookIdIdx: index('idx_gardners_stock_book_id').on(t.bookId),
     stockUpdatedAtIdx: index('idx_gardners_stock_updated_at').on(t.stockUpdatedAt),
+    // Supports GET /books?shoppable=true — see buildShoppableCondition in
+    // books.service. That filter's correlated EXISTS probes this table once per
+    // candidate book, and a filter-only browse's count probes it across the
+    // whole catalogue, so the predicate lives in the index instead of being
+    // rechecked on the heap ~2M times.
+    //
+    // upper()/btrim() are both IMMUTABLE, which is what makes them legal in an
+    // index predicate. The code list is duplicated from
+    // UNSUPPLIABLE_REPORT_CODES in services/commerce/availability.service.ts
+    // because an index predicate cannot reference application state; drifting
+    // from it degrades this index's coverage but never the answer, since
+    // Postgres rechecks the predicate against the row.
+    shoppableIdx: index('idx_gardners_stock_shoppable')
+      .on(t.isbn13)
+      .where(
+        sql`${t.rrpGbp} > 0 AND (${t.reportCode} IS NULL OR upper(btrim(${t.reportCode})) NOT IN ('NYP', 'OSI', 'O/P', 'OP', 'CNC', 'R/P', 'RP', 'POS', 'REF'))`,
+      ),
   }),
 );
 

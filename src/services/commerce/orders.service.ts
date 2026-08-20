@@ -2,7 +2,7 @@
  * Reading orders back — the customer's own order history and detail view, plus
  * the state transitions the Stripe webhook drives.
  */
-import { and, desc, eq, lt, inArray } from 'drizzle-orm';
+import { and, desc, eq, lt, inArray, isNull } from 'drizzle-orm';
 import { db } from '../../db';
 import {
   orders,
@@ -13,11 +13,21 @@ import {
   type OrderStatus,
 } from '../../db/schema';
 import { logger } from '../../lib/logger';
+import { hashToken, tokensMatch } from '../../lib/order-identity';
 import { interactionsService } from '../interactions.service';
 
 export interface OrderView {
   id: number;
+  /** Customer-facing identity, e.g. `ORD-7K2M9QX4`. */
+  reference: string;
   status: OrderStatus;
+  /** The status collapsed for the order UI's filter tabs. */
+  statusBucket: 'pending' | 'in_progress' | 'delivered' | 'closed';
+  carrier: string | null;
+  trackingNumber: string | null;
+  trackingUrl: string | null;
+  dispatchedAt: Date | null;
+  deliveredAt: Date | null;
   currency: string;
   subtotalMinor: number;
   shippingMinor: number;
@@ -38,10 +48,50 @@ export interface OrderView {
   }[];
 }
 
+/**
+ * The ten `order_status` values collapsed into the three buckets the order UI
+ * actually offers (All / In Progress / Delivered, plus a closed bucket for
+ * anything that ended badly).
+ *
+ * Kept as an explicit map rather than a range check so that adding a status to
+ * the enum is a compile error here — the alternative is a new status silently
+ * defaulting into "in progress" and a refunded order sitting in a customer's
+ * active list.
+ */
+export const ORDER_STATUS_BUCKET = {
+  pending_payment: 'pending',
+  payment_failed: 'closed',
+  expired: 'closed',
+  paid: 'in_progress',
+  submitted_to_supplier: 'in_progress',
+  acknowledged: 'in_progress',
+  supplier_rejected: 'closed',
+  dispatched: 'in_progress',
+  delivered: 'delivered',
+  refunded: 'closed',
+  cancelled: 'closed',
+} as const satisfies Record<Order['status'], 'pending' | 'in_progress' | 'delivered' | 'closed'>;
+
+export type OrderStatusBucket = (typeof ORDER_STATUS_BUCKET)[keyof typeof ORDER_STATUS_BUCKET];
+
+/** Which raw statuses belong to a bucket — the inverse of the map above. */
+export function statusesInBucket(bucket: OrderStatusBucket): Order['status'][] {
+  return (Object.keys(ORDER_STATUS_BUCKET) as Order['status'][]).filter(
+    (status) => ORDER_STATUS_BUCKET[status] === bucket,
+  );
+}
+
 function toView(order: Order, items?: OrderItem[]): OrderView {
   return {
     id: order.id,
+    reference: order.reference,
     status: order.status,
+    statusBucket: ORDER_STATUS_BUCKET[order.status],
+    carrier: order.carrier,
+    trackingNumber: order.trackingNumber,
+    trackingUrl: order.trackingUrl,
+    dispatchedAt: order.dispatchedAt,
+    deliveredAt: order.deliveredAt,
     currency: order.presentmentCurrency,
     subtotalMinor: order.subtotalMinor,
     shippingMinor: order.shippingMinor,
@@ -65,6 +115,33 @@ function toView(order: Order, items?: OrderItem[]): OrderView {
   };
 }
 
+/**
+ * Maps Stripe's optional address fields onto column updates, dropping anything
+ * absent so a partial (or entirely empty) collection cannot erase stored data.
+ */
+function definedShipping(shipping: {
+  name?: string | null;
+  line1?: string | null;
+  line2?: string | null;
+  city?: string | null;
+  region?: string | null;
+  postcode?: string | null;
+}): Record<string, string> {
+  const columns: Record<string, string | null | undefined> = {
+    shippingName: shipping.name,
+    shippingLine1: shipping.line1,
+    shippingLine2: shipping.line2,
+    shippingCity: shipping.city,
+    shippingRegion: shipping.region,
+    shippingPostcode: shipping.postcode,
+  };
+  const patch: Record<string, string> = {};
+  for (const [column, value] of Object.entries(columns)) {
+    if (typeof value === 'string' && value.length > 0) patch[column] = value;
+  }
+  return patch;
+}
+
 export const ordersService = {
   /**
    * The user's order history.
@@ -74,24 +151,38 @@ export const ordersService = {
    * list peppered with `pending_payment` rows they never completed reads as a
    * billing error.
    */
-  async list(userId: number, limit: number, offset: number): Promise<OrderView[]> {
+  async list(
+    userId: number,
+    limit: number,
+    offset: number,
+    bucket?: OrderStatusBucket,
+  ): Promise<OrderView[]> {
+    // Everything a customer would recognise as an order. 'pending_payment',
+    // 'payment_failed' and 'expired' are deliberately absent: an abandoned
+    // checkout is not an order, and listing one reads as a billing error.
+    const listable: Order['status'][] = [
+      'paid',
+      'submitted_to_supplier',
+      'acknowledged',
+      'dispatched',
+      'delivered',
+      'supplier_rejected',
+      'refunded',
+      'cancelled',
+    ];
+
+    // A requested bucket narrows the listable set; it never widens it, so
+    // ?status=pending cannot surface incomplete checkouts.
+    const statuses = bucket
+      ? listable.filter((status) => ORDER_STATUS_BUCKET[status] === bucket)
+      : listable;
+
+    if (statuses.length === 0) return [];
+
     const rows = await db
       .select()
       .from(orders)
-      .where(
-        and(
-          eq(orders.userId, userId),
-          inArray(orders.status, [
-            'paid',
-            'submitted_to_supplier',
-            'acknowledged',
-            'dispatched',
-            'supplier_rejected',
-            'refunded',
-            'cancelled',
-          ]),
-        ),
-      )
+      .where(and(eq(orders.userId, userId), inArray(orders.status, statuses)))
       .orderBy(desc(orders.createdAt))
       .limit(limit)
       .offset(offset);
@@ -125,6 +216,75 @@ export const ordersService = {
 
     const items = await db.select().from(orderItems).where(eq(orderItems.orderId, order.id));
     return toView(order, items);
+  },
+
+  /**
+   * An order fetched by its reference and the bearer token issued at checkout.
+   *
+   * This is the only way to read an order without an account, and it is what
+   * "Track My Order" runs on. Both halves are required: the reference is
+   * quotable (it is printed on receipts and pasted into support tickets), so it
+   * is an identifier, not a credential — the token is the credential.
+   *
+   * A wrong token and an unknown reference return the same `null`, so the
+   * endpoint cannot be used to test whether a reference exists.
+   */
+  async findByReferenceAndToken(reference: string, token: string): Promise<OrderView | null> {
+    const [order] = await db
+      .select()
+      .from(orders)
+      .where(eq(orders.reference, reference.toUpperCase()))
+      .limit(1);
+
+    if (!order?.guestAccessTokenHash) return null;
+    if (!tokensMatch(order.guestAccessTokenHash, hashToken(token))) return null;
+
+    const items = await db.select().from(orderItems).where(eq(orderItems.orderId, order.id));
+    return toView(order, items);
+  },
+
+  /**
+   * Attaches a guest order to an account.
+   *
+   * The whole check is one conditional UPDATE rather than a read-then-write.
+   * That matters: two tabs submitting the same claim, or an attacker racing a
+   * legitimate one, would both pass a separate "is it unclaimed?" read and the
+   * second write would silently retag an order that already had an owner. Here
+   * the second statement matches zero rows and is rejected.
+   *
+   * `user_id IS NULL` in the predicate is what makes claiming single-use at the
+   * row level, and clearing the token hash retires the credential — a link
+   * forwarded from an order confirmation email cannot re-home somebody else's
+   * order afterwards.
+   */
+  async claim(reference: string, token: string, userId: number): Promise<OrderView | null> {
+    const [order] = await db
+      .select()
+      .from(orders)
+      .where(eq(orders.reference, reference.toUpperCase()))
+      .limit(1);
+
+    if (!order?.guestAccessTokenHash) return null;
+    if (!tokensMatch(order.guestAccessTokenHash, hashToken(token))) return null;
+
+    const [claimed] = await db
+      .update(orders)
+      .set({ userId, guestAccessTokenHash: null, updatedAt: new Date() })
+      .where(
+        and(
+          eq(orders.id, order.id),
+          isNull(orders.userId),
+          eq(orders.guestAccessTokenHash, order.guestAccessTokenHash),
+        ),
+      )
+      .returning();
+
+    if (!claimed) return null;
+
+    logger.info('Guest order claimed', { orderId: claimed.id, userId });
+
+    const items = await db.select().from(orderItems).where(eq(orderItems.orderId, claimed.id));
+    return toView(claimed, items);
   },
 
   async findByStripeSessionId(sessionId: string): Promise<Order | null> {
@@ -190,12 +350,16 @@ export const ordersService = {
         status: 'paid',
         paidAt: new Date(),
         stripePaymentIntentId: details.paymentIntentId,
-        shippingName: details.shipping.name ?? null,
-        shippingLine1: details.shipping.line1 ?? null,
-        shippingLine2: details.shipping.line2 ?? null,
-        shippingCity: details.shipping.city ?? null,
-        shippingRegion: details.shipping.region ?? null,
-        shippingPostcode: details.shipping.postcode ?? null,
+        // Only overwrite what Stripe actually returned.
+        //
+        // Orders placed through our own checkout form already carry a full
+        // address, written before the payment ever started, and Stripe is not
+        // asked to collect one for them. Blanket-assigning `?? null` here — as
+        // this did — would wipe that address the moment the webhook landed,
+        // leaving a paid order with nowhere to ship to and no way to
+        // reconstruct it. Absent means "Stripe had nothing to say", not
+        // "the buyer has no address".
+        ...definedShipping(details.shipping),
         updatedAt: new Date(),
       })
       .where(eq(orders.id, orderId));
@@ -204,11 +368,24 @@ export const ordersService = {
   },
 
   /** Closes the cart this order came from, once payment has landed. */
-  async convertCart(userId: number): Promise<void> {
+  /**
+   * Marks the cart this order came from as converted.
+   *
+   * Keyed on the cart id recorded at checkout rather than on the buyer. Two
+   * reasons: a guest cart has no user to look it up by at all, and even for a
+   * signed-in buyer "their active cart" is not necessarily the one that was
+   * paid for — someone who starts a new basket while a payment is pending
+   * would otherwise have the *new* cart silently converted and emptied.
+   *
+   * Still idempotent (the status predicate makes a redelivery a no-op), which
+   * the webhook depends on.
+   */
+  async convertCart(cartId: number | null): Promise<void> {
+    if (cartId === null) return;
     await db
       .update(carts)
       .set({ status: 'converted', updatedAt: new Date() })
-      .where(and(eq(carts.userId, userId), eq(carts.status, 'active')));
+      .where(and(eq(carts.id, cartId), eq(carts.status, 'active')));
   },
 
   /**

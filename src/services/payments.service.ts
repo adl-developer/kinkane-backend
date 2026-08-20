@@ -112,7 +112,11 @@ export const paymentsService = {
    */
   async create(
     params: {
-      userId: number;
+      /** Null for a guest order's payment — nobody was signed in to attribute
+       * it to. Confirmation for those goes through the order's access token
+       * (see orders lookup), not through GET /payments/:reference, which stays
+       * scoped to the authenticated user. */
+      userId: number | null;
       kind: PaymentKind;
       stripeCheckoutSessionId: string;
       amountCents?: number | null;

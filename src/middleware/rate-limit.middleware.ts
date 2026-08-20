@@ -83,6 +83,25 @@ export const recommendationsLimiter = rateLimit({
 // API call, and nobody legitimately needs to start twenty checkouts an hour.
 // Keyed by user rather than IP so one person on a shared network can't lock
 // everyone else out of subscribing.
+/**
+ * Guest order lookup and claim: 10 per 15 minutes, per IP.
+ *
+ * Keyed by IP rather than by user because the whole point of these endpoints is
+ * that there is no user yet. The token they take is 256 bits, so this is not
+ * what stops a brute force — that is arithmetically hopeless already. It is
+ * here to stop an attacker walking the *reference* space to find which orders
+ * exist by timing or by response shape, and to keep an unauthenticated endpoint
+ * that does a hash comparison from being a cheap way to burn our CPU.
+ */
+export const guestOrderLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: json429,
+  store: new RedisStore({ prefix: 'rl:guestorder:', sendCommand }),
+});
+
 export const checkoutLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 20,

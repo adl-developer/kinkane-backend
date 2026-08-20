@@ -17,30 +17,16 @@ import { db } from '../../db';
 import {
   books,
   bookContributors,
+  bookPromotions,
   gardnersStock,
   gardnersMarketRestrictions,
 } from '../../db/schema';
 import { config } from '../../config';
 import { logger } from '../../lib/logger';
 import { normalizeCountry } from './pricing';
-
-/**
- * Gardners report codes that mean a title cannot actually be supplied, whatever
- * the stock number says.
- *
- * NYP (not yet published), OSI (out of stock indefinitely), O/P (out of print),
- * CNC (cancelled), R/P (reprinting), GXC (Gardners cancelled), M/D (may be
- * discontinued), POS (postponed), REF (refer to publisher).
- *
- * Verify against Gardners' current code list before treating this as complete —
- * it was assembled from the codes observed in the Inventory feed, and an
- * unrecognised code fails *open* (we assume it is sellable), so a genuinely
- * dead code that is missing here will surface as a rejected dropship line
- * rather than as a lost sale.
- */
-const UNSUPPLIABLE_REPORT_CODES = new Set([
-  'NYP', 'OSI', 'O/P', 'OP', 'CNC', 'R/P', 'RP', 'GXC', 'M/D', 'MD', 'POS', 'REF',
-]);
+// Shared with the catalogue's `shoppable` filter so browse and checkout can
+// never disagree about which report codes mean "cannot be supplied".
+import { UNSUPPLIABLE_REPORT_CODE_SET, isSupplyToOrder } from '../../lib/shoppable';
 
 export type UnbuyableReason =
   | 'not_found'
@@ -55,8 +41,36 @@ export interface BuyableBook {
   title: string;
   contributor: string | null;
   coverUrl: string | null;
+  /** What the customer actually pays. The sale price when one is live. */
   unitPriceGbpPence: number;
+  /**
+   * The price this is marked down *from*, i.e. the RRP, and only when a
+   * promotion is actually reducing it. Null means no sale — the UI must not
+   * render a struck-through price, because there isn't one.
+   *
+   * Always strictly greater than `unitPriceGbpPence` when set: a "sale" that
+   * saves nothing is a false claim, so those are dropped rather than shown.
+   */
+  compareAtGbpPence: number | null;
+  /**
+   * The supplier's real stock figure. Zero is normal and not a blocker for a
+   * supply-to-order title — see `supplyToOrder`. Use `orderableQuantity` for
+   * anything that caps what a customer may buy.
+   */
   stockQty: number;
+  /**
+   * Gardners does not stock this title but will supply it to order (extended
+   * catalogue, print on demand). Distinct from both "in stock" and "out of
+   * stock": it is buyable, just slower. The UI should say "available to order"
+   * rather than showing an out-of-stock badge.
+   */
+  supplyToOrder: boolean;
+  /**
+   * How many may actually be bought. Equal to `stockQty` for a stocked title;
+   * for a supply-to-order title there is no shelf to exhaust, so it is capped
+   * at the per-line maximum instead of at zero.
+   */
+  orderableQuantity: number;
 }
 
 export interface AvailabilityResult {
@@ -171,6 +185,18 @@ export const availabilityService = {
         rrpGbp: gardnersStock.rrpGbp,
         stockQty: gardnersStock.stockQty,
         reportCode: gardnersStock.reportCode,
+        // The lowest live Kinkané markdown for this book, or null. Correlated
+        // subquery rather than a join so a book with two overlapping
+        // promotions yields one row rather than duplicating the book — and
+        // `min` makes overlapping promotions resolve in the customer's favour
+        // instead of by whichever row the planner happened to return.
+        salePriceGbpPence: sql<number | null>`(
+          SELECT min(${bookPromotions.salePriceGbpPence})
+          FROM ${bookPromotions}
+          WHERE ${bookPromotions.bookId} = ${books.id}
+            AND ${bookPromotions.startsAt} <= now()
+            AND (${bookPromotions.endsAt} IS NULL OR ${bookPromotions.endsAt} > now())
+        )`.as('sale_price_gbp_pence'),
       })
       .from(books)
       .leftJoin(primaryContributor, eq(primaryContributor.bookId, books.id))
@@ -212,19 +238,33 @@ export const availabilityService = {
         continue;
       }
 
-      const unitPriceGbpPence = poundsToPence(row.rrpGbp);
-      if (unitPriceGbpPence === null) {
+      const rrpGbpPence = poundsToPence(row.rrpGbp);
+      if (rrpGbpPence === null) {
         rejected.set(row.bookId, 'no_price');
         continue;
       }
 
+      // A markdown only applies if it is actually below RRP. A promotion left
+      // in place after the RRP fell beneath it must not *raise* the price — the
+      // customer pays the lower of the two, always.
+      const salePrice = row.salePriceGbpPence === null ? null : Number(row.salePriceGbpPence);
+      const onSale = salePrice !== null && Number.isFinite(salePrice) && salePrice > 0 && salePrice < rrpGbpPence;
+      const unitPriceGbpPence = onSale ? salePrice : rrpGbpPence;
+      const compareAtGbpPence = onSale ? rrpGbpPence : null;
+
       const reportCode = row.reportCode?.trim().toUpperCase();
-      if (reportCode && UNSUPPLIABLE_REPORT_CODES.has(reportCode)) {
+      if (reportCode && UNSUPPLIABLE_REPORT_CODE_SET.has(reportCode)) {
         rejected.set(row.bookId, 'unsuppliable');
         continue;
       }
 
-      if ((row.stockQty ?? 0) <= 0) {
+      // Stock is only a gate for titles Gardners actually stocks. An extended
+      // catalogue or print-on-demand title legitimately reports zero and is
+      // still orderable; rejecting on that blocked ~27,000 sellable books.
+      const supplyToOrder = isSupplyToOrder(row.reportCode);
+      const stockQty = row.stockQty ?? 0;
+
+      if (!supplyToOrder && stockQty <= 0) {
         rejected.set(row.bookId, 'out_of_stock');
         continue;
       }
@@ -241,11 +281,41 @@ export const availabilityService = {
         contributor: row.contributor ?? null,
         coverUrl: row.coverUrl ?? null,
         unitPriceGbpPence,
-        stockQty: row.stockQty ?? 0,
+        compareAtGbpPence,
+        stockQty,
+        supplyToOrder,
+        orderableQuantity: supplyToOrder ? config.commerce.cart.maxQuantityPerLine : stockQty,
       });
     }
 
     return { buyable, rejected };
+  },
+
+  /**
+   * Which of these ISBNs Gardners currently has stock for.
+   *
+   * Deliberately returns a boolean, not `stock_qty`: this feeds a public,
+   * unauthenticated catalogue response, and our supplier's wholesale stock
+   * levels are not ours to publish. "In stock" is all a shop badge needs.
+   *
+   * This is *not* a sellability check — it answers one question and skips
+   * price, report code and market restrictions. Call `check()` for anything
+   * that leads to a transaction.
+   */
+  async inStockByIsbns(isbns: (string | null)[]): Promise<Map<string, boolean>> {
+    const map = new Map<string, boolean>();
+    const unique = [...new Set(isbns.filter((isbn): isbn is string => isbn !== null))];
+    if (unique.length === 0) return map;
+
+    const rows = await db
+      .select({ isbn13: gardnersStock.isbn13, stockQty: gardnersStock.stockQty })
+      .from(gardnersStock)
+      .where(inArray(gardnersStock.isbn13, unique));
+
+    for (const row of rows) {
+      map.set(row.isbn13, (row.stockQty ?? 0) > 0);
+    }
+    return map;
   },
 
   /** Single-book convenience wrapper for add-to-cart. */

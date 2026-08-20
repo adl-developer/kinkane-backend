@@ -43,6 +43,9 @@ export const orderStatusEnum = pgEnum('order_status', [
   'acknowledged',
   'supplier_rejected',
   'dispatched',
+  // Terminal happy path. Distinct from 'dispatched' because the order UI shows
+  // a Delivered bucket, and "left the warehouse" is not "arrived".
+  'delivered',
   'refunded',
   'cancelled',
 ]);
@@ -57,6 +60,10 @@ export const carts = pgTable(
   'carts',
   {
     id: serial('id').primaryKey(),
+    // Always set. A cart only exists once there is an account to hang it on:
+    // before sign-in the basket lives entirely on the client, so there is no
+    // such thing as an ownerless cart row. See POST /cart/price, which prices a
+    // client-held basket without storing anything.
     userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
@@ -113,9 +120,57 @@ export const orders = pgTable(
   'orders',
   {
     id: serial('id').primaryKey(),
-    userId: integer('user_id')
-      .notNull()
-      .references(() => users.id, { onDelete: 'restrict' }),
+
+    /**
+     * The customer-facing order identity, e.g. `ORD-7K2M9QX4`.
+     *
+     * Deliberately **not** the serial id and deliberately not sequential. A
+     * guest can look this order up without an account, so a predictable
+     * reference would let anyone walk the order book by incrementing a number.
+     * The suffix is crypto-random base32 (Crockford, ambiguous characters
+     * removed so it survives being read aloud or retyped from an email).
+     *
+     * Random alone is not the access control — `guestAccessTokenHash` below is
+     * — but it removes enumeration as an attack surface entirely rather than
+     * relying on rate limiting to make it merely slow.
+     */
+    reference: varchar('reference', { length: 32 }).notNull().unique(),
+
+    /**
+     * Null for a guest order, set once an account claims it (or from the start
+     * for a signed-in buyer). Nullable is what makes guest checkout possible at
+     * all; `contactEmail` below is notNull and is the identity that always
+     * exists.
+     *
+     * onDelete stays 'restrict': an order is a financial record and must
+     * outlive account deletion. A deleted user's order becomes an unclaimed
+     * order, it does not disappear.
+     */
+    userId: integer('user_id').references(() => users.id, { onDelete: 'restrict' }),
+
+    /**
+     * SHA-256 of the one-time token handed to the buyer at checkout. It is the
+     * bearer credential behind both "Track My Order" and claiming a guest order
+     * into a new account.
+     *
+     * Hashed for the same reason the cart token is. Cleared when the order is
+     * claimed, which makes the claim single-use: a token leaked from a browser
+     * history or a shared email cannot re-attach an already-owned order to
+     * somebody else's account.
+     */
+    guestAccessTokenHash: varchar('guest_access_token_hash', { length: 64 }),
+
+    /**
+     * The cart this order was created from.
+     *
+     * Recorded so the paid-webhook converts *this* cart rather than "whatever
+     * cart that user has open now" — which was only ever correct because a
+     * user had exactly one. A guest cart has no user to look it up by, and a
+     * buyer who starts a second basket while a payment is pending would
+     * otherwise have the wrong one converted out from under them.
+     */
+    cartId: integer('cart_id').references(() => carts.id, { onDelete: 'set null' }),
+
     status: orderStatusEnum('status').notNull().default('pending_payment'),
 
     // Supplier side — GBP pence, never converted.
@@ -165,6 +220,20 @@ export const orders = pgTable(
     // rather than only in logs: this is the text an operator needs to fix it.
     fulfilmentErrorMessage: text('fulfilment_error_message'),
 
+    // ── Shipment tracking ────────────────────────────────────────────────────
+    // Populated by fulfilment once Gardners reports a dispatch. All nullable:
+    // an order is legitimately trackable-less until it physically ships, and a
+    // supplier that never sends a tracking number is a normal case, not an
+    // error state.
+    carrier: varchar('carrier', { length: 100 }),
+    trackingNumber: varchar('tracking_number', { length: 100 }),
+    // Stored rather than templated per carrier so a carrier we have no URL
+    // pattern for still shows a number, and so a pattern change is data, not a
+    // deploy. Rendered as a link, so it must be validated on write.
+    trackingUrl: varchar('tracking_url', { length: 500 }),
+    dispatchedAt: timestamp('dispatched_at', { withTimezone: true }),
+    deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+
     paidAt: timestamp('paid_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -174,6 +243,8 @@ export const orders = pgTable(
     statusIdx: index('idx_orders_status').on(t.status),
     // Drives both order history and the bestseller window scan.
     createdAtIdx: index('idx_orders_created_at').on(t.createdAt),
+    // Guest order lookup is by reference; the unique constraint on the column
+    // already indexes it, so nothing extra is needed here.
   }),
 );
 
