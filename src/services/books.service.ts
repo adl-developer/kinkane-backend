@@ -23,6 +23,7 @@ import {
   filterExcludedWorks,
   getUserExclusions,
 } from '../lib/exclusions';
+import { logger } from '../lib/logger';
 import { redis } from '../lib/redis';
 import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-excerpts.service';
 import { TRENDING_SCORED_TYPES, trendingScoreSql } from './interactions.service';
@@ -78,6 +79,13 @@ const SEARCH_COUNT_CAP = 1000;
 // so it only ever truncates genuinely ambiguous fragments, where the rows past the cap
 // were never going to be shown anyway.
 const AUTHOR_MATCH_LIMIT = 5000;
+// Ceiling on a single count probe. The probes only ever feed a total that callers are
+// already allowed to read as a lower bound (see totalIsApproximate), so a probe that
+// overruns can be abandoned without failing the search — whereas letting it run unbounded
+// lets one pathological query hold a connection and saturate disk I/O for the whole
+// instance. Measured against production: five concurrent uncached searches took 66-92s
+// each and degraded every other endpoint until they drained.
+const PROBE_STATEMENT_TIMEOUT_MS = 5000;
 
 export interface ListBooksOptions {
   q?: string;
@@ -707,6 +715,62 @@ async function countUpTo(where: SQL | undefined, cap: number): Promise<number> {
   return Number((rows as unknown as { count: number }[])[0]?.count ?? 0);
 }
 
+// Postgres reports a statement_timeout abort as query_canceled. Narrowed deliberately:
+// every other failure is a real bug and must keep propagating.
+function isStatementTimeout(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: string }).code === '57014';
+}
+
+// SET LOCAL scopes the timeout to the wrapped statement inside a transaction — a bare SET
+// would stick to the pooled connection and silently apply to unrelated queries that reuse
+// it afterwards. Same rationale as withWordSimilarityThreshold above.
+async function withStatementTimeout<T>(
+  ms: number,
+  fn: (conn: Pick<typeof db, 'select' | 'execute'>) => Promise<T>,
+): Promise<T> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql.raw(`SET LOCAL statement_timeout = ${ms}`));
+    return fn(tx);
+  });
+}
+
+// Counts the union of two conditions, each bounded independently.
+//
+// The obvious shape — one scan with the conditions OR'd together — is a trap. Postgres
+// cannot estimate the cardinality of the author subquery, so `id IN (...)` falls back to
+// the default 0.5 selectivity: on the production catalogue it estimated 994,218 rows
+// against 1,988,039 actual, i.e. exactly reltuples/2. An OR across a trigram-indexable
+// predicate and a subquery membership test cannot be served by a BitmapOr in any case, so
+// the planner chose a Seq Scan and evaluated the hashed SubPlan once per row. The LIMIT
+// could only cut that short for terms common enough to hit the cap early, which inverted
+// the cost profile: "harry" stopped after ~560k rows (2.5s), while a selective term like
+// "bookkeeping" (51 matches) had to scan all 1.98M rows to prove there were no more —
+// 9.5s and 1.42GB of disk reads for one probe.
+//
+// Splitting the branches keeps each on its own index and lets UNION dedupe the ids.
+// Verified on production to return identical counts (51, 0, 24 for bookkeeping,
+// zephyrbook, chimamanda) at 15-30x less cost.
+//
+// Each branch carries its own cap, so this can reach 2*cap where the OR'd form stopped at
+// cap. Both are far above SEARCH_COUNT_CAP, which every caller clamps the total to, so the
+// reported figure is unchanged.
+async function countUnionUpTo(
+  whereA: SQL | undefined,
+  whereB: SQL | undefined,
+  cap: number,
+): Promise<number> {
+  return withStatementTimeout(PROBE_STATEMENT_TIMEOUT_MS, async (conn) => {
+    const rows = await conn.execute<{ count: number }>(
+      sql`SELECT COUNT(*)::int AS count FROM (
+            (SELECT ${books.id} FROM ${books} WHERE ${whereA ?? sql`TRUE`} LIMIT ${cap})
+            UNION
+            (SELECT ${books.id} FROM ${books} WHERE ${whereB ?? sql`TRUE`} LIMIT ${cap})
+          ) t`,
+    );
+    return Number((rows as unknown as { count: number }[])[0]?.count ?? 0);
+  });
+}
+
 // Fetches one page of search results as two independently-bounded branches — books
 // matched by title, then books matched by their author's name — merged title-first.
 //
@@ -884,38 +948,44 @@ export const booksService = {
     let fastCount = 0;
     let cheapCount = 0;
     let blendedCount = 0;
+    // Set when the blended probe gave up, so the total it feeds is known to be a lower
+    // bound rather than a real count — see the total handling further down.
+    let blendedProbeIncomplete = false;
     if (opts.q && (!cachedRows || cachedCount == null)) {
       const q = opts.q;
-      // The two title probes are sequential (the second is only worth running if the first
-      // didn't already hit the cap), but the blended probe doesn't depend on either — so it
-      // overlaps them rather than adding its latency on top.
-      const [titleCounts, blended] = await Promise.all([
-        (async () => {
-          const fast = await countUpTo(
-            buildWhereClause(opts, buildFastTitlePrefixCondition(q)),
+      fastCount = await countUpTo(
+        buildWhereClause(opts, buildFastTitlePrefixCondition(q)),
+        SEARCH_COUNT_CAP + 1,
+      );
+      // Once the fast tier alone has hit the cap, neither wider probe can change any answer
+      // this function produces: rowsTier below already resolves to 'fast', and the reported
+      // total is Math.min(_, SEARCH_COUNT_CAP), which fastCount has itself already exceeded.
+      // The blended probe used to run unconditionally and in parallel, so every search for a
+      // common word paid for a trigram scan plus an author lookup whose result was then
+      // discarded by that clamp — ~2.5s of it on production for "harry".
+      if (fastCount <= SEARCH_COUNT_CAP) {
+        const [cheap, blended] = await Promise.all([
+          countUpTo(
+            buildWhereClause(opts, buildTitlePrefixCondition(q)),
             SEARCH_COUNT_CAP + 1,
-          );
-          // Only worth widening to the cheap tier if the fast tier hasn't already hit the cap.
-          const cheap =
-            fast > SEARCH_COUNT_CAP
-              ? 0
-              : await countUpTo(
-                  buildWhereClause(opts, buildTitlePrefixCondition(q)),
-                  SEARCH_COUNT_CAP + 1,
-                );
-          return { fast, cheap };
-        })(),
-        countUpTo(
-          buildWhereClause(
-            opts,
-            sql`(${buildTitlePrefixCondition(q)} OR ${buildAuthorMatchCondition(q, 'cheap')})`,
           ),
-          SEARCH_COUNT_CAP + 1,
-        ),
-      ]);
-      fastCount = titleCounts.fast;
-      cheapCount = titleCounts.cheap;
-      blendedCount = blended;
+          countUnionUpTo(
+            buildWhereClause(opts, buildTitlePrefixCondition(q)),
+            buildWhereClause(opts, buildAuthorMatchCondition(q, 'cheap')),
+            SEARCH_COUNT_CAP + 1,
+          ).catch((err: unknown) => {
+            if (!isStatementTimeout(err)) throw err;
+            // The total is the only thing this probe feeds, and callers already read it as a
+            // lower bound. Degrading to the title-only counts keeps the search answerable
+            // instead of failing the whole request on a caption.
+            logger.warn('Blended search count probe timed out — reporting a lower bound', { q });
+            blendedProbeIncomplete = true;
+            return 0;
+          }),
+        ]);
+        cheapCount = cheap;
+        blendedCount = blended;
+      }
     }
     // blendedCount already counts the union of both branches, so it dominates the title-only
     // probes — max() rather than a sum, which would double-count books matching both.
@@ -1085,7 +1155,11 @@ export const booksService = {
           // probes computed above, so a search's count can never be the slow part again.
           if (opts.q) {
             const total = Math.min(searchMatchCount, SEARCH_COUNT_CAP);
-            await redis.set(countCacheKey, String(total), 'EX', COUNT_TTL);
+            // A degraded count must not be cached for COUNT_TTL — the next request should get
+            // a fresh attempt rather than inherit this lower bound for the next half hour.
+            if (!blendedProbeIncomplete) {
+              await redis.set(countCacheKey, String(total), 'EX', COUNT_TTL);
+            }
             return total;
           }
           // Filter-only browse (no q) keeps an exact count: it's already cached for
@@ -1105,7 +1179,8 @@ export const booksService = {
     // mean an unbounded GROUP BY over the same 1M+-row table SEARCH_COUNT_CAP exists to
     // avoid scanning, so dedupe forces this the same way a capped search count does: a
     // lower bound, with `hasMore` as the real pagination signal.
-    const totalIsApproximate = (!!opts.q && total >= SEARCH_COUNT_CAP) || !!opts.dedupe;
+    const totalIsApproximate =
+      (!!opts.q && total >= SEARCH_COUNT_CAP) || !!opts.dedupe || blendedProbeIncomplete;
     return {
       books: page.rows,
       total,
