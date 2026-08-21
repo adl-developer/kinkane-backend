@@ -951,7 +951,16 @@ export const booksService = {
     // Set when the blended probe gave up, so the total it feeds is known to be a lower
     // bound rather than a real count — see the total handling further down.
     let blendedProbeIncomplete = false;
-    if (opts.q && (!cachedRows || cachedCount == null)) {
+    // The probes answer two separate questions, and a request rarely needs both. The title
+    // probes pick the row tier, so they are only needed when the rows have to be fetched;
+    // the blended probe feeds nothing but the total, so it is only needed when the total is
+    // not already cached. Running both sets whenever *either* was missing meant paginating
+    // re-ran the expensive one on every new offset despite the count being cached under a
+    // page-independent key for COUNT_TTL — 3.5s for "harry&offset=20" and 11.5s for
+    // "bookkeeping&offset=20", entirely to recompute a number already in Redis.
+    const needsTier = !cachedRows;
+    const needsCount = cachedCount == null;
+    if (opts.q && (needsTier || needsCount)) {
       const q = opts.q;
       fastCount = await countUpTo(
         buildWhereClause(opts, buildFastTitlePrefixCondition(q)),
@@ -969,19 +978,23 @@ export const booksService = {
             buildWhereClause(opts, buildTitlePrefixCondition(q)),
             SEARCH_COUNT_CAP + 1,
           ),
-          countUnionUpTo(
-            buildWhereClause(opts, buildTitlePrefixCondition(q)),
-            buildWhereClause(opts, buildAuthorMatchCondition(q, 'cheap')),
-            SEARCH_COUNT_CAP + 1,
-          ).catch((err: unknown) => {
-            if (!isStatementTimeout(err)) throw err;
-            // The total is the only thing this probe feeds, and callers already read it as a
-            // lower bound. Degrading to the title-only counts keeps the search answerable
-            // instead of failing the whole request on a caption.
-            logger.warn('Blended search count probe timed out — reporting a lower bound', { q });
-            blendedProbeIncomplete = true;
-            return 0;
-          }),
+          !needsCount
+            ? Promise.resolve(0)
+            : countUnionUpTo(
+                buildWhereClause(opts, buildTitlePrefixCondition(q)),
+                buildWhereClause(opts, buildAuthorMatchCondition(q, 'cheap')),
+                SEARCH_COUNT_CAP + 1,
+              ).catch((err: unknown) => {
+                if (!isStatementTimeout(err)) throw err;
+                // The total is the only thing this probe feeds, and callers already read it
+                // as a lower bound. Degrading to the title-only counts keeps the search
+                // answerable instead of failing the whole request on a caption.
+                logger.warn('Blended search count probe timed out — reporting a lower bound', {
+                  q,
+                });
+                blendedProbeIncomplete = true;
+                return 0;
+              }),
         ]);
         cheapCount = cheap;
         blendedCount = blended;
@@ -1173,14 +1186,32 @@ export const booksService = {
           return total;
         })();
 
-    const [page, total] = await Promise.all([pagePromise, totalPromise]);
+    const [page, probedTotal] = await Promise.all([pagePromise, totalPromise]);
+    // The tier probes count title and author matches only, so a search answered by the
+    // broad (fuzzy) tier can report zero while returning a full page — "xylophonist" came
+    // back as 20 books under a "0 results" caption, with hasMore true against a total of 0.
+    // Counting the fuzzy tier properly is the unbounded work SEARCH_COUNT_CAP exists to
+    // avoid, so the rows actually being returned stand in as a floor instead: never above
+    // the truth, and never below what the caller is looking at. Searches only — a
+    // filter-only browse keeps its exact count, where a disagreement would be a real bug
+    // worth surfacing rather than papering over.
+    // Only a non-empty page is evidence: returning n rows at offset k proves rows k..k+n-1
+    // exist, so the total is at least k+n. An *empty* page proves nothing — paging past the
+    // end of a 3-match result set would otherwise let offset alone invent a total of 40.
+    const rowsFloor = opts.q && page.rows.length > 0 ? effectiveOffset + page.rows.length : 0;
+    const total = Math.max(probedTotal, rowsFloor);
     // Derived rather than stored so it stays correct when `total` came from cache. `total`
     // counts raw rows, not distinct titles — computing an exact distinct-title count would
     // mean an unbounded GROUP BY over the same 1M+-row table SEARCH_COUNT_CAP exists to
     // avoid scanning, so dedupe forces this the same way a capped search count does: a
     // lower bound, with `hasMore` as the real pagination signal.
     const totalIsApproximate =
-      (!!opts.q && total >= SEARCH_COUNT_CAP) || !!opts.dedupe || blendedProbeIncomplete;
+      (!!opts.q && total >= SEARCH_COUNT_CAP) ||
+      !!opts.dedupe ||
+      blendedProbeIncomplete ||
+      // The floor only raises the total when the probes undercounted, which makes what we
+      // report a lower bound by construction.
+      total > probedTotal;
     return {
       books: page.rows,
       total,
