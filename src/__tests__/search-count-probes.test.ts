@@ -20,10 +20,14 @@ const dialect = new PgDialect();
 
 // SQL text of every statement issued, in order, and the counts to hand back for them.
 let issued: string[] = [];
+let issuedParams: unknown[][] = [];
+let settings: string[] = [];
 let counts: number[] = [];
 // Failure staged against the blended probe specifically — it is the only one wrapped in a
 // timeout, and aiming at "whichever query runs first" would test the wrong thing.
 let blendedError: unknown = null;
+// Lets a test fail a specific broad-tier pool stage, the way the time budget cancels one.
+let poolFailure: (() => unknown) | null = null;
 
 function render(query: unknown): string {
   try {
@@ -33,12 +37,28 @@ function render(query: unknown): string {
   }
 }
 
+function params(query: unknown): unknown[] {
+  try {
+    return dialect.sqlToQuery(query as never).params as unknown[];
+  } catch {
+    return [];
+  }
+}
+
 function execute(query: unknown): Promise<{ count: number }[]> {
   const text = render(query);
-  // The GUC statements the probe wrappers emit are not probes; don't let them consume a
-  // staged count or the assertions below would be counting the wrong thing.
-  if (/^\s*SET\b/i.test(text)) return Promise.resolve([]);
+  // The GUC statements the wrappers emit are not queries; don't let them consume a staged
+  // count or the assertions below would be counting the wrong thing.
+  if (/^\s*SET\b/i.test(text)) {
+    settings.push(text);
+    return Promise.resolve([]);
+  }
+  issuedParams.push(params(query));
   issued.push(text);
+  if (poolFailure && /word_similarity/i.test(text)) {
+    const err = poolFailure();
+    if (err) return Promise.reject(err);
+  }
   if (blendedError && /UNION/i.test(text)) {
     const err = blendedError;
     blendedError = null;
@@ -111,8 +131,11 @@ const list = (o: Record<string, unknown> = {}) =>
 
 beforeEach(() => {
   issued = [];
+  issuedParams = [];
+  settings = [];
   counts = [];
   blendedError = null;
+  poolFailure = null;
   cachedRows = null;
   cachedCount = null;
   cacheWrites = [];
@@ -335,5 +358,58 @@ describe('the broad (fuzzy) tier', () => {
     // returned different pages for identical searches 100s apart.
     const pooled = issued.find((sql) => /word_similarity/i.test(sql) && /FROM\s*\(\s*SELECT/i.test(sql))!;
     expect(pooled).toMatch(/lower\(c\.title\),\s*c\.id/i);
+  });
+});
+
+describe('the fuzzy tier time budget', () => {
+  const stageBroadTier = () => {
+    cachedRows = null;
+    cachedCount = null;
+    counts = [0, 0, 0];
+  };
+  const poolQueries = () =>
+    issued
+      .map((sql, i) => ({ sql, params: issuedParams[i] }))
+      .filter((x) => /word_similarity/i.test(x.sql) && /FROM\s*\(\s*SELECT/i.test(x.sql));
+
+  // A statement_timeout cancels rather than returning partial rows, so "as much as fits in
+  // the budget" is built by attempting a narrow pool first and widening only while time
+  // remains. Measured on production, the narrow stage lands in 260-660ms for every term
+  // tried, so there is almost always a ranking in hand before the wide attempt begins.
+  it('tries a narrow pool first, then widens while the budget allows', async () => {
+    stageBroadTier();
+    await list();
+
+    // The pool cap is the first numeric parameter — the filter's are all strings, and the
+    // outer page limit comes after the ranking.
+    const pools = poolQueries().map((x) => x.params.find((v) => typeof v === 'number'));
+    expect(pools.length, 'expected the pool to be attempted in stages').toBeGreaterThanOrEqual(2);
+    // Narrow first, then wider — never the other way round.
+    expect(Number(pools[0])).toBeLessThan(Number(pools[1]));
+  });
+
+  it('bounds every stage with a statement timeout, not just the first', async () => {
+    stageBroadTier();
+    await list();
+    const timeouts = settings.filter((sql) => /statement_timeout/i.test(sql));
+    expect(timeouts.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('keeps the narrower ranking when the wider pool runs out of budget', async () => {
+    stageBroadTier();
+    // Let the narrow stage succeed, then cancel the wide one the way the budget would.
+    let seen = 0;
+    poolFailure = () => (++seen >= 2 ? Object.assign(new Error('canceling statement'), { code: '57014' }) : null);
+
+    const r = await list();
+    // The search still answers, from the stage that completed, rather than failing.
+    expect(r.books).toBeDefined();
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it('still propagates a non-timeout failure from a stage', async () => {
+    stageBroadTier();
+    poolFailure = () => Object.assign(new Error('relation missing'), { code: '42P01' });
+    await expect(list()).rejects.toThrow('relation missing');
   });
 });

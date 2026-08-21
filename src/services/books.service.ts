@@ -101,6 +101,25 @@ const AUTHOR_MATCH_LIMIT = 5000;
 // already a fuzzy guess — and it is the difference between a guess in a second and a guess
 // in a minute and a half.
 const BROAD_CANDIDATE_POOL = 2000;
+// Wall-clock ceiling for the fuzzy tier. An ambiguous query — a typo, a mid-word fragment,
+// anything that matched no title by prefix — must come back inside this, with whatever it
+// managed to rank, rather than running to completion however long that takes.
+const BROAD_TIME_BUDGET_MS = 5000;
+// Pool sizes to try, smallest first. A statement_timeout cancels a query outright rather
+// than returning partial rows, so "as much as fits in the budget" has to be built by
+// attempting progressively wider pools and keeping the widest that finished. The first
+// stage is sized to complete comfortably for every term measured on production (≤660ms
+// warm), so there is nearly always a result in hand before the expensive attempt starts.
+//
+// The spread between them is the whole reason for staging: on "traning" the 500 pool takes
+// 479ms and the 2000 pool 6.8s warm — and 14.6s cold — while on "thhe", "annd" and "boook"
+// the 2000 pool lands in well under a second. A single fixed size is either too slow for
+// the worst term or needlessly narrow for the rest; staging lets each query take the widest
+// pool it can afford.
+const BROAD_POOL_STAGES = [500, BROAD_CANDIDATE_POOL];
+// Don't open a stage there is no realistic room to finish — it would burn the remainder of
+// the budget and be cancelled with nothing to show for it.
+const BROAD_MIN_STAGE_MS = 500;
 // Ceiling on a single count probe. The probes only ever feed a total that callers are
 // already allowed to read as a lower bound (see totalIsApproximate), so a probe that
 // overruns can be abandoned without failing the search — whereas letting it run unbounded
@@ -760,7 +779,23 @@ async function withStatementTimeout<T>(
   fn: (conn: Pick<typeof db, 'select' | 'execute'>) => Promise<T>,
 ): Promise<T> {
   return db.transaction(async (tx) => {
-    await tx.execute(sql.raw(`SET LOCAL statement_timeout = ${ms}`));
+    await tx.execute(sql.raw(`SET LOCAL statement_timeout = ${Math.max(1, Math.floor(ms))}`));
+    return fn(tx);
+  });
+}
+
+// The fuzzy tier needs both GUCs, and needs them in a transaction of its own rather than
+// one shared with the author branch. A statement_timeout abort poisons its whole
+// transaction: sharing one would mean a cancelled title stage also killing the author
+// query that had already succeeded beside it. Separate transactions also let the two
+// branches run concurrently again, which the shared-transaction arrangement gave up.
+async function withBroadTierSession<T>(
+  timeoutMs: number,
+  fn: (conn: Pick<typeof db, 'select' | 'execute'>) => Promise<T>,
+): Promise<T> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql.raw('SET LOCAL pg_trgm.word_similarity_threshold = 0.3'));
+    await tx.execute(sql.raw(`SET LOCAL statement_timeout = ${Math.max(1, Math.floor(timeoutMs))}`));
     return fn(tx);
   });
 }
@@ -857,11 +892,12 @@ async function countUnionUpTo(
 // had no tiebreak at all, and with ties that large it was genuinely unstable: two
 // identical production searches 100s apart returned different pages (18/21 overlap, a
 // different top result).
-async function rankBroadCandidates(
+async function rankBroadPool(
   conn: Pick<typeof db, 'execute'>,
   opts: ListBooksOptions,
   q: string,
   take: number,
+  pool: number,
 ): Promise<number[]> {
   const where = buildWhereClause(opts, buildSearchCondition(q));
   const ranking = buildSearchRankOrderBy(q, sql`c.title`, sql`c.search_vector`);
@@ -872,7 +908,7 @@ async function rankBroadCandidates(
       FROM ${books}
       WHERE ${where ?? sql`TRUE`}
       ORDER BY ${books.id}
-      LIMIT ${BROAD_CANDIDATE_POOL}
+      LIMIT ${pool}
     ) c
     ORDER BY ${sql.join(ranking, sql`, `)}, lower(c.title), c.id
     LIMIT ${take}
@@ -880,19 +916,54 @@ async function rankBroadCandidates(
   return (ranked as unknown as { id: number }[]).map((r) => Number(r.id));
 }
 
+// Widens the candidate pool for as long as the time budget allows, returning the best
+// ranking that actually completed.
+//
+// Each stage is a separate attempt against a wider pool, given whatever remains of the
+// budget as its statement_timeout. A stage that overruns is cancelled and its transaction
+// discarded, leaving the previous stage's result — already in hand — as the answer. So the
+// page is always ranked from the widest pool that fitted in BROAD_TIME_BUDGET_MS, and the
+// tier cannot exceed it regardless of how dense the fuzzy neighbourhood turns out to be.
+//
+// A wider pool is a strict improvement on a narrower one, never a different kind of answer:
+// same filter, same ordering, more candidates considered. Falling back to a narrow stage
+// costs relevance, not correctness.
+async function rankBroadCandidates(
+  opts: ListBooksOptions,
+  q: string,
+  take: number,
+): Promise<number[]> {
+  const deadline = Date.now() + BROAD_TIME_BUDGET_MS;
+  let best: number[] = [];
+
+  for (const pool of BROAD_POOL_STAGES) {
+    const remaining = deadline - Date.now();
+    if (remaining < BROAD_MIN_STAGE_MS) break;
+    try {
+      best = await withBroadTierSession(remaining, (conn) => rankBroadPool(conn, opts, q, take, pool));
+    } catch (err) {
+      if (!isStatementTimeout(err)) throw err;
+      logger.warn('Fuzzy search tier hit its time budget — ranking from a narrower pool', {
+        q,
+        pool,
+        budgetMs: BROAD_TIME_BUDGET_MS,
+      });
+      break;
+    }
+  }
+  return best;
+}
+
 // The pool query already applied every filter (it shares buildWhereClause with the
 // unpooled form), so the ids coming back need only be resolved to rows — unlike the author
 // branch, whose ranking runs over book_contributors and cannot filter books.
-async function fetchBroadTitleBranch(
-  conn: Pick<typeof db, 'select' | 'execute'>,
-  opts: ListBooksOptions,
-  q: string,
-  branchLimit: number,
-) {
-  const ids = await rankBroadCandidates(conn, opts, q, branchLimit);
+async function fetchBroadTitleBranch(opts: ListBooksOptions, q: string, branchLimit: number) {
+  const ids = await rankBroadCandidates(opts, q, branchLimit);
   if (ids.length === 0) return [];
 
-  const rows = await conn.select(LIST_COLUMNS).from(books).where(inArray(books.id, ids));
+  // Resolving ids to rows needs neither GUC and is a plain indexed lookup, so it runs
+  // outside the budgeted stages rather than eating into them.
+  const rows = await db.select(LIST_COLUMNS).from(books).where(inArray(books.id, ids));
   // Relevance order lives in the id list; the fetch above discards it.
   const rank = new Map(ids.map((id, i) => [id, i]));
   rows.sort((a, b) => rank.get(a.id)! - rank.get(b.id)!);
@@ -914,10 +985,8 @@ async function fetchSearchPage(
 ) {
   const branchLimit = opts.offset + pageSize + 1;
 
-  const titleQuery = (conn: Pick<typeof db, 'select' | 'execute'>) =>
-    tier === 'broad'
-      ? fetchBroadTitleBranch(conn, opts, q, branchLimit)
-      : conn.select(LIST_COLUMNS).from(books).where(titleWhere).orderBy(...titleOrderBy).limit(branchLimit);
+  const titleQuery = (conn: Pick<typeof db, 'select'>) =>
+    conn.select(LIST_COLUMNS).from(books).where(titleWhere).orderBy(...titleOrderBy).limit(branchLimit);
 
   // The author branch only reaches for its fuzzy tier when the title branch has already
   // fallen through to its own — i.e. nothing cheaper matched anywhere. Escalating the two
@@ -928,14 +997,20 @@ async function fetchSearchPage(
   let titleRows: Awaited<ReturnType<typeof titleQuery>>;
   let authorRows: Awaited<ReturnType<typeof authorQuery>>;
   if (tier === 'broad') {
-    // Both branches use <% at this tier, so both need the threshold override — and it only
-    // holds for the transaction, so they run inside one rather than in parallel.
-    const pair = await withWordSimilarityThreshold(async (conn) => ({
-      title: await titleQuery(conn),
-      author: await authorQuery(conn),
-    }));
-    titleRows = pair.title;
-    authorRows = pair.author;
+    // Each branch scopes its own GUCs now, so they run concurrently and a title stage
+    // cancelled by the time budget cannot take the author query down with it. The author
+    // branch gets the same ceiling: it is bounded by AUTHOR_MATCH_LIMIT and has never been
+    // the slow side, but "an ambiguous search answers within the budget" has to hold for
+    // the whole tier, not just the branch that was measured to be expensive. Losing it
+    // costs the author-matched rows, not the page.
+    [titleRows, authorRows] = await Promise.all([
+      fetchBroadTitleBranch(opts, q, branchLimit),
+      withBroadTierSession(BROAD_TIME_BUDGET_MS, (conn) => authorQuery(conn)).catch((err: unknown) => {
+        if (!isStatementTimeout(err)) throw err;
+        logger.warn('Author branch of the fuzzy tier hit its time budget — omitting it', { q });
+        return [] as Awaited<ReturnType<typeof authorQuery>>;
+      }),
+    ]);
   } else {
     [titleRows, authorRows] = await Promise.all([titleQuery(db), authorQuery(db)]);
   }
