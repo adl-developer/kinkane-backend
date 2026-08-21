@@ -23,6 +23,7 @@ import {
   filterExcludedWorks,
   getUserExclusions,
 } from '../lib/exclusions';
+import { logger } from '../lib/logger';
 import { redis } from '../lib/redis';
 import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-excerpts.service';
 import { TRENDING_SCORED_TYPES, trendingScoreSql } from './interactions.service';
@@ -78,6 +79,54 @@ const SEARCH_COUNT_CAP = 1000;
 // so it only ever truncates genuinely ambiguous fragments, where the rows past the cap
 // were never going to be shown anyway.
 const AUTHOR_MATCH_LIMIT = 5000;
+// How many fuzzy candidates the broad tier will rank before picking a page.
+//
+// The broad tier's ranking expression — word_similarity() per row, then a sort — cannot be
+// served by any index, so Postgres must evaluate it for every matching row before LIMIT can
+// apply. That is fine when the fuzzy match set is small and catastrophic when it is not: a
+// four-letter typo of a common word ("thhe") clears the 0.3 word-similarity threshold
+// against 506,996 titles, a quarter of the catalogue, at which point the planner abandons
+// the trigram index for a parallel sequential scan of all 1.98M rows. Measured on
+// production: 93.5s and 6.5GB read from disk for one search.
+//
+// Capping the candidate pool decouples the cost from how dense the fuzzy neighbourhood is,
+// the same way SEARCH_COUNT_CAP decouples the count from how common the term is. Sized well
+// above any page the API can ask for (max offset + max page size), so the ranking still has
+// a wide field to choose from.
+//
+// The tradeoff is real and worth stating plainly: the pool is the first rows Postgres
+// happens to find, not the best ones, so for a very dense fuzzy match the top of the page
+// is the best of a bounded sample rather than the best overall. That only affects searches
+// where nothing matched by prefix or word-prefix at all — i.e. where every result is
+// already a fuzzy guess — and it is the difference between a guess in a second and a guess
+// in a minute and a half.
+const BROAD_CANDIDATE_POOL = 2000;
+// Wall-clock ceiling for the fuzzy tier. An ambiguous query — a typo, a mid-word fragment,
+// anything that matched no title by prefix — must come back inside this, with whatever it
+// managed to rank, rather than running to completion however long that takes.
+const BROAD_TIME_BUDGET_MS = 5000;
+// Pool sizes to try, smallest first. A statement_timeout cancels a query outright rather
+// than returning partial rows, so "as much as fits in the budget" has to be built by
+// attempting progressively wider pools and keeping the widest that finished. The first
+// stage is sized to complete comfortably for every term measured on production (≤660ms
+// warm), so there is nearly always a result in hand before the expensive attempt starts.
+//
+// The spread between them is the whole reason for staging: on "traning" the 500 pool takes
+// 479ms and the 2000 pool 6.8s warm — and 14.6s cold — while on "thhe", "annd" and "boook"
+// the 2000 pool lands in well under a second. A single fixed size is either too slow for
+// the worst term or needlessly narrow for the rest; staging lets each query take the widest
+// pool it can afford.
+const BROAD_POOL_STAGES = [500, BROAD_CANDIDATE_POOL];
+// Don't open a stage there is no realistic room to finish — it would burn the remainder of
+// the budget and be cancelled with nothing to show for it.
+const BROAD_MIN_STAGE_MS = 500;
+// Ceiling on a single count probe. The probes only ever feed a total that callers are
+// already allowed to read as a lower bound (see totalIsApproximate), so a probe that
+// overruns can be abandoned without failing the search — whereas letting it run unbounded
+// lets one pathological query hold a connection and saturate disk I/O for the whole
+// instance. Measured against production: five concurrent uncached searches took 66-92s
+// each and degraded every other endpoint until they drained.
+const PROBE_STATEMENT_TIMEOUT_MS = 5000;
 
 export interface ListBooksOptions {
   q?: string;
@@ -315,20 +364,29 @@ function buildSearchCondition(q: string): SQL {
   )`;
 }
 
-function buildSearchOrderBy(q: string): SQL[] {
+// Relevance ordering for the broad tier, parameterised by where the columns live so the
+// same expression can rank the books table directly or a materialised candidate pool
+// aliased over it. Kept as one function because the two must agree exactly: they decide
+// which rows a page contains and in what order, and a divergence between them is a
+// reordering bug that only shows up on the fuzzy path.
+function buildSearchRankOrderBy(q: string, title: SQL, searchVector: SQL): SQL[] {
   const prefix = q + '%';
   const wordPrefix = '% ' + q + '%';
 
   return [
     sql`CASE
-      WHEN ${books.title} ILIKE ${prefix}     THEN 0
-      WHEN ${books.title} ILIKE ${wordPrefix} THEN 1
-      WHEN word_similarity(${q}, ${books.title}) > 0.3 THEN 2
+      WHEN ${title} ILIKE ${prefix}     THEN 0
+      WHEN ${title} ILIKE ${wordPrefix} THEN 1
+      WHEN word_similarity(${q}, ${title}) > 0.3 THEN 2
       ELSE 3
     END`,
-    sql`word_similarity(${q}, ${books.title}) DESC`,
-    sql`ts_rank(${books.searchVector}, plainto_tsquery('english', ${q})) DESC`,
+    sql`word_similarity(${q}, ${title}) DESC`,
+    sql`ts_rank(${searchVector}, plainto_tsquery('english', ${q})) DESC`,
   ];
+}
+
+function buildSearchOrderBy(q: string): SQL[] {
+  return buildSearchRankOrderBy(q, sql`${books.title}`, sql`${books.searchVector}`);
 }
 
 // Matches books by their author's name, as an *uncorrelated* subquery over a
@@ -707,6 +765,78 @@ async function countUpTo(where: SQL | undefined, cap: number): Promise<number> {
   return Number((rows as unknown as { count: number }[])[0]?.count ?? 0);
 }
 
+// Postgres reports a statement_timeout abort as query_canceled. Narrowed deliberately:
+// every other failure is a real bug and must keep propagating.
+function isStatementTimeout(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: string }).code === '57014';
+}
+
+// SET LOCAL scopes the timeout to the wrapped statement inside a transaction — a bare SET
+// would stick to the pooled connection and silently apply to unrelated queries that reuse
+// it afterwards. Same rationale as withWordSimilarityThreshold above.
+async function withStatementTimeout<T>(
+  ms: number,
+  fn: (conn: Pick<typeof db, 'select' | 'execute'>) => Promise<T>,
+): Promise<T> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql.raw(`SET LOCAL statement_timeout = ${Math.max(1, Math.floor(ms))}`));
+    return fn(tx);
+  });
+}
+
+// The fuzzy tier needs both GUCs, and needs them in a transaction of its own rather than
+// one shared with the author branch. A statement_timeout abort poisons its whole
+// transaction: sharing one would mean a cancelled title stage also killing the author
+// query that had already succeeded beside it. Separate transactions also let the two
+// branches run concurrently again, which the shared-transaction arrangement gave up.
+async function withBroadTierSession<T>(
+  timeoutMs: number,
+  fn: (conn: Pick<typeof db, 'select' | 'execute'>) => Promise<T>,
+): Promise<T> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql.raw('SET LOCAL pg_trgm.word_similarity_threshold = 0.3'));
+    await tx.execute(sql.raw(`SET LOCAL statement_timeout = ${Math.max(1, Math.floor(timeoutMs))}`));
+    return fn(tx);
+  });
+}
+
+// Counts the union of two conditions, each bounded independently.
+//
+// The obvious shape — one scan with the conditions OR'd together — is a trap. Postgres
+// cannot estimate the cardinality of the author subquery, so `id IN (...)` falls back to
+// the default 0.5 selectivity: on the production catalogue it estimated 994,218 rows
+// against 1,988,039 actual, i.e. exactly reltuples/2. An OR across a trigram-indexable
+// predicate and a subquery membership test cannot be served by a BitmapOr in any case, so
+// the planner chose a Seq Scan and evaluated the hashed SubPlan once per row. The LIMIT
+// could only cut that short for terms common enough to hit the cap early, which inverted
+// the cost profile: "harry" stopped after ~560k rows (2.5s), while a selective term like
+// "bookkeeping" (51 matches) had to scan all 1.98M rows to prove there were no more —
+// 9.5s and 1.42GB of disk reads for one probe.
+//
+// Splitting the branches keeps each on its own index and lets UNION dedupe the ids.
+// Verified on production to return identical counts (51, 0, 24 for bookkeeping,
+// zephyrbook, chimamanda) at 15-30x less cost.
+//
+// Each branch carries its own cap, so this can reach 2*cap where the OR'd form stopped at
+// cap. Both are far above SEARCH_COUNT_CAP, which every caller clamps the total to, so the
+// reported figure is unchanged.
+async function countUnionUpTo(
+  whereA: SQL | undefined,
+  whereB: SQL | undefined,
+  cap: number,
+): Promise<number> {
+  return withStatementTimeout(PROBE_STATEMENT_TIMEOUT_MS, async (conn) => {
+    const rows = await conn.execute<{ count: number }>(
+      sql`SELECT COUNT(*)::int AS count FROM (
+            (SELECT ${books.id} FROM ${books} WHERE ${whereA ?? sql`TRUE`} LIMIT ${cap})
+            UNION
+            (SELECT ${books.id} FROM ${books} WHERE ${whereB ?? sql`TRUE`} LIMIT ${cap})
+          ) t`,
+    );
+    return Number((rows as unknown as { count: number }[])[0]?.count ?? 0);
+  });
+}
+
 // Fetches one page of search results as two independently-bounded branches — books
 // matched by title, then books matched by their author's name — merged title-first.
 //
@@ -737,11 +867,117 @@ async function countUpTo(where: SQL | undefined, cap: number): Promise<number> {
 // applies to the merged sequence, not to either branch — so a deep page transfers
 // offset+limit rows per branch. That is bounded by the max page size (50) and by
 // SEARCH_COUNT_CAP making pagination past ~1000 rows meaningless for a search anyway.
+// Ranks the broad tier against a bounded pool instead of the whole fuzzy match set.
+//
+// The inner LIMIT is the whole point and has to stay inside the subquery: it caps the rows
+// the ranking is evaluated over. Hoisting it to the outer query would restore exactly the
+// shape this replaces, where LIMIT applies to the output and the sort still has to consider
+// every match first.
+//
+// The pool is ordered by id, and that ordering is load-bearing rather than cosmetic. An
+// unordered LIMIT is cheaper but resamples: measured against production, two identical
+// "thhe" searches returned different pools, which would put a book on two pages or on none
+// as the offset advanced — the same hazard rankAuthorMatches documents. Ordering by id is
+// the cheapest total order available, because books_pkey can be walked in order and the
+// scan stops as soon as the pool is full. It costs roughly 800ms on the densest terms
+// (thhe 731ms unordered vs 1525ms ordered) and is *faster* on sparse ones, against a
+// baseline of 100s.
+//
+// It does bias the pool toward lower ids, i.e. earlier-ingested books. That is arbitrary,
+// but so is every alternative here: 166,111 titles tie at word_similarity 0.5 for "thhe",
+// so no selection among them is more correct than another. Deterministic-arbitrary beats
+// random-arbitrary, because it paginates and caches correctly.
+//
+// The ranking is then a total order through title and id. The unpooled form it replaces
+// had no tiebreak at all, and with ties that large it was genuinely unstable: two
+// identical production searches 100s apart returned different pages (18/21 overlap, a
+// different top result).
+async function rankBroadPool(
+  conn: Pick<typeof db, 'execute'>,
+  opts: ListBooksOptions,
+  q: string,
+  take: number,
+  pool: number,
+): Promise<number[]> {
+  const where = buildWhereClause(opts, buildSearchCondition(q));
+  const ranking = buildSearchRankOrderBy(q, sql`c.title`, sql`c.search_vector`);
+  const ranked = await conn.execute<{ id: number }>(sql`
+    SELECT c.id
+    FROM (
+      SELECT ${books.id} AS id, ${books.title} AS title, ${books.searchVector} AS search_vector
+      FROM ${books}
+      WHERE ${where ?? sql`TRUE`}
+      ORDER BY ${books.id}
+      LIMIT ${pool}
+    ) c
+    ORDER BY ${sql.join(ranking, sql`, `)}, lower(c.title), c.id
+    LIMIT ${take}
+  `);
+  return (ranked as unknown as { id: number }[]).map((r) => Number(r.id));
+}
+
+// Widens the candidate pool for as long as the time budget allows, returning the best
+// ranking that actually completed.
+//
+// Each stage is a separate attempt against a wider pool, given whatever remains of the
+// budget as its statement_timeout. A stage that overruns is cancelled and its transaction
+// discarded, leaving the previous stage's result — already in hand — as the answer. So the
+// page is always ranked from the widest pool that fitted in BROAD_TIME_BUDGET_MS, and the
+// tier cannot exceed it regardless of how dense the fuzzy neighbourhood turns out to be.
+//
+// A wider pool is a strict improvement on a narrower one, never a different kind of answer:
+// same filter, same ordering, more candidates considered. Falling back to a narrow stage
+// costs relevance, not correctness.
+async function rankBroadCandidates(
+  opts: ListBooksOptions,
+  q: string,
+  take: number,
+): Promise<number[]> {
+  const deadline = Date.now() + BROAD_TIME_BUDGET_MS;
+  let best: number[] = [];
+
+  for (const pool of BROAD_POOL_STAGES) {
+    const remaining = deadline - Date.now();
+    if (remaining < BROAD_MIN_STAGE_MS) break;
+    try {
+      best = await withBroadTierSession(remaining, (conn) => rankBroadPool(conn, opts, q, take, pool));
+    } catch (err) {
+      if (!isStatementTimeout(err)) throw err;
+      logger.warn('Fuzzy search tier hit its time budget — ranking from a narrower pool', {
+        q,
+        pool,
+        budgetMs: BROAD_TIME_BUDGET_MS,
+      });
+      break;
+    }
+  }
+  return best;
+}
+
+// The pool query already applied every filter (it shares buildWhereClause with the
+// unpooled form), so the ids coming back need only be resolved to rows — unlike the author
+// branch, whose ranking runs over book_contributors and cannot filter books.
+async function fetchBroadTitleBranch(opts: ListBooksOptions, q: string, branchLimit: number) {
+  const ids = await rankBroadCandidates(opts, q, branchLimit);
+  if (ids.length === 0) return [];
+
+  // Resolving ids to rows needs neither GUC and is a plain indexed lookup, so it runs
+  // outside the budgeted stages rather than eating into them.
+  const rows = await db.select(LIST_COLUMNS).from(books).where(inArray(books.id, ids));
+  // Relevance order lives in the id list; the fetch above discards it.
+  const rank = new Map(ids.map((id, i) => [id, i]));
+  rows.sort((a, b) => rank.get(a.id)! - rank.get(b.id)!);
+  return rows;
+}
+
 async function fetchSearchPage(
   opts: ListBooksOptions,
   q: string,
   tier: 'fast' | 'cheap' | 'broad',
   titleWhere: SQL | undefined,
+  // Ranking for the fast and cheap tiers, both of which sort an already-narrow index-backed
+  // match set. The broad tier ignores it and ranks inside its own bounded pool instead —
+  // see rankBroadCandidates for why it cannot simply sort what it matches.
   titleOrderBy: (SQL | PgColumn)[],
   // The page size to fetch per branch — opts.limit normally, or opts.limit +
   // DEDUPE_POOL_HEADROOM when the caller is about to dedupe the merged result.
@@ -761,14 +997,20 @@ async function fetchSearchPage(
   let titleRows: Awaited<ReturnType<typeof titleQuery>>;
   let authorRows: Awaited<ReturnType<typeof authorQuery>>;
   if (tier === 'broad') {
-    // Both branches use <% at this tier, so both need the threshold override — and it only
-    // holds for the transaction, so they run inside one rather than in parallel.
-    const pair = await withWordSimilarityThreshold(async (conn) => ({
-      title: await titleQuery(conn),
-      author: await authorQuery(conn),
-    }));
-    titleRows = pair.title;
-    authorRows = pair.author;
+    // Each branch scopes its own GUCs now, so they run concurrently and a title stage
+    // cancelled by the time budget cannot take the author query down with it. The author
+    // branch gets the same ceiling: it is bounded by AUTHOR_MATCH_LIMIT and has never been
+    // the slow side, but "an ambiguous search answers within the budget" has to hold for
+    // the whole tier, not just the branch that was measured to be expensive. Losing it
+    // costs the author-matched rows, not the page.
+    [titleRows, authorRows] = await Promise.all([
+      fetchBroadTitleBranch(opts, q, branchLimit),
+      withBroadTierSession(BROAD_TIME_BUDGET_MS, (conn) => authorQuery(conn)).catch((err: unknown) => {
+        if (!isStatementTimeout(err)) throw err;
+        logger.warn('Author branch of the fuzzy tier hit its time budget — omitting it', { q });
+        return [] as Awaited<ReturnType<typeof authorQuery>>;
+      }),
+    ]);
   } else {
     [titleRows, authorRows] = await Promise.all([titleQuery(db), authorQuery(db)]);
   }
@@ -884,38 +1126,57 @@ export const booksService = {
     let fastCount = 0;
     let cheapCount = 0;
     let blendedCount = 0;
-    if (opts.q && (!cachedRows || cachedCount == null)) {
+    // Set when the blended probe gave up, so the total it feeds is known to be a lower
+    // bound rather than a real count — see the total handling further down.
+    let blendedProbeIncomplete = false;
+    // The probes answer two separate questions, and a request rarely needs both. The title
+    // probes pick the row tier, so they are only needed when the rows have to be fetched;
+    // the blended probe feeds nothing but the total, so it is only needed when the total is
+    // not already cached. Running both sets whenever *either* was missing meant paginating
+    // re-ran the expensive one on every new offset despite the count being cached under a
+    // page-independent key for COUNT_TTL — 3.5s for "harry&offset=20" and 11.5s for
+    // "bookkeeping&offset=20", entirely to recompute a number already in Redis.
+    const needsTier = !cachedRows;
+    const needsCount = cachedCount == null;
+    if (opts.q && (needsTier || needsCount)) {
       const q = opts.q;
-      // The two title probes are sequential (the second is only worth running if the first
-      // didn't already hit the cap), but the blended probe doesn't depend on either — so it
-      // overlaps them rather than adding its latency on top.
-      const [titleCounts, blended] = await Promise.all([
-        (async () => {
-          const fast = await countUpTo(
-            buildWhereClause(opts, buildFastTitlePrefixCondition(q)),
+      fastCount = await countUpTo(
+        buildWhereClause(opts, buildFastTitlePrefixCondition(q)),
+        SEARCH_COUNT_CAP + 1,
+      );
+      // Once the fast tier alone has hit the cap, neither wider probe can change any answer
+      // this function produces: rowsTier below already resolves to 'fast', and the reported
+      // total is Math.min(_, SEARCH_COUNT_CAP), which fastCount has itself already exceeded.
+      // The blended probe used to run unconditionally and in parallel, so every search for a
+      // common word paid for a trigram scan plus an author lookup whose result was then
+      // discarded by that clamp — ~2.5s of it on production for "harry".
+      if (fastCount <= SEARCH_COUNT_CAP) {
+        const [cheap, blended] = await Promise.all([
+          countUpTo(
+            buildWhereClause(opts, buildTitlePrefixCondition(q)),
             SEARCH_COUNT_CAP + 1,
-          );
-          // Only worth widening to the cheap tier if the fast tier hasn't already hit the cap.
-          const cheap =
-            fast > SEARCH_COUNT_CAP
-              ? 0
-              : await countUpTo(
-                  buildWhereClause(opts, buildTitlePrefixCondition(q)),
-                  SEARCH_COUNT_CAP + 1,
-                );
-          return { fast, cheap };
-        })(),
-        countUpTo(
-          buildWhereClause(
-            opts,
-            sql`(${buildTitlePrefixCondition(q)} OR ${buildAuthorMatchCondition(q, 'cheap')})`,
           ),
-          SEARCH_COUNT_CAP + 1,
-        ),
-      ]);
-      fastCount = titleCounts.fast;
-      cheapCount = titleCounts.cheap;
-      blendedCount = blended;
+          !needsCount
+            ? Promise.resolve(0)
+            : countUnionUpTo(
+                buildWhereClause(opts, buildTitlePrefixCondition(q)),
+                buildWhereClause(opts, buildAuthorMatchCondition(q, 'cheap')),
+                SEARCH_COUNT_CAP + 1,
+              ).catch((err: unknown) => {
+                if (!isStatementTimeout(err)) throw err;
+                // The total is the only thing this probe feeds, and callers already read it
+                // as a lower bound. Degrading to the title-only counts keeps the search
+                // answerable instead of failing the whole request on a caption.
+                logger.warn('Blended search count probe timed out — reporting a lower bound', {
+                  q,
+                });
+                blendedProbeIncomplete = true;
+                return 0;
+              }),
+        ]);
+        cheapCount = cheap;
+        blendedCount = blended;
+      }
     }
     // blendedCount already counts the union of both branches, so it dominates the title-only
     // probes — max() rather than a sum, which would double-count books matching both.
@@ -1085,7 +1346,11 @@ export const booksService = {
           // probes computed above, so a search's count can never be the slow part again.
           if (opts.q) {
             const total = Math.min(searchMatchCount, SEARCH_COUNT_CAP);
-            await redis.set(countCacheKey, String(total), 'EX', COUNT_TTL);
+            // A degraded count must not be cached for COUNT_TTL — the next request should get
+            // a fresh attempt rather than inherit this lower bound for the next half hour.
+            if (!blendedProbeIncomplete) {
+              await redis.set(countCacheKey, String(total), 'EX', COUNT_TTL);
+            }
             return total;
           }
           // Filter-only browse (no q) keeps an exact count: it's already cached for
@@ -1099,13 +1364,32 @@ export const booksService = {
           return total;
         })();
 
-    const [page, total] = await Promise.all([pagePromise, totalPromise]);
+    const [page, probedTotal] = await Promise.all([pagePromise, totalPromise]);
+    // The tier probes count title and author matches only, so a search answered by the
+    // broad (fuzzy) tier can report zero while returning a full page — "xylophonist" came
+    // back as 20 books under a "0 results" caption, with hasMore true against a total of 0.
+    // Counting the fuzzy tier properly is the unbounded work SEARCH_COUNT_CAP exists to
+    // avoid, so the rows actually being returned stand in as a floor instead: never above
+    // the truth, and never below what the caller is looking at. Searches only — a
+    // filter-only browse keeps its exact count, where a disagreement would be a real bug
+    // worth surfacing rather than papering over.
+    // Only a non-empty page is evidence: returning n rows at offset k proves rows k..k+n-1
+    // exist, so the total is at least k+n. An *empty* page proves nothing — paging past the
+    // end of a 3-match result set would otherwise let offset alone invent a total of 40.
+    const rowsFloor = opts.q && page.rows.length > 0 ? effectiveOffset + page.rows.length : 0;
+    const total = Math.max(probedTotal, rowsFloor);
     // Derived rather than stored so it stays correct when `total` came from cache. `total`
     // counts raw rows, not distinct titles — computing an exact distinct-title count would
     // mean an unbounded GROUP BY over the same 1M+-row table SEARCH_COUNT_CAP exists to
     // avoid scanning, so dedupe forces this the same way a capped search count does: a
     // lower bound, with `hasMore` as the real pagination signal.
-    const totalIsApproximate = (!!opts.q && total >= SEARCH_COUNT_CAP) || !!opts.dedupe;
+    const totalIsApproximate =
+      (!!opts.q && total >= SEARCH_COUNT_CAP) ||
+      !!opts.dedupe ||
+      blendedProbeIncomplete ||
+      // The floor only raises the total when the probes undercounted, which makes what we
+      // report a lower bound by construction.
+      total > probedTotal;
     return {
       books: page.rows,
       total,
