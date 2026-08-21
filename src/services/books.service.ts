@@ -79,6 +79,28 @@ const SEARCH_COUNT_CAP = 1000;
 // so it only ever truncates genuinely ambiguous fragments, where the rows past the cap
 // were never going to be shown anyway.
 const AUTHOR_MATCH_LIMIT = 5000;
+// How many fuzzy candidates the broad tier will rank before picking a page.
+//
+// The broad tier's ranking expression — word_similarity() per row, then a sort — cannot be
+// served by any index, so Postgres must evaluate it for every matching row before LIMIT can
+// apply. That is fine when the fuzzy match set is small and catastrophic when it is not: a
+// four-letter typo of a common word ("thhe") clears the 0.3 word-similarity threshold
+// against 506,996 titles, a quarter of the catalogue, at which point the planner abandons
+// the trigram index for a parallel sequential scan of all 1.98M rows. Measured on
+// production: 93.5s and 6.5GB read from disk for one search.
+//
+// Capping the candidate pool decouples the cost from how dense the fuzzy neighbourhood is,
+// the same way SEARCH_COUNT_CAP decouples the count from how common the term is. Sized well
+// above any page the API can ask for (max offset + max page size), so the ranking still has
+// a wide field to choose from.
+//
+// The tradeoff is real and worth stating plainly: the pool is the first rows Postgres
+// happens to find, not the best ones, so for a very dense fuzzy match the top of the page
+// is the best of a bounded sample rather than the best overall. That only affects searches
+// where nothing matched by prefix or word-prefix at all — i.e. where every result is
+// already a fuzzy guess — and it is the difference between a guess in a second and a guess
+// in a minute and a half.
+const BROAD_CANDIDATE_POOL = 2000;
 // Ceiling on a single count probe. The probes only ever feed a total that callers are
 // already allowed to read as a lower bound (see totalIsApproximate), so a probe that
 // overruns can be abandoned without failing the search — whereas letting it run unbounded
@@ -323,20 +345,29 @@ function buildSearchCondition(q: string): SQL {
   )`;
 }
 
-function buildSearchOrderBy(q: string): SQL[] {
+// Relevance ordering for the broad tier, parameterised by where the columns live so the
+// same expression can rank the books table directly or a materialised candidate pool
+// aliased over it. Kept as one function because the two must agree exactly: they decide
+// which rows a page contains and in what order, and a divergence between them is a
+// reordering bug that only shows up on the fuzzy path.
+function buildSearchRankOrderBy(q: string, title: SQL, searchVector: SQL): SQL[] {
   const prefix = q + '%';
   const wordPrefix = '% ' + q + '%';
 
   return [
     sql`CASE
-      WHEN ${books.title} ILIKE ${prefix}     THEN 0
-      WHEN ${books.title} ILIKE ${wordPrefix} THEN 1
-      WHEN word_similarity(${q}, ${books.title}) > 0.3 THEN 2
+      WHEN ${title} ILIKE ${prefix}     THEN 0
+      WHEN ${title} ILIKE ${wordPrefix} THEN 1
+      WHEN word_similarity(${q}, ${title}) > 0.3 THEN 2
       ELSE 3
     END`,
-    sql`word_similarity(${q}, ${books.title}) DESC`,
-    sql`ts_rank(${books.searchVector}, plainto_tsquery('english', ${q})) DESC`,
+    sql`word_similarity(${q}, ${title}) DESC`,
+    sql`ts_rank(${searchVector}, plainto_tsquery('english', ${q})) DESC`,
   ];
+}
+
+function buildSearchOrderBy(q: string): SQL[] {
+  return buildSearchRankOrderBy(q, sql`${books.title}`, sql`${books.searchVector}`);
 }
 
 // Matches books by their author's name, as an *uncorrelated* subquery over a
@@ -801,11 +832,81 @@ async function countUnionUpTo(
 // applies to the merged sequence, not to either branch — so a deep page transfers
 // offset+limit rows per branch. That is bounded by the max page size (50) and by
 // SEARCH_COUNT_CAP making pagination past ~1000 rows meaningless for a search anyway.
+// Ranks the broad tier against a bounded pool instead of the whole fuzzy match set.
+//
+// The inner LIMIT is the whole point and has to stay inside the subquery: it caps the rows
+// the ranking is evaluated over. Hoisting it to the outer query would restore exactly the
+// shape this replaces, where LIMIT applies to the output and the sort still has to consider
+// every match first.
+//
+// The pool is ordered by id, and that ordering is load-bearing rather than cosmetic. An
+// unordered LIMIT is cheaper but resamples: measured against production, two identical
+// "thhe" searches returned different pools, which would put a book on two pages or on none
+// as the offset advanced — the same hazard rankAuthorMatches documents. Ordering by id is
+// the cheapest total order available, because books_pkey can be walked in order and the
+// scan stops as soon as the pool is full. It costs roughly 800ms on the densest terms
+// (thhe 731ms unordered vs 1525ms ordered) and is *faster* on sparse ones, against a
+// baseline of 100s.
+//
+// It does bias the pool toward lower ids, i.e. earlier-ingested books. That is arbitrary,
+// but so is every alternative here: 166,111 titles tie at word_similarity 0.5 for "thhe",
+// so no selection among them is more correct than another. Deterministic-arbitrary beats
+// random-arbitrary, because it paginates and caches correctly.
+//
+// The ranking is then a total order through title and id. The unpooled form it replaces
+// had no tiebreak at all, and with ties that large it was genuinely unstable: two
+// identical production searches 100s apart returned different pages (18/21 overlap, a
+// different top result).
+async function rankBroadCandidates(
+  conn: Pick<typeof db, 'execute'>,
+  opts: ListBooksOptions,
+  q: string,
+  take: number,
+): Promise<number[]> {
+  const where = buildWhereClause(opts, buildSearchCondition(q));
+  const ranking = buildSearchRankOrderBy(q, sql`c.title`, sql`c.search_vector`);
+  const ranked = await conn.execute<{ id: number }>(sql`
+    SELECT c.id
+    FROM (
+      SELECT ${books.id} AS id, ${books.title} AS title, ${books.searchVector} AS search_vector
+      FROM ${books}
+      WHERE ${where ?? sql`TRUE`}
+      ORDER BY ${books.id}
+      LIMIT ${BROAD_CANDIDATE_POOL}
+    ) c
+    ORDER BY ${sql.join(ranking, sql`, `)}, lower(c.title), c.id
+    LIMIT ${take}
+  `);
+  return (ranked as unknown as { id: number }[]).map((r) => Number(r.id));
+}
+
+// The pool query already applied every filter (it shares buildWhereClause with the
+// unpooled form), so the ids coming back need only be resolved to rows — unlike the author
+// branch, whose ranking runs over book_contributors and cannot filter books.
+async function fetchBroadTitleBranch(
+  conn: Pick<typeof db, 'select' | 'execute'>,
+  opts: ListBooksOptions,
+  q: string,
+  branchLimit: number,
+) {
+  const ids = await rankBroadCandidates(conn, opts, q, branchLimit);
+  if (ids.length === 0) return [];
+
+  const rows = await conn.select(LIST_COLUMNS).from(books).where(inArray(books.id, ids));
+  // Relevance order lives in the id list; the fetch above discards it.
+  const rank = new Map(ids.map((id, i) => [id, i]));
+  rows.sort((a, b) => rank.get(a.id)! - rank.get(b.id)!);
+  return rows;
+}
+
 async function fetchSearchPage(
   opts: ListBooksOptions,
   q: string,
   tier: 'fast' | 'cheap' | 'broad',
   titleWhere: SQL | undefined,
+  // Ranking for the fast and cheap tiers, both of which sort an already-narrow index-backed
+  // match set. The broad tier ignores it and ranks inside its own bounded pool instead —
+  // see rankBroadCandidates for why it cannot simply sort what it matches.
   titleOrderBy: (SQL | PgColumn)[],
   // The page size to fetch per branch — opts.limit normally, or opts.limit +
   // DEDUPE_POOL_HEADROOM when the caller is about to dedupe the merged result.
@@ -813,8 +914,10 @@ async function fetchSearchPage(
 ) {
   const branchLimit = opts.offset + pageSize + 1;
 
-  const titleQuery = (conn: Pick<typeof db, 'select'>) =>
-    conn.select(LIST_COLUMNS).from(books).where(titleWhere).orderBy(...titleOrderBy).limit(branchLimit);
+  const titleQuery = (conn: Pick<typeof db, 'select' | 'execute'>) =>
+    tier === 'broad'
+      ? fetchBroadTitleBranch(conn, opts, q, branchLimit)
+      : conn.select(LIST_COLUMNS).from(books).where(titleWhere).orderBy(...titleOrderBy).limit(branchLimit);
 
   // The author branch only reaches for its fuzzy tier when the title branch has already
   // fallen through to its own — i.e. nothing cheaper matched anywhere. Escalating the two

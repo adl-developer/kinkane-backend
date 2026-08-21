@@ -290,3 +290,50 @@ describe('the reported total against the rows actually returned', () => {
     expect(r.totalIsApproximate).toBe(false);
   });
 });
+
+describe('the broad (fuzzy) tier', () => {
+  // Reached only when nothing matched by prefix or word-prefix — every probe returns zero.
+  const stageBroadTier = () => {
+    cachedRows = null;
+    cachedCount = null;
+    counts = [0, 0, 0];
+  };
+
+  // The ranking — word_similarity() per row, then a sort — cannot be served by any index,
+  // so Postgres must evaluate it for every matching row before an outer LIMIT can apply.
+  // For a four-letter typo of a common word that is 506,996 rows, at which point the
+  // planner drops the trigram index for a parallel seq scan of the whole table: 91s and
+  // 6.5GB read from disk, measured on production. The cap has to sit inside the subquery
+  // so it bounds what gets ranked; hoisting it to the outer query restores the original.
+  it('ranks inside a bounded candidate pool rather than over every fuzzy match', async () => {
+    stageBroadTier();
+    await list();
+
+    const pooled = issued.find((sql) => /word_similarity/i.test(sql) && /FROM\s*\(\s*SELECT/i.test(sql));
+    expect(pooled, 'the broad tier issued no pooled query').toBeDefined();
+    // The inner LIMIT caps the pool; the outer one only trims the ranked page.
+    expect(pooled!.match(/limit \$/gi)?.length, 'expected an inner and an outer LIMIT').toBeGreaterThanOrEqual(2);
+  });
+
+  it('orders the pool, so paging does not resample it', async () => {
+    stageBroadTier();
+    await list();
+
+    // An unordered LIMIT resamples between calls — verified against production, where two
+    // identical "thhe" searches returned different pools. With the offset advancing per
+    // page that puts a book on two pages or on none.
+    const pooled = issued.find((sql) => /word_similarity/i.test(sql) && /FROM\s*\(\s*SELECT/i.test(sql))!;
+    expect(pooled).toMatch(/order by\s+"books"\."id"\s*\n?\s*limit/i);
+  });
+
+  it('breaks ranking ties totally, down to a unique column', async () => {
+    stageBroadTier();
+    await list();
+
+    // 166,111 titles tie at word_similarity 0.5 for "thhe". Without a tiebreak the order
+    // within a tie is whatever the plan happens to produce — the unpooled form it replaces
+    // returned different pages for identical searches 100s apart.
+    const pooled = issued.find((sql) => /word_similarity/i.test(sql) && /FROM\s*\(\s*SELECT/i.test(sql))!;
+    expect(pooled).toMatch(/lower\(c\.title\),\s*c\.id/i);
+  });
+});
