@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { requireAdmin } from '../../middleware/admin-auth.middleware';
-import { loginLimiter } from '../../middleware/rate-limit.middleware';
+import { adminLoginLimiter } from '../../middleware/rate-limit.middleware';
 import { wrapHttp } from '../../lib/route-helpers';
 import { adminController } from '../../controllers/admin/admin.controller';
 
@@ -19,9 +19,9 @@ const router = Router();
  */
 
 // ── Session ───────────────────────────────────────────────────────────────────
-// Rate limited with the same bucket as customer login: this is a password form
-// on the public internet and the accounts behind it can export the customer list.
-router.post('/auth/login', loginLimiter, wrapHttp(adminController.login));
+// Rate limited in its own bucket — sharing the customer one would let a brute
+// force against the app lock staff out of the console.
+router.post('/auth/login', adminLoginLimiter, wrapHttp(adminController.login));
 router.get('/auth/me', requireAdmin, wrapHttp(adminController.me));
 
 // Everything below needs a session.

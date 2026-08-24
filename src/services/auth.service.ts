@@ -543,7 +543,7 @@ export const authService = {
     }
 
     const [user] = await db
-      .select({ id: users.id, email: users.email })
+      .select({ id: users.id, email: users.email, blacklistedAt: users.blacklistedAt })
       .from(users)
       .where(eq(users.id, consumed.userId))
       .limit(1);
@@ -551,6 +551,14 @@ export const authService = {
     if (!user) {
       throw Object.assign(new Error('User not found'), { statusCode: 401 });
     }
+
+    // Refreshing is signing in again, and has to be gated the same way.
+    // Without this a blacklisted user simply never logs in again: their client
+    // keeps trading a refresh token for a fresh pair, indefinitely, and the
+    // block only ever bites someone who happened to be signed out when it
+    // landed. The consumed token is already deleted above, so a rejected
+    // refresh also ends that session rather than leaving it retryable.
+    assertNotBlacklisted(user.blacklistedAt);
 
     return issueTokenPair(user.id, user.email);
   },
@@ -994,13 +1002,21 @@ export const authService = {
 
     if (existingProvider) {
       const [user] = await db
-        .select({ id: users.id, name: users.name, email: users.email, emailVerified: users.emailVerified })
+        .select({
+          id: users.id, name: users.name, email: users.email,
+          emailVerified: users.emailVerified, blacklistedAt: users.blacklistedAt,
+        })
         .from(users)
         .where(eq(users.id, existingProvider.userId))
         .limit(1);
 
+      // Same gate as the password login. A block that stops one sign-in method
+      // and waves through "Continue with Google" is not a block.
+      assertNotBlacklisted(user.blacklistedAt);
+
       const tokens = await issueTokenPair(user.id, user.email);
-      return { user, tokens, isNewUser: false };
+      const { blacklistedAt: _blacklistedAt, ...safeUser } = user;
+      return { user: safeUser, tokens, isNewUser: false };
     }
 
     // 2. Check if a user with the same email already exists (account linking)
@@ -1011,6 +1027,10 @@ export const authService = {
       .limit(1);
 
     if (existingUser) {
+      // Checked before the provider is linked, not after: a blacklisted account
+      // must not quietly gain a new sign-in method on the way to being refused.
+      assertNotBlacklisted(existingUser.blacklistedAt);
+
       await db.insert(userProviders).values({ userId: existingUser.id, provider, providerUid });
 
       // Backfill photo if missing

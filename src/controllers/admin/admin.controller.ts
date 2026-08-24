@@ -66,6 +66,32 @@ function badRequest(res: Response, error: z.ZodError): void {
   res.status(400).json({ error: error.flatten().fieldErrors });
 }
 
+const EXPORT_ROW_CAP = 5000;
+
+/**
+ * Sets the download headers, and says so loudly when the export was truncated.
+ *
+ * The cap protects the server, but a silently truncated export is worse than a
+ * refused one: an operator who asks for 12,000 customers, receives 5,000 and is
+ * told nothing will believe they are holding the whole list. The header is there
+ * for API callers, and the **filename** carries it too, because that is the only
+ * part an operator clicking a download button ever actually sees.
+ */
+function sendCsv(res: Response, name: string, rows: number, total: number, csv: string): void {
+  const truncated = total > rows;
+  const stamp = new Date().toISOString().slice(0, 10);
+  const filename = truncated
+    ? `kinkane-${name}-${stamp}-FIRST-${rows}-OF-${total}.csv`
+    : `kinkane-${name}-${stamp}.csv`;
+
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.setHeader('X-Total-Rows', String(total));
+  res.setHeader('X-Exported-Rows', String(rows));
+  if (truncated) res.setHeader('X-Truncated', 'true');
+  res.status(200).send(csv);
+}
+
 export const adminController = {
   /** POST /admin/auth/login */
   async login(req: Request, res: Response): Promise<void> {
@@ -119,7 +145,7 @@ export const adminController = {
     // Exports the current filter rather than everything, so what downloads is
     // what the operator is looking at. Capped: an unbounded export of a growing
     // table is a way to take the server down from a button.
-    const result = await adminOrdersService.list({ ...parsed.data, limit: 5000, offset: 0 });
+    const result = await adminOrdersService.list({ ...parsed.data, limit: EXPORT_ROW_CAP, offset: 0 });
 
     const csv = csvDocument(
       ['Reference', 'Placed', 'Paid', 'Customer', 'Email', 'Phone', 'Status', 'Items', 'Currency', 'Subtotal', 'Discount', 'Shipping', 'Tax', 'Total', 'Ship to', 'Country'],
@@ -143,9 +169,7 @@ export const adminController = {
       ]),
     );
 
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="kinkane-orders-${new Date().toISOString().slice(0, 10)}.csv"`);
-    res.status(200).send(csv);
+    sendCsv(res, 'orders', result.orders.length, result.total, csv);
   },
 
   /** GET /admin/customers */
@@ -160,7 +184,7 @@ export const adminController = {
     const parsed = customersQuerySchema.safeParse(req.query);
     if (!parsed.success) return badRequest(res, parsed.error);
 
-    const result = await adminCustomersService.list({ ...parsed.data, limit: 5000, offset: 0 });
+    const result = await adminCustomersService.list({ ...parsed.data, limit: EXPORT_ROW_CAP, offset: 0 });
 
     const csv = csvDocument(
       ['Customer', 'Email', 'Country', 'Orders', 'Total spent (minor units)', 'Last order', 'Status', 'Joined'],
@@ -176,9 +200,7 @@ export const adminController = {
       ]),
     );
 
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="kinkane-customers-${new Date().toISOString().slice(0, 10)}.csv"`);
-    res.status(200).send(csv);
+    sendCsv(res, 'customers', result.customers.length, result.total, csv);
   },
 
   /** POST /admin/customers/:id/blacklist */

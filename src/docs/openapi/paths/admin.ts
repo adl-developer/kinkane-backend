@@ -187,6 +187,8 @@ export const adminPaths = {
       description: [
         'Exports **the current filter**, not everything — what downloads is what the operator is looking at. Capped at 5,000 rows, because an unbounded export of a growing table is a way to take the server down from a button.',
         '',
+        '**A truncated export says so.** `X-Total-Rows`, `X-Exported-Rows` and `X-Truncated` come back as headers, and the filename itself becomes `…-FIRST-5000-OF-12345.csv` — because the filename is the only part an operator clicking a download button ever sees, and a silently truncated list is one they will believe is complete.',
+        '',
         'Fields beginning `=`, `+`, `-` or `@` are prefixed with an apostrophe so a spreadsheet cannot execute a customer-supplied value as a formula. The file carries a UTF-8 BOM so Excel on Windows renders non-ASCII names correctly.',
       ].join('\n'),
       parameters: [
@@ -262,6 +264,8 @@ export const adminPaths = {
         '',
         '**Non-destructive and reversible.** Posts, reviews, shelf and order history are untouched: moderation decisions get revisited, and a blacklist that deletes content cannot be undone.',
         '',
+        '**Every way back in is closed**, not just the password form: password login, refresh, and social sign-in all reject a blacklisted account, and their existing sessions are revoked on the spot — `sessionsRevoked` says how many. Guarding only the login would have meant the block never bit anyone already signed in, since a client refreshes on a timer and never logs in again. The one gap left by design is their current access token, valid until it expires (15 min by default), which is why checkout carries its own check.',
+        '',
         'Idempotent — blacklisting an already-blacklisted customer returns `changed: false` rather than an error.',
       ].join('\n'),
       parameters: [param('id', 'path', { type: 'integer' }, 'Customer id.', { required: true })],
@@ -273,6 +277,7 @@ export const adminPaths = {
           id: { type: 'integer', example: 4412 },
           blacklisted: { type: 'boolean', example: true },
           changed: { type: 'boolean', description: 'False when they were already blacklisted.', example: true },
+          sessionsRevoked: { type: 'integer', description: 'Live sessions ended by this call.', example: 2 },
         })),
         400: json('Invalid customer id.', ref('ValidationError')),
         404: resp('NotFound'),

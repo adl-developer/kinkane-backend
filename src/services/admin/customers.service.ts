@@ -1,6 +1,6 @@
 import { and, desc, eq, gte, ilike, isNotNull, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
-import { users, orders } from '../../db/schema';
+import { users, orders, refreshTokens } from '../../db/schema';
 import { ACTIVE_CUSTOMER_WINDOW_DAYS } from './dashboard.service';
 
 export interface AdminCustomerQuery {
@@ -119,10 +119,31 @@ export const adminCustomersService = {
       // and the console should not care which.
       const [exists] = await db.select({ id: users.id }).from(users).where(eq(users.id, userId)).limit(1);
       if (!exists) throw httpError('Customer not found', 404);
-      return { id: userId, blacklisted: true, changed: false };
+      return { id: userId, blacklisted: true, changed: false, sessionsRevoked: 0 };
     }
 
-    return { id: updated.id, blacklisted: true, changed: true };
+    // Kill every live session rather than waiting for one to lapse.
+    //
+    // The sign-in guards alone would leave a blacklisted user signed in until
+    // their refresh token was next used — and since refreshing is itself
+    // blocked, the practical effect without this is that they keep whatever
+    // access token they were holding until it expires. Deleting the refresh
+    // tokens means the next refresh has nothing to consume and the session ends
+    // for good.
+    //
+    // Their current access token stays valid until it expires (15 minutes by
+    // default). That window is why checkout carries its own blacklist check.
+    const revoked = await db
+      .delete(refreshTokens)
+      .where(eq(refreshTokens.userId, userId))
+      .returning({ id: refreshTokens.id });
+
+    return {
+      id: updated.id,
+      blacklisted: true,
+      changed: true,
+      sessionsRevoked: revoked.length,
+    };
   },
 
   async unblacklist(userId: number) {

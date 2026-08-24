@@ -394,6 +394,13 @@ new to build, but two responses now exist that did not before:
   blacklisted account. Show it as-is; do not treat it as a wrong-password
   error, because the customer will keep resetting a password that works and
   never get in.
+- **`POST /api/v1/auth/refresh`** returns `401` for a blacklisted account, and
+  their refresh tokens are deleted the moment the block is applied. **This is
+  the one most likely to surprise you:** a blacklist can land mid-session, so
+  handle a failed refresh as "signed out" rather than retrying it. The app will
+  otherwise sit in a refresh loop that can never succeed.
+- **`POST /api/v1/auth/social`** returns the same `403`. Social sign-in is not
+  a way around a block.
 - **`POST /api/v1/cart/checkout`** returns the same 403 for a signed-in buyer
   whose account was blocked after login but before checkout. Sign the user out
   when you see it.

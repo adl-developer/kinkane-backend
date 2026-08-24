@@ -163,6 +163,33 @@ courier. The type exists so the feed needs no change when one arrives.
   "all time" only gets slower, so this wants a nightly rollup before `orders`
   passes a few hundred thousand.
 
+## Found in review, after the first version
+
+Three defects an audit turned up, all now fixed and covered by tests:
+
+**The blacklist only blocked one of three ways in.** `assertNotBlacklisted` sat
+on the password login and nowhere else, so a blacklisted customer stayed signed
+in indefinitely: their client traded a refresh token for a fresh pair on a timer
+and never needed to log in again. "Continue with Google" walked past it too.
+Demonstrated live before fixing — blacklisted account, `403` at login, `200` and
+a new token pair from `/auth/refresh` a second later. Refresh and both social
+paths are now gated, and blacklisting revokes existing refresh tokens on the
+spot (`sessionsRevoked` reports how many). The remaining window is their current
+access token until it expires, which is why checkout keeps its own check.
+
+**Admin login shared the customer login rate-limit bucket.** Both keyed by IP at
+`rl:login:`, so a brute force against the customer app would have locked staff
+out of the console at the moment they most needed it. Admin sign-in now has its
+own bucket, tighter (10 per 15 min) because the population is a handful of people
+who know their password.
+
+**CSV exports truncated silently.** The 5,000-row cap protects the server, but an
+operator who asks for 12,000 customers, receives 5,000 and is told nothing will
+believe they hold the whole list. Exports now return `X-Total-Rows`,
+`X-Exported-Rows` and `X-Truncated`, and a truncated file is *named*
+`…-FIRST-5000-OF-12345.csv` — the filename being the only part someone clicking
+a download button ever actually sees.
+
 ## Verification
 
 Migrated and exercised live against the local database (83,688 books, real

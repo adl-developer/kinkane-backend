@@ -103,6 +103,27 @@ export const guestOrderLimiter = rateLimit({
 });
 
 /**
+ * Admin console sign-in.
+ *
+ * Its own bucket rather than sharing `loginLimiter` with the customer app. They
+ * are keyed by IP, so a shared bucket means two bad outcomes: someone brute
+ * forcing the *customer* login from an address locks staff out of the console
+ * at the moment they most need it, and an office behind one NAT spends the same
+ * budget twice.
+ *
+ * Tighter than the customer limit because the population is a handful of people
+ * who know their own password, not the public.
+ */
+export const adminLoginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: json429,
+  store: new RedisStore({ prefix: 'rl:adminlogin:', sendCommand }),
+});
+
+/**
  * Contact form. Unauthenticated and it sends mail, which makes it a spam relay
  * if it is not bounded — three an hour is generous for a human with a problem
  * and useless to anyone with a script.
