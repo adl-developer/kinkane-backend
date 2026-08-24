@@ -1,7 +1,9 @@
 import IORedis from 'ioredis';
 import { Queue } from 'bullmq';
 import { config } from '../config';
-import type { RecommendedBook, NewsletterPayload, WeeklyDigestPayload } from '../emails';
+import type {
+  RecommendedBook, NewsletterPayload, WeeklyDigestPayload, OrderConfirmedPayload,
+} from '../emails';
 
 // BullMQ requires maxRetriesPerRequest: null — a separate connection from the
 // main redis instance (which uses maxRetriesPerRequest: 1 for rate limiting).
@@ -35,6 +37,7 @@ export interface EmailJobMap {
   // No videoUrl: the campaign copy has no slot for it, and the copy set in
   // force is decided at send time rather than baked into the job.
   'referral-invite':            { to: string; referrerName: string; link: string };
+  'order-confirmed':            { to: string; name: string | null; payload: OrderConfirmedPayload };
 }
 
 export type EmailJobName = keyof EmailJobMap;
@@ -43,6 +46,10 @@ export type EmailJobName = keyof EmailJobMap;
 // Lower number = higher priority. Password reset is critical (user is blocked).
 
 export const EMAIL_PRIORITY: Record<EmailJobName, number> = {
+  // Highest of the transactional set: somebody has just been charged, and for a
+  // guest this email is the only copy of their tracking code that will ever
+  // exist. It must not queue behind a newsletter.
+  'order-confirmed':    1,
   'password-reset':     1,
   'password-changed':   1,
   'account-deleted':    1,

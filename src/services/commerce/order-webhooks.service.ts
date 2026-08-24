@@ -17,8 +17,10 @@
 import Stripe from 'stripe';
 import { eq } from 'drizzle-orm';
 import { db } from '../../db';
-import { orders } from '../../db/schema';
+import { orders, orderItems } from '../../db/schema';
 import { logger } from '../../lib/logger';
+import { enqueueEmail } from '../../lib/email-queue';
+import { takeGuestToken } from '../../lib/guest-token-handoff';
 import { ordersService } from './orders.service';
 import { paymentsService } from '../payments.service';
 import { enqueueFulfilment } from '../../lib/fulfilment-queue';
@@ -123,6 +125,8 @@ export const orderWebhooksService = {
       totalMinor: order.totalMinor,
     });
 
+    await sendOrderConfirmation(orderId);
+
     enqueueFulfilment(orderId);
   },
 
@@ -202,3 +206,68 @@ export const orderWebhooksService = {
     logger.info('Order refunded', { orderId: order.id });
   },
 };
+
+/**
+ * Queues the confirmation email for a paid order.
+ *
+ * Never throws. A webhook that fails because an email could not be composed
+ * gets retried by Stripe, and every retry re-runs the side effects above — so a
+ * missing email would turn into duplicate fulfilment attempts. The email is the
+ * least important thing in this function and must behave like it.
+ *
+ * Safe against Stripe's redeliveries by consequence rather than by design: the
+ * guest token is taken from Redis and deleted, so a second delivery sends an
+ * email without a tracking section rather than a second copy of the credential.
+ * A duplicate confirmation is untidy; a duplicate credential in an inbox is not.
+ */
+async function sendOrderConfirmation(orderId: number): Promise<void> {
+  try {
+    const [order] = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
+    if (!order) return;
+
+    const items = await db
+      .select({
+        title: orderItems.titleSnapshot,
+        contributor: orderItems.contributorSnapshot,
+        quantity: orderItems.quantity,
+        lineTotalMinor: orderItems.lineTotalMinor,
+      })
+      .from(orderItems)
+      .where(eq(orderItems.orderId, orderId));
+
+    const buyerName = order.shippingName ?? null;
+
+    const shippingLines = [
+      order.shippingName,
+      order.shippingLine1,
+      order.shippingLine2,
+      order.shippingCity,
+      order.shippingPostcode,
+      order.shippingCountryCode,
+    ].filter((line): line is string => Boolean(line));
+
+    await enqueueEmail('order-confirmed', {
+      to: order.contactEmail,
+      name: buyerName,
+      payload: {
+        reference: order.reference,
+        currency: order.presentmentCurrency,
+        subtotalMinor: order.subtotalMinor,
+        discountMinor: order.discountMinor,
+        shippingMinor: order.shippingMinor,
+        taxMinor: order.taxMinor,
+        totalMinor: order.totalMinor,
+        items,
+        shippingLines,
+        // Guests only — takeGuestToken returns null for a signed-in buyer,
+        // whose order lives under their account instead.
+        trackingCode: await takeGuestToken(orderId),
+      },
+    });
+  } catch (err) {
+    logger.error('Failed to queue order confirmation email', {
+      orderId,
+      error: (err as Error).message,
+    });
+  }
+}

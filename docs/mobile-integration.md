@@ -280,6 +280,24 @@ returned by `GET /api/v1/orders` and `GET /api/v1/orders/:id`. It is a snapshot
 — changing the profile number later does not retroactively change what is on a
 parcel that already shipped.
 
+### Order confirmation email
+
+When payment lands, the buyer now gets a confirmation email: order number, the
+books, the totals (including the discount), and where it is going.
+
+**For guest orders it also carries the tracking code.** That code is handed to
+your client exactly once, in the checkout response — before this email existed,
+a guest who closed the tab lost access to their own paid order permanently.
+
+Two things this does not change for you:
+
+- **Still store the `accessToken` client-side at checkout.** The email is a
+  safety net: it is slower than the confirmation screen, and sometimes never
+  arrives.
+- **It is not a payment receipt.** Stripe issues those. This one answers what a
+  receipt does not — what was bought, where it is going, and how to find it
+  again.
+
 ### The 15% first-order discount
 
 Automatic on every buyer's first paid order. **No code field, and no basket

@@ -159,6 +159,16 @@ the number from their profile.
 Key it by `reference`. The confirmation email should also carry a tracking link
 built from both — email is what survives a cleared browser or a new device.
 
+
+**A confirmation email now carries this too**, for guests only — so a shopper who
+closes the tab is no longer locked out of their own order. It arrives when
+payment lands, not at checkout, and prints the code as text rather than a link:
+a token in a URL leaks through Referer headers, browser history and any
+analytics on the landing page.
+
+That is a safety net, not a substitute. Still store the token client-side —
+email is slower than the confirmation screen and sometimes never arrives.
+
 ### 5. Send to Stripe, then confirm
 
 Open `url`. When the user returns, confirm with `POST /api/v1/orders/lookup`

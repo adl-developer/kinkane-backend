@@ -5,6 +5,7 @@
 
 ### Features
 
+* show prices on the discovery carousels ([e717e01](https://adl.github.com/adl-developer/kinkane-backend/commit/e717e01ed000f7c81e1031ef1ae47a3b038b8e48)) — [details](changelog/2026-08-24-admin-console.md)
 * add the staffed admin console back end ([027708a](https://adl.github.com/adl-developer/kinkane-backend/commit/027708a4bbc662c8678f8361025933d37157a5f5)) — [details](changelog/2026-08-24-admin-console.md)
 * make the Contact Us form actually reach someone ([f040abd](https://adl.github.com/adl-developer/kinkane-backend/commit/f040abdd1a9ddc17f15fb2c7d4c7a734659bd1b9)) — [details](changelog/2026-08-24-contact-form.md)
 * give first-time buyers their 15% off automatically at checkout ([2eaea3f](https://adl.github.com/adl-developer/kinkane-backend/commit/2eaea3f17cfa533366a0f12f71b7f42fbe2e6bb6)) — [details](changelog/2026-08-24-checkout-phone-number.md)

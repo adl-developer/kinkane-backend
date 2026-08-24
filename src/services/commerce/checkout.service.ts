@@ -22,6 +22,7 @@ import { stripe, assertStripeConfigured } from '../../lib/stripe';
 import { withQueryParam } from '../../lib/url';
 import { logger } from '../../lib/logger';
 import { normalizeEmailForPromotions } from '../../lib/email-identity';
+import { stashGuestToken } from '../../lib/guest-token-handoff';
 import { checkoutService as subscriptionCheckoutService } from '../subscriptions/checkout.service';
 import { paymentsService } from '../payments.service';
 import { availabilityService, type UnbuyableReason } from './availability.service';
@@ -547,6 +548,13 @@ export const commerceCheckoutService = {
       destinationCountry,
       paymentReference: payment.reference,
     });
+
+    // Parked for the confirmation email, which is sent from the paid webhook
+    // long after this raw value is gone. Guests only — a signed-in buyer has
+    // order history and needs no credential printed in an inbox.
+    if (userId === null) {
+      await stashGuestToken(order.id, accessToken);
+    }
 
     return {
       url: session.url!,
