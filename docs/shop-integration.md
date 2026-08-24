@@ -281,6 +281,16 @@ Every discovery feed takes the same `shoppable=true` flag as `GET /books`:
 | `GET /books/:id/similar` | PDP "You may also like" |
 | `GET /books/recommendations` | Cart "You may also like" |
 
+Passing it also puts `unitPriceMinor`, `compareAtMinor`, `currency` and
+`inStock` on every row, exactly as on `GET /books` — so a carousel with an Add
+button needs no second request to price what it is showing.
+
+**The price is never cached, though the feed is.** These feeds cache their pool
+for an hour; the price is attached after the cache read, on every request. So a
+supplier price change is visible immediately while the *ordering* may be up to
+an hour old. That split is deliberate: stale ordering is invisible, a stale
+price is a customer seeing one number on the shelf and another in the basket.
+
 **Pass `true` from any surface that renders an Add button.** These feeds default
 to `false` for backward compatibility, so a client that forgets will show books
 the cart then refuses — a button that cannot work.

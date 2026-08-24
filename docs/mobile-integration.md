@@ -364,13 +364,16 @@ Three rules:
 - **Both fields are absent without `shoppable=true`**, along with `inStock`. A
   discovery screen that renders an Add button must pass the flag.
 
-**Known gap, so you are not surprised:** the discovery feeds
-(`GET /explore/trending`, `GET /books/:id/similar`, `GET /books/recommendations`)
-accept `shoppable=true` and correctly filter by it, but **do not yet return
-`unitPriceMinor` or `inStock`** — they are cached server-side and attaching a
-live price to a cached feed would break the never-cache-a-price rule. Until that
-is resolved, a carousel that needs a price has to fetch those books through
-`GET /books` as well, or show the title without one.
+**The discovery feeds carry these too.** `GET /explore/trending`,
+`GET /explore/personalized`, `GET /books/:id/similar` and
+`GET /books/recommendations` all return `unitPriceMinor`, `compareAtMinor`,
+`currency` and `inStock` when passed `shoppable=true` — so a carousel with an
+Add button needs no second request.
+
+Those feeds are cached server-side, but **the price is not**: the cached pool
+holds books only, and the live price is attached on every request. A supplier
+price change shows up immediately even while the feed itself is still cached.
+Treat the price as fresh and the ordering as up to an hour old.
 
 ### Shop filters on `GET /books`
 

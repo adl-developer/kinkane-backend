@@ -315,6 +315,20 @@ export interface TrendingBookItem {
   contributors: Pick<BookContributor, 'role' | 'personName' | 'sequenceNumber'>[];
   genres: Pick<Genre, 'name' | 'slug'>[];
   excerpt: BookExcerptInfo | null;
+  /**
+   * Live shop fields, present only when the feed was asked for `shoppable=true`.
+   *
+   * **Attached after the cache is read, never inside it.** These feeds cache
+   * their pool for an hour, and a price is the one thing in this system that
+   * must never be served from an hour-old snapshot — supplier prices move
+   * hourly, and the whole shop design rests on a displayed price being the price
+   * the basket will honour. So the cached payload holds books; the price is put
+   * on afterwards, on every request.
+   */
+  unitPriceMinor?: number;
+  compareAtMinor?: number | null;
+  currency?: string;
+  inStock?: boolean;
 }
 
 // TrendingBookItem plus the fields dedupeByTitle needs to pick the best of several
@@ -1973,7 +1987,12 @@ export const booksService = {
    * also like", the shared list is filtered per viewer after the cache read
    * rather than being computed per user. Anonymous callers get the list as-is.
    */
-  async trending(limit: number, userId?: number, shoppable?: boolean): Promise<TrendingBookItem[]> {
+  async trending(
+    limit: number,
+    userId?: number,
+    shoppable?: boolean,
+    currency?: string,
+  ): Promise<TrendingBookItem[]> {
     const cacheTarget = limit + FEED_EXCLUSION_HEADROOM;
     // v3: the cached value is a pool of cacheTarget items rather than exactly
     // `limit`, so per-viewer filtering has spare rows to eat. (v2 reweighted
@@ -1983,7 +2002,11 @@ export const booksService = {
     const cacheKey = `trending:v4:${limit}:${shoppable ? 'shop' : 'all'}`;
     const cached = await redis.get(cacheKey);
     if (cached) {
-      return applyUserExclusions(JSON.parse(cached) as TrendingBookItem[], userId, limit);
+      return attachShopFields(
+        await applyUserExclusions(JSON.parse(cached) as TrendingBookItem[], userId, limit),
+        shoppable,
+        currency,
+      );
     }
 
     const since = new Date();
@@ -2108,14 +2131,22 @@ export const booksService = {
 
     // The pool is shared across all viewers; each one gets their own filtered
     // view of it.
+    // The pool is cached WITHOUT prices; attachShopFields runs after.
     await redis.set(cacheKey, JSON.stringify(pool), 'EX', TRENDING_TTL);
-    return applyUserExclusions(pool, userId, limit);
+    return attachShopFields(await applyUserExclusions(pool, userId, limit), shoppable, currency);
   },
 
-  async personalized(userId: number, limit: number, shoppable?: boolean): Promise<TrendingBookItem[]> {
+  async personalized(
+    userId: number,
+    limit: number,
+    shoppable?: boolean,
+    currency?: string,
+  ): Promise<TrendingBookItem[]> {
     const cacheKey = `personalized:v2:${userId}:${limit}:${shoppable ? 'shop' : 'all'}`;
     const cached = await redis.get(cacheKey);
-    if (cached) return JSON.parse(cached) as TrendingBookItem[];
+    if (cached) {
+      return attachShopFields(JSON.parse(cached) as TrendingBookItem[], shoppable, currency);
+    }
 
     // Fetch the user's stored preference embedding and their exclusion set
     // (rejected books plus everything already on their shelf) in parallel —
@@ -2220,8 +2251,9 @@ export const booksService = {
     const ordered = rows.map((r) => bookMap.get(r.id)).filter((b): b is FeedScoringRow => b !== undefined);
     const results = dedupeByTitle(ordered).slice(0, limit).map(stripFeedScoring);
 
+    // Cached without prices — attachShopFields runs on every read instead.
     await redis.set(cacheKey, JSON.stringify(results), 'EX', PERSONALIZED_TTL);
-    return results;
+    return attachShopFields(results, shoppable, currency);
   },
 
   /**
@@ -2254,6 +2286,7 @@ export const booksService = {
     limit: number,
     userId?: number,
     shoppable?: boolean,
+    currency?: string,
   ): Promise<BookListItem[]> {
     if (bookIds.length === 0) return [];
 
@@ -2308,13 +2341,27 @@ export const booksService = {
     // Signed-in shoppers do not get recommended books they have already
     // rejected. Guests have no exclusions to apply, which is the common case
     // here since the basket is client-held until sign-in.
-    if (userId === undefined) return ordered.slice(0, limit);
+    // Uncached, unlike the other feeds — but the price still goes on here rather
+    // than in listByIds, so the shop fields ride one code path for every feed.
+    if (userId === undefined) {
+      return attachShopFields(ordered.slice(0, limit), shoppable, currency);
+    }
 
     const exclusions = await getUserExclusions(userId);
-    return filterExcludedWorks(ordered, exclusions).slice(0, limit);
+    return attachShopFields(
+      filterExcludedWorks(ordered, exclusions).slice(0, limit),
+      shoppable,
+      currency,
+    );
   },
 
-  async similar(bookId: number, limit: number, userId?: number, shoppable?: boolean): Promise<TrendingBookItem[]> {
+  async similar(
+    bookId: number,
+    limit: number,
+    userId?: number,
+    shoppable?: boolean,
+    currency?: string,
+  ): Promise<TrendingBookItem[]> {
     // Over-fetch target, so per-user filtering below has spare rows to eat.
     const cacheTarget = limit + FEED_EXCLUSION_HEADROOM;
     // v2: the cached value is now a pool of cacheTarget items rather than
@@ -2322,7 +2369,11 @@ export const booksService = {
     const cacheKey = `similar:v3:${bookId}:${limit}:${shoppable ? 'shop' : 'all'}`;
     const cached = await redis.get(cacheKey);
     if (cached) {
-      return applyUserExclusions(JSON.parse(cached) as TrendingBookItem[], userId, limit);
+      return attachShopFields(
+        await applyUserExclusions(JSON.parse(cached) as TrendingBookItem[], userId, limit),
+        shoppable,
+        currency,
+      );
     }
 
     const [target] = await db
@@ -2422,7 +2473,8 @@ export const booksService = {
     // The pool is what gets cached and shared across users; the caller gets
     // their own filtered view of it.
     await redis.set(cacheKey, JSON.stringify(pool), 'EX', PERSONALIZED_TTL);
-    return applyUserExclusions(pool, userId, limit);
+    // Cached without prices — see attachShopFields.
+    return attachShopFields(await applyUserExclusions(pool, userId, limit), shoppable, currency);
   },
 };
 
@@ -2433,6 +2485,50 @@ export const booksService = {
  *
  * Anonymous callers have nothing to exclude and skip the lookup entirely.
  */
+/**
+ * Puts live price and stock onto a feed's rows.
+ *
+ * Called at every feed's return point, *after* the cache read, for the reason
+ * spelled out on TrendingBookItem: caching a price is the one thing the shop
+ * must not do. Two batched lookups per request over the page's ISBNs — the same
+ * bargain GET /books already makes, and only when the caller asked to shop.
+ *
+ * A book with no live stock row comes back without the fields rather than with
+ * zeros: absent means "unknown", and a zero here reads as "free".
+ */
+async function attachShopFields<T extends { isbn13: string | null }>(
+  items: T[],
+  shoppable: boolean | undefined,
+  currency: string | undefined,
+): Promise<T[]> {
+  if (!shoppable || items.length === 0) return items;
+
+  const isbns = items.map((i) => i.isbn13);
+  const [priceByIsbn, stockByIsbn] = await Promise.all([
+    availabilityService.livePricesByIsbns(isbns),
+    availabilityService.inStockByIsbns(isbns),
+  ]);
+
+  const code = (currency ?? config.commerce.currency.default).toUpperCase();
+
+  return items.map((item): T => {
+    if (!item.isbn13) return item;
+    const live = priceByIsbn.get(item.isbn13);
+    return {
+      ...item,
+      inStock: stockByIsbn.get(item.isbn13) ?? false,
+      ...(live
+        ? {
+            unitPriceMinor: toPresentment(live.unitPriceGbpPence, code),
+            compareAtMinor:
+              live.compareAtGbpPence === null ? null : toPresentment(live.compareAtGbpPence, code),
+            currency: code,
+          }
+        : {}),
+    };
+  });
+}
+
 async function applyUserExclusions(
   items: TrendingBookItem[],
   userId: number | undefined,

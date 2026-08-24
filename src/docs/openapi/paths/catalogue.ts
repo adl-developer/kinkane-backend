@@ -153,7 +153,7 @@ export const cataloguePaths = {
         param('limit', 'query', { type: 'integer', minimum: 1, maximum: 20, default: 10 },
           'How many to return (1–20).'),
         param('shoppable', 'query', { type: 'string', enum: ['true', 'false'], default: 'false' },
-          'Restrict to books the shop can sell. **Pass `true` from any surface with an Add button** — otherwise this feed can offer a book the cart will refuse. Off by default so existing callers are unaffected.'),
+          'Restrict to books the shop can sell, **and add the live shop fields** — `unitPriceMinor`, `compareAtMinor`, `currency` and `inStock` — so a carousel with an Add button needs no second request to price what it shows. Pass `true` from any surface with an Add button; otherwise this feed can offer a book the cart will refuse. Off by default so existing callers are unaffected.\n\n**The feed is cached; the price is not.** The cached pool holds books only and the price is attached on every request, so a supplier price change is visible immediately while the ordering may be up to an hour old. A stale ordering is invisible to a shopper; a stale price is one number on the shelf and another in the basket.'),
       ],
       responses: {
         200: json('Similar books, most similar first. May be empty.',
@@ -184,6 +184,8 @@ export const cataloguePaths = {
         param('bookIds', 'query', { type: 'string' },
           'Comma-separated book ids — the basket. Duplicates are ignored.', { example: '48213,50127' }),
         param('limit', 'query', { type: 'integer', minimum: 1, maximum: 20, default: 8 }, 'How many to return.'),
+        param('shoppable', 'query', { type: 'string', enum: ['true', 'false'], default: 'false' },
+          'Restrict to books the shop can sell, **and add the live shop fields** — `unitPriceMinor`, `compareAtMinor`, `currency` and `inStock` — so a rail with an Add button needs no second request to price what it shows. Pass `true` from any surface with an Add button; otherwise this feed can offer a book the cart will refuse. Off by default so existing callers are unaffected.\n\n**The feed is cached; the price is not.** The cached pool holds books only and the price is attached on every request, so a supplier price change shows immediately while the ordering may be up to an hour old.'),
       ],
       responses: {
         200: json('Recommendations, most relevant first. May be empty.',
@@ -253,6 +255,8 @@ export const cataloguePaths = {
       parameters: [
         param('limit', 'query', { type: 'integer', minimum: 1, maximum: 20, default: 10 },
           'How many books (1–20).'),
+        param('shoppable', 'query', { type: 'string', enum: ['true', 'false'], default: 'false' },
+          'Restrict to books the shop can sell, **and add the live shop fields** — `unitPriceMinor`, `compareAtMinor`, `currency` and `inStock` — so a rail with an Add button needs no second request to price what it shows. Pass `true` from any surface with an Add button; otherwise this feed can offer a book the cart will refuse. Off by default so existing callers are unaffected.\n\n**The feed is cached; the price is not.** The cached pool holds books only and the price is attached on every request, so a supplier price change shows immediately while the ordering may be up to an hour old.'),
       ],
       responses: {
         200: json('Trending books.', object({ books: arrayOf(ref('BookSummary')) })),
@@ -280,6 +284,8 @@ export const cataloguePaths = {
           'The sales window to rank over.'),
         param('limit', 'query', { type: 'integer', minimum: 1, maximum: 20, default: 10 },
           'How many books (1–20).'),
+        param('shoppable', 'query', { type: 'string', enum: ['true', 'false'], default: 'false' },
+          'Restrict to books the shop can sell, **and add the live shop fields** — `unitPriceMinor`, `compareAtMinor`, `currency` and `inStock` — so a rail with an Add button needs no second request to price what it shows. Pass `true` from any surface with an Add button; otherwise this feed can offer a book the cart will refuse. Off by default so existing callers are unaffected.\n\n**The feed is cached; the price is not.** The cached pool holds books only and the price is attached on every request, so a supplier price change shows immediately while the ordering may be up to an hour old.'),
       ],
       responses: {
         200: json('Bestsellers, or an empty list if nothing sold in the window.',
@@ -314,6 +320,8 @@ export const cataloguePaths = {
       parameters: [
         param('limit', 'query', { type: 'integer', minimum: 1, maximum: 20, default: 10 },
           'How many books (1–20).'),
+        param('shoppable', 'query', { type: 'string', enum: ['true', 'false'], default: 'false' },
+          'Restrict to books the shop can sell, **and add the live shop fields** — `unitPriceMinor`, `compareAtMinor`, `currency` and `inStock` — so a rail with an Add button needs no second request to price what it shows. Pass `true` from any surface with an Add button; otherwise this feed can offer a book the cart will refuse. Off by default so existing callers are unaffected.\n\n**The feed is cached; the price is not.** The cached pool holds books only and the price is attached on every request, so a supplier price change shows immediately while the ordering may be up to an hour old.'),
       ],
       responses: {
         200: json('Personalised books. Empty while the embedding is still being built.',

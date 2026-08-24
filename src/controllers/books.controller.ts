@@ -119,6 +119,22 @@ const basketRecsSchema = z.object({
   shoppable: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
 });
 
+/**
+ * The currency a shop surface should quote in, or undefined when the caller did
+ * not ask to shop.
+ *
+ * Resolved per request rather than baked into a cached feed, for the same
+ * reason the price itself is attached after the cache: a visitor in Lagos and
+ * one in Berlin hit the same cached pool and must not see each other's money.
+ */
+export async function shopCurrency(
+  req: Request,
+  shoppable: boolean | undefined,
+): Promise<string | undefined> {
+  if (!shoppable) return undefined;
+  return resolveCurrency({ countryCode: await resolveRequestCountry(req) });
+}
+
 export const booksController = {
   /** GET /api/v1/books/recommendations?bookIds=1,2,3 */
   async basketRecommendations(req: Request, res: Response): Promise<void> {
@@ -136,6 +152,7 @@ export const booksController = {
       parsed.data.limit,
       userId,
       parsed.data.shoppable,
+      await shopCurrency(req, parsed.data.shoppable),
     );
 
     res.status(200).json({ books });
@@ -311,7 +328,13 @@ export const booksController = {
       // have already rejected; when there isn't, everyone sees the same
       // similarity ranking.
       const userId = (req as AuthenticatedRequest).user?.id;
-      const results = await booksService.similar(id, parsed.data.limit, userId, parsed.data.shoppable);
+      const results = await booksService.similar(
+        id,
+        parsed.data.limit,
+        userId,
+        parsed.data.shoppable,
+        await shopCurrency(req, parsed.data.shoppable),
+      );
       res.status(200).json({ books: results });
     } catch (err: unknown) {
       const e = err as Error;
