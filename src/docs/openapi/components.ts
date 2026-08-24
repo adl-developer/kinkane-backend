@@ -510,6 +510,140 @@ const commerceSchemas = {
     },
   },
 
+  AdminOrder: {
+    type: 'object',
+    description: 'One row of the admin Orders table. Read-only — the console has no endpoint to change any of it.',
+    properties: {
+      id: { type: 'integer', example: 1042 },
+      reference: { type: 'string', example: 'ORD-7K2M9QX4' },
+      status: { type: 'string', description: 'The raw status, one of eleven.', example: 'paid' },
+      tab: {
+        type: 'string',
+        enum: ['processing', 'shipped', 'delivered', 'needs_attention', 'pending'],
+        description: 'Which admin tab this row belongs to.',
+        example: 'processing',
+      },
+      currency: { type: 'string', example: 'USD' },
+      subtotalMinor: { type: 'integer', example: 7448 },
+      discountMinor: { type: 'integer', example: 1117 },
+      shippingMinor: { type: 'integer', example: 0 },
+      taxMinor: { type: 'integer', example: 0 },
+      totalMinor: { type: 'integer', example: 6331 },
+      itemCount: { type: 'integer', example: 3 },
+      placedAt: { type: 'string', format: 'date-time' },
+      paidAt: { type: 'string', format: 'date-time', nullable: true },
+      customerId: { type: 'integer', nullable: true, description: 'Null for a guest order.', example: null },
+      customerName: { type: 'string', nullable: true, description: 'Account name, falling back to the name on the parcel.', example: 'Jane Doe' },
+      contactEmail: { type: 'string', format: 'email' },
+      contactPhone: { type: 'string', nullable: true, example: '+233201234567' },
+      shippingName: { type: 'string', nullable: true },
+      shippingLine1: { type: 'string', nullable: true },
+      shippingLine2: { type: 'string', nullable: true },
+      shippingCity: { type: 'string', nullable: true },
+      shippingPostcode: { type: 'string', nullable: true },
+      shippingCountryCode: { type: 'string', example: 'GH' },
+      fulfilmentError: {
+        type: 'string', nullable: true,
+        description: 'Why the supplier rejected it. Populated on needs_attention rows and null otherwise — this is the field that makes a stuck paid order diagnosable.',
+        example: null,
+      },
+      items: {
+        type: 'array',
+        description: 'Present only with ?withItems=true.',
+        items: {
+          type: 'object',
+          properties: {
+            bookId: { type: 'integer' },
+            isbn13: { type: 'string' },
+            title: { type: 'string' },
+            contributor: { type: 'string', nullable: true },
+            quantity: { type: 'integer' },
+            unitPriceMinor: { type: 'integer' },
+            lineTotalMinor: { type: 'integer' },
+          },
+        },
+      },
+    },
+  },
+
+  AdminCustomer: {
+    type: 'object',
+    properties: {
+      id: { type: 'integer', example: 4412 },
+      name: { type: 'string', example: 'Amara Diallo' },
+      email: { type: 'string', format: 'email' },
+      countryCode: { type: 'string', nullable: true, description: 'Frozen at signup, not re-resolved on later logins.', example: 'GH' },
+      joinedAt: { type: 'string', format: 'date-time' },
+      orders: { type: 'integer', description: 'Paid orders only.', example: 4 },
+      totalSpentMinor: { type: 'integer', description: 'Lifetime paid total, minor units.', example: 18750 },
+      lastOrderAt: { type: 'string', format: 'date-time', nullable: true },
+      active: { type: 'boolean', description: 'Paid for something in the last 12 months.', example: true },
+      blacklisted: { type: 'boolean', example: false },
+      blacklistedAt: { type: 'string', format: 'date-time', nullable: true },
+      blacklistReason: { type: 'string', nullable: true },
+    },
+  },
+
+  AdminReport: {
+    type: 'object',
+    properties: {
+      id: { type: 'integer', example: 3 },
+      reference: { type: 'string', nullable: true, description: 'What the screen displays, e.g. R003.', example: 'R003' },
+      status: { type: 'string', enum: ['pending', 'resolved', 'dismissed'], example: 'pending' },
+      reason: { type: 'string', example: 'Created multiple accounts to abuse the first-order discount.' },
+      postId: { type: 'integer', nullable: true, description: 'The post complained about, when there was one. Nulled if that post is later deleted — the report survives it.' },
+      filedAt: { type: 'string', format: 'date-time' },
+      resolvedAt: { type: 'string', format: 'date-time', nullable: true },
+      reportedUser: {
+        type: 'object',
+        properties: {
+          id: { type: 'integer' },
+          name: { type: 'string' },
+          email: { type: 'string', format: 'email' },
+          blacklisted: { type: 'boolean' },
+        },
+      },
+      reportedBy: {
+        type: 'object',
+        properties: {
+          id: { type: 'integer' },
+          name: { type: 'string' },
+          email: { type: 'string', format: 'email' },
+        },
+      },
+    },
+  },
+
+  AdminBanner: {
+    type: 'object',
+    properties: {
+      slot: { type: 'string', enum: ['top', 'second'], example: 'top' },
+      enabled: { type: 'boolean', example: true },
+      text: { type: 'string', maxLength: 200, example: 'We Ship Worldwide!' },
+      updatedAt: { type: 'string', format: 'date-time', nullable: true },
+    },
+  },
+
+  AdminNotification: {
+    type: 'object',
+    properties: {
+      id: { type: 'integer', example: 12 },
+      type: {
+        type: 'string',
+        enum: ['report_filed', 'order_received', 'customer_registered', 'order_delivered'],
+        description: 'order_delivered never fires yet — nothing marks an order delivered until there is a courier signal.',
+        example: 'order_received',
+      },
+      title: { type: 'string', example: 'New order received' },
+      body: { type: 'string', example: 'ORD-7K2M9QX4 — $63.31 from ama@example.com.' },
+      orderId: { type: 'integer', nullable: true },
+      userId: { type: 'integer', nullable: true },
+      reportId: { type: 'integer', nullable: true },
+      read: { type: 'boolean', description: 'Shared across admins, not per-person.', example: false },
+      createdAt: { type: 'string', format: 'date-time' },
+    },
+  },
+
   Order: {
     type: 'object',
     properties: {

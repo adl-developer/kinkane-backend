@@ -12,6 +12,8 @@ import {
   type OrderItem,
   type OrderStatus,
 } from '../../db/schema';
+import { adminNotificationsService } from '../admin/notifications.service';
+import { formatMinor } from '../../lib/money';
 import { logger } from '../../lib/logger';
 import { hashToken, tokensMatch } from '../../lib/order-identity';
 import { interactionsService } from '../interactions.service';
@@ -372,6 +374,16 @@ export const ordersService = {
         updatedAt: new Date(),
       })
       .where(eq(orders.id, orderId));
+
+    // Tell the console. Never blocks or fails the webhook — a missing bell
+    // entry must not turn a successful payment into a retried webhook.
+    void adminNotificationsService.emit({
+      type: 'order_received',
+      title: 'New order received',
+      body: `${order.reference} — ${formatMinor(order.totalMinor, order.presentmentCurrency)} from ${order.contactEmail}.`,
+      orderId,
+      userId: order.userId ?? undefined,
+    });
 
     return true;
   },

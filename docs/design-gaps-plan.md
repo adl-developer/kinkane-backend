@@ -1,7 +1,8 @@
 # Web eCommerce designs vs. the server — gap plan
 
-Status: **P0 and P1 complete** (2026-08-24), P2 in progress. Written 2026-08-23.
-P1's reviews item is deliberately deferred — see below. Audited against the
+Status: **P0, P1 and P2 complete** (2026-08-24). Two items deferred by decision:
+P1's reviews (source undecided) and the admin order-action endpoints (the screens
+are read-only). See `changelog/2026-08-24-admin-console.md`. Audited against the
 "Kinkané Web eCommerce" Figma (file `NPKXRFHdV9POc2NW88Ndsw`, last touched
 2026-08-20), all four pages: Web (26 frames), Admin (10), Mobile (14),
 Email Template.
@@ -188,7 +189,7 @@ toggles with **Save Changes**, and **Mark all read / Clear** on notifications.
 There is no refund button, no status editor, no order-detail page. Build to
 that, not to a general-purpose admin.
 
-## 6. Admin identity (~3d) — everything below depends on it
+## 6. Admin identity — **done**
 
 Email and password, "Sign In", nothing else. No 2FA, no SSO, no
 forgot-password flow is designed. Worth flagging that this console can
@@ -196,7 +197,7 @@ blacklist users and export the entire customer list, so the thinnest possible
 auth is a deliberate risk rather than an oversight. Sessions, roles, and
 retiring `requireAdminToken` (or narrowing it to machine callers) belong here.
 
-## 7. Orders (~2d)
+## 7. Orders — **done** (read-only, as designed)
 
 Status tabs `All / Processing / Shipped / Delivered` with counts, a search box,
 an Export button, and rows that expand to reveal Items and Ship To. That is the
@@ -212,7 +213,7 @@ whole screen — no actions.
   inventing a second one.
 - Search covers order reference and customer name/email.
 
-## 8. Customers (~3d)
+## 8. Customers — **done**
 
 Three stat cards (Total 12, Active 10 with "2 inactive", Total spent $1840), a
 searchable table of Customer / Email / Country / Orders / Total Spent / Last
@@ -226,7 +227,7 @@ Order / Status, an Export button, and a red **Blacklist** action per row.
   community posts, or all three.
 - "Active" is **decision 3**.
 
-## 9. Reports (~3d)
+## 9. Reports — **done**
 
 Cards headed `R003 · Pending` / `R004 · Resolved`, showing reported user and
 reporter with names and emails, the complaint text, and **Blacklist User** /
@@ -240,7 +241,7 @@ reporter with names and emails, the complaint text, and **Blacklist User** /
 - List endpoint joining both users' names and emails.
 - The two actions, sharing the blacklist implementation from part 8.
 
-## 10. Dashboard (~3d)
+## 10. Dashboard — **done** (live aggregates; rollup deferred)
 
 Four stat cards — Total Orders (all time), Revenue (all time), Customers (with
 an active count), Processing ("need fulfilment") — plus a Recent Orders table
@@ -251,7 +252,7 @@ plain aggregation over `orders` and `users`. At current volumes live queries
 are fine, but the "all time" framing means these only get slower — plan for a
 nightly rollup before it becomes a problem.
 
-## 11. Settings (~1d)
+## 11. Settings — **done**
 
 One card, **Announcement Banners**: the red "WE SHIP WORLDWIDE!" strip and the
 charcoal "15% OFF YOUR FIRST ORDER" strip, each with an on/off toggle and an
@@ -263,7 +264,7 @@ apply to the storefront instantly."
   that the toggle controls nothing.
 - "Instantly" means either no cache or a very short one. Say which.
 
-## 12. Admin notification feed (~2d)
+## 12. Admin notification feed — **done** (order_delivered not yet emitted)
 
 The bell appears in every admin header with an unread badge. The panel shows
 "3 new", **Mark all read**, **Clear**, and a list of events with relative
@@ -277,7 +278,7 @@ timestamps. Four event types, none of which anything emits today:
 This is separate from the user-facing `notifications` table and needs its own
 emitters wired into the order, signup and report paths.
 
-## 13. Exports and badge counts (~1.5d)
+## 13. Exports and badge counts — **done**
 
 - CSV export on three screens: Dashboard ("Export all"), Orders, Customers.
   Stream them; decide a row cap and whether the export respects the active

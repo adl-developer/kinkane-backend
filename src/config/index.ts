@@ -11,6 +11,16 @@ const envSchema = z.object({
   REDIS_URL: z.string().url(),
 
   JWT_ACCESS_SECRET: z.string().min(32),
+  // Signs admin-console sessions. Kept separate from the customer secret on
+  // purpose: an app token must never verify against the admin console, and
+  // rotating one must not sign every customer out. Optional so the app boots
+  // without it — the console then refuses every login rather than falling back
+  // to the customer secret, which would be the dangerous default.
+  ADMIN_JWT_SECRET: z.string().min(32).optional(),
+  // 12 hours: a working day, so a session survives one but not a weekend. There
+  // is no refresh token — signing back in is cheap, and a long-lived refresh
+  // credential for an account that can export the customer list is not worth it.
+  ADMIN_TOKEN_TTL: z.coerce.number().default(43200),
   JWT_REFRESH_SECRET: z.string().min(32),
 
   ACCESS_TOKEN_TTL: z.coerce.number().default(900),        // 15 min
@@ -399,6 +409,8 @@ export const config = {
   },
   jwt: {
     accessSecret: env.JWT_ACCESS_SECRET,
+    adminSecret: env.ADMIN_JWT_SECRET,
+    adminTtl: env.ADMIN_TOKEN_TTL,
     refreshSecret: env.JWT_REFRESH_SECRET,
     accessTtl: env.ACCESS_TOKEN_TTL,
     refreshTtl: env.REFRESH_TOKEN_TTL,

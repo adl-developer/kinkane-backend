@@ -6,6 +6,7 @@ import { db } from '../db';
 import { users, refreshTokens, userProviders, guestSessions, userPreferences, userInteractions, userBooks, userSubscriptions, subscriptionEvents, passwordResetTokens, emailVerificationTokens, books, bookContributors, notificationPreferences } from '../db/schema';
 import { config } from '../config';
 import { admin } from '../lib/firebase';
+import { adminNotificationsService } from './admin/notifications.service';
 import { logger } from '../lib/logger';
 import { enqueueEmail } from '../lib/email-queue';
 import { generateEmbedding } from '../lib/gemini';
@@ -71,6 +72,26 @@ function hashToken(raw: string): string {
 
 function generateRefreshToken(): string {
   return crypto.randomBytes(40).toString('hex');
+}
+
+/**
+ * Stops a blacklisted account signing in.
+ *
+ * Checked **after** the password, deliberately. Checking first would turn the
+ * login form into an oracle for which addresses are blocked, and someone who
+ * types the wrong password should get the same answer either way.
+ *
+ * The message says the account is blocked rather than pretending the password
+ * is wrong: a blocked customer who keeps resetting a password that works is a
+ * support ticket nobody can resolve.
+ */
+function assertNotBlacklisted(blacklistedAt: Date | null): void {
+  if (blacklistedAt !== null) {
+    throw Object.assign(new Error('This account has been suspended. Contact support.'), {
+      statusCode: 403,
+      code: 'ACCOUNT_SUSPENDED',
+    });
+  }
 }
 
 export function signAccessToken(userId: number, email: string): string {
@@ -449,6 +470,13 @@ export const authService = {
       });
     });
 
+    void adminNotificationsService.emit({
+      type: 'customer_registered',
+      title: 'New customer registered',
+      body: `${user.name} created an account.`,
+      userId: user.id,
+    });
+
     issueEmailVerification(user.id, user.email, user.name).catch((err) => {
       logger.error('Failed to issue email verification after signup', {
         userId: user.id,
@@ -477,6 +505,8 @@ export const authService = {
     if (!user || !valid) {
       throw Object.assign(new Error('Invalid email or password'), { statusCode: 401 });
     }
+
+    assertNotBlacklisted(user.blacklistedAt);
 
     const tokens = await issueTokenPair(user.id, user.email);
 
@@ -1060,6 +1090,13 @@ export const authService = {
         userId: newUser.id,
         error: (err as Error).message,
       });
+    });
+
+    void adminNotificationsService.emit({
+      type: 'customer_registered',
+      title: 'New customer registered',
+      body: `${newUser.name} created an account.`,
+      userId: newUser.id,
     });
 
     return { user: newUser, tokens, isNewUser: true };

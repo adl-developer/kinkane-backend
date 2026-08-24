@@ -17,6 +17,7 @@ import notificationPreferencesRoutes from './notification-preferences.routes';
 import preferenceHistoryRoutes from './preference-history.routes';
 import unsubscribeRoutes from './unsubscribe.routes';
 import contactRoutes from './contact.routes';
+import settingsRoutes from './settings.routes';
 import notificationsRoutes from './notifications.routes';
 import deviceTokensRoutes from './device-tokens.routes';
 import reportsRoutes from './reports.routes';
@@ -69,6 +70,9 @@ v1.use('/unsubscribe', unsubscribeRoutes);
 // Public by design — the people most likely to need the contact form are the
 // ones who cannot get into their account.
 v1.use('/contact', contactRoutes);
+// Storefront-wide copy the admin console controls. Public: it is what every
+// visitor sees anyway.
+v1.use('/settings', settingsRoutes);
 
 router.use('/v1', v1);
 

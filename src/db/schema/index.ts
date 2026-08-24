@@ -1,5 +1,6 @@
 export * from './users';
 export * from './contact-messages';
+export * from './admin';
 export * from './countries';
 export * from './referrals';
 export * from './payments';

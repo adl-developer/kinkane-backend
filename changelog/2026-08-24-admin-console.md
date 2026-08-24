@@ -1,0 +1,156 @@
+# The admin console back end
+
+## What changed
+
+The staffed back office the web designs draw across ten screens now has an API.
+Fifteen endpoints under `/admin/console`, plus one public endpoint the
+storefront reads.
+
+**Identity.** A new `admins` table, its own login (`POST /admin/console/auth/login`),
+its own signing secret (`ADMIN_JWT_SECRET`), 12-hour sessions and no refresh
+token. Accounts are made with `npm run admin:create`.
+
+**Dashboard** — `GET /admin/console/dashboard` (the four overview cards and
+recent orders) and `GET /admin/console/badges` (the sidebar counts).
+
+**Orders** — `GET /admin/console/orders`, read-only, with the three designed
+tabs plus a `needs_attention` bucket, search, and optional line items.
+`GET /admin/console/orders/export` streams CSV.
+
+**Customers** — `GET /admin/console/customers` with lifetime totals and the
+three stat cards; CSV export; `POST`/`DELETE .../{id}/blacklist`.
+
+**Reports** — `GET /admin/console/reports` (the moderation queue),
+`POST .../{id}/dismiss`, and `POST .../{id}/blacklist` (blocks the reported
+account and closes every pending report against them). The `user_reports` table
+gained a status, a display reference (`R003`), and who-resolved-it.
+
+**Settings** — `GET`/`PUT /admin/console/settings/banners` for the two
+announcement strips, and the public `GET /api/v1/settings/banners` the
+storefront reads.
+
+**Notifications** — `GET /admin/console/notifications`, `POST .../read-all`,
+`DELETE` (clear). Three of the four event types fire today.
+
+## Why
+
+There was no admin console at all — just one static `ADMIN_TOKEN` shared by
+Bull Board and the Gardners dropship routes. Ten designed screens had nothing
+behind them.
+
+## The decisions that shaped it
+
+**Admins are a separate table, not a role flag on `users`.** This console can
+blacklist a customer and export the entire customer list. Keeping the two
+populations apart means no path through the customer-facing auth stack — social
+login, password reset, email change — can ever end with a customer holding admin
+rights. The blast radius of a bug in the app's auth is customers only. The cost
+is a second login stack, which is why it is deliberately minimal.
+
+**A separate JWT secret, and the console refuses to run without it.** The
+tempting fallback — reuse `JWT_ACCESS_SECRET` — would mean any customer access
+token verifies against the console. When `ADMIN_JWT_SECRET` is unset the console
+returns 503 to every login rather than falling back. An unconfigured console
+nobody can log into is a deployment problem; one every customer can log into is a
+breach. Belt and braces: the token also carries `kind: 'admin'`, checked on
+verify, so even a misconfiguration where the two secrets matched would not let an
+app token through.
+
+**Sessions re-read the admin on every request.** Disabling an admin then takes
+effect on their next call, not whenever their token happens to expire. One
+indexed lookup per admin request, which at console traffic is nothing.
+
+**Orders is read-only.** The screens have no action controls, so there is no
+endpoint to change a status, refund, or resend. Adding one later should be a
+deliberate decision, not an accident of scaffolding.
+
+**`needs_attention` exists because five statuses fit no designed tab.** The
+design offers Processing / Shipped / Delivered. `payment_failed`,
+`supplier_rejected`, `refunded` and `cancelled` are collected under
+`needs_attention` rather than dropped — `supplier_rejected` in particular is
+exactly the order an operator must find: a customer has paid and the supplier
+will not fulfil. `fulfilmentError` carries the reason. A test asserts every
+schema status maps somewhere, so a new status cannot silently vanish from the UI.
+
+**Blacklisting is reversible and non-destructive.** It blocks signing in and
+checking out; it does not touch posts, reviews, shelf or order history.
+Moderation decisions get revisited, and a blacklist that deletes content cannot
+be undone. Checkout is guarded separately from login, because a session issued
+before the blacklist stays valid until its token expires — "blocked" that still
+lets someone spend money is not blocked.
+
+**"Blacklist from report" closes every pending report against that user.** Three
+people reporting the same person is one decision; leaving the others open means
+the next admin re-reviews an account that is already blocked.
+
+**"Active" means paid in the last 12 months.** A customer who has never ordered
+is inactive, not new — the operator wants to know who is buying.
+
+**Notification read-state is shared across admins.** With a small team on one
+queue, "somebody has seen this" is the useful meaning, and a per-admin join
+table is more machinery than the bell is worth.
+
+**Notifications never throw.** Every emitter sits inside a flow that matters more
+than the bell — a paid order, a signup, a filed report. A failed notification
+insert logs and swallows rather than failing the thing it describes.
+
+**CSV exports are formula-injection safe.** A field starting `=`, `+`, `-` or `@`
+is prefixed with an apostrophe, so a customer named `=HYPERLINK(...)` cannot
+execute on an operator's machine. A UTF-8 BOM makes Excel on Windows render
+non-ASCII names. Exports respect the current filter and cap at 5,000 rows — an
+unbounded export of a growing table is a way to take the server down from a
+button.
+
+**Announcement banners: a row per slot, saved together.** There are exactly two
+and the slot is the primary key, so a third cannot appear by accident. `PUT`
+saves both in one transaction — the design has one Save button, and a partial
+write would show one banner from before the edit and one from after. The admin
+endpoint returns both slots with their toggles; the public one returns only the
+enabled ones, because a storefront has no business knowing the copy of a banner
+it is not showing.
+
+## What is emitted, and what is not
+
+Three of the four notification types fire: `report_filed` (when a customer files
+a report), `order_received` (when a payment lands), `customer_registered` (on
+signup, both password and social). **`order_delivered` never fires yet** —
+nothing marks an order delivered, because there is no delivery signal from the
+courier. The type exists so the feed needs no change when one arrives.
+
+## Explicitly out of scope
+
+- **No order actions** — status changes, refunds, resends, fulfilment retry.
+  Read-only by design.
+- **No 2FA, SSO, or password reset for admins.** The designs show email +
+  password only. `admin:create` doubles as the reset path.
+- **No per-admin read state**, no admin audit log beyond `resolvedBy` /
+  `blacklistedBy` / `updatedBy` stamps.
+- **Dashboard aggregates are live**, not a rollup. Fine at current volumes;
+  "all time" only gets slower, so this wants a nightly rollup before `orders`
+  passes a few hundred thousand.
+
+## Verification
+
+Migrated and exercised live against the local database (83,688 books, real
+orders and users) with the server running. Walked the full console: login
+(right and wrong password, and a non-admin token — all correctly rejected),
+dashboard, badges, orders with items and tab counts, customers with stats,
+banner edit + public filtering + the empty-text rejection, then the moderation
+path end to end — filed a report through the real customer endpoint, saw
+`report_filed` and `order_received` and `customer_registered` land in the feed
+with correct badges, blacklisted from the report (which resolved it and flagged
+the user), confirmed the blacklisted account gets **403 at login**, then
+unblacklisted and cleared. Both CSV exports checked for the BOM, content type,
+attachment disposition and header row. Seed data removed afterwards.
+
+New unit tests: `csv.test.ts` (escaping and formula-injection) and
+`admin-order-tabs.test.ts` (the status→tab mapping, including the guard that
+every schema status is covered). Full suite 334 passing; the 3 failures in
+`subscription-pricing.test.ts` pre-date this work.
+
+The OpenAPI document builds clean — 109 paths, all 15 console endpoints and the
+five new schemas, every `$ref` resolving.
+
+**Not done:** the migration has run only on the local database. `ADMIN_JWT_SECRET`
+and `SUPPORT_INBOX` must be set in each real environment before the console and
+contact form work there.

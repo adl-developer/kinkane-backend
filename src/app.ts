@@ -13,6 +13,7 @@ import apiRoutes from './routes';
 import gardnersDropshipRoutes from './routes/gardners-dropship.routes';
 import referralRedirectRoutes from './routes/referral-redirect.routes';
 import adminReferralsRoutes from './routes/admin-referrals.routes';
+import adminConsoleRoutes from './routes/admin';
 import { referralsController } from './controllers/referrals.controller';
 import { wrap } from './lib/route-helpers';
 import { webhookRouter as stripeWebhookRouter } from './routes/subscriptions.routes';
@@ -77,6 +78,13 @@ app.use('/admin/queues', requireAdminToken, bullBoardAdapter.getRouter());
 // not part of the customer-facing checkout flow yet, so it isn't versioned
 // under /api/v1. Protected by the same static bearer token as Bull Board.
 app.use('/admin/gardners/dropship', requireAdminToken, gardnersDropshipRoutes);
+
+// ── Admin console ─────────────────────────────────────────────────────────────
+// The staffed console: dashboard, orders, customers, reports, settings. Guarded
+// by a per-person session (see middleware/admin-auth), NOT the static token the
+// machine-facing surfaces above use — these endpoints can blacklist a customer
+// and export the customer list.
+app.use('/admin/console', adminConsoleRoutes);
 
 // ── Referral competition admin ────────────────────────────────────────────────
 // The map, the standings, and the corrections. Same static bearer token as the

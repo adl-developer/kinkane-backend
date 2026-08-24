@@ -2,6 +2,7 @@ import {
   pgTable,
   serial,
   varchar,
+  text,
   char,
   boolean,
   timestamp,
@@ -63,6 +64,21 @@ export const users = pgTable(
     // without guessing which path produced any given row.
     countrySource: varchar('country_source', { length: 20 }),
     countryResolvedAt: timestamp('country_resolved_at', { withTimezone: true }),
+    // ── Blacklist ──────────────────────────────────────────────────────────
+    // Set from the admin console, from either the Customers list or a report.
+    // Null means in good standing; a timestamp means blocked. Stored as a time
+    // rather than a boolean so "when did this happen" is answerable without an
+    // audit table.
+    //
+    // What it blocks: signing in, and checking out. It deliberately does *not*
+    // delete or hide their existing content — moderation is reversible and
+    // destroying posts on a blacklist is not.
+    blacklistedAt: timestamp('blacklisted_at', { withTimezone: true }),
+    // No FK to `admins`: schema/users.ts is imported by nearly everything, and
+    // pointing it at the admin table would make the customer schema depend on
+    // the staff one. The id is enough to resolve a name when the console asks.
+    blacklistedBy: integer('blacklisted_by'),
+    blacklistReason: text('blacklist_reason'),
     searchVector: tsvector('search_vector'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),

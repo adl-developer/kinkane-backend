@@ -5,6 +5,7 @@
 
 ### Features
 
+* make the Contact Us form actually reach someone ([f040abd](https://adl.github.com/adl-developer/kinkane-backend/commit/f040abdd1a9ddc17f15fb2c7d4c7a734659bd1b9)) — [details](changelog/2026-08-24-contact-form.md)
 * give first-time buyers their 15% off automatically at checkout ([2eaea3f](https://adl.github.com/adl-developer/kinkane-backend/commit/2eaea3f17cfa533366a0f12f71b7f42fbe2e6bb6)) — [details](changelog/2026-08-24-checkout-phone-number.md)
 * let shoppers filter the shop by ISBN, price and publication year ([8efbeae](https://adl.github.com/adl-developer/kinkane-backend/commit/8efbeaea01710f9ac6b1d9b1223c8e8042a1eaf7)) — [details](changelog/2026-08-24-shop-filters.md)
 * collect a delivery phone number at checkout and pass it to the courier ([272eaa4](https://adl.github.com/adl-developer/kinkane-backend/commit/272eaa45993085fde7616eb690bf5a2d3a5260cf)) — [details](changelog/2026-08-24-checkout-phone-number.md)
