@@ -200,6 +200,13 @@ const envSchema = z.object({
   FX_RATES_FROM_GBP: z.string().default('USD:1.27,EUR:1.17'),
   FX_BUFFER_PERCENT: z.coerce.number().min(0).max(25).default(3),
 
+  // The launch promotion printed on every page of the shop: a percentage off
+  // someone's first order, applied automatically at checkout rather than typed
+  // in as a code — the checkout design has no field for one. Set to 0 to turn
+  // the promotion off; the banner text is separate and lives with the
+  // storefront, so the two can disagree if nobody keeps them in step.
+  FIRST_ORDER_DISCOUNT_PERCENT: z.coerce.number().min(0).max(100).default(0),
+
   // Shipping, in GBP pence, resolved most-specific-first:
   // country code -> region (EU/ROW) -> ROW. Gardners bills us per line, so a
   // flat per-order rate on a large basket is a deliberate margin decision.
@@ -473,6 +480,9 @@ export const config = {
     },
     gardnersRegionByCountry: parseMap(env.GARDNERS_REGION_BY_COUNTRY, (v) => v.toUpperCase()),
     gardnersCountryNamesExtra: parseMap(env.GARDNERS_COUNTRY_NAMES_EXTRA, (v) => v.toUpperCase()),
+    discount: {
+      firstOrderPercent: env.FIRST_ORDER_DISCOUNT_PERCENT,
+    },
     cart: {
       maxQuantityPerLine: env.CART_MAX_QUANTITY_PER_LINE,
       maxItems: env.CART_MAX_ITEMS,

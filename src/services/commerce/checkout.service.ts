@@ -14,13 +14,14 @@
  * configuration, which is the thing the env-driven design exists to avoid.
  */
 import Stripe from 'stripe';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNotNull, or, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { users, carts, cartItems, orders, orderItems, type Order } from '../../db/schema';
 import { config } from '../../config';
 import { stripe, assertStripeConfigured } from '../../lib/stripe';
 import { withQueryParam } from '../../lib/url';
 import { logger } from '../../lib/logger';
+import { normalizeEmailForPromotions } from '../../lib/email-identity';
 import { checkoutService as subscriptionCheckoutService } from '../subscriptions/checkout.service';
 import { paymentsService } from '../payments.service';
 import { availabilityService, type UnbuyableReason } from './availability.service';
@@ -78,6 +79,17 @@ export interface CheckoutResult {
   paymentReference: string;
   currency: string;
   totalMinor: number;
+  /**
+   * What the promotion took off, in the same currency as `totalMinor`. Zero
+   * when none applied.
+   *
+   * This is the first point in the flow where it can be known: eligibility
+   * depends on the buyer's email, and the basket endpoints deliberately do not
+   * ask for one — see the note in docs/shop-integration.md.
+   */
+  discountMinor: number;
+  /** Why, e.g. `first_order`. Null when there was no discount. */
+  discountReason: string | null;
   /** Customer-facing order identity, e.g. `ORD-7K2M9QX4`. Safe to display. */
   reference: string;
   /**
@@ -90,6 +102,37 @@ export interface CheckoutResult {
 
 function httpError(message: string, statusCode: number, code?: string, extra?: object): Error {
   return Object.assign(new Error(message), { statusCode, code, ...extra });
+}
+
+/**
+ * Has this buyer ever paid for anything before?
+ *
+ * Keyed on the **normalised email**, not the user id, because the shop sells to
+ * guests: an account-scoped check is bypassed by simply not signing in. The
+ * signed-in user id is checked as well, so someone who changes their email does
+ * not thereby earn a second first order.
+ *
+ * `paid_at IS NOT NULL` rather than a status list: an abandoned checkout leaves
+ * a `pending_payment` row behind, and counting those would deny the discount to
+ * someone who has never actually bought anything — the worst failure direction,
+ * since they are being told they had a first order they never got.
+ *
+ * This is an anti-abuse *speed bump*, not a wall. A determined person with a
+ * second mailbox gets a second discount, and that is an accepted cost — see the
+ * note on lib/email-identity.
+ */
+async function hasPaidBefore(normalizedEmail: string, userId: number | null): Promise<boolean> {
+  const identity = userId === null
+    ? eq(orders.contactEmailNormalized, normalizedEmail)
+    : or(eq(orders.contactEmailNormalized, normalizedEmail), eq(orders.userId, userId));
+
+  const [existing] = await db
+    .select({ one: sql`1` })
+    .from(orders)
+    .where(and(identity, isNotNull(orders.paidAt)))
+    .limit(1);
+
+  return Boolean(existing);
 }
 
 export const commerceCheckoutService = {
@@ -275,20 +318,6 @@ export const commerceCheckoutService = {
       });
     }
 
-    const quote = quoteOrder({
-      lines: items.map((item) => {
-        const live = buyable.get(item.bookId)!;
-        return {
-          bookId: item.bookId,
-          isbn13: live.isbn13,
-          quantity: item.quantity,
-          unitPriceGbpPence: live.unitPriceGbpPence,
-        };
-      }),
-      destinationCountry,
-      currency,
-    });
-
     // The account's own email for a signed-in buyer; the one they typed for a
     // guest. Never the request body's value for a signed-in buyer — see the
     // note on `contactEmail` above.
@@ -313,6 +342,29 @@ export const commerceCheckoutService = {
       contactEmail = options.contactEmail;
     }
 
+    // Priced *after* the buyer is identified: the first-order discount depends
+    // on who they are, so identity has to be settled before there is a price.
+    const normalizedEmail = normalizeEmailForPromotions(contactEmail);
+    const firstOrderPercent = config.commerce.discount.firstOrderPercent;
+    const discountEligible =
+      firstOrderPercent > 0 && !(await hasPaidBefore(normalizedEmail, userId));
+
+    const quote = quoteOrder({
+      lines: items.map((item) => {
+        const live = buyable.get(item.bookId)!;
+        return {
+          bookId: item.bookId,
+          isbn13: live.isbn13,
+          quantity: item.quantity,
+          unitPriceGbpPence: live.unitPriceGbpPence,
+        };
+      }),
+      destinationCountry,
+      currency,
+      discountPercent: discountEligible ? firstOrderPercent : 0,
+      discountReason: 'first_order',
+    });
+
     // Handed back to the caller in the clear exactly once; only its hash is
     // stored. This is what lets the confirmation screen offer "Track My Order"
     // and "Save your order details" to somebody with no account yet.
@@ -328,6 +380,9 @@ export const commerceCheckoutService = {
           guestAccessTokenHash: hashToken(accessToken),
           status: 'pending_payment',
           subtotalGbpPence: quote.subtotalGbpPence,
+          discountGbpPence: quote.discountGbpPence,
+          discountMinor: quote.discountMinor,
+          discountReason: quote.discountReason,
           shippingGbpPence: quote.shippingGbpPence,
           taxGbpPence: quote.taxGbpPence,
           totalGbpPence: quote.totalGbpPence,
@@ -343,6 +398,7 @@ export const commerceCheckoutService = {
           shippingRule: quote.shippingRule,
           shippingCountryCode: destinationCountry,
           contactEmail,
+          contactEmailNormalized: normalizedEmail,
           contactPhone,
           // Written before payment when we collected it ourselves. The paid
           // webhook will not overwrite these with Stripe's (absent) values —
@@ -428,6 +484,8 @@ export const commerceCheckoutService = {
       paymentReference: payment.reference,
       currency: quote.currency,
       totalMinor: quote.totalMinor,
+      discountMinor: quote.discountMinor,
+      discountReason: quote.discountReason,
       reference: order.reference,
       accessToken,
     };
@@ -482,6 +540,32 @@ export const commerceCheckoutService = {
       });
     }
 
+    // A one-off, single-redemption coupon for the exact amount our own quote
+    // took off, rather than a reusable `percent_off` one.
+    //
+    // Percent-off would have Stripe recompute the reduction from its own line
+    // items and round it its own way, which can disagree with the stored
+    // `total_minor` by a penny or two — and this codebase's whole money design
+    // rests on the amount charged provably equalling the amount stored. An
+    // `amount_off` coupon reduces the session total by exactly the integer we
+    // already committed to the order row.
+    //
+    // Shipping is a `shipping_option`, not a line item, so it is untouched by
+    // the coupon — which matches the quote, where the discount never applies to
+    // delivery.
+    const discounts: Stripe.Checkout.SessionCreateParams.Discount[] = [];
+    if (order.discountMinor > 0) {
+      const coupon = await stripe().coupons.create({
+        amount_off: order.discountMinor,
+        currency,
+        duration: 'once',
+        max_redemptions: 1,
+        name: order.discountReason === 'first_order' ? 'First order discount' : 'Discount',
+        metadata: { orderId: String(order.id), reason: order.discountReason ?? '' },
+      });
+      discounts.push({ coupon: coupon.id });
+    }
+
     // Already have an address? Then Stripe is a payment processor on this
     // order and nothing else. Asking it to collect an address we already hold
     // would mean two addresses to reconcile and a second chance for the
@@ -500,6 +584,7 @@ export const commerceCheckoutService = {
           }
         : { customer_email: order.contactEmail }),
       line_items: lineItems,
+      ...(discounts.length > 0 && { discounts }),
       // Locked to the country the order was priced against. The buyer can
       // correct any part of their address except the one that would invalidate
       // the shipping and tax we already quoted.

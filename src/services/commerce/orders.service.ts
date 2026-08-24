@@ -30,6 +30,10 @@ export interface OrderView {
   deliveredAt: Date | null;
   currency: string;
   subtotalMinor: number;
+  /** Promotional reduction applied at checkout; 0 when there was none. */
+  discountMinor: number;
+  /** Why, e.g. `first_order`. Null when there was no discount. */
+  discountReason: string | null;
   shippingMinor: number;
   taxMinor: number;
   totalMinor: number;
@@ -96,6 +100,8 @@ function toView(order: Order, items?: OrderItem[]): OrderView {
     deliveredAt: order.deliveredAt,
     currency: order.presentmentCurrency,
     subtotalMinor: order.subtotalMinor,
+    discountMinor: order.discountMinor,
+    discountReason: order.discountReason,
     shippingMinor: order.shippingMinor,
     taxMinor: order.taxMinor,
     totalMinor: order.totalMinor,

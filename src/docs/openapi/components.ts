@@ -549,6 +549,16 @@ const commerceSchemas = {
       deliveredAt: { type: 'string', format: 'date-time', nullable: true, example: null },
       currency: { type: 'string', example: 'USD' },
       subtotalMinor: { type: 'integer', example: 2598 },
+      discountMinor: {
+        type: 'integer',
+        description: 'Promotional reduction applied at checkout, 0 when none. The components always reconcile: `subtotalMinor - discountMinor + shippingMinor + taxMinor === totalMinor`.',
+        example: 0,
+      },
+      discountReason: {
+        type: 'string', nullable: true,
+        description: 'Why it was given — `first_order` is the only value today. Null when there was no discount.',
+        example: null,
+      },
       shippingMinor: { type: 'integer', example: 899 },
       taxMinor: {
         type: 'integer',

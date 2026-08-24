@@ -245,7 +245,17 @@ export const commercePaths = {
             orderId: { type: 'integer', example: 1042 },
             sessionId: { type: 'string', example: 'cs_test_a1B2c3D4…' },
             currency: { type: 'string', example: 'USD' },
-            totalMinor: { type: 'integer', description: 'Total in minor units.', example: 3497 },
+            totalMinor: { type: 'integer', description: 'Total in minor units, discount already applied.', example: 3497 },
+            discountMinor: {
+              type: 'integer',
+              description: 'What the first-order promotion took off, 0 when it did not apply. This is the first point in the flow where it can be known — eligibility depends on the buyer\'s email, and the basket endpoints deliberately never ask for one, so the cart cannot show it.',
+              example: 1117,
+            },
+            discountReason: {
+              type: 'string', nullable: true,
+              description: '`first_order`, or null when there was no discount.',
+              example: 'first_order',
+            },
             reference: {
               type: 'string',
               description: 'Customer-facing order identity. Safe to display and to print in emails.',

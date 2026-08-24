@@ -268,13 +268,17 @@ export interface OrderQuote {
   fxCapturedAt: Date;
   lines: PricedLine[];
   subtotalGbpPence: number;
+  discountGbpPence: number;
   shippingGbpPence: number;
   taxGbpPence: number;
   totalGbpPence: number;
   subtotalMinor: number;
+  discountMinor: number;
   shippingMinor: number;
   taxMinor: number;
   totalMinor: number;
+  /** Why a discount was applied, e.g. `first_order`. Null when there was none. */
+  discountReason: string | null;
   shippingRule: string;
   taxRatePercent: number;
   taxSource: 'env';
@@ -293,6 +297,15 @@ export function quoteOrder(options: {
   lines: QuoteLine[];
   destinationCountry: string;
   currency: string;
+  /**
+   * Percentage off the goods subtotal, 0 for none. Whether the buyer is
+   * *entitled* to it is decided in checkout.service — this function only
+   * applies what it is given, so pricing stays a pure function of its inputs
+   * and the eligibility rule stays in one place.
+   */
+  discountPercent?: number;
+  /** Recorded on the order when a discount applies. */
+  discountReason?: string | null;
 }): OrderQuote {
   const currency = options.currency.toUpperCase();
   const fxRate = fxRateFor(currency);
@@ -310,6 +323,16 @@ export function quoteOrder(options: {
   const subtotalGbpPence = lines.reduce((sum, line) => sum + line.lineTotalGbpPence, 0);
   const itemCount = lines.reduce((sum, line) => sum + line.quantity, 0);
 
+  // Applied to the goods only — never to shipping, which is a cost we are
+  // passing on rather than margin to give away.
+  const discountPercent = options.discountPercent ?? 0;
+  const discountGbpPence =
+    discountPercent > 0 ? Math.round((subtotalGbpPence * discountPercent) / 100) : 0;
+
+  // Deliberately quoted on the **pre-discount** subtotal. Otherwise a discount
+  // can push a basket back under the free-shipping threshold and hand the buyer
+  // a promotion that costs them delivery — the one outcome a promotion must
+  // never produce.
   const shipping = quoteShipping({
     countryCode: options.destinationCountry,
     itemCount,
@@ -317,23 +340,29 @@ export function quoteOrder(options: {
   });
 
   // Shipping is taxed alongside the goods in most regimes that tax books at
-  // all, so the taxable base includes it.
+  // all, so the taxable base includes it. The discount comes off first: tax is
+  // owed on what was actually paid.
   const tax = quoteTax({
     countryCode: options.destinationCountry,
-    taxableGbpPence: subtotalGbpPence + shipping.gbpPence,
+    taxableGbpPence: subtotalGbpPence - discountGbpPence + shipping.gbpPence,
   });
 
   const totalGbpPence = config.commerce.tax.pricesIncludeTax
-    ? subtotalGbpPence + shipping.gbpPence
-    : subtotalGbpPence + shipping.gbpPence + tax.gbpPence;
+    ? subtotalGbpPence - discountGbpPence + shipping.gbpPence
+    : subtotalGbpPence - discountGbpPence + shipping.gbpPence + tax.gbpPence;
 
   const subtotalMinor = lines.reduce((sum, line) => sum + line.lineTotalMinor, 0);
+  // toPresentment rounds up, which on a *discount* rounds in the customer's
+  // favour by at most one minor unit. That is the right direction to err, and
+  // it keeps one conversion helper rather than a second that rounds the other
+  // way for the one case where up means down.
+  const discountMinor = discountGbpPence > 0 ? toPresentment(discountGbpPence, currency) : 0;
   const shippingMinor = toPresentment(shipping.gbpPence, currency);
   const taxMinor = toPresentment(tax.gbpPence, currency);
 
   const totalMinor = config.commerce.tax.pricesIncludeTax
-    ? subtotalMinor + shippingMinor
-    : subtotalMinor + shippingMinor + taxMinor;
+    ? subtotalMinor - discountMinor + shippingMinor
+    : subtotalMinor - discountMinor + shippingMinor + taxMinor;
 
   return {
     currency,
@@ -341,13 +370,16 @@ export function quoteOrder(options: {
     fxCapturedAt: new Date(),
     lines,
     subtotalGbpPence,
+    discountGbpPence,
     shippingGbpPence: shipping.gbpPence,
     taxGbpPence: tax.gbpPence,
     totalGbpPence,
     subtotalMinor,
+    discountMinor,
     shippingMinor,
     taxMinor,
     totalMinor,
+    discountReason: discountGbpPence > 0 ? (options.discountReason ?? null) : null,
     shippingRule: shipping.rule,
     taxRatePercent: tax.ratePercent,
     taxSource: tax.source,

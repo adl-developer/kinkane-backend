@@ -106,6 +106,36 @@ tax are priced on.
 Passing `shippingCountry` instead of `shippingAddress` still works — Stripe then
 collects the address, locked to that country. Send one or the other.
 
+### The first-order discount is applied at checkout, and nowhere earlier
+
+When `FIRST_ORDER_DISCOUNT_PERCENT` is set, an order whose email has never paid
+for anything before gets that percentage off the goods automatically. There is
+no code to type, and nothing for the client to send.
+
+The checkout response carries `discountMinor` and `discountReason`, and the
+components always reconcile:
+
+```
+subtotalMinor - discountMinor + shippingMinor + taxMinor === totalMinor
+```
+
+**The basket endpoints deliberately do not show it.** `POST /cart/price` and
+`GET /cart` never ask for an email, and eligibility depends on one — adding an
+email parameter would turn the basket into an oracle for "has this address
+ordered from you before", which is not a question a public endpoint should
+answer about anybody. So the reduction appears once, at checkout.
+
+Two consequences for the UI:
+
+- The cart page cannot promise the discount, only the banner can. Design the
+  cart summary without a discount line.
+- The checkout summary needs a discount line the current design does not have.
+  `discountMinor > 0` is the signal to render it.
+
+Shipping is quoted on the **pre-discount** subtotal, so a promotion can never
+push a basket back under the free-shipping threshold and cost the buyer
+delivery. Tax is charged on the discounted amount.
+
 `contactPhone` is optional and is the delivery contact — it goes to the courier
 as the SMS tracking number. Send it in international form (`+233…` or `00233…`;
 spaces, dashes and brackets are fine and get stripped). A bare national number
