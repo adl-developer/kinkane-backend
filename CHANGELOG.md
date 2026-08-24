@@ -13,6 +13,7 @@
 
 ### Bug Fixes
 
+* separate unpaid checkouts from orders that actually need attention ([e22e0dc](https://adl.github.com/adl-developer/kinkane-backend/commit/e22e0dcf6632633bed8b85ae176543a593a94054)) — [details](changelog/2026-08-24-checkout-phone-number.md)
 * stop the dashboard listing abandoned checkouts as recent orders ([d2608ef](https://adl.github.com/adl-developer/kinkane-backend/commit/d2608efdca770e6da54e38724c07d650ad18183d)) — [details](changelog/2026-08-24-checkout-phone-number.md)
 
 
