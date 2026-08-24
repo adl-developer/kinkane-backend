@@ -22,7 +22,7 @@ const pageSchema = z.object({
 });
 
 const ordersQuerySchema = pageSchema.extend({
-  tab: z.enum(['all', 'processing', 'shipped', 'delivered', 'needs_attention']).default('all'),
+  tab: z.enum(['all', 'processing', 'shipped', 'delivered', 'needs_attention', 'unpaid']).default('all'),
   q: z.string().trim().min(1).max(200).optional(),
   // The design expands a row in place, so the client can pull the lines for the
   // whole page up front and expand without a round trip.

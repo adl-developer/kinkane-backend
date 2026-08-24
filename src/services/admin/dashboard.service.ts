@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, isNotNull, sql, inArray } from 'drizzle-orm';
+import { and, desc, eq, gte, isNotNull, sql, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { orders, users, userReports } from '../../db/schema';
 import { statusesInBucket } from '../commerce/orders.service';
@@ -6,23 +6,44 @@ import { statusesInBucket } from '../commerce/orders.service';
 /**
  * How the admin Orders tabs map onto the eleven order statuses.
  *
- * The design offers three tabs. The statuses that fit none of them —
- * `payment_failed`, `expired`, `supplier_rejected`, `refunded`, `cancelled` —
- * are collected under `needs_attention` rather than being dropped, because
- * `supplier_rejected` is precisely the order an operator has to find: a
- * customer has paid and the supplier will not fulfil it. Leaving it out of
- * every tab would make it invisible in the only screen anyone looks at.
+ * The design offers three tabs — Processing, Shipped, Delivered — which between
+ * them cover only five statuses. The other six need somewhere to go, and the
+ * line that decides where is **did money move**:
  *
- * `all` really is all of them, including the ones nobody has paid for yet.
+ * - `unpaid` — nobody was ever charged. A checkout that is still open, one whose
+ *   card was declined, one whose session timed out. No sale, nothing owed, and
+ *   nothing to chase beyond marketing.
+ * - `needs_attention` — money moved and something is wrong. `supplier_rejected`
+ *   is the case that matters: the customer has paid and the supplier will not
+ *   fulfil, so we owe them a book or a refund.
+ *
+ * Those two were originally one bucket, which made the badge meaningless: "3
+ * need attention" could have been three declined cards (nothing owed) or three
+ * paid orders stuck at the supplier (three people waiting for a book they paid
+ * for). Same number, opposite urgency.
+ *
+ * `all` really is all of them, unpaid included.
  */
 export const ADMIN_ORDER_TABS = {
   processing: ['paid', 'submitted_to_supplier', 'acknowledged'],
   shipped: ['dispatched'],
   delivered: ['delivered'],
-  needs_attention: ['payment_failed', 'supplier_rejected', 'refunded', 'cancelled'],
+  // Money moved and the order did not land where it should have. `cancelled` is
+  // here on the assumption it follows a payment; nothing sets it today, so if
+  // something ever cancels an *unpaid* order, move it.
+  needs_attention: ['supplier_rejected', 'refunded', 'cancelled'],
+  // Never paid for. Deliberately its own tab rather than a count with no way to
+  // see it — an operator told "1 unpaid" and given no filter to open it is being
+  // shown a dead end.
+  unpaid: ['pending_payment', 'payment_failed', 'expired'],
 } as const;
 
 export type AdminOrderTab = keyof typeof ADMIN_ORDER_TABS | 'all';
+
+/** Every status that belongs to a tab, as a flat SQL-ready list. */
+function statusList(tab: keyof typeof ADMIN_ORDER_TABS): SQL {
+  return sql`(${sql.join(ADMIN_ORDER_TABS[tab].map((s) => sql`${s}`), sql`, `)})`;
+}
 
 /** "Active" for the customer counts: has paid for something in the last year. */
 export const ACTIVE_CUSTOMER_WINDOW_DAYS = 365;
@@ -59,8 +80,13 @@ export const adminDashboardService = {
           totalOrders: sql<number>`count(*) filter (where ${orders.paidAt} is not null)`,
           revenueMinor: sql<number>`coalesce(sum(${orders.totalMinor}) filter (where ${orders.paidAt} is not null), 0)`,
           // The fulfilment queue: paid, not yet dispatched.
-          processing: sql<number>`count(*) filter (where ${orders.status} in ('paid','submitted_to_supplier','acknowledged'))`,
-          needsAttention: sql<number>`count(*) filter (where ${orders.status} in ('payment_failed','supplier_rejected','refunded','cancelled'))`,
+          // Derived from ADMIN_ORDER_TABS rather than repeating the status
+          // lists as SQL literals. They were duplicated, and a duplicated
+          // status list is one someone edits in one place: the card and the tab
+          // would then disagree about the same orders.
+          processing: sql<number>`count(*) filter (where ${orders.status} in ${statusList('processing')})`,
+          needsAttention: sql<number>`count(*) filter (where ${orders.status} in ${statusList('needs_attention')})`,
+          unpaid: sql<number>`count(*) filter (where ${orders.status} in ${statusList('unpaid')})`,
         })
         .from(orders),
       db.select({ total: sql<number>`count(*)` }).from(users),
@@ -109,6 +135,8 @@ export const adminDashboardService = {
         revenueCurrency: 'USD',
         processing: Number(totals.processing),
         needsAttention: Number(totals.needsAttention),
+        // Not a card in the designs — the Orders screen's tab badge reads this.
+        unpaid: Number(totals.unpaid),
         customers: totalCustomers,
         activeCustomers: active,
         inactiveCustomers: Math.max(0, totalCustomers - active),
@@ -146,13 +174,21 @@ export const adminDashboardService = {
   },
 };
 
-/** Which admin tab a raw status belongs to. Exported for the orders listing. */
-export function tabForStatus(status: string): AdminOrderTab | 'pending' {
+/**
+ * Which admin tab a raw status belongs to.
+ *
+ * Every status in the schema now maps to a real tab, so there is no fallback
+ * bucket to hide in — a status added later without a home here falls to
+ * `unpaid`, and the test in admin-order-tabs.test.ts fails until someone
+ * decides where it actually belongs.
+ */
+export function tabForStatus(status: string): Exclude<AdminOrderTab, 'all'> {
   for (const [tab, statuses] of Object.entries(ADMIN_ORDER_TABS)) {
-    if ((statuses as readonly string[]).includes(status)) return tab as AdminOrderTab;
+    if ((statuses as readonly string[]).includes(status)) {
+      return tab as Exclude<AdminOrderTab, 'all'>;
+    }
   }
-  // pending_payment and expired: started but never paid for.
-  return 'pending';
+  return 'unpaid';
 }
 
 /** Kept so the customer-facing bucket vocabulary stays importable from one place. */

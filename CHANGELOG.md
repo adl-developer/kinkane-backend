@@ -13,7 +13,7 @@
 
 ### Bug Fixes
 
-* stop the dashboard listing abandoned checkouts as recent orders ([f139e9d](https://adl.github.com/adl-developer/kinkane-backend/commit/f139e9daae73850f8bc1ae5aa4fd24906401756e)) — [details](changelog/2026-08-24-checkout-phone-number.md)
+* stop the dashboard listing abandoned checkouts as recent orders ([d2608ef](https://adl.github.com/adl-developer/kinkane-backend/commit/d2608efdca770e6da54e38724c07d650ad18183d)) — [details](changelog/2026-08-24-checkout-phone-number.md)
 
 
 ## 2026-08-20

@@ -85,7 +85,9 @@ export const adminOrdersService = {
         .groupBy(orders.status),
     ]);
 
-    const counts: Record<string, number> = { all: 0, processing: 0, shipped: 0, delivered: 0, needs_attention: 0, pending: 0 };
+    const counts: Record<string, number> = {
+      all: 0, processing: 0, shipped: 0, delivered: 0, needs_attention: 0, unpaid: 0,
+    };
     for (const row of byStatus) {
       counts.all += Number(row.n);
       counts[tabForStatus(row.status)] += Number(row.n);

@@ -519,7 +519,7 @@ const commerceSchemas = {
       status: { type: 'string', description: 'The raw status, one of eleven.', example: 'paid' },
       tab: {
         type: 'string',
-        enum: ['processing', 'shipped', 'delivered', 'needs_attention', 'pending'],
+        enum: ['processing', 'shipped', 'delivered', 'needs_attention', 'unpaid'],
         description: 'Which admin tab this row belongs to.',
         example: 'processing',
       },

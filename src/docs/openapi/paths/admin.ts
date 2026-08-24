@@ -16,7 +16,7 @@ const pagingParams = [
   param('offset', 'query', { type: 'integer', minimum: 0, default: 0 }, 'Rows to skip.'),
 ];
 
-const orderTabs = ['all', 'processing', 'shipped', 'delivered', 'needs_attention'];
+const orderTabs = ['all', 'processing', 'shipped', 'delivered', 'needs_attention', 'unpaid'];
 
 export const adminPaths = {
   '/admin/console/auth/login': {
@@ -85,7 +85,7 @@ export const adminPaths = {
         '',
         '**`revenueMinor` sums presentment minor units across whatever currencies were charged**, and is labelled with `revenueCurrency`. That is correct only while the shop sells in a single currency; the moment it genuinely sells in several, this needs converting to a base currency. The label exists so the ambiguity is visible rather than silent.',
         '',
-        '**Everything here counts paid orders only — the cards and the Recent Orders table alike.** An abandoned Stripe redirect is not a sale, and a total that excluded them above a table that included them would be a dashboard arguing with itself. Abandoned checkouts are still reachable on the Orders screen, counted as `pending` and included in its `all` tab.',
+        '**Everything here counts paid orders only — the cards and the Recent Orders table alike.** An abandoned Stripe redirect is not a sale, and a total that excluded them above a table that included them would be a dashboard arguing with itself. Abandoned checkouts are still reachable on the Orders screen, under its `unpaid` tab.',
         '',
         '`activeCustomers` means *placed a paid order in the last 12 months*. A customer who has never ordered counts as inactive, not new.',
       ].join('\n'),
@@ -96,7 +96,8 @@ export const adminPaths = {
             revenueMinor: { type: 'integer', description: 'Sum of paid order totals, minor units.', example: 9896 },
             revenueCurrency: { type: 'string', example: 'USD' },
             processing: { type: 'integer', description: 'Paid but not yet dispatched — the fulfilment queue.', example: 1 },
-            needsAttention: { type: 'integer', description: 'Failed, rejected, refunded or cancelled.', example: 0 },
+            needsAttention: { type: 'integer', description: 'Paid orders that went wrong: supplier-rejected, refunded or cancelled.', example: 0 },
+            unpaid: { type: 'integer', description: 'Checkouts nobody ever paid for. Not a card in the designs — the Orders tab badge reads this.', example: 1 },
             customers: { type: 'integer', example: 12 },
             activeCustomers: { type: 'integer', example: 10 },
             inactiveCustomers: { type: 'integer', example: 2 },
@@ -107,7 +108,7 @@ export const adminPaths = {
             customerName: { type: 'string', nullable: true, example: 'Jane Doe' },
             contactEmail: { type: 'string', format: 'email' },
             status: { type: 'string', example: 'paid' },
-            statusTab: { type: 'string', enum: [...orderTabs, 'pending'], example: 'processing' },
+            statusTab: { type: 'string', enum: orderTabs.filter((t) => t !== 'all'), example: 'processing' },
             currency: { type: 'string', example: 'USD' },
             totalMinor: { type: 'integer', example: 6997 },
             itemCount: { type: 'integer', example: 2 },
@@ -144,9 +145,14 @@ export const adminPaths = {
         '',
         'The `counts` object comes back on every request with a number for *every* tab, not just the selected one, because the design puts a badge on each.',
         '',
-        '**About `needs_attention`:** the design offers three tabs, and five of the eleven order statuses fit none of them. Rather than drop them, `payment_failed`, `supplier_rejected`, `refunded` and `cancelled` are collected here — `supplier_rejected` in particular is exactly the order an operator must find, because the customer has paid and the supplier will not fulfil it. `fulfilmentError` on those rows carries the reason.',
+'**Two tabs beyond the designs, split on whether money moved.** The designed three cover only five of the eleven statuses; the rest divide by a line that matters more than any label:',
         '',
-        '`pending` (started but never paid for) appears in `counts` and in `all`, but has no tab of its own.',
+        '| Tab | Statuses | Meaning |',
+        '| --- | --- | --- |',
+        '| `needs_attention` | `supplier_rejected`, `refunded`, `cancelled` | **Money moved and something is wrong.** `supplier_rejected` is the urgent one: the customer paid and the supplier will not fulfil, so we owe them a book or a refund. `fulfilmentError` carries the reason. |',
+        '| `unpaid` | `pending_payment`, `payment_failed`, `expired` | **Nobody was ever charged.** An open checkout, a declined card, a timed-out session. No sale, nothing owed. |',
+        '',
+        'These were one bucket at first, which made the badge meaningless — "3 need attention" could have been three declined cards (nothing owed) or three paid orders stuck at the supplier (three people waiting for a book they paid for). Same number, opposite urgency.',
       ].join('\n'),
       parameters: [
         param('tab', 'query', { type: 'string', enum: orderTabs, default: 'all' }, 'Which tab to list.'),
@@ -165,7 +171,7 @@ export const adminPaths = {
             shipped: { type: 'integer', example: 0 },
             delivered: { type: 'integer', example: 1 },
             needs_attention: { type: 'integer', example: 0 },
-            pending: { type: 'integer', example: 0 },
+            unpaid: { type: 'integer', example: 1 },
           }),
         })),
         400: json('Validation failed.', ref('ValidationError')),

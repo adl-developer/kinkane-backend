@@ -64,13 +64,31 @@ indexed lookup per admin request, which at console traffic is nothing.
 endpoint to change a status, refund, or resend. Adding one later should be a
 deliberate decision, not an accident of scaffolding.
 
-**`needs_attention` exists because five statuses fit no designed tab.** The
-design offers Processing / Shipped / Delivered. `payment_failed`,
-`supplier_rejected`, `refunded` and `cancelled` are collected under
-`needs_attention` rather than dropped — `supplier_rejected` in particular is
-exactly the order an operator must find: a customer has paid and the supplier
-will not fulfil. `fulfilmentError` carries the reason. A test asserts every
-schema status maps somewhere, so a new status cannot silently vanish from the UI.
+**Two tabs beyond the designs, split on whether money moved.** Processing /
+Shipped / Delivered cover only five of the eleven statuses. The rest divide on
+the line that decides what an operator has to do about them:
+
+- `needs_attention` — `supplier_rejected`, `refunded`, `cancelled`. Money moved
+  and something is wrong. `supplier_rejected` is the urgent one: the customer
+  paid and the supplier will not fulfil, so we owe them a book or a refund.
+  `fulfilmentError` carries the reason.
+- `unpaid` — `pending_payment`, `payment_failed`, `expired`. Nobody was ever
+  charged. No sale, nothing owed.
+
+These began as one bucket with `payment_failed` filed next to
+`supplier_rejected`, which made the badge meaningless: "3 need attention" could
+have been three declined cards (nothing owed) or three paid orders stuck at the
+supplier (three people waiting for a book they paid for). Same number, opposite
+urgency.
+
+`unpaid` is also a real, selectable tab rather than a count with no way to open
+it — the first version reported `pending: 1` in `counts` and returned 400 for
+`?tab=pending`, which is a dead-end badge.
+
+Three tests hold the taxonomy: every schema status maps to a tab, no status maps
+to two, and no tab mixes charged with uncharged orders. The last one caught its
+own author — `cancelled` is charged, which the customer-facing list had already
+settled by including it among the orders "a customer would recognise".
 
 **Blacklisting is reversible and non-destructive.** It blocks signing in and
 checking out; it does not touch posts, reviews, shelf or order history.
@@ -102,6 +120,13 @@ table is more machinery than the bell is worth.
 **Notifications never throw.** Every emitter sits inside a flow that matters more
 than the bell — a paid order, a signup, a filed report. A failed notification
 insert logs and swallows rather than failing the thing it describes.
+
+**Tab status lists are defined once.** The dashboard counted `processing` and
+`needs_attention` with hardcoded SQL string literals while the Orders screen used
+the `ADMIN_ORDER_TABS` table — the same lists in two places. They agreed on the
+day they were written, which is the only day duplicated lists ever agree. The
+dashboard now derives its counts from the same table, so a card and its tab
+cannot disagree about the same orders.
 
 **CSV exports are formula-injection safe.** A field starting `=`, `+`, `-` or `@`
 is prefixed with an apostrophe, so a customer named `=HYPERLINK(...)` cannot
