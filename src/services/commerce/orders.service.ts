@@ -37,6 +37,8 @@ export interface OrderView {
   placedAt: Date;
   paidAt: Date | null;
   shippingCountryCode: string;
+  /** The delivery contact this order was placed with. E.164, or null. */
+  contactPhone: string | null;
   items?: {
     bookId: number;
     isbn13: string;
@@ -101,6 +103,7 @@ function toView(order: Order, items?: OrderItem[]): OrderView {
     placedAt: order.createdAt,
     paidAt: order.paidAt,
     shippingCountryCode: order.shippingCountryCode,
+    contactPhone: order.contactPhone,
     ...(items && {
       items: items.map((item) => ({
         bookId: item.bookId,

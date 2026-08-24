@@ -559,6 +559,11 @@ const commerceSchemas = {
       totalMinor: { type: 'integer', example: 3497 },
       itemCount: { type: 'integer', example: 2 },
       shippingCountryCode: { type: 'string', example: 'US' },
+      contactPhone: {
+        type: 'string', nullable: true,
+        description: 'The delivery contact the order was placed with, E.164. Snapshotted at checkout, so editing the profile number later does not change it.',
+        example: '+233201234567',
+      },
       placedAt: { type: 'string', format: 'date-time', example: '2026-08-01T12:00:00.000Z' },
       paidAt: { type: 'string', format: 'date-time', nullable: true, example: '2026-08-01T12:01:14.000Z' },
       items: {

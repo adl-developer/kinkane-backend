@@ -227,6 +227,11 @@ export const commercePaths = {
           description: 'Guests only, and required for them — there is no account to read an email from. Ignored when signed in; the account email always wins.',
           example: 'rachel@example.com',
         },
+        contactPhone: {
+          type: 'string', maxLength: 32,
+          description: 'Optional delivery contact, international format (`+233…` or `00233…`; spaces, dashes and brackets are stripped). Unlike `contactEmail` this is honoured when signed in, so a buyer can give the recipient\'s number. Omitted by a signed-in buyer, the number on their profile is used. Passed to the courier as the SMS tracking contact.',
+          example: '+233201234567',
+        },
         currency: {
           type: 'string', minLength: 3, maxLength: 3,
           description: 'ISO-4217 override. Falls back to the resolved currency; ignored if unsupported.',

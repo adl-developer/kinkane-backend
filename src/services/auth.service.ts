@@ -44,6 +44,8 @@ export interface AuthUser {
 
 export interface MeUser extends AuthUser {
   photoUrl: string | null;
+  /** E.164, or null. Shown on the account screen and prefilled at checkout. */
+  phone: string | null;
   joinedYear: number;
   subscription: {
     tier: SubscriptionTier;
@@ -862,6 +864,7 @@ export const authService = {
         email: users.email,
         emailVerified: users.emailVerified,
         photoUrl: users.photoUrl,
+        phone: users.phone,
         createdAt: users.createdAt,
       })
       .from(users)

@@ -4,6 +4,7 @@ import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 import { cartService } from '../services/commerce/cart.service';
 import { commerceCheckoutService } from '../services/commerce/checkout.service';
 import { resolveRequestCountry } from '../services/commerce/pricing';
+import { phoneSchema } from '../lib/phone';
 import { config } from '../config';
 
 const viewSchema = z.object({
@@ -65,6 +66,11 @@ const checkoutSchema = z.object({
   // Guests only. Ignored for a signed-in buyer, whose account email wins — see
   // the note in checkout.service.start.
   contactEmail: z.string().trim().email().max(254).optional(),
+  // Delivery contact number, taken from whoever is checking out. Unlike
+  // contactEmail this *is* honoured for a signed-in buyer: a phone number is
+  // not an identity, and someone shipping a present to a friend should be able
+  // to give the recipient's number without editing their own profile.
+  contactPhone: phoneSchema.optional(),
   // Guests only — a signed-in buyer's stored cart is authoritative.
   lines: z.array(requestedLineSchema).max(config.commerce.cart.maxItems).optional(),
 }).refine((v) => Boolean(v.shippingCountry || v.shippingAddress), {
@@ -208,6 +214,7 @@ export const cartController = {
       currency: parsed.data.currency,
       address: parsed.data.shippingAddress,
       contactEmail: parsed.data.contactEmail,
+      contactPhone: parsed.data.contactPhone,
       lines: parsed.data.lines,
     });
 

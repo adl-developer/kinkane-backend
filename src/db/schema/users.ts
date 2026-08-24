@@ -40,6 +40,10 @@ export const users = pgTable(
     passwordHash: varchar('password_hash', { length: 500 }),
     photoUrl: varchar('photo_url', { length: 1000 }),
     emailVerified: boolean('email_verified').default(false).notNull(),
+    // E.164, or null — most accounts never supply one. Collected at checkout
+    // as a delivery contact and editable from the profile screen; it is not an
+    // identity or a login factor, and nothing authenticates against it.
+    phone: varchar('phone', { length: 32 }),
     shelfVisibility: shelfVisibilityEnum('shelf_visibility').notNull().default('public'),
     readerType: readerTypeEnum('reader_type'),
     // ── Competition geography ──────────────────────────────────────────────

@@ -117,6 +117,16 @@ export const commerceCheckoutService = {
        */
       contactEmail?: string | null;
       /**
+       * E.164 delivery contact. Optional: the older flow, where Stripe collects
+       * the address, never asks for one, and an order without a phone number
+       * still ships.
+       *
+       * Honoured for signed-in buyers as well as guests — see the note on the
+       * field in cart.controller. When a signed-in buyer omits it, their stored
+       * profile number is used, so the common case needs no field at all.
+       */
+      contactPhone?: string | null;
+      /**
        * The guest's basket, straight from the request body. Required when
        * `userId` is null and ignored otherwise — a signed-in buyer checks out
        * the cart we hold, so accepting lines for them would let a request buy
@@ -283,14 +293,19 @@ export const commerceCheckoutService = {
     // guest. Never the request body's value for a signed-in buyer — see the
     // note on `contactEmail` above.
     let contactEmail: string;
+    // Falls back to the account's stored number when the request omits one, so
+    // a returning buyer is not made to retype it. Null for a guest who gave
+    // none: there is no profile to fall back to.
+    let contactPhone: string | null = options.contactPhone ?? null;
     if (userId !== null) {
       const [user] = await db
-        .select({ email: users.email })
+        .select({ email: users.email, phone: users.phone })
         .from(users)
         .where(eq(users.id, userId))
         .limit(1);
       if (!user) throw httpError('User not found', 404);
       contactEmail = user.email;
+      contactPhone ??= user.phone;
     } else {
       if (!options.contactEmail) {
         throw httpError('An email address is required to check out', 400, 'EMAIL_REQUIRED');
@@ -328,6 +343,7 @@ export const commerceCheckoutService = {
           shippingRule: quote.shippingRule,
           shippingCountryCode: destinationCountry,
           contactEmail,
+          contactPhone,
           // Written before payment when we collected it ourselves. The paid
           // webhook will not overwrite these with Stripe's (absent) values —
           // see definedShipping in orders.service.

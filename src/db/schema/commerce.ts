@@ -200,6 +200,12 @@ export const orders = pgTable(
     stripePaymentIntentId: varchar('stripe_payment_intent_id', { length: 255 }),
 
     contactEmail: varchar('contact_email', { length: 254 }).notNull(),
+    // E.164 delivery contact, or null. Snapshotted onto the order rather than
+    // read from the user at fulfilment time: a buyer who later edits their
+    // profile number must not retroactively change where a courier calls about
+    // a parcel that already shipped. Optional because the older checkout flow,
+    // where Stripe collects the address, never asks for one.
+    contactPhone: varchar('contact_phone', { length: 32 }),
     // Collected by Stripe Checkout, written by the webhook. Null until paid.
     shippingName: varchar('shipping_name', { length: 200 }),
     shippingLine1: varchar('shipping_line1', { length: 200 }),

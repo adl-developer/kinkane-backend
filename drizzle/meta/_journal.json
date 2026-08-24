@@ -302,6 +302,13 @@
       "when": 1787257820699,
       "tag": "0042_shoppable_index_extended_catalogue",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1787523041999,
+      "tag": "0043_early_marten_broadcloak",
+      "breakpoints": true
     }
   ]
 }

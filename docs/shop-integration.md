@@ -79,6 +79,7 @@ tax are priced on.
 {
   "lines": [{ "bookId": 48213, "quantity": 2 }],
   "contactEmail": "rachel@example.com",
+  "contactPhone": "+233201234567",
   "shippingAddress": {
     "name": "Rachel TM",
     "line1": "19 H P Nyemitei St",
@@ -104,6 +105,18 @@ tax are priced on.
 
 Passing `shippingCountry` instead of `shippingAddress` still works — Stripe then
 collects the address, locked to that country. Send one or the other.
+
+`contactPhone` is optional and is the delivery contact — it goes to the courier
+as the SMS tracking number. Send it in international form (`+233…` or `00233…`;
+spaces, dashes and brackets are fine and get stripped). A bare national number
+is rejected rather than guessed at from the shipping country, because a
+plausible wrong number is worse than an absent one.
+
+Unlike `contactEmail`, it **is** honoured for a signed-in buyer: an email
+address identifies the account and cannot be overridden from a request body,
+but a phone number is just where the courier calls, and someone shipping a gift
+should be able to give the recipient's. A signed-in buyer who sends none gets
+the number from their profile.
 
 ### 4. Store the token before navigating away
 
@@ -178,7 +191,7 @@ is ignored too; the account email always wins.
 ```
 
 Only `lines` and `contactEmail` behave differently by auth state. Everything
-else — including `currency` — is identical for both.
+else — including `currency` and `contactPhone` — is identical for both.
 
 ### The handover at sign-in
 

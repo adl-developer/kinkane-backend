@@ -170,6 +170,10 @@ export const fulfilmentService = {
         serviceCode,
         tracking: supportsTracking(serviceCode),
         trackingEmail: order.contactEmail,
+        // Gardners' SMS tracking field. Only populated when the buyer gave a
+        // number — an empty string is what the spec's own example sends when
+        // there is none, and `trackingSms` serialises to exactly that.
+        ...(order.contactPhone && { trackingSms: order.contactPhone }),
         invoice: address,
         comm1: `Kinkane order ${order.id}`,
       }));

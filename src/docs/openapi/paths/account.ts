@@ -30,13 +30,13 @@ export const accountPaths = {
   '/api/v1/user/settings/profile': {
     patch: {
       tags: [TAG],
-      summary: 'Update name and profile photo',
+      summary: 'Update name, profile photo and phone',
       description: [
         'Patch semantics — send only what changes.',
         '',
         '**`photoUrl` must already be hosted on Kinkané’s own Cloudinary account.** This endpoint does not accept uploads: upload to Cloudinary from the client first, then send the resulting URL here. URLs on any other host — including other Cloudinary accounts — are rejected with a 400, so an arbitrary third-party image cannot be made to render as a user’s avatar.',
         '',
-        'Pass `photoUrl: null` to remove the photo.',
+        'Pass `photoUrl: null` to remove the photo, or `phone: null` to remove the number.',
       ].join('\n'),
       requestBody: body(object({
         name: { type: 'string', minLength: 1, maxLength: 100, example: 'Ama Boateng' },
@@ -45,12 +45,18 @@ export const accountPaths = {
           description: 'Must be on `res.cloudinary.com` under the configured cloud name. `null` clears it.',
           example: 'https://res.cloudinary.com/kinkane/image/upload/v1/avatars/4412.jpg',
         },
+        phone: {
+          type: 'string', maxLength: 32, nullable: true,
+          description: 'International format (`+233…` or `00233…`); spaces, dashes and brackets are stripped and it is stored E.164. A bare national number is rejected — the country code is not guessed. `null` clears it.',
+          example: '+233201234567',
+        },
       })),
       responses: {
         200: json('Updated.',
           object({
             name: { type: 'string', example: 'Ama Boateng' },
             photoUrl: { type: 'string', format: 'uri', nullable: true },
+            phone: { type: 'string', nullable: true, example: '+233201234567' },
           })),
         400: json('Validation failed, or the photo URL is not on the expected Cloudinary account.',
           ref('ValidationError')),
