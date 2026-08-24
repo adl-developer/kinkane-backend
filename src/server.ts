@@ -1,4 +1,5 @@
 import app from './app';
+import { bootstrapFirstAdmin } from './services/admin/bootstrap.service';
 import { config } from './config';
 import { logger } from './lib/logger';
 import { connectRedis, disconnectRedis } from './lib/redis';
@@ -46,6 +47,11 @@ async function main(): Promise<void> {
   const emailWorker = startEmailWorker();
   const pushWorker = startPushWorker();
   const fulfilmentWorker = startFulfilmentWorker();
+
+  // Creates the first admin from ADMIN_BOOTSTRAP_* when the table is empty, and
+  // does nothing otherwise. Awaited so the console is usable the moment the
+  // server accepts traffic, rather than a moment after.
+  await bootstrapFirstAdmin();
 
   const server = app.listen(config.port, () => {
     logger.info('kinkane-server started', { port: config.port, env: config.nodeEnv });

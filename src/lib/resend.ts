@@ -17,6 +17,13 @@ export interface EmailMessage {
   subject: string;
   html: string;
   text: string;
+  /**
+   * Where a reply should go, when that is not the From address. Used by the
+   * contact-form notification so support can answer the customer directly;
+   * putting the customer's address in From instead would fail SPF and land the
+   * message in spam.
+   */
+  replyTo?: string;
 }
 
 /**
@@ -33,6 +40,7 @@ export async function sendEmail(msg: EmailMessage): Promise<void> {
     subject: msg.subject,
     html: msg.html,
     text: msg.text,
+    ...(msg.replyTo && { replyTo: msg.replyTo }),
   });
 
   if (error) {

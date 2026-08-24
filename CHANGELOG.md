@@ -1,6 +1,28 @@
 # Changelog
 
 
+## 2026-08-24
+
+### Features
+
+* seed admin accounts from a file, and document every setting ([6e5a273](https://adl.github.com/adl-developer/kinkane-backend/commit/6e5a2738be47bd27ad6cd992294ef08dae8dab4a)) — [details](changelog/2026-08-24-order-confirmation-email.md)
+* email a confirmation when an order is paid for ([7b17245](https://adl.github.com/adl-developer/kinkane-backend/commit/7b17245d74c1513e05e6faf76ace5ae92d0116ee)) — [details](changelog/2026-08-24-order-confirmation-email.md)
+* show prices on the discovery carousels ([e717e01](https://adl.github.com/adl-developer/kinkane-backend/commit/e717e01ed000f7c81e1031ef1ae47a3b038b8e48)) — [details](changelog/2026-08-24-admin-console.md)
+* add the staffed admin console back end ([027708a](https://adl.github.com/adl-developer/kinkane-backend/commit/027708a4bbc662c8678f8361025933d37157a5f5)) — [details](changelog/2026-08-24-admin-console.md)
+* make the Contact Us form actually reach someone ([f040abd](https://adl.github.com/adl-developer/kinkane-backend/commit/f040abdd1a9ddc17f15fb2c7d4c7a734659bd1b9)) — [details](changelog/2026-08-24-contact-form.md)
+* give first-time buyers their 15% off automatically at checkout ([2eaea3f](https://adl.github.com/adl-developer/kinkane-backend/commit/2eaea3f17cfa533366a0f12f71b7f42fbe2e6bb6)) — [details](changelog/2026-08-24-checkout-phone-number.md)
+* let shoppers filter the shop by ISBN, price and publication year ([8efbeae](https://adl.github.com/adl-developer/kinkane-backend/commit/8efbeaea01710f9ac6b1d9b1223c8e8042a1eaf7)) — [details](changelog/2026-08-24-shop-filters.md)
+* collect a delivery phone number at checkout and pass it to the courier ([272eaa4](https://adl.github.com/adl-developer/kinkane-backend/commit/272eaa45993085fde7616eb690bf5a2d3a5260cf)) — [details](changelog/2026-08-24-checkout-phone-number.md)
+
+### Bug Fixes
+
+* stop concurrent requests charging, shipping and discounting twice ([f79e616](https://adl.github.com/adl-developer/kinkane-backend/commit/f79e616c2924f7eaf7e1d14361efcd13c6966d13)) — [details](changelog/2026-08-24-first-order-discount.md)
+* give shop listings the price they are filtered by ([4ac7a5c](https://adl.github.com/adl-developer/kinkane-backend/commit/4ac7a5c8a2cc5c40c06bf0834e710df09623c896)) — [details](changelog/2026-08-24-feed-prices.md)
+* close three gaps found reviewing the admin console ([6ad62b5](https://adl.github.com/adl-developer/kinkane-backend/commit/6ad62b5aa6b3c6c79c39f699f0896bf7c41fc740)) — [details](changelog/2026-08-24-admin-console.md)
+* separate unpaid checkouts from orders that actually need attention ([e22e0dc](https://adl.github.com/adl-developer/kinkane-backend/commit/e22e0dcf6632633bed8b85ae176543a593a94054)) — [details](changelog/2026-08-24-checkout-phone-number.md)
+* stop the dashboard listing abandoned checkouts as recent orders ([d2608ef](https://adl.github.com/adl-developer/kinkane-backend/commit/d2608efdca770e6da54e38724c07d650ad18183d)) — [details](changelog/2026-08-24-checkout-phone-number.md)
+
+
 ## 2026-08-20
 
 ### Features

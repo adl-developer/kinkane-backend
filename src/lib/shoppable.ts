@@ -114,11 +114,30 @@ export function isSupplyToOrder(reportCode: string | null | undefined): boolean 
  * certainly unbuyable, but what survives still has to clear the full gate at
  * add-to-cart.
  */
-export function buildShoppableCondition(): SQL {
+export function buildShoppableCondition(priceBounds?: {
+  /** Inclusive lower bound, GBP pence. */
+  minGbpPence?: number;
+  /** Inclusive upper bound, GBP pence. */
+  maxGbpPence?: number;
+}): SQL {
   const codes = sql.join(
     UNSUPPLIABLE_REPORT_CODES.map((code) => sql`${code}`),
     sql`, `,
   );
+
+  // Price bounds ride *inside* the shoppable EXISTS rather than in a second
+  // one. Same correlated index probe, one extra comparison on a row already
+  // fetched — where a separate EXISTS would double the probes for no gain.
+  // `rrp_gbp` is pounds (numeric(10,2)) and the bounds arrive as pence, so the
+  // comparison is done in pence to keep the arithmetic integral on our side.
+  const priceFloor =
+    priceBounds?.minGbpPence === undefined
+      ? sql``
+      : sql` AND gs.rrp_gbp * 100 >= ${priceBounds.minGbpPence}`;
+  const priceCeiling =
+    priceBounds?.maxGbpPence === undefined
+      ? sql``
+      : sql` AND gs.rrp_gbp * 100 <= ${priceBounds.maxGbpPence}`;
   // Correlated EXISTS rather than a join: `gardners_stock` has a unique index on
   // isbn13, so this is one index probe per candidate row, and it cannot
   // duplicate a book the way a join would if that uniqueness ever lapsed.
@@ -134,7 +153,7 @@ export function buildShoppableCondition(): SQL {
         AND (
           gs.report_code IS NULL
           OR upper(btrim(gs.report_code)) NOT IN (${codes})
-        )
+        )${priceFloor}${priceCeiling}
     )
   )`;
 }

@@ -10,6 +10,8 @@ import { accountPaths } from './paths/account';
 import { commercePaths } from './paths/commerce';
 import { billingPaths } from './paths/billing';
 import { referralPaths } from './paths/referrals';
+import { supportPaths } from './paths/support';
+import { adminPaths } from './paths/admin';
 
 /**
  * Assembles the OpenAPI 3.0 document.
@@ -154,6 +156,12 @@ const tags = [
     description:
       'Invite links and the "Around the World" competition. Open to every signed-up account, lapsed ones included.',
   },
+  { name: 'Support', description: 'The Contact Us form. Public, rate limited, honeypot-protected.' },
+  {
+    name: 'Admin Console',
+    description:
+      'The staffed back office: dashboard, orders, customers, moderation, banners and the notification feed. Separate accounts from customers, separate signing secret, mounted at /admin/console rather than under /api/v1.',
+  },
 ];
 
 export function buildOpenApiDocument(req: Request): Record<string, unknown> {
@@ -187,6 +195,8 @@ export function buildOpenApiDocument(req: Request): Record<string, unknown> {
       ...commercePaths,
       ...billingPaths,
       ...referralPaths,
+      ...supportPaths,
+      ...adminPaths,
     },
   };
 }

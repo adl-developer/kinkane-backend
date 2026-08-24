@@ -219,6 +219,7 @@ export const authPaths = {
               email: { type: 'string', format: 'email', example: 'ama@example.com' },
               emailVerified: { type: 'boolean', example: true },
               photoUrl: { type: 'string', format: 'uri', nullable: true, example: null },
+              phone: { type: 'string', nullable: true, description: 'E.164, or null.', example: '+233201234567' },
               joinedYear: { type: 'integer', example: 2026 },
               subscription: ref('Subscription'),
               providers: {

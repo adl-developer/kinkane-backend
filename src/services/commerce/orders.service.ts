@@ -12,6 +12,8 @@ import {
   type OrderItem,
   type OrderStatus,
 } from '../../db/schema';
+import { adminNotificationsService } from '../admin/notifications.service';
+import { formatMinor } from '../../lib/money';
 import { logger } from '../../lib/logger';
 import { hashToken, tokensMatch } from '../../lib/order-identity';
 import { interactionsService } from '../interactions.service';
@@ -30,6 +32,10 @@ export interface OrderView {
   deliveredAt: Date | null;
   currency: string;
   subtotalMinor: number;
+  /** Promotional reduction applied at checkout; 0 when there was none. */
+  discountMinor: number;
+  /** Why, e.g. `first_order`. Null when there was no discount. */
+  discountReason: string | null;
   shippingMinor: number;
   taxMinor: number;
   totalMinor: number;
@@ -37,6 +43,8 @@ export interface OrderView {
   placedAt: Date;
   paidAt: Date | null;
   shippingCountryCode: string;
+  /** The delivery contact this order was placed with. E.164, or null. */
+  contactPhone: string | null;
   items?: {
     bookId: number;
     isbn13: string;
@@ -94,6 +102,8 @@ function toView(order: Order, items?: OrderItem[]): OrderView {
     deliveredAt: order.deliveredAt,
     currency: order.presentmentCurrency,
     subtotalMinor: order.subtotalMinor,
+    discountMinor: order.discountMinor,
+    discountReason: order.discountReason,
     shippingMinor: order.shippingMinor,
     taxMinor: order.taxMinor,
     totalMinor: order.totalMinor,
@@ -101,6 +111,7 @@ function toView(order: Order, items?: OrderItem[]): OrderView {
     placedAt: order.createdAt,
     paidAt: order.paidAt,
     shippingCountryCode: order.shippingCountryCode,
+    contactPhone: order.contactPhone,
     ...(items && {
       items: items.map((item) => ({
         bookId: item.bookId,
@@ -344,7 +355,18 @@ export const ordersService = {
       });
     }
 
-    await db
+    // The claim itself. `status = 'pending_payment'` in the WHERE clause is what
+    // makes this safe: one statement, so Postgres serialises concurrent
+    // attempts and exactly one of them updates a row. The read above is a fast
+    // path that skips the work for an obvious duplicate; **this** is the check
+    // that actually holds.
+    //
+    // It has to be atomic because Stripe delivers at-least-once and two
+    // deliveries can land at the same moment. With a read-then-write both would
+    // see `pending_payment`, both would return true, and the caller would run
+    // fulfilment twice — which at the far end means shipping and paying for the
+    // same books twice.
+    const claimed = await db
       .update(orders)
       .set({
         status: 'paid',
@@ -362,7 +384,24 @@ export const ordersService = {
         ...definedShipping(details.shipping),
         updatedAt: new Date(),
       })
-      .where(eq(orders.id, orderId));
+      .where(and(eq(orders.id, orderId), eq(orders.status, 'pending_payment')))
+      .returning({ id: orders.id });
+
+    if (claimed.length === 0) {
+      // Another delivery won the race between our read and this write.
+      logger.info('Concurrent delivery already marked this order paid — ignoring', { orderId });
+      return false;
+    }
+
+    // Tell the console. Never blocks or fails the webhook — a missing bell
+    // entry must not turn a successful payment into a retried webhook.
+    void adminNotificationsService.emit({
+      type: 'order_received',
+      title: 'New order received',
+      body: `${order.reference} — ${formatMinor(order.totalMinor, order.presentmentCurrency)} from ${order.contactEmail}.`,
+      orderId,
+      userId: order.userId ?? undefined,
+    });
 
     return true;
   },

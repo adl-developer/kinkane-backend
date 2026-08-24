@@ -39,18 +39,22 @@ export const userSettingsService = {
 
   async updateProfile(
     userId: number,
-    data: { name?: string; photoUrl?: string | null },
-  ): Promise<{ name: string; photoUrl: string | null }> {
+    data: { name?: string; photoUrl?: string | null; phone?: string | null },
+  ): Promise<{ name: string; photoUrl: string | null; phone: string | null }> {
     const [updated] = await db
       .update(users)
       .set({ ...data, updatedAt: new Date() })
       .where(eq(users.id, userId))
-      .returning({ name: users.name, photoUrl: users.photoUrl });
+      .returning({ name: users.name, photoUrl: users.photoUrl, phone: users.phone });
 
     if (!updated) {
       throw Object.assign(new Error('User not found'), { statusCode: 404 });
     }
 
-    return { name: updated.name, photoUrl: updated.photoUrl ?? null };
+    return {
+      name: updated.name,
+      photoUrl: updated.photoUrl ?? null,
+      phone: updated.phone ?? null,
+    };
   },
 };

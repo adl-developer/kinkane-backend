@@ -42,7 +42,9 @@ router.get('/recommendations', optionalAuth, booksController.basketRecommendatio
 
 /**
  * GET /books
- * Query params: q, genre, availability, productForm, publishingStatus, publisher, limit, offset, dedupe, shoppable, cursor
+ * Query params: q, genre, availability, productForm, publishingStatus, publisher,
+ * isbn, yearMin, yearMax, priceMin, priceMax, currency, sortBy, sort, limit,
+ * offset, dedupe, shoppable, cursor
  *
  * `q` matches both title and author name. Title matches rank first, except when
  * nothing matched a title properly — then an exact author match outranks the
@@ -58,6 +60,19 @@ router.get('/recommendations', optionalAuth, booksController.basketRecommendatio
  * Cursor pagination guarantees a title cannot appear on two pages; naive
  * offset pagination on the deduped path could, because two raw editions of
  * one book can straddle a page boundary.
+ *
+ * `isbn` matches exactly (hyphens stripped); `yearMin`/`yearMax` bound
+ * publication date, excluding undated books; `priceMin`/`priceMax` bound the
+ * supplier price and are **only valid with `shoppable=true`**, since that is
+ * the only path that consults it — sending them otherwise is a 400 rather than
+ * a page that silently came back unfiltered. Price bounds are major units of
+ * `currency` (defaulting to the currency the request would be quoted in) and
+ * are converted to GBP pence server-side.
+ *
+ * `sortBy=title|newest` picks the ordering field and `sort=asc|desc` its
+ * direction; a bare `sort` still means title. Both are ignored when `q` is
+ * present, where relevance ranking wins. There is no price ordering — see
+ * buildSortOrderBy for why.
  *
  * `shoppable=true` narrows the results to what the e-commerce section can
  * list: an ISBN13, a live Gardners price, and no unsuppliable report code.

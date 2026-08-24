@@ -15,7 +15,9 @@
     "firebase:check": "tsx scripts/check-firebase.ts",
     "changelog": "node scripts/generate-changelog.mjs",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "admin:create": "tsx scripts/create-admin.ts",
+    "seed:demo": "tsx scripts/seed-demo.ts"
   },
   "dependencies": {
     "@bull-board/api": "^7.1.5",

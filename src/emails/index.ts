@@ -13,6 +13,9 @@ export type { SubscriptionConfirmedPayload } from './transactional/subscription-
 export { sendSubscriptionPaymentFailedEmail } from './transactional/subscription-payment-failed';
 export { sendSubscriptionCancelledEmail } from './transactional/subscription-cancelled';
 export { sendReferralInviteEmail } from './transactional/referral-invite';
+export { sendContactMessageEmail } from './transactional/contact-message';
+export { sendOrderConfirmedEmail } from './transactional/order-confirmed';
+export type { OrderConfirmedPayload, OrderConfirmedItem } from './transactional/order-confirmed';
 
 // Notifications
 export { sendTrialEndingEmail } from './notifications/trial-ending';

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { AuthenticatedRequest } from '../middleware/auth.middleware';
 import { userSettingsService } from '../services/user-settings.service';
 import { config } from '../config';
+import { phoneSchema } from '../lib/phone';
 import { logger } from '../lib/logger';
 
 const shelfVisibilitySchema = z.object({
@@ -32,9 +33,11 @@ const updateProfileSchema = z
       )
       .nullable()
       .optional(),
+    // Nullable so the profile screen can clear a number as well as set one.
+    phone: phoneSchema.nullable().optional(),
   })
-  .refine((d) => d.name !== undefined || d.photoUrl !== undefined, {
-    message: 'At least one of name or photoUrl must be provided',
+  .refine((d) => d.name !== undefined || d.photoUrl !== undefined || d.phone !== undefined, {
+    message: 'At least one of name, photoUrl or phone must be provided',
   });
 
 export const userSettingsController = {

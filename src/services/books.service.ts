@@ -29,6 +29,8 @@ import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-ex
 import { TRENDING_SCORED_TYPES, trendingScoreSql } from './interactions.service';
 import { availabilityService } from './commerce/availability.service';
 import { buildShoppableCondition } from '../lib/shoppable';
+import { toPresentment } from './commerce/pricing';
+import { config } from '../config';
 
 const BOOK_DETAIL_TTL    = 60 * 60;    // 1 hour
 const LIST_TTL           = 5 * 60;     // 5 minutes
@@ -135,6 +137,27 @@ export interface ListBooksOptions {
   productForm?: string;
   publishingStatus?: string;
   publisher?: string;
+  /** Exact ISBN-13. Narrower than `q`, and index-backed. */
+  isbn?: string;
+  /** Inclusive publication-year bounds. */
+  yearMin?: number;
+  yearMax?: number;
+  /**
+   * Inclusive price bounds in **GBP pence**, already converted from whatever
+   * currency the customer typed. Only meaningful with `shoppable` — the price
+   * lives on the Gardners row that flag joins against — and the controller
+   * rejects them otherwise rather than returning a silently unfiltered page.
+   */
+  priceMinGbpPence?: number;
+  priceMaxGbpPence?: number;
+  /**
+   * The currency prices come back in, already resolved by the controller. Also
+   * the currency the price bounds were expressed in, so the numbers a client
+   * filters by and the numbers it displays are the same.
+   */
+  currency?: string;
+  /** Which field to order by. Ignored whenever `q` is present — relevance wins. */
+  sortBy?: 'title' | 'newest';
   sort?: 'asc' | 'desc';
   limit: number;
   offset: number;
@@ -243,6 +266,21 @@ export interface BookListItem {
    * than a title that is visibly, temporarily unavailable.
    */
   inStock?: boolean;
+  /**
+   * The live sellable price, in the currency this request resolved to. Present
+   * only with `shoppable=true`, alongside `inStock`.
+   *
+   * This — not the `prices` array — is what the shop charges. That array is
+   * ONIX edition metadata and disagrees with the supplier feed on part of the
+   * catalogue, so a listing that renders it is showing a price the basket will
+   * not honour. It is also what `priceMin`/`priceMax` filter on, so a filtered
+   * page can display the number it was filtered by.
+   */
+  unitPriceMinor?: number;
+  /** Pre-markdown price when a promotion is running; null when not on sale. */
+  compareAtMinor?: number | null;
+  /** ISO-4217 for the two fields above. */
+  currency?: string;
 }
 
 // Which side of the catalogue a typeahead query is matched against. 'all' (the default)
@@ -277,6 +315,20 @@ export interface TrendingBookItem {
   contributors: Pick<BookContributor, 'role' | 'personName' | 'sequenceNumber'>[];
   genres: Pick<Genre, 'name' | 'slug'>[];
   excerpt: BookExcerptInfo | null;
+  /**
+   * Live shop fields, present only when the feed was asked for `shoppable=true`.
+   *
+   * **Attached after the cache is read, never inside it.** These feeds cache
+   * their pool for an hour, and a price is the one thing in this system that
+   * must never be served from an hour-old snapshot — supplier prices move
+   * hourly, and the whole shop design rests on a displayed price being the price
+   * the basket will honour. So the cached payload holds books; the price is put
+   * on afterwards, on every request.
+   */
+  unitPriceMinor?: number;
+  compareAtMinor?: number | null;
+  currency?: string;
+  inStock?: boolean;
 }
 
 // TrendingBookItem plus the fields dedupeByTitle needs to pick the best of several
@@ -629,6 +681,58 @@ function buildPersonNamePrefixOrderBy(q: string): SQL[] {
 // callers can swap the cheap prefix-only tier in for the expensive full tier — see the
 // cheap-first strategy in list() — while still sharing the same genre/availability/etc.
 // filters.
+/**
+ * Ordering for a browse (no `q`). Backwards compatible by construction: with
+ * neither sortBy nor sort supplied this is `updatedAt`, exactly as before, and
+ * a bare `sort` still means title — the meaning it had when it was the only
+ * ordering knob there was.
+ *
+ * `newest` orders on publication_date, which is nullable; undated books sort
+ * last in both directions rather than crowding the top of a "newest" page,
+ * where Postgres would otherwise put them descending.
+ *
+ * There is deliberately no `price` here. Price lives on the correlated Gardners
+ * row, so ordering by it means evaluating that subquery for every candidate row
+ * *before* the LIMIT applies — the same shape as the title-sort regression
+ * documented on buildFastTitlePrefixOrderBy, and unmeasured against the real
+ * table. It needs an EXPLAIN against production data before it exists.
+ */
+/**
+ * Converts a live GBP price into the currency the request resolved to.
+ *
+ * Returns nothing at all when the book has no live price — which should not
+ * happen for a row that cleared buildShoppableCondition, but a missing key is a
+ * better answer than a zero that reads as "free".
+ */
+function priceFields(
+  live: { unitPriceGbpPence: number; compareAtGbpPence: number | null } | undefined,
+  currency: string | undefined,
+): { unitPriceMinor: number; compareAtMinor: number | null; currency: string } | Record<string, never> {
+  if (!live) return {};
+  const code = (currency ?? config.commerce.currency.default).toUpperCase();
+  return {
+    unitPriceMinor: toPresentment(live.unitPriceGbpPence, code),
+    compareAtMinor:
+      live.compareAtGbpPence === null ? null : toPresentment(live.compareAtGbpPence, code),
+    currency: code,
+  };
+}
+
+function buildSortOrderBy(opts: ListBooksOptions): (SQL | PgColumn)[] {
+  const direction = opts.sort === 'desc' ? desc : asc;
+
+  switch (opts.sortBy) {
+    case 'title':
+      return [direction(books.title)];
+    case 'newest':
+      return [
+        sql`${books.publicationDate} ${opts.sort === 'asc' ? sql`ASC` : sql`DESC`} NULLS LAST`,
+      ];
+    default:
+      return opts.sort ? [direction(books.title)] : [books.updatedAt];
+  }
+}
+
 function buildWhereClause(opts: ListBooksOptions, searchCondition?: SQL): SQL | undefined {
   const conditions: SQL[] = [];
 
@@ -674,8 +778,29 @@ function buildWhereClause(opts: ListBooksOptions, searchCondition?: SQL): SQL | 
     conditions.push(ilike(books.publisherName, `%${opts.publisher}%`));
   }
 
+  if (opts.isbn) {
+    conditions.push(eq(books.isbn13, opts.isbn));
+  }
+
+  // Half-open in neither direction: a buyer who asks for 1990-2000 means both
+  // endpoints. Books with no publication date drop out of a year-filtered
+  // result, which is correct — an undated book cannot be shown to satisfy a
+  // date range.
+  if (opts.yearMin !== undefined) {
+    conditions.push(sql`${books.publicationDate} >= ${`${opts.yearMin}-01-01`}`);
+  }
+
+  if (opts.yearMax !== undefined) {
+    conditions.push(sql`${books.publicationDate} <= ${`${opts.yearMax}-12-31`}`);
+  }
+
   if (opts.shoppable) {
-    conditions.push(buildShoppableCondition());
+    conditions.push(
+      buildShoppableCondition({
+        minGbpPence: opts.priceMinGbpPence,
+        maxGbpPence: opts.priceMaxGbpPence,
+      }),
+    );
   }
 
   return conditions.length > 0 ? and(...conditions) : undefined;
@@ -1075,6 +1200,7 @@ export const booksService = {
     // added to this list.
     const {
       sort: _sort,
+      sortBy: _sortBy,
       limit: _limit,
       offset: _offset,
       dedupe: _dedupe,
@@ -1199,8 +1325,10 @@ export const booksService = {
           : 'broad'
       : 'broad';
 
-    // When a search query is present, relevance ranking takes priority and sort is ignored.
-    // Otherwise sort by title (asc/desc) when specified, falling back to updatedAt.
+    // When a search query is present, relevance ranking takes priority and both
+    // sortBy and sort are ignored — a page ordered by title that was *selected*
+    // by fuzzy relevance is neither one thing nor the other. Otherwise order by
+    // the requested field, falling back to updatedAt.
     const rowsWhere = opts.q
       ? buildWhereClause(
           opts,
@@ -1217,9 +1345,7 @@ export const booksService = {
         : rowsTier === 'cheap'
           ? buildTitlePrefixOrderBy(opts.q)
           : buildSearchOrderBy(opts.q)
-      : opts.sort
-        ? [opts.sort === 'desc' ? desc(books.title) : asc(books.title)]
-        : [books.updatedAt];
+      : buildSortOrderBy(opts);
 
     // With dedupe on, over-fetch a headroom pool per page so collapsing same-titled
     // editions still tends to leave a full page — see DEDUPE_POOL_HEADROOM. Without it,
@@ -1255,7 +1381,7 @@ export const booksService = {
           const rawHasMore = fetched.length > overfetchLimit;
           const rawRows = rawHasMore ? fetched.slice(0, overfetchLimit) : fetched;
 
-          const [relations, excerptMap, descriptionById, stockByIsbn] = await Promise.all([
+          const [relations, excerptMap, descriptionById, stockByIsbn, priceByIsbn] = await Promise.all([
             attachRelationsToList(rawRows),
             getExcerptsByIsbns(rawRows.map((r) => r.isbn13)),
             // Only needed for dedupe scoring — BookListItem never exposes it, and
@@ -1276,6 +1402,14 @@ export const booksService = {
             opts.shoppable && rawRows.length > 0
               ? availabilityService.inStockByIsbns(rawRows.map((r) => r.isbn13))
               : Promise.resolve(new Map<string, boolean>()),
+            // Same bargain as the stock badge: one batched query, and only when
+            // the shop asked. Without it a client can filter on a price the
+            // response never carries.
+            opts.shoppable && rawRows.length > 0
+              ? availabilityService.livePricesByIsbns(rawRows.map((r) => r.isbn13))
+              : Promise.resolve(
+                  new Map<string, { unitPriceGbpPence: number; compareAtGbpPence: number | null }>(),
+                ),
           ]);
           const enriched = rawRows.map((r) => ({
             ...r,
@@ -1285,7 +1419,10 @@ export const booksService = {
             // buildShoppableCondition, so a missing stock entry would mean the row
             // vanished between the two queries — `false` is the safe reading.
             ...(opts.shoppable
-              ? { inStock: r.isbn13 ? (stockByIsbn.get(r.isbn13) ?? false) : false }
+              ? {
+                  inStock: r.isbn13 ? (stockByIsbn.get(r.isbn13) ?? false) : false,
+                  ...priceFields(r.isbn13 ? priceByIsbn.get(r.isbn13) : undefined, opts.currency),
+                }
               : {}),
           }));
 
@@ -1850,7 +1987,12 @@ export const booksService = {
    * also like", the shared list is filtered per viewer after the cache read
    * rather than being computed per user. Anonymous callers get the list as-is.
    */
-  async trending(limit: number, userId?: number, shoppable?: boolean): Promise<TrendingBookItem[]> {
+  async trending(
+    limit: number,
+    userId?: number,
+    shoppable?: boolean,
+    currency?: string,
+  ): Promise<TrendingBookItem[]> {
     const cacheTarget = limit + FEED_EXCLUSION_HEADROOM;
     // v3: the cached value is a pool of cacheTarget items rather than exactly
     // `limit`, so per-viewer filtering has spare rows to eat. (v2 reweighted
@@ -1860,7 +2002,11 @@ export const booksService = {
     const cacheKey = `trending:v4:${limit}:${shoppable ? 'shop' : 'all'}`;
     const cached = await redis.get(cacheKey);
     if (cached) {
-      return applyUserExclusions(JSON.parse(cached) as TrendingBookItem[], userId, limit);
+      return attachShopFields(
+        await applyUserExclusions(JSON.parse(cached) as TrendingBookItem[], userId, limit),
+        shoppable,
+        currency,
+      );
     }
 
     const since = new Date();
@@ -1985,14 +2131,22 @@ export const booksService = {
 
     // The pool is shared across all viewers; each one gets their own filtered
     // view of it.
+    // The pool is cached WITHOUT prices; attachShopFields runs after.
     await redis.set(cacheKey, JSON.stringify(pool), 'EX', TRENDING_TTL);
-    return applyUserExclusions(pool, userId, limit);
+    return attachShopFields(await applyUserExclusions(pool, userId, limit), shoppable, currency);
   },
 
-  async personalized(userId: number, limit: number, shoppable?: boolean): Promise<TrendingBookItem[]> {
+  async personalized(
+    userId: number,
+    limit: number,
+    shoppable?: boolean,
+    currency?: string,
+  ): Promise<TrendingBookItem[]> {
     const cacheKey = `personalized:v2:${userId}:${limit}:${shoppable ? 'shop' : 'all'}`;
     const cached = await redis.get(cacheKey);
-    if (cached) return JSON.parse(cached) as TrendingBookItem[];
+    if (cached) {
+      return attachShopFields(JSON.parse(cached) as TrendingBookItem[], shoppable, currency);
+    }
 
     // Fetch the user's stored preference embedding and their exclusion set
     // (rejected books plus everything already on their shelf) in parallel —
@@ -2097,8 +2251,9 @@ export const booksService = {
     const ordered = rows.map((r) => bookMap.get(r.id)).filter((b): b is FeedScoringRow => b !== undefined);
     const results = dedupeByTitle(ordered).slice(0, limit).map(stripFeedScoring);
 
+    // Cached without prices — attachShopFields runs on every read instead.
     await redis.set(cacheKey, JSON.stringify(results), 'EX', PERSONALIZED_TTL);
-    return results;
+    return attachShopFields(results, shoppable, currency);
   },
 
   /**
@@ -2131,6 +2286,7 @@ export const booksService = {
     limit: number,
     userId?: number,
     shoppable?: boolean,
+    currency?: string,
   ): Promise<BookListItem[]> {
     if (bookIds.length === 0) return [];
 
@@ -2185,13 +2341,27 @@ export const booksService = {
     // Signed-in shoppers do not get recommended books they have already
     // rejected. Guests have no exclusions to apply, which is the common case
     // here since the basket is client-held until sign-in.
-    if (userId === undefined) return ordered.slice(0, limit);
+    // Uncached, unlike the other feeds — but the price still goes on here rather
+    // than in listByIds, so the shop fields ride one code path for every feed.
+    if (userId === undefined) {
+      return attachShopFields(ordered.slice(0, limit), shoppable, currency);
+    }
 
     const exclusions = await getUserExclusions(userId);
-    return filterExcludedWorks(ordered, exclusions).slice(0, limit);
+    return attachShopFields(
+      filterExcludedWorks(ordered, exclusions).slice(0, limit),
+      shoppable,
+      currency,
+    );
   },
 
-  async similar(bookId: number, limit: number, userId?: number, shoppable?: boolean): Promise<TrendingBookItem[]> {
+  async similar(
+    bookId: number,
+    limit: number,
+    userId?: number,
+    shoppable?: boolean,
+    currency?: string,
+  ): Promise<TrendingBookItem[]> {
     // Over-fetch target, so per-user filtering below has spare rows to eat.
     const cacheTarget = limit + FEED_EXCLUSION_HEADROOM;
     // v2: the cached value is now a pool of cacheTarget items rather than
@@ -2199,7 +2369,11 @@ export const booksService = {
     const cacheKey = `similar:v3:${bookId}:${limit}:${shoppable ? 'shop' : 'all'}`;
     const cached = await redis.get(cacheKey);
     if (cached) {
-      return applyUserExclusions(JSON.parse(cached) as TrendingBookItem[], userId, limit);
+      return attachShopFields(
+        await applyUserExclusions(JSON.parse(cached) as TrendingBookItem[], userId, limit),
+        shoppable,
+        currency,
+      );
     }
 
     const [target] = await db
@@ -2299,7 +2473,8 @@ export const booksService = {
     // The pool is what gets cached and shared across users; the caller gets
     // their own filtered view of it.
     await redis.set(cacheKey, JSON.stringify(pool), 'EX', PERSONALIZED_TTL);
-    return applyUserExclusions(pool, userId, limit);
+    // Cached without prices — see attachShopFields.
+    return attachShopFields(await applyUserExclusions(pool, userId, limit), shoppable, currency);
   },
 };
 
@@ -2310,6 +2485,50 @@ export const booksService = {
  *
  * Anonymous callers have nothing to exclude and skip the lookup entirely.
  */
+/**
+ * Puts live price and stock onto a feed's rows.
+ *
+ * Called at every feed's return point, *after* the cache read, for the reason
+ * spelled out on TrendingBookItem: caching a price is the one thing the shop
+ * must not do. Two batched lookups per request over the page's ISBNs — the same
+ * bargain GET /books already makes, and only when the caller asked to shop.
+ *
+ * A book with no live stock row comes back without the fields rather than with
+ * zeros: absent means "unknown", and a zero here reads as "free".
+ */
+async function attachShopFields<T extends { isbn13: string | null }>(
+  items: T[],
+  shoppable: boolean | undefined,
+  currency: string | undefined,
+): Promise<T[]> {
+  if (!shoppable || items.length === 0) return items;
+
+  const isbns = items.map((i) => i.isbn13);
+  const [priceByIsbn, stockByIsbn] = await Promise.all([
+    availabilityService.livePricesByIsbns(isbns),
+    availabilityService.inStockByIsbns(isbns),
+  ]);
+
+  const code = (currency ?? config.commerce.currency.default).toUpperCase();
+
+  return items.map((item): T => {
+    if (!item.isbn13) return item;
+    const live = priceByIsbn.get(item.isbn13);
+    return {
+      ...item,
+      inStock: stockByIsbn.get(item.isbn13) ?? false,
+      ...(live
+        ? {
+            unitPriceMinor: toPresentment(live.unitPriceGbpPence, code),
+            compareAtMinor:
+              live.compareAtGbpPence === null ? null : toPresentment(live.compareAtGbpPence, code),
+            currency: code,
+          }
+        : {}),
+    };
+  });
+}
+
 async function applyUserExclusions(
   items: TrendingBookItem[],
   userId: number | undefined,

@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX IF NOT EXISTS "uq_orders_first_order_discount" ON "orders" USING btree ("contact_email_normalized") WHERE "orders"."discount_reason" = 'first_order' AND "orders"."status" NOT IN ('expired', 'payment_failed', 'cancelled');

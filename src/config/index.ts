@@ -11,6 +11,28 @@ const envSchema = z.object({
   REDIS_URL: z.string().url(),
 
   JWT_ACCESS_SECRET: z.string().min(32),
+  // Signs admin-console sessions. Kept separate from the customer secret on
+  // purpose: an app token must never verify against the admin console, and
+  // rotating one must not sign every customer out. Optional so the app boots
+  // without it — the console then refuses every login rather than falling back
+  // to the customer secret, which would be the dangerous default.
+  ADMIN_JWT_SECRET: z.string().min(32).optional(),
+  // ── First admin, for an environment with no shell ──────────────────────────
+  // Set both and the server creates that admin on boot — but ONLY while the
+  // admins table is empty, so it cannot resurrect a deleted account or quietly
+  // reset a live one. Remove them once you have signed in.
+  //
+  // Deliberately not a hardcoded default. A credential committed to the repo is
+  // a published credential: it is in the git history, it is guessable from the
+  // product name, and it is attached to an account that can suspend customers
+  // and export the customer list. These come from the environment, where the
+  // rest of the secrets already live.
+  ADMIN_BOOTSTRAP_EMAIL: z.string().email().optional(),
+  ADMIN_BOOTSTRAP_PASSWORD: z.string().min(12).optional(),
+  // 12 hours: a working day, so a session survives one but not a weekend. There
+  // is no refresh token — signing back in is cheap, and a long-lived refresh
+  // credential for an account that can export the customer list is not worth it.
+  ADMIN_TOKEN_TTL: z.coerce.number().default(43200),
   JWT_REFRESH_SECRET: z.string().min(32),
 
   ACCESS_TOKEN_TTL: z.coerce.number().default(900),        // 15 min
@@ -48,6 +70,10 @@ const envSchema = z.object({
 
   RESEND_API_KEY: z.string().min(1),
   EMAIL_FROM: z.string().email().default('hello@kinkane.app'),
+  // Where the Contact Us form delivers. Defaults to the From address so the
+  // form still works before anyone sets up a dedicated support mailbox — it
+  // just means support mail arrives wherever hello@ goes.
+  SUPPORT_INBOX: z.string().email().optional(),
   EMAIL_FROM_NAME: z.string().default('Kinkane'),
 
   // Base client URL, and the single source of truth for every user-facing link
@@ -199,6 +225,13 @@ const envSchema = z.object({
   // few weeks of drift eats the buffer rather than the margin.
   FX_RATES_FROM_GBP: z.string().default('USD:1.27,EUR:1.17'),
   FX_BUFFER_PERCENT: z.coerce.number().min(0).max(25).default(3),
+
+  // The launch promotion printed on every page of the shop: a percentage off
+  // someone's first order, applied automatically at checkout rather than typed
+  // in as a code — the checkout design has no field for one. Set to 0 to turn
+  // the promotion off; the banner text is separate and lives with the
+  // storefront, so the two can disagree if nobody keeps them in step.
+  FIRST_ORDER_DISCOUNT_PERCENT: z.coerce.number().min(0).max(100).default(0),
 
   // Shipping, in GBP pence, resolved most-specific-first:
   // country code -> region (EU/ROW) -> ROW. Gardners bills us per line, so a
@@ -388,6 +421,10 @@ export const config = {
   },
   jwt: {
     accessSecret: env.JWT_ACCESS_SECRET,
+    adminSecret: env.ADMIN_JWT_SECRET,
+    adminBootstrapEmail: env.ADMIN_BOOTSTRAP_EMAIL,
+    adminBootstrapPassword: env.ADMIN_BOOTSTRAP_PASSWORD,
+    adminTtl: env.ADMIN_TOKEN_TTL,
     refreshSecret: env.JWT_REFRESH_SECRET,
     accessTtl: env.ACCESS_TOKEN_TTL,
     refreshTtl: env.REFRESH_TOKEN_TTL,
@@ -406,6 +443,7 @@ export const config = {
     apiKey: env.RESEND_API_KEY,
     from: env.EMAIL_FROM,
     fromName: env.EMAIL_FROM_NAME,
+    supportInbox: env.SUPPORT_INBOX ?? env.EMAIL_FROM,
   },
   appUrl: env.APP_URL,
   referrals: {
@@ -473,6 +511,9 @@ export const config = {
     },
     gardnersRegionByCountry: parseMap(env.GARDNERS_REGION_BY_COUNTRY, (v) => v.toUpperCase()),
     gardnersCountryNamesExtra: parseMap(env.GARDNERS_COUNTRY_NAMES_EXTRA, (v) => v.toUpperCase()),
+    discount: {
+      firstOrderPercent: env.FIRST_ORDER_DISCOUNT_PERCENT,
+    },
     cart: {
       maxQuantityPerLine: env.CART_MAX_QUANTITY_PER_LINE,
       maxItems: env.CART_MAX_ITEMS,

@@ -6,6 +6,7 @@ import { db } from '../db';
 import { users, refreshTokens, userProviders, guestSessions, userPreferences, userInteractions, userBooks, userSubscriptions, subscriptionEvents, passwordResetTokens, emailVerificationTokens, books, bookContributors, notificationPreferences } from '../db/schema';
 import { config } from '../config';
 import { admin } from '../lib/firebase';
+import { adminNotificationsService } from './admin/notifications.service';
 import { logger } from '../lib/logger';
 import { enqueueEmail } from '../lib/email-queue';
 import { generateEmbedding } from '../lib/gemini';
@@ -44,6 +45,8 @@ export interface AuthUser {
 
 export interface MeUser extends AuthUser {
   photoUrl: string | null;
+  /** E.164, or null. Shown on the account screen and prefilled at checkout. */
+  phone: string | null;
   joinedYear: number;
   subscription: {
     tier: SubscriptionTier;
@@ -69,6 +72,26 @@ function hashToken(raw: string): string {
 
 function generateRefreshToken(): string {
   return crypto.randomBytes(40).toString('hex');
+}
+
+/**
+ * Stops a blacklisted account signing in.
+ *
+ * Checked **after** the password, deliberately. Checking first would turn the
+ * login form into an oracle for which addresses are blocked, and someone who
+ * types the wrong password should get the same answer either way.
+ *
+ * The message says the account is blocked rather than pretending the password
+ * is wrong: a blocked customer who keeps resetting a password that works is a
+ * support ticket nobody can resolve.
+ */
+function assertNotBlacklisted(blacklistedAt: Date | null): void {
+  if (blacklistedAt !== null) {
+    throw Object.assign(new Error('This account has been suspended. Contact support.'), {
+      statusCode: 403,
+      code: 'ACCOUNT_SUSPENDED',
+    });
+  }
 }
 
 export function signAccessToken(userId: number, email: string): string {
@@ -447,6 +470,13 @@ export const authService = {
       });
     });
 
+    void adminNotificationsService.emit({
+      type: 'customer_registered',
+      title: 'New customer registered',
+      body: `${user.name} created an account.`,
+      userId: user.id,
+    });
+
     issueEmailVerification(user.id, user.email, user.name).catch((err) => {
       logger.error('Failed to issue email verification after signup', {
         userId: user.id,
@@ -475,6 +505,8 @@ export const authService = {
     if (!user || !valid) {
       throw Object.assign(new Error('Invalid email or password'), { statusCode: 401 });
     }
+
+    assertNotBlacklisted(user.blacklistedAt);
 
     const tokens = await issueTokenPair(user.id, user.email);
 
@@ -511,7 +543,7 @@ export const authService = {
     }
 
     const [user] = await db
-      .select({ id: users.id, email: users.email })
+      .select({ id: users.id, email: users.email, blacklistedAt: users.blacklistedAt })
       .from(users)
       .where(eq(users.id, consumed.userId))
       .limit(1);
@@ -519,6 +551,14 @@ export const authService = {
     if (!user) {
       throw Object.assign(new Error('User not found'), { statusCode: 401 });
     }
+
+    // Refreshing is signing in again, and has to be gated the same way.
+    // Without this a blacklisted user simply never logs in again: their client
+    // keeps trading a refresh token for a fresh pair, indefinitely, and the
+    // block only ever bites someone who happened to be signed out when it
+    // landed. The consumed token is already deleted above, so a rejected
+    // refresh also ends that session rather than leaving it retryable.
+    assertNotBlacklisted(user.blacklistedAt);
 
     return issueTokenPair(user.id, user.email);
   },
@@ -862,6 +902,7 @@ export const authService = {
         email: users.email,
         emailVerified: users.emailVerified,
         photoUrl: users.photoUrl,
+        phone: users.phone,
         createdAt: users.createdAt,
       })
       .from(users)
@@ -961,13 +1002,21 @@ export const authService = {
 
     if (existingProvider) {
       const [user] = await db
-        .select({ id: users.id, name: users.name, email: users.email, emailVerified: users.emailVerified })
+        .select({
+          id: users.id, name: users.name, email: users.email,
+          emailVerified: users.emailVerified, blacklistedAt: users.blacklistedAt,
+        })
         .from(users)
         .where(eq(users.id, existingProvider.userId))
         .limit(1);
 
+      // Same gate as the password login. A block that stops one sign-in method
+      // and waves through "Continue with Google" is not a block.
+      assertNotBlacklisted(user.blacklistedAt);
+
       const tokens = await issueTokenPair(user.id, user.email);
-      return { user, tokens, isNewUser: false };
+      const { blacklistedAt: _blacklistedAt, ...safeUser } = user;
+      return { user: safeUser, tokens, isNewUser: false };
     }
 
     // 2. Check if a user with the same email already exists (account linking)
@@ -978,6 +1027,10 @@ export const authService = {
       .limit(1);
 
     if (existingUser) {
+      // Checked before the provider is linked, not after: a blacklisted account
+      // must not quietly gain a new sign-in method on the way to being refused.
+      assertNotBlacklisted(existingUser.blacklistedAt);
+
       await db.insert(userProviders).values({ userId: existingUser.id, provider, providerUid });
 
       // Backfill photo if missing
@@ -1057,6 +1110,13 @@ export const authService = {
         userId: newUser.id,
         error: (err as Error).message,
       });
+    });
+
+    void adminNotificationsService.emit({
+      type: 'customer_registered',
+      title: 'New customer registered',
+      body: `${newUser.name} created an account.`,
+      userId: newUser.id,
     });
 
     return { user: newUser, tokens, isNewUser: true };

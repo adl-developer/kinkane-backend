@@ -200,6 +200,27 @@ export const orders = pgTable(
     stripePaymentIntentId: varchar('stripe_payment_intent_id', { length: 255 }),
 
     contactEmail: varchar('contact_email', { length: 254 }).notNull(),
+    // The same address with `+tags` and (at the providers that ignore them)
+    // dots removed — see lib/email-identity. Stored rather than computed at
+    // query time so the first-order-discount check is one indexed lookup
+    // instead of a scan with a function on every row. Promotions only: it is a
+    // guess about mailbox aliasing and must never be treated as an identity.
+    contactEmailNormalized: varchar('contact_email_normalized', { length: 254 }).notNull(),
+    // Promotional discount applied at checkout, both currency sides like every
+    // other money column here. Zero when none applied — nullable would mean two
+    // ways to say "no discount" and a null check on every sum.
+    discountGbpPence: integer('discount_gbp_pence').notNull().default(0),
+    discountMinor: integer('discount_minor').notNull().default(0),
+    // Why it was given, e.g. 'first_order'. Null when there was none. A string
+    // rather than a boolean so a second promotion is a new value rather than a
+    // new column — and so the reports screen can group by it.
+    discountReason: varchar('discount_reason', { length: 40 }),
+    // E.164 delivery contact, or null. Snapshotted onto the order rather than
+    // read from the user at fulfilment time: a buyer who later edits their
+    // profile number must not retroactively change where a courier calls about
+    // a parcel that already shipped. Optional because the older checkout flow,
+    // where Stripe collects the address, never asks for one.
+    contactPhone: varchar('contact_phone', { length: 32 }),
     // Collected by Stripe Checkout, written by the webhook. Null until paid.
     shippingName: varchar('shipping_name', { length: 200 }),
     shippingLine1: varchar('shipping_line1', { length: 200 }),
@@ -240,6 +261,28 @@ export const orders = pgTable(
   },
   (t) => ({
     userIdIdx: index('idx_orders_user_id').on(t.userId),
+    // Backs the first-order-discount eligibility check, which runs on every
+    // checkout and asks whether this mailbox has ever paid for anything.
+    contactEmailNormalizedIdx: index('idx_orders_contact_email_normalized').on(
+      t.contactEmailNormalized,
+    ),
+    // **The first-order discount, enforced by the database rather than by a
+    // check in application code.**
+    //
+    // The eligibility query alone is check-then-act: two checkouts started at
+    // the same moment both see no paid order, both get the discount, and both
+    // can then be paid. No amount of care in the service closes that window —
+    // only a constraint the database evaluates at write time does.
+    //
+    // Partial on purpose. Orders that were never going to be paid are excluded,
+    // so abandoning a discounted checkout and starting another one still works:
+    // the abandoned row leaves the index the moment it expires or fails. What
+    // it forbids is *two live discounted orders for one mailbox at once*.
+    oneLiveFirstOrderDiscount: uniqueIndex('uq_orders_first_order_discount')
+      .on(t.contactEmailNormalized)
+      .where(
+        sql`${t.discountReason} = 'first_order' AND ${t.status} NOT IN ('expired', 'payment_failed', 'cancelled')`,
+      ),
     statusIdx: index('idx_orders_status').on(t.status),
     // Drives both order history and the bestseller window scan.
     createdAtIdx: index('idx_orders_created_at').on(t.createdAt),

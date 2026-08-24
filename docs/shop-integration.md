@@ -79,6 +79,7 @@ tax are priced on.
 {
   "lines": [{ "bookId": 48213, "quantity": 2 }],
   "contactEmail": "rachel@example.com",
+  "contactPhone": "+233201234567",
   "shippingAddress": {
     "name": "Rachel TM",
     "line1": "19 H P Nyemitei St",
@@ -105,6 +106,48 @@ tax are priced on.
 Passing `shippingCountry` instead of `shippingAddress` still works — Stripe then
 collects the address, locked to that country. Send one or the other.
 
+### The first-order discount is applied at checkout, and nowhere earlier
+
+When `FIRST_ORDER_DISCOUNT_PERCENT` is set, an order whose email has never paid
+for anything before gets that percentage off the goods automatically. There is
+no code to type, and nothing for the client to send.
+
+The checkout response carries `discountMinor` and `discountReason`, and the
+components always reconcile:
+
+```
+subtotalMinor - discountMinor + shippingMinor + taxMinor === totalMinor
+```
+
+**The basket endpoints deliberately do not show it.** `POST /cart/price` and
+`GET /cart` never ask for an email, and eligibility depends on one — adding an
+email parameter would turn the basket into an oracle for "has this address
+ordered from you before", which is not a question a public endpoint should
+answer about anybody. So the reduction appears once, at checkout.
+
+Two consequences for the UI:
+
+- The cart page cannot promise the discount, only the banner can. Design the
+  cart summary without a discount line.
+- The checkout summary needs a discount line the current design does not have.
+  `discountMinor > 0` is the signal to render it.
+
+Shipping is quoted on the **pre-discount** subtotal, so a promotion can never
+push a basket back under the free-shipping threshold and cost the buyer
+delivery. Tax is charged on the discounted amount.
+
+`contactPhone` is optional and is the delivery contact — it goes to the courier
+as the SMS tracking number. Send it in international form (`+233…` or `00233…`;
+spaces, dashes and brackets are fine and get stripped). A bare national number
+is rejected rather than guessed at from the shipping country, because a
+plausible wrong number is worse than an absent one.
+
+Unlike `contactEmail`, it **is** honoured for a signed-in buyer: an email
+address identifies the account and cannot be overridden from a request body,
+but a phone number is just where the courier calls, and someone shipping a gift
+should be able to give the recipient's. A signed-in buyer who sends none gets
+the number from their profile.
+
 ### 4. Store the token before navigating away
 
 > **`accessToken` is returned exactly once** and is the only credential that can
@@ -115,6 +158,16 @@ collects the address, locked to that country. Send one or the other.
 
 Key it by `reference`. The confirmation email should also carry a tracking link
 built from both — email is what survives a cleared browser or a new device.
+
+
+**A confirmation email now carries this too**, for guests only — so a shopper who
+closes the tab is no longer locked out of their own order. It arrives when
+payment lands, not at checkout, and prints the code as text rather than a link:
+a token in a URL leaks through Referer headers, browser history and any
+analytics on the landing page.
+
+That is a safety net, not a substitute. Still store the token client-side —
+email is slower than the confirmation screen and sometimes never arrives.
 
 ### 5. Send to Stripe, then confirm
 
@@ -178,7 +231,7 @@ is ignored too; the account email always wins.
 ```
 
 Only `lines` and `contactEmail` behave differently by auth state. Everything
-else — including `currency` — is identical for both.
+else — including `currency` and `contactPhone` — is identical for both.
 
 ### The handover at sign-in
 
@@ -186,6 +239,46 @@ When a guest with a local basket signs in or signs up, the client must replay
 each line into the stored cart with `POST /api/v1/cart/items`, then clear its
 local copy. **There is no server-side merge.** If this is skipped, the user's
 basket appears to empty on login.
+
+## Filtering the shop
+
+`GET /books?shoppable=true` takes the filter set the shop's Filters panel needs:
+
+| Param | Notes |
+| --- | --- |
+| `isbn` | ISBN-13, exact. Hyphens and spaces are stripped, so the number as printed works. |
+| `yearMin` / `yearMax` | Publication year, inclusive both ends. Undated books drop out of a year-filtered result. |
+| `priceMin` / `priceMax` | **Major units** — `20` means $20, not 2000 cents. Requires `shoppable=true`. |
+| `currency` | Which currency the price bounds are in. Defaults to the currency this request would be quoted in. |
+| `sortBy` | `title` or `newest`. Pair with `sort=asc\|desc` for direction. |
+
+`shoppable=true` also puts the **live price** on every row — `unitPriceMinor`,
+`compareAtMinor` (null when not on sale) and `currency`. Render those.
+
+**Ignore the `prices` array on a shop surface.** It is ONIX edition metadata,
+it is GBP-only, and it disagrees with the live supplier feed on about 2% of the
+catalogue — so a listing built from it will occasionally advertise a price the
+basket refuses to honour. `unitPriceMinor` is the same number the price filter
+matches on and the same number the cart will quote.
+
+Three things worth knowing before wiring the panel up:
+
+- **Price bounds without `shoppable=true` are a 400, not an unfiltered page.**
+  The price lives on the supplier row that only the shoppable path consults, and
+  a filter that quietly did nothing would be invisible from the client.
+- **The price boundary is approximate by up to a penny.** The displayed price is
+  converted out of GBP with a rounding buffer, so converting the bound back
+  cannot be exact. Both ends are treated as inclusive, which means a book may
+  appear one penny outside the range rather than a matching book being hidden.
+- **`sortBy` is ignored whenever `q` is set.** Search results are ranked by
+  relevance, and reordering that ranking by title gives you neither. If the
+  panel offers both a search box and a sort, expect sort to have no effect while
+  a query is present — that is deliberate, not a bug.
+
+There is **no price sort**. Ordering on the supplier price means evaluating a
+correlated subquery for every candidate row before the page limit applies, which
+is the shape that has bitten this endpoint before. It needs measuring against
+the real table first.
 
 ## `shoppable` applies to the feeds too, and is off by default
 
@@ -197,6 +290,16 @@ Every discovery feed takes the same `shoppable=true` flag as `GET /books`:
 | `GET /explore/personalized` | Personalised recommendations |
 | `GET /books/:id/similar` | PDP "You may also like" |
 | `GET /books/recommendations` | Cart "You may also like" |
+
+Passing it also puts `unitPriceMinor`, `compareAtMinor`, `currency` and
+`inStock` on every row, exactly as on `GET /books` — so a carousel with an Add
+button needs no second request to price what it is showing.
+
+**The price is never cached, though the feed is.** These feeds cache their pool
+for an hour; the price is attached after the cache read, on every request. So a
+supplier price change is visible immediately while the *ordering* may be up to
+an hour old. That split is deliberate: stale ordering is invisible, a stale
+price is a customer seeing one number on the shelf and another in the basket.
 
 **Pass `true` from any surface that renders an Add button.** These feeds default
 to `false` for backward compatibility, so a client that forgets will show books

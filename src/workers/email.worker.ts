@@ -19,6 +19,7 @@ import {
   sendSubscriptionPaymentFailedEmail,
   sendSubscriptionCancelledEmail,
   sendReferralInviteEmail,
+  sendOrderConfirmedEmail,
 } from '../emails';
 import { notificationPreferencesService } from '../services/notification-preferences.service';
 import { logger } from '../lib/logger';
@@ -127,6 +128,11 @@ async function processEmailJob(job: Job): Promise<void> {
     case 'referral-invite': {
       const { to, referrerName, link } = job.data as EmailJobMap['referral-invite'];
       await sendReferralInviteEmail(to, referrerName, link);
+      break;
+    }
+    case 'order-confirmed': {
+      const { to, name: buyerName, payload } = job.data as EmailJobMap['order-confirmed'];
+      await sendOrderConfirmedEmail(to, buyerName, payload);
       break;
     }
     default: {
