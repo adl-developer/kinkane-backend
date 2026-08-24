@@ -240,3 +240,187 @@ whether the launch or evergreen copy is in force, for matching campaign artwork.
 `points`, `pointsByKind`, `hasCircuit` and `country`. Note `country` is resolved
 once at signup and frozen; a user showing `null` there **scores nothing**, so a
 null is worth surfacing to support rather than hiding.
+
+## The web shop features you now integrate with
+
+The web eCommerce designs came with a set of things the server had never
+supported. All the customer-facing ones now exist, and the mobile client has to
+adopt each of them explicitly or your users will see stale UI compared to the
+web. Backend audit and rationale live in [design-gaps-plan.md](./design-gaps-plan.md);
+the client contract is in [shop-integration.md](./shop-integration.md); the
+authoritative field-by-field spec is `GET /openapi.json` (Swagger UI on the
+same host at `/docs`).
+
+### Delivery phone number at checkout, and on the profile
+
+The web checkout collects one and the account screen shows it. Add both to the
+mobile flows.
+
+**At checkout.** `POST /api/v1/cart/checkout` now takes `contactPhone`.
+
+- Ask for it in **international format** — the field label the web uses is
+  "Phone Number" with placeholder `+233 20 123 4567`.
+- Spaces, dashes and brackets are fine and get stripped server-side. `00…` is
+  accepted and converted to `+…` — both are how people type an international
+  number.
+- A bare national number (`020 123 4567`) is **rejected**. The server does
+  not guess the country code from the shipping address, because a plausible
+  wrong number costs a delivery.
+- `contactPhone` is honoured for signed-in buyers as well as guests, unlike
+  `contactEmail`: someone shipping a gift can enter the recipient's number
+  without editing their own profile. A signed-in buyer who sends nothing falls
+  back to the number on their profile.
+
+**On the profile.** `PATCH /api/v1/user/settings/profile` now accepts `phone`
+alongside `name` and `photoUrl`. Send `null` to clear it. `GET /api/v1/auth/me`
+returns it under `user.phone`.
+
+**On order history and detail.** `contactPhone` is a new field on every order
+returned by `GET /api/v1/orders` and `GET /api/v1/orders/:id`. It is a snapshot
+— changing the profile number later does not retroactively change what is on a
+parcel that already shipped.
+
+### The 15% first-order discount
+
+Automatic on every buyer's first paid order. **No code field, and no basket
+line** — the reduction is applied at checkout and appears only there.
+
+Do not build a promo code UI. The cart and price endpoints deliberately never
+ask for an email, because eligibility depends on one, and turning the basket
+into an oracle for "has this address ordered here before" would be a data leak
+on any address anyone can type.
+
+The checkout response now carries:
+
+```
+discountMinor: 1117
+discountReason: "first_order"   // null when nothing applied
+totalMinor: 6331                // discount already applied
+```
+
+If `discountMinor > 0`, **the confirmation UI needs a discount line the current
+designs do not have.** The reconciliation always holds:
+
+```
+subtotalMinor - discountMinor + shippingMinor + taxMinor === totalMinor
+```
+
+Same fields exist on every order returned by `GET /api/v1/orders` and
+`GET /api/v1/orders/:id`, so the order-history and order-detail screens can
+render the discount too.
+
+Two things worth internalising:
+
+- **Shipping is quoted on the pre-discount basket.** A promotion cannot push
+  a basket below a free-shipping threshold and cost the buyer delivery.
+- **Tax is on the discounted amount** — that is what was actually paid.
+
+### Shop filters on `GET /books`
+
+The web filter panel gained four things `?shoppable=true` had never supported:
+
+| Param | Notes |
+| --- | --- |
+| `isbn` | Exact ISBN-13. Hyphens and spaces are stripped, so the number as printed on the book works. |
+| `yearMin` / `yearMax` | Publication year, inclusive. Undated books drop out of a year-filtered result. |
+| `priceMin` / `priceMax` | In **major units** of `currency`: `20` means $20, not 2000 cents. |
+| `currency` | Which currency the price bounds are in. Defaults to the currency this request would be quoted in. |
+| `sortBy` | `title` or `newest`. Pair with `sort=asc\|desc`. |
+
+Three things to know before wiring this up:
+
+- **Price bounds require `shoppable=true`.** Sending them without the flag is
+  a 400, not a page that came back unfiltered — the price lives on the
+  supplier row that only the shoppable path consults.
+- **`sortBy` is ignored when `q` is present.** Search results are ranked by
+  relevance; sort would give you neither ranking. If your filter panel offers
+  both a search box and a sort, expect the sort to have no effect while a
+  query is present.
+- **There is no `price` sort.** Measured; the query shape needs a partial
+  index. See `design-gaps-plan.md` for what shipping it needs.
+
+### Announcement banners on the storefront
+
+`GET /api/v1/settings/banners` returns the strips at the top of every web
+page. Public, unauthenticated, controlled from the admin console.
+
+```
+{
+  "banners": [
+    { "slot": "top",    "text": "We Ship Worldwide!" },
+    { "slot": "second", "text": "15% Off Your First Order" }
+  ]
+}
+```
+
+- **`slot: 'top'`** is the red strip. **`slot: 'second'`** is the charcoal one
+  beneath it. Render in that order.
+- Only enabled banners come back. An empty array means show neither.
+- **Do not cache the response for more than a minute or two.** The admin
+  console change is meant to be live.
+- **Do not tie the banner text to the discount rate.** The banner is copy the
+  operator edits; the discount rate is a separate config value. Turning one
+  off does not switch the other off, and the mobile app should render whatever
+  text comes back rather than deriving it from anything.
+
+### Contact Us form
+
+`POST /api/v1/contact` — public, optional auth. Send it whenever the user is
+signed in and you have a token, so support can see who they are talking to.
+
+```
+{
+  "name": "Ama Boateng",
+  "email": "ama@example.com",
+  "subject": "Where is my order?",
+  "message": "…",
+  "website": ""                // honeypot — leave empty, hide from users
+}
+```
+
+Response is always `201 { "received": true }` when the payload is well-formed,
+including when the honeypot was filled. **Rate limited to 3 an hour per IP.** A
+`429` with the usual `Retry-After` is worth surfacing gently in the UI rather
+than hidden as a generic error, because it is what someone hitting the button
+repeatedly after a network glitch will see.
+
+### Blacklist state (already handled — worth knowing about)
+
+An admin can now block an account. From the mobile app's side there is nothing
+new to build, but two responses now exist that did not before:
+
+- **`POST /api/v1/auth/login`** returns `403 { "error": "This account has been
+  suspended. Contact support.", "code": "ACCOUNT_SUSPENDED" }` for a
+  blacklisted account. Show it as-is; do not treat it as a wrong-password
+  error, because the customer will keep resetting a password that works and
+  never get in.
+- **`POST /api/v1/cart/checkout`** returns the same 403 for a signed-in buyer
+  whose account was blocked after login but before checkout. Sign the user out
+  when you see it.
+
+### What did NOT change and is not coming for you
+
+- **Product reviews.** The web PDP has a Reviews tab, but its source is an
+  open product decision (editorial press quotes vs reader reviews). No new
+  endpoint exists. Do not build a Reviews tab yet.
+- **Order actions in the app.** The admin console is web-only. Nothing in the
+  customer API changed here.
+
+## Rollout checklist for the mobile app
+
+For each of the sections above, in order:
+
+1. **Phone number** — add the input to checkout, add the display + edit to
+   Profile, thread it through `GET /users/me`, keep the profile fallback
+   invisible to the user.
+2. **First-order discount** — render a discount line on the checkout summary
+   and on the order confirmation/detail screens whenever `discountMinor > 0`.
+   Do not read `discountMinor` from the basket, because it is not there.
+3. **Filters** — extend the shop filter panel; refuse to enable the price
+   bounds unless the user is on a shoppable listing.
+4. **Announcement banners** — render both slots at the top of every shop
+   screen; fetch on foreground, cache for at most a minute or two.
+5. **Contact Us** — add the screen; include the honeypot; handle 429 as
+   "please wait" rather than a generic failure.
+6. **Blacklist copy** — special-case the `ACCOUNT_SUSPENDED` code at login and
+   checkout with the server-provided message.
