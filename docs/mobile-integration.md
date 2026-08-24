@@ -309,11 +309,68 @@ Same fields exist on every order returned by `GET /api/v1/orders` and
 `GET /api/v1/orders/:id`, so the order-history and order-detail screens can
 render the discount too.
 
-Two things worth internalising:
+Three things worth internalising:
 
 - **Shipping is quoted on the pre-discount basket.** A promotion cannot push
   a basket below a free-shipping threshold and cost the buyer delivery.
 - **Tax is on the discounted amount** — that is what was actually paid.
+- **The discount can be withheld on a second attempt, and that is not an
+  error.** Only one live discounted order per customer is allowed at a time, so
+  if a checkout is started twice — a double-tap, a retry after a dropped
+  connection, two devices — the second comes back with `discountMinor: 0` and a
+  higher total. Read `discountMinor` and `totalMinor` **from the response you
+  are about to send the user to Stripe with**, every time. Never carry a total
+  forward from an earlier attempt or from the basket, or the amount on screen
+  will not match the amount Stripe charges.
+
+  Abandoning a checkout does *not* burn the promotion: once the old attempt
+  expires, the discount is available again.
+
+### Prices on shop listings — read `unitPriceMinor`, not `prices`
+
+**This is the single most important change for the mobile shop, and it is a
+correction to what the app is most likely doing today.**
+
+Every book in a `shoppable=true` response now carries the live sellable price:
+
+```jsonc
+{
+  "id": 48213,
+  "title": "Wandering Stars",
+  "unitPriceMinor": 2899,     // what the shop charges, in `currency`
+  "compareAtMinor": null,     // pre-markdown price when on sale; null otherwise
+  "currency": "USD",
+  "inStock": true,
+  "prices": [ … ]             // ONIX metadata — DO NOT render this on a shop screen
+}
+```
+
+**Stop rendering the `prices` array on any shop surface.** It is ONIX edition
+metadata: it is GBP-only, and it disagrees with the live supplier feed on about
+one book in fifty. A listing built from it will occasionally advertise a price
+the basket then refuses to honour — the customer sees one number on the shelf
+and a different one in their cart, which reads as a bug even though nothing is
+broken.
+
+`unitPriceMinor` is the same number `POST /cart/price` will quote and the same
+number `priceMin`/`priceMax` filter on.
+
+Three rules:
+
+- **Render `compareAtMinor` struck through** when it is non-null. That is a live
+  markdown, and it is the only sale signal on a listing.
+- **Do not cache these.** Supplier prices move hourly. Re-fetch when a screen is
+  shown; never persist a price and re-display it later.
+- **Both fields are absent without `shoppable=true`**, along with `inStock`. A
+  discovery screen that renders an Add button must pass the flag.
+
+**Known gap, so you are not surprised:** the discovery feeds
+(`GET /explore/trending`, `GET /books/:id/similar`, `GET /books/recommendations`)
+accept `shoppable=true` and correctly filter by it, but **do not yet return
+`unitPriceMinor` or `inStock`** — they are cached server-side and attaching a
+live price to a cached feed would break the never-cache-a-price rule. Until that
+is resolved, a carousel that needs a price has to fetch those books through
+`GET /books` as well, or show the title without one.
 
 ### Shop filters on `GET /books`
 
@@ -417,17 +474,24 @@ new to build, but two responses now exist that did not before:
 
 For each of the sections above, in order:
 
-1. **Phone number** — add the input to checkout, add the display + edit to
+1. **Prices on shop listings** — switch every shop screen from the `prices`
+   array to `unitPriceMinor`/`currency`, strike through `compareAtMinor` when
+   it is non-null, and stop persisting any price. **Do this first:** it is the
+   only item on this list that corrects something already on screen, and until
+   it is done a shopper can see one price on the shelf and another in the cart.
+2. **Phone number** — add the input to checkout, add the display + edit to
    Profile, thread it through `GET /users/me`, keep the profile fallback
    invisible to the user.
-2. **First-order discount** — render a discount line on the checkout summary
+3. **First-order discount** — render a discount line on the checkout summary
    and on the order confirmation/detail screens whenever `discountMinor > 0`.
-   Do not read `discountMinor` from the basket, because it is not there.
-3. **Filters** — extend the shop filter panel; refuse to enable the price
+   Do not read `discountMinor` from the basket, because it is not there — and
+   re-read it from every checkout response rather than carrying one forward.
+4. **Filters** — extend the shop filter panel; refuse to enable the price
    bounds unless the user is on a shoppable listing.
-4. **Announcement banners** — render both slots at the top of every shop
+5. **Announcement banners** — render both slots at the top of every shop
    screen; fetch on foreground, cache for at most a minute or two.
-5. **Contact Us** — add the screen; include the honeypot; handle 429 as
+6. **Contact Us** — add the screen; include the honeypot; handle 429 as
    "please wait" rather than a generic failure.
-6. **Blacklist copy** — special-case the `ACCOUNT_SUSPENDED` code at login and
-   checkout with the server-provided message.
+7. **Suspended accounts** — special-case `ACCOUNT_SUSPENDED` at login, social
+   sign-in and checkout with the server-provided message, and treat a failed
+   `POST /auth/refresh` as signed-out rather than retrying it.
