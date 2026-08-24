@@ -355,7 +355,18 @@ export const ordersService = {
       });
     }
 
-    await db
+    // The claim itself. `status = 'pending_payment'` in the WHERE clause is what
+    // makes this safe: one statement, so Postgres serialises concurrent
+    // attempts and exactly one of them updates a row. The read above is a fast
+    // path that skips the work for an obvious duplicate; **this** is the check
+    // that actually holds.
+    //
+    // It has to be atomic because Stripe delivers at-least-once and two
+    // deliveries can land at the same moment. With a read-then-write both would
+    // see `pending_payment`, both would return true, and the caller would run
+    // fulfilment twice — which at the far end means shipping and paying for the
+    // same books twice.
+    const claimed = await db
       .update(orders)
       .set({
         status: 'paid',
@@ -373,7 +384,14 @@ export const ordersService = {
         ...definedShipping(details.shipping),
         updatedAt: new Date(),
       })
-      .where(eq(orders.id, orderId));
+      .where(and(eq(orders.id, orderId), eq(orders.status, 'pending_payment')))
+      .returning({ id: orders.id });
+
+    if (claimed.length === 0) {
+      // Another delivery won the race between our read and this write.
+      logger.info('Concurrent delivery already marked this order paid — ignoring', { orderId });
+      return false;
+    }
 
     // Tell the console. Never blocks or fails the webhook — a missing bell
     // entry must not turn a successful payment into a retried webhook.

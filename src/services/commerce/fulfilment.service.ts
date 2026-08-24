@@ -16,7 +16,7 @@
  * `refunded` order status exists so that manual action can at least be
  * recorded against the order.
  */
-import { eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { db } from '../../db';
 import { orders, orderItems, type Order } from '../../db/schema';
 import { config } from '../../config';
@@ -151,6 +151,38 @@ export const fulfilmentService = {
       return;
     }
 
+    // Claim the order before talking to Gardners.
+    //
+    // The checks above are a fast path; this single conditional UPDATE is what
+    // actually prevents a duplicate submission. Two workers — two instances, or
+    // a retried job overlapping the original — would otherwise both read `paid`
+    // with no dropship id and both send the order, and at this end of the
+    // pipeline a duplicate means shipping and paying for the same books twice.
+    //
+    // The claim moves the order to `submitted_to_supplier` *before* the send
+    // rather than after. That is deliberate: a crash mid-send leaves the order
+    // visibly in flight rather than looking like it still needs sending. The
+    // catch below releases the claim when the send genuinely failed, so a retry
+    // can pick it up.
+    const claimed = await db
+      .update(orders)
+      .set({ status: 'submitted_to_supplier', updatedAt: new Date() })
+      .where(
+        and(
+          eq(orders.id, orderId),
+          eq(orders.status, 'paid'),
+          isNull(orders.gardnersDropshipOrderId),
+        ),
+      )
+      .returning({ id: orders.id });
+
+    if (claimed.length === 0) {
+      logger.info('Another worker already claimed this order for fulfilment — skipping', {
+        orderId,
+      });
+      return;
+    }
+
     const items = await db.select().from(orderItems).where(eq(orderItems.orderId, orderId));
 
     try {
@@ -183,10 +215,11 @@ export const fulfilmentService = {
         lines,
       });
 
+      // Status was already set by the claim; this records which supplier order
+      // it became, which is what makes the skip above work on a later retry.
       await db
         .update(orders)
         .set({
-          status: 'submitted_to_supplier',
           gardnersDropshipOrderId: result.order.id,
           fulfilmentErrorMessage: null,
           updatedAt: new Date(),
@@ -202,13 +235,20 @@ export const fulfilmentService = {
     } catch (err) {
       const message = (err as Error).message;
 
-      // The order stays `paid`. The customer has been charged and is owed their
-      // books; moving it to a failure state would hide it from any retry and
-      // make it look resolved. An operator needs to see a paid order with an
-      // error on it.
+      // Release the claim by putting the order back to `paid`, and record why.
+      //
+      // `paid` is the honest state: the customer has been charged and is owed
+      // their books. Leaving it claimed would hide it from every retry and make
+      // it look resolved, and moving it to a failure state would do the same.
+      // An operator needs to see a paid order carrying an error — which is
+      // exactly what the console's needs_attention tab surfaces.
       await db
         .update(orders)
-        .set({ fulfilmentErrorMessage: message.slice(0, 1000), updatedAt: new Date() })
+        .set({
+          status: 'paid',
+          fulfilmentErrorMessage: message.slice(0, 1000),
+          updatedAt: new Date(),
+        })
         .where(eq(orders.id, orderId));
 
       logger.error('Failed to submit order to Gardners', { orderId, error: message });

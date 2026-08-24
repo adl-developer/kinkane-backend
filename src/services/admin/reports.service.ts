@@ -86,19 +86,39 @@ export const adminReportsService = {
 
     if (!report) throw httpError('Report not found', 404);
 
-    await adminCustomersService.blacklist(
-      report.reportedUserId,
-      adminId,
-      `Blacklisted from report ${reportId}`,
-    );
+    // One decision, so one unit of work. Split, a failure between the two
+    // leaves a blacklisted customer whose reports are still sitting in the
+    // queue — so the next admin reviews an account that is already blocked and
+    // blocks it again — or, worse the other way, reports marked resolved
+    // against someone who was never actually blocked.
+    //
+    // blacklist() is handed *this* transaction rather than opening its own.
+    // Under postgres-js a nested db.transaction() takes a separate connection,
+    // which would make the two writes non-atomic and deadlock the moment both
+    // touched the same users row.
+    const result = await db.transaction(async (tx) => {
+      await adminCustomersService.blacklist(
+        report.reportedUserId,
+        adminId,
+        `Blacklisted from report ${reportId}`,
+        tx,
+      );
 
-    const closed = await db
-      .update(userReports)
-      .set({ status: 'resolved', resolvedBy: adminId, resolvedAt: new Date() })
-      .where(and(eq(userReports.reportedUserId, report.reportedUserId), eq(userReports.status, 'pending')))
-      .returning({ id: userReports.id });
+      const closed = await tx
+        .update(userReports)
+        .set({ status: 'resolved', resolvedBy: adminId, resolvedAt: new Date() })
+        .where(
+          and(
+            eq(userReports.reportedUserId, report.reportedUserId),
+            eq(userReports.status, 'pending'),
+          ),
+        )
+        .returning({ id: userReports.id });
 
-    return { resolvedReportIds: closed.map((c) => c.id), blacklistedUserId: report.reportedUserId };
+      return { resolvedReportIds: closed.map((c) => c.id), blacklistedUserId: report.reportedUserId };
+    });
+
+    return result;
   },
 
   async close(reportId: number, adminId: number, status: 'resolved' | 'dismissed') {

@@ -1,6 +1,9 @@
 import { and, desc, eq, gte, ilike, isNotNull, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { users, orders, refreshTokens } from '../../db/schema';
+
+/** Either the pool or an open transaction, so callers can share one. */
+type DbHandle = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 import { ACTIVE_CUSTOMER_WINDOW_DAYS } from './dashboard.service';
 
 export interface AdminCustomerQuery {
@@ -107,43 +110,70 @@ export const adminCustomersService = {
    * What it does block is signing in and checking out — see the guards in
    * auth.service and commerce/checkout.service.
    */
-  async blacklist(userId: number, adminId: number, reason: string | null) {
-    const [updated] = await db
-      .update(users)
-      .set({ blacklistedAt: new Date(), blacklistedBy: adminId, blacklistReason: reason, updatedAt: new Date() })
-      .where(and(eq(users.id, userId), isNull(users.blacklistedAt)))
-      .returning({ id: users.id, blacklistedAt: users.blacklistedAt });
-
-    if (!updated) {
-      // Either no such user or already blacklisted. Both are "nothing to do",
-      // and the console should not care which.
-      const [exists] = await db.select({ id: users.id }).from(users).where(eq(users.id, userId)).limit(1);
-      if (!exists) throw httpError('Customer not found', 404);
-      return { id: userId, blacklisted: true, changed: false, sessionsRevoked: 0 };
-    }
-
-    // Kill every live session rather than waiting for one to lapse.
+  /**
+   * @param tx Reuse the caller's transaction when there is one. Opening our own
+   *   from inside another would take a *separate* connection under postgres-js,
+   *   not a savepoint — so the two writes would not be atomic, and both trying
+   *   to update the same `users` row would deadlock. Same pattern as
+   *   subscriptions/state.service.
+   */
+  async blacklist(userId: number, adminId: number, reason: string | null, tx?: DbHandle) {
+    // Blocking the account and ending its sessions are one decision, so they
+    // are one transaction. Split, a crash between them leaves a customer marked
+    // blacklisted while their existing sessions keep working — the exact state
+    // the blacklist exists to prevent, and one nothing would ever re-check.
     //
+    // The `isNull` in the WHERE is also what makes this idempotent under
+    // concurrency: two admins clicking at once, and only one update lands.
+    const run = async (handle: DbHandle) => {
+      const [updated] = await handle
+        .update(users)
+        .set({
+          blacklistedAt: new Date(),
+          blacklistedBy: adminId,
+          blacklistReason: reason,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(users.id, userId), isNull(users.blacklistedAt)))
+        .returning({ id: users.id, blacklistedAt: users.blacklistedAt });
+
+      if (!updated) {
+        // Either no such user or already blacklisted. Both are "nothing to do",
+        // and the console should not care which.
+        const [exists] = await handle
+          .select({ id: users.id })
+          .from(users)
+          .where(eq(users.id, userId))
+          .limit(1);
+        if (!exists) throw httpError('Customer not found', 404);
+        return { id: userId, blacklisted: true, changed: false, sessionsRevoked: 0 };
+      }
+
+      // Kill every live session rather than waiting for one to lapse.
+      //
     // The sign-in guards alone would leave a blacklisted user signed in until
     // their refresh token was next used — and since refreshing is itself
     // blocked, the practical effect without this is that they keep whatever
-    // access token they were holding until it expires. Deleting the refresh
-    // tokens means the next refresh has nothing to consume and the session ends
-    // for good.
-    //
+      // access token they were holding until it expires. Deleting the refresh
+      // tokens means the next refresh has nothing to consume and the session ends
+      // for good.
+      //
     // Their current access token stays valid until it expires (15 minutes by
-    // default). That window is why checkout carries its own blacklist check.
-    const revoked = await db
-      .delete(refreshTokens)
-      .where(eq(refreshTokens.userId, userId))
-      .returning({ id: refreshTokens.id });
+      // default). That window is why checkout carries its own blacklist check.
+      const revoked = await handle
+        .delete(refreshTokens)
+        .where(eq(refreshTokens.userId, userId))
+        .returning({ id: refreshTokens.id });
 
-    return {
-      id: updated.id,
-      blacklisted: true,
-      changed: true,
-      sessionsRevoked: revoked.length,
+      return {
+        id: updated.id,
+        blacklisted: true,
+        changed: true,
+        sessionsRevoked: revoked.length,
+      };
     };
+
+    return tx ? run(tx) : db.transaction(run);
   },
 
   async unblacklist(userId: number) {

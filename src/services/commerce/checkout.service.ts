@@ -32,7 +32,9 @@ import {
   hashToken,
 } from '../../lib/order-identity';
 import { isDeliverableCountry } from './gardners-countries';
-import { quoteOrder, resolveCurrency, normalizeCountry, toPresentment } from './pricing';
+import {
+  quoteOrder, resolveCurrency, normalizeCountry, toPresentment, type OrderQuote,
+} from './pricing';
 
 /**
  * The address as our own checkout form collects it.
@@ -121,18 +123,30 @@ function httpError(message: string, statusCode: number, code?: string, extra?: o
  * second mailbox gets a second discount, and that is an accepted cost — see the
  * note on lib/email-identity.
  */
-async function hasPaidBefore(normalizedEmail: string, userId: number | null): Promise<boolean> {
+async function hasPaidBefore(
+  normalizedEmail: string,
+  userId: number | null,
+  handle: DbHandle = db,
+): Promise<boolean> {
   const identity = userId === null
     ? eq(orders.contactEmailNormalized, normalizedEmail)
     : or(eq(orders.contactEmailNormalized, normalizedEmail), eq(orders.userId, userId));
 
-  const [existing] = await db
+  const [existing] = await handle
     .select({ one: sql`1` })
     .from(orders)
     .where(and(identity, isNotNull(orders.paidAt)))
     .limit(1);
 
   return Boolean(existing);
+}
+
+/** Either the pool or a transaction — so money checks can run inside one. */
+type DbHandle = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/** Postgres unique-violation. */
+function isUniqueViolation(err: unknown): boolean {
+  return (err as { code?: string })?.code === '23505';
 }
 
 export const commerceCheckoutService = {
@@ -349,98 +363,148 @@ export const commerceCheckoutService = {
       contactEmail = options.contactEmail;
     }
 
-    // Priced *after* the buyer is identified: the first-order discount depends
-    // on who they are, so identity has to be settled before there is a price.
     const normalizedEmail = normalizeEmailForPromotions(contactEmail);
     const firstOrderPercent = config.commerce.discount.firstOrderPercent;
-    const discountEligible =
-      firstOrderPercent > 0 && !(await hasPaidBefore(normalizedEmail, userId));
 
-    const quote = quoteOrder({
-      lines: items.map((item) => {
-        const live = buyable.get(item.bookId)!;
-        return {
-          bookId: item.bookId,
-          isbn13: live.isbn13,
-          quantity: item.quantity,
-          unitPriceGbpPence: live.unitPriceGbpPence,
-        };
-      }),
-      destinationCountry,
-      currency,
-      discountPercent: discountEligible ? firstOrderPercent : 0,
-      discountReason: 'first_order',
-    });
+    /**
+     * Prices the basket, with or without the promotion.
+     *
+     * A function rather than a value because the discount decision is made
+     * *inside* the transaction that writes the order, and may have to be
+     * retracted and the basket re-priced if the database refuses it.
+     */
+    const priceBasket = (discountPercent: number) =>
+      quoteOrder({
+        lines: items.map((item) => {
+          const live = buyable.get(item.bookId)!;
+          return {
+            bookId: item.bookId,
+            isbn13: live.isbn13,
+            quantity: item.quantity,
+            unitPriceGbpPence: live.unitPriceGbpPence,
+          };
+        }),
+        destinationCountry,
+        currency,
+        discountPercent,
+        discountReason: 'first_order',
+      });
 
     // Handed back to the caller in the clear exactly once; only its hash is
     // stored. This is what lets the confirmation screen offer "Track My Order"
     // and "Save your order details" to somebody with no account yet.
     const accessToken = generateAccessToken();
 
-    const order = await db.transaction(async (tx) => {
-      const [created] = await tx
-        .insert(orders)
-        .values({
-          userId,
-          cartId,
-          reference: generateOrderReference(),
-          guestAccessTokenHash: hashToken(accessToken),
-          status: 'pending_payment',
-          subtotalGbpPence: quote.subtotalGbpPence,
-          discountGbpPence: quote.discountGbpPence,
-          discountMinor: quote.discountMinor,
-          discountReason: quote.discountReason,
-          shippingGbpPence: quote.shippingGbpPence,
-          taxGbpPence: quote.taxGbpPence,
-          totalGbpPence: quote.totalGbpPence,
-          presentmentCurrency: quote.currency,
-          subtotalMinor: quote.subtotalMinor,
-          shippingMinor: quote.shippingMinor,
-          taxMinor: quote.taxMinor,
-          totalMinor: quote.totalMinor,
-          fxRate: String(quote.fxRate),
-          fxCapturedAt: quote.fxCapturedAt,
-          taxRatePercent: String(quote.taxRatePercent),
-          taxSource: quote.taxSource,
-          shippingRule: quote.shippingRule,
-          shippingCountryCode: destinationCountry,
-          contactEmail,
-          contactEmailNormalized: normalizedEmail,
-          contactPhone,
-          // Written before payment when we collected it ourselves. The paid
-          // webhook will not overwrite these with Stripe's (absent) values —
-          // see definedShipping in orders.service.
-          ...(options.address && {
-            shippingName: options.address.name,
-            shippingLine1: options.address.line1,
-            shippingLine2: options.address.line2 ?? null,
-            shippingCity: options.address.city,
-            shippingRegion: options.address.region ?? null,
-            shippingPostcode: options.address.postcode,
+    /**
+     * Writes the order, deciding the discount inside the same transaction that
+     * records it.
+     *
+     * Two layers, because one is not enough:
+     *
+     * 1. **The eligibility read moves inside the transaction**, so it sees a
+     *    consistent snapshot with the write rather than whatever was true a few
+     *    hundred milliseconds earlier.
+     * 2. **A partial unique index does the actual enforcing.** Two checkouts
+     *    starting at the same instant both legitimately see "no paid order" —
+     *    no isolation level makes that untrue, because at that moment it *is*
+     *    true. Only a constraint evaluated at write time can stop them both
+     *    being written, and `uq_orders_first_order_discount` is it.
+     *
+     * When the index refuses the second one, the order is re-priced without the
+     * promotion and written again. The buyer gets an order rather than an
+     * error — they were never entitled to two discounts, and failing their
+     * checkout to tell them so would be the wrong end of the trade.
+     */
+    const writeOrder = async (quote: OrderQuote) =>
+      db.transaction(async (tx) => {
+        const [created] = await tx
+          .insert(orders)
+          .values({
+            userId,
+            cartId,
+            reference: generateOrderReference(),
+            guestAccessTokenHash: hashToken(accessToken),
+            status: 'pending_payment',
+            subtotalGbpPence: quote.subtotalGbpPence,
+            discountGbpPence: quote.discountGbpPence,
+            discountMinor: quote.discountMinor,
+            discountReason: quote.discountReason,
+            shippingGbpPence: quote.shippingGbpPence,
+            taxGbpPence: quote.taxGbpPence,
+            totalGbpPence: quote.totalGbpPence,
+            presentmentCurrency: quote.currency,
+            subtotalMinor: quote.subtotalMinor,
+            shippingMinor: quote.shippingMinor,
+            taxMinor: quote.taxMinor,
+            totalMinor: quote.totalMinor,
+            fxRate: String(quote.fxRate),
+            fxCapturedAt: quote.fxCapturedAt,
+            taxRatePercent: String(quote.taxRatePercent),
+            taxSource: quote.taxSource,
+            shippingRule: quote.shippingRule,
+            shippingCountryCode: destinationCountry,
+            contactEmail,
+            contactEmailNormalized: normalizedEmail,
+            contactPhone,
+            // Written before payment when we collected it ourselves. The paid
+            // webhook will not overwrite these with Stripe's (absent) values —
+            // see definedShipping in orders.service.
+            ...(options.address && {
+              shippingName: options.address.name,
+              shippingLine1: options.address.line1,
+              shippingLine2: options.address.line2 ?? null,
+              shippingCity: options.address.city,
+              shippingRegion: options.address.region ?? null,
+              shippingPostcode: options.address.postcode,
+            }),
+          })
+          .returning();
+
+        await tx.insert(orderItems).values(
+          quote.lines.map((line) => {
+            const live = buyable.get(line.bookId)!;
+            return {
+              orderId: created.id,
+              bookId: line.bookId,
+              isbn13: line.isbn13,
+              quantity: line.quantity,
+              unitPriceGbpPence: line.unitPriceGbpPence,
+              lineTotalGbpPence: line.lineTotalGbpPence,
+              unitPriceMinor: line.unitPriceMinor,
+              lineTotalMinor: line.lineTotalMinor,
+              titleSnapshot: live.title.slice(0, 500),
+              contributorSnapshot: live.contributor?.slice(0, 500) ?? null,
+            };
           }),
-        })
-        .returning();
+        );
 
-      await tx.insert(orderItems).values(
-        quote.lines.map((line) => {
-          const live = buyable.get(line.bookId)!;
-          return {
-            orderId: created.id,
-            bookId: line.bookId,
-            isbn13: line.isbn13,
-            quantity: line.quantity,
-            unitPriceGbpPence: line.unitPriceGbpPence,
-            lineTotalGbpPence: line.lineTotalGbpPence,
-            unitPriceMinor: line.unitPriceMinor,
-            lineTotalMinor: line.lineTotalMinor,
-            titleSnapshot: live.title.slice(0, 500),
-            contributorSnapshot: live.contributor?.slice(0, 500) ?? null,
-          };
-        }),
-      );
+        return created;
+      });
 
-      return created;
+    // The eligibility read happens inside a transaction with the write it
+    // informs, and the unique index is what settles a genuine tie.
+    let quote = await db.transaction(async (tx) => {
+      const eligible =
+        config.commerce.discount.firstOrderPercent > 0 &&
+        !(await hasPaidBefore(normalizedEmail, userId, tx));
+      return priceBasket(eligible ? firstOrderPercent : 0);
     });
+
+    let order: Order;
+    try {
+      order = await writeOrder(quote);
+    } catch (err) {
+      if (!isUniqueViolation(err) || quote.discountGbpPence === 0) throw err;
+
+      // Another checkout for this mailbox already holds the first-order
+      // discount. Re-price without it and write again, rather than failing a
+      // checkout over a promotion the buyer was never owed twice.
+      logger.info('First-order discount already claimed for this buyer — pricing without it', {
+        normalizedEmail,
+      });
+      quote = priceBasket(0);
+      order = await writeOrder(quote);
+    }
 
     const session = await this.createSession(userId, order, quote.lines.map((line) => ({
       name: buyable.get(line.bookId)!.title,

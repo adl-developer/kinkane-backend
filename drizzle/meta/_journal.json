@@ -330,6 +330,13 @@
       "when": 1787546336332,
       "tag": "0046_sticky_lizard",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1787581022805,
+      "tag": "0047_supreme_nekra",
+      "breakpoints": true
     }
   ]
 }

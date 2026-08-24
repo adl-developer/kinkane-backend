@@ -266,6 +266,23 @@ export const orders = pgTable(
     contactEmailNormalizedIdx: index('idx_orders_contact_email_normalized').on(
       t.contactEmailNormalized,
     ),
+    // **The first-order discount, enforced by the database rather than by a
+    // check in application code.**
+    //
+    // The eligibility query alone is check-then-act: two checkouts started at
+    // the same moment both see no paid order, both get the discount, and both
+    // can then be paid. No amount of care in the service closes that window —
+    // only a constraint the database evaluates at write time does.
+    //
+    // Partial on purpose. Orders that were never going to be paid are excluded,
+    // so abandoning a discounted checkout and starting another one still works:
+    // the abandoned row leaves the index the moment it expires or fails. What
+    // it forbids is *two live discounted orders for one mailbox at once*.
+    oneLiveFirstOrderDiscount: uniqueIndex('uq_orders_first_order_discount')
+      .on(t.contactEmailNormalized)
+      .where(
+        sql`${t.discountReason} = 'first_order' AND ${t.status} NOT IN ('expired', 'payment_failed', 'cancelled')`,
+      ),
     statusIdx: index('idx_orders_status').on(t.status),
     // Drives both order history and the bestseller window scan.
     createdAtIdx: index('idx_orders_created_at').on(t.createdAt),
