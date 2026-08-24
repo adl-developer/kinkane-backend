@@ -192,13 +192,17 @@ export const booksController = {
       // pence, so they are converted once here rather than per row. The
       // currency is resolved the same way the cart resolves it, so the numbers
       // being filtered on are the numbers the shop displayed.
+      // Resolved for every shoppable request, not only filtered ones: it is
+      // both the currency the bounds are read in and the currency prices come
+      // back in, so a client filters and displays in the same units.
+      const resolved =
+        rest.shoppable || priceMin !== undefined || priceMax !== undefined
+          ? resolveCurrency({ requested: currency, countryCode: await resolveRequestCountry(req) })
+          : undefined;
+
       let priceMinGbpPence: number | undefined;
       let priceMaxGbpPence: number | undefined;
-      if (priceMin !== undefined || priceMax !== undefined) {
-        const resolved = resolveCurrency({
-          requested: currency,
-          countryCode: await resolveRequestCountry(req),
-        });
+      if (resolved && (priceMin !== undefined || priceMax !== undefined)) {
         const perMajor = minorUnitsPerMajor(resolved);
         if (priceMin !== undefined) {
           priceMinGbpPence = fromPresentment(Math.round(priceMin * perMajor), resolved);
@@ -210,6 +214,7 @@ export const booksController = {
 
       const result = await booksService.list({
         ...rest,
+        currency: resolved,
         priceMinGbpPence,
         priceMaxGbpPence,
         cursor,

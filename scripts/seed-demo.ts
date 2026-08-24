@@ -18,7 +18,9 @@
  */
 import { and, eq, like } from 'drizzle-orm';
 import { db } from '../src/db';
-import { users, userReports, adminNotifications, orders } from '../src/db/schema';
+import {
+  users, userReports, adminNotifications, orders, userSubscriptions, notificationPreferences,
+} from '../src/db/schema';
 import { reportsService } from '../src/services/reports.service';
 import { adminNotificationsService } from '../src/services/admin/notifications.service';
 import { formatMinor } from '../src/lib/money';
@@ -44,7 +46,8 @@ async function reset(): Promise<void> {
     .from(users)
     .where(like(users.email, `%${SEED_DOMAIN}`));
 
-  // Reports first — they reference the users.
+  // Reports first — they reference the users. Subscriptions and preferences
+  // cascade on user delete, so they need no separate pass.
   for (const u of seeded) {
     await db.delete(userReports).where(eq(userReports.reportedUserId, u.id));
     await db.delete(userReports).where(eq(userReports.reporterId, u.id));
@@ -73,6 +76,18 @@ async function seed(): Promise<void> {
       .insert(users)
       .values({ name: p.name, email: p.email + SEED_DOMAIN, emailVerified: true })
       .returning({ id: users.id });
+
+    // A user row alone is not an account. Signup also opens a subscription and
+    // a notification-preferences row, and endpoints assume they exist —
+    // GET /auth/me returns "Subscription not found" without one. Seeding just
+    // the users table produces accounts that look fine in the console and
+    // break the moment anyone signs in as them.
+    const trialEndsAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    await db
+      .insert(userSubscriptions)
+      .values({ userId: row.id, tier: 'plus', status: 'trialing', trialEndsAt });
+    await db.insert(notificationPreferences).values({ userId: row.id });
+
     made[p.email] = row.id;
   }
   console.log(`Created ${PEOPLE.length} accounts.`);

@@ -60,7 +60,7 @@ export const cataloguePaths = {
         param('dedupe', 'query', { type: 'string', enum: ['true', 'false'], default: 'false' },
           'Collapse same-titled editions to one. Off by default so every edition stays visible.'),
         param('shoppable', 'query', { type: 'string', enum: ['true', 'false'], default: 'false' },
-          'Restrict to books the shop can list — an ISBN13, a live price, and no unsuppliable supplier report code. Out-of-stock titles are **kept**, each carrying `inStock` so you can badge them, because stock moves hourly and a book disappearing mid-browse reads as a bug. Not a guarantee of sellability: rights restrictions depend on a destination country this endpoint has none of, so they are enforced at add-to-cart instead.'),
+          '**Also adds `unitPriceMinor`, `compareAtMinor` and `currency` to every row** — the live sellable price, which is what the shop charges and what the price filter matches on. Ignore the `prices` array on a shop surface: it is ONIX edition metadata and disagrees with the supplier feed on part of the catalogue. Restrict to books the shop can list — an ISBN13, a live price, and no unsuppliable supplier report code. Out-of-stock titles are **kept**, each carrying `inStock` so you can badge them, because stock moves hourly and a book disappearing mid-browse reads as a bug. Not a guarantee of sellability: rights restrictions depend on a destination country this endpoint has none of, so they are enforced at add-to-cart instead.'),
         param('cursor', 'query', { type: 'string', maxLength: 4096 },
           'Opaque token from the previous response’s `nextCursor`. Only meaningful with `dedupe=true`; silently ignored otherwise.'),
       ],

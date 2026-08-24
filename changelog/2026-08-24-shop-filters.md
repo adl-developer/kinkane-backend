@@ -62,6 +62,26 @@ production data, and probably a different query shape, before it ships.
 matches author names, and a dedicated parameter would need its own ranking
 story.
 
+## Found reviewing this afterwards
+
+**The filter matched on a price the response did not carry.** `priceMin`/`priceMax`
+filter on `gardners_stock.rrp_gbp` — the live supplier price, the one the cart
+charges — but a shoppable listing returned only the `prices` array, which is ONIX
+edition metadata. Those two disagree on 1,654 of 80,732 shoppable books, and the
+ONIX one is GBP-only. So a client could filter "$10–$15" and get back rows whose
+only visible price was a different number in a different currency.
+
+Shoppable rows now carry `unitPriceMinor`, `compareAtMinor` (null when not on
+sale) and `currency`, converted into the currency the request resolved to —
+the same currency the bounds were read in, so a client filters and displays in
+one unit. Fetched by one batched query per page, the same bargain `inStock`
+already makes: only the shop asks for it, so no other search tier pays.
+
+**The discount had never actually run.** Not this feature, but found here:
+`FIRST_ORDER_DISCOUNT_PERCENT` was unset locally, so every earlier test of it
+exercised the disabled path. Turned on and re-tested end to end — see that
+changelog.
+
 ## Verification
 
 `npx tsc --noEmit` clean. `src/__tests__/catalogue-filters.test.ts` asserts the

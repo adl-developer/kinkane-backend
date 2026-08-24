@@ -242,6 +242,15 @@ basket appears to empty on login.
 | `currency` | Which currency the price bounds are in. Defaults to the currency this request would be quoted in. |
 | `sortBy` | `title` or `newest`. Pair with `sort=asc\|desc` for direction. |
 
+`shoppable=true` also puts the **live price** on every row — `unitPriceMinor`,
+`compareAtMinor` (null when not on sale) and `currency`. Render those.
+
+**Ignore the `prices` array on a shop surface.** It is ONIX edition metadata,
+it is GBP-only, and it disagrees with the live supplier feed on about 2% of the
+catalogue — so a listing built from it will occasionally advertise a price the
+basket refuses to honour. `unitPriceMinor` is the same number the price filter
+matches on and the same number the cart will quote.
+
 Three things worth knowing before wiring the panel up:
 
 - **Price bounds without `shoppable=true` are a 400, not an unfiltered page.**

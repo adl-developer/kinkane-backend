@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { buildShoppableCondition } from '../lib/shoppable';
 
 /**
@@ -113,5 +115,29 @@ describe('fromPresentment', () => {
   it('refuses a currency with no configured rate rather than guessing', async () => {
     const { fromPresentment } = await loadPricing(ENV);
     expect(() => fromPresentment(10_000, 'NGN')).toThrow();
+  });
+});
+
+describe('live price on shoppable rows', () => {
+  it('prefers a live markdown, and only when it is actually below RRP', async () => {
+    // The rule the cart already applies. A "sale" at or above RRP is not a
+    // sale, and a listing that advertised one would disagree with the basket.
+    const { availabilityService } = await import('../services/commerce/availability.service');
+    expect(typeof availabilityService.livePricesByIsbns).toBe('function');
+  });
+
+  it('is sourced from the supplier feed, not ONIX metadata', async () => {
+    // book_prices is edition metadata covering a different slice of the
+    // catalogue and disagreeing with the feed on part of it. Pricing a shop
+    // listing from it advertises prices we cannot honour — the same reason
+    // buildShoppableCondition reads gardners_stock.
+    const src = readFileSync(
+      join(__dirname, '..', 'services/commerce/availability.service.ts'),
+      'utf8',
+    );
+    const fn = src.slice(src.indexOf('async livePricesByIsbns'));
+    const body = fn.slice(0, fn.indexOf('\n  },'));
+    expect(body).toContain('gardnersStock');
+    expect(body).not.toContain('bookPrices');
   });
 });

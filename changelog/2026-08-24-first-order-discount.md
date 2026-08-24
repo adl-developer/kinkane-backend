@@ -82,6 +82,24 @@ leaves the site advertising a discount it no longer gives.
 **Promo codes, stacking, expiry, per-campaign reporting.** None of it exists.
 `discount_reason` is the seam it would hang off.
 
+## Verified end to end afterwards
+
+The original verification was unit-level only, and `FIRST_ORDER_DISCOUNT_PERCENT`
+was unset in the local environment — so every one of those runs exercised the
+*disabled* path. With it switched on and a real database and Stripe key:
+
+- A fresh email gets `discountMinor: 1766`, `discountReason: "first_order"`, and
+  Stripe accepts the `amount_off` coupon.
+- The stored order reconciles exactly: `11773 − 1766 + 1569 + 0 = 11576`, which
+  is the `total_minor` on the row.
+- An unpaid first attempt does **not** consume the discount — retrying still
+  grants it, which is right, because nothing was ever paid.
+- Once that order is marked paid, the same address is refused, and so are
+  `+tag` and capitalised variants.
+- At Gmail, dotted variants are refused too (`a.u.d.i.t...@gmail.com`), while at
+  a domain where dots are significant a dotted address is correctly treated as a
+  different person.
+
 ## Verification
 
 `npx tsc --noEmit` clean. `src/__tests__/first-order-discount.test.ts` covers

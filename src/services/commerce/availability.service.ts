@@ -318,6 +318,64 @@ export const availabilityService = {
     return map;
   },
 
+  /**
+   * The live sellable price for a page of ISBNs, in GBP pence.
+   *
+   * The sibling of inStockByIsbns, and there for the same reason: the shop's
+   * listing needs it, nothing else does, and one batched query per page is
+   * cheaper than putting the stock table into every search tier's plan.
+   *
+   * **This is the price the shop actually sells at** — `gardners_stock.rrp_gbp`,
+   * with any live Kinkané markdown applied. Deliberately *not* `book_prices`,
+   * which is ONIX edition metadata: the two disagree on about 2% of the
+   * catalogue, and only this one matches what the cart will charge and what the
+   * price filter matched on.
+   *
+   * `compareAtGbpPence` is the pre-markdown price when a promotion is running,
+   * so a listing can strike it through, and null when there is no sale.
+   */
+  async livePricesByIsbns(isbns: (string | null)[]): Promise<
+    Map<string, { unitPriceGbpPence: number; compareAtGbpPence: number | null }>
+  > {
+    const map = new Map<string, { unitPriceGbpPence: number; compareAtGbpPence: number | null }>();
+    const unique = [...new Set(isbns.filter((isbn): isbn is string => isbn !== null))];
+    if (unique.length === 0) return map;
+
+    const rows = await db
+      .select({
+        isbn13: gardnersStock.isbn13,
+        rrpGbp: gardnersStock.rrpGbp,
+        // Correlated on ISBN via an IN rather than a join: joining `books`
+        // inside the subquery puts a second `id` in scope and Postgres rejects
+        // the reference as ambiguous.
+        salePriceGbpPence: sql<number | null>`(
+          SELECT min(bp.sale_price_gbp_pence)
+          FROM book_promotions bp
+          WHERE bp.book_id IN (
+            SELECT b2.id FROM books b2 WHERE b2.isbn13 = ${gardnersStock.isbn13}
+          )
+            AND bp.starts_at <= now()
+            AND (bp.ends_at IS NULL OR bp.ends_at > now())
+        )`,
+      })
+      .from(gardnersStock)
+      .where(inArray(gardnersStock.isbn13, unique));
+
+    for (const row of rows) {
+      if (row.rrpGbp === null) continue;
+      const rrpPence = Math.round(Number(row.rrpGbp) * 100);
+      const sale = row.salePriceGbpPence === null ? null : Number(row.salePriceGbpPence);
+      // A "sale" at or above RRP is not a sale — same rule the cart applies, so
+      // a listing cannot advertise a markdown the basket then disagrees with.
+      const onSale = sale !== null && sale < rrpPence;
+      map.set(row.isbn13, {
+        unitPriceGbpPence: onSale ? sale! : rrpPence,
+        compareAtGbpPence: onSale ? rrpPence : null,
+      });
+    }
+    return map;
+  },
+
   /** Single-book convenience wrapper for add-to-cart. */
   async checkOne(bookId: number, destinationCountry: string): Promise<BuyableBook | UnbuyableReason> {
     const { buyable, rejected } = await this.check([bookId], destinationCountry);

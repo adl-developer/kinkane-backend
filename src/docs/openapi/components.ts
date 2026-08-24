@@ -139,6 +139,21 @@ const bookSchemas = {
       publicationDate: { type: 'string', format: 'date', nullable: true, example: '2019-05-02' },
       contributors: { type: 'array', items: { $ref: '#/components/schemas/Contributor' } },
       genres: { type: 'array', items: { $ref: '#/components/schemas/Genre' } },
+      unitPriceMinor: {
+        type: 'integer',
+        description: 'The live sellable price, in `currency`. Present only with `shoppable=true`. **This — not the `prices` array — is what the shop charges.** That array is ONIX edition metadata and disagrees with the supplier feed on part of the catalogue, so rendering it shows a price the basket will not honour. It is also what `priceMin`/`priceMax` filter on, so a filtered page can display the number it was filtered by.',
+        example: 1307,
+      },
+      compareAtMinor: {
+        type: 'integer', nullable: true,
+        description: 'Pre-markdown price when a promotion is running, for striking through. Null when not on sale.',
+        example: null,
+      },
+      currency: {
+        type: 'string',
+        description: 'ISO-4217 for the two fields above. Resolved from the request, or the `currency` parameter.',
+        example: 'USD',
+      },
       inStock: {
         type: 'boolean',
         example: true,

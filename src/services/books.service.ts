@@ -29,6 +29,8 @@ import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-ex
 import { TRENDING_SCORED_TYPES, trendingScoreSql } from './interactions.service';
 import { availabilityService } from './commerce/availability.service';
 import { buildShoppableCondition } from '../lib/shoppable';
+import { toPresentment } from './commerce/pricing';
+import { config } from '../config';
 
 const BOOK_DETAIL_TTL    = 60 * 60;    // 1 hour
 const LIST_TTL           = 5 * 60;     // 5 minutes
@@ -148,6 +150,12 @@ export interface ListBooksOptions {
    */
   priceMinGbpPence?: number;
   priceMaxGbpPence?: number;
+  /**
+   * The currency prices come back in, already resolved by the controller. Also
+   * the currency the price bounds were expressed in, so the numbers a client
+   * filters by and the numbers it displays are the same.
+   */
+  currency?: string;
   /** Which field to order by. Ignored whenever `q` is present — relevance wins. */
   sortBy?: 'title' | 'newest';
   sort?: 'asc' | 'desc';
@@ -258,6 +266,21 @@ export interface BookListItem {
    * than a title that is visibly, temporarily unavailable.
    */
   inStock?: boolean;
+  /**
+   * The live sellable price, in the currency this request resolved to. Present
+   * only with `shoppable=true`, alongside `inStock`.
+   *
+   * This — not the `prices` array — is what the shop charges. That array is
+   * ONIX edition metadata and disagrees with the supplier feed on part of the
+   * catalogue, so a listing that renders it is showing a price the basket will
+   * not honour. It is also what `priceMin`/`priceMax` filter on, so a filtered
+   * page can display the number it was filtered by.
+   */
+  unitPriceMinor?: number;
+  /** Pre-markdown price when a promotion is running; null when not on sale. */
+  compareAtMinor?: number | null;
+  /** ISO-4217 for the two fields above. */
+  currency?: string;
 }
 
 // Which side of the catalogue a typeahead query is matched against. 'all' (the default)
@@ -660,6 +683,27 @@ function buildPersonNamePrefixOrderBy(q: string): SQL[] {
  * documented on buildFastTitlePrefixOrderBy, and unmeasured against the real
  * table. It needs an EXPLAIN against production data before it exists.
  */
+/**
+ * Converts a live GBP price into the currency the request resolved to.
+ *
+ * Returns nothing at all when the book has no live price — which should not
+ * happen for a row that cleared buildShoppableCondition, but a missing key is a
+ * better answer than a zero that reads as "free".
+ */
+function priceFields(
+  live: { unitPriceGbpPence: number; compareAtGbpPence: number | null } | undefined,
+  currency: string | undefined,
+): { unitPriceMinor: number; compareAtMinor: number | null; currency: string } | Record<string, never> {
+  if (!live) return {};
+  const code = (currency ?? config.commerce.currency.default).toUpperCase();
+  return {
+    unitPriceMinor: toPresentment(live.unitPriceGbpPence, code),
+    compareAtMinor:
+      live.compareAtGbpPence === null ? null : toPresentment(live.compareAtGbpPence, code),
+    currency: code,
+  };
+}
+
 function buildSortOrderBy(opts: ListBooksOptions): (SQL | PgColumn)[] {
   const direction = opts.sort === 'desc' ? desc : asc;
 
@@ -1323,7 +1367,7 @@ export const booksService = {
           const rawHasMore = fetched.length > overfetchLimit;
           const rawRows = rawHasMore ? fetched.slice(0, overfetchLimit) : fetched;
 
-          const [relations, excerptMap, descriptionById, stockByIsbn] = await Promise.all([
+          const [relations, excerptMap, descriptionById, stockByIsbn, priceByIsbn] = await Promise.all([
             attachRelationsToList(rawRows),
             getExcerptsByIsbns(rawRows.map((r) => r.isbn13)),
             // Only needed for dedupe scoring — BookListItem never exposes it, and
@@ -1344,6 +1388,14 @@ export const booksService = {
             opts.shoppable && rawRows.length > 0
               ? availabilityService.inStockByIsbns(rawRows.map((r) => r.isbn13))
               : Promise.resolve(new Map<string, boolean>()),
+            // Same bargain as the stock badge: one batched query, and only when
+            // the shop asked. Without it a client can filter on a price the
+            // response never carries.
+            opts.shoppable && rawRows.length > 0
+              ? availabilityService.livePricesByIsbns(rawRows.map((r) => r.isbn13))
+              : Promise.resolve(
+                  new Map<string, { unitPriceGbpPence: number; compareAtGbpPence: number | null }>(),
+                ),
           ]);
           const enriched = rawRows.map((r) => ({
             ...r,
@@ -1353,7 +1405,10 @@ export const booksService = {
             // buildShoppableCondition, so a missing stock entry would mean the row
             // vanished between the two queries — `false` is the safe reading.
             ...(opts.shoppable
-              ? { inStock: r.isbn13 ? (stockByIsbn.get(r.isbn13) ?? false) : false }
+              ? {
+                  inStock: r.isbn13 ? (stockByIsbn.get(r.isbn13) ?? false) : false,
+                  ...priceFields(r.isbn13 ? priceByIsbn.get(r.isbn13) : undefined, opts.currency),
+                }
               : {}),
           }));
 
