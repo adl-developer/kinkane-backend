@@ -190,6 +190,32 @@ believe they hold the whole list. Exports now return `X-Total-Rows`,
 `…-FIRST-5000-OF-12345.csv` — the filename being the only part someone clicking
 a download button ever actually sees.
 
+## Seeding admins
+
+`npm run admin:create` handles one account or many, and hashes every password
+with bcrypt before anything reaches a query — the same helper the login path
+verifies against, so a seeded password and one set later are indistinguishable.
+
+```bash
+# one, prompted (a person at a terminal)
+npm run admin:create -- --email ama@kinkane.app --name "Ama Boateng"
+
+# one, non-interactively (CI, containers)
+ADMIN_PASSWORD='…' npm run admin:create -- --email ama@kinkane.app --name "Ama"
+
+# several, from a file
+npm run admin:create -- --file admins.json
+```
+
+Re-running for an existing email updates it, which is also the password-reset
+path — there is no self-service one.
+
+Two guards worth knowing about. It **refuses a seed file that sits inside the
+repository unless git ignores it**, because such a file holds plaintext
+passwords and committing one is invisible until it is in the history forever.
+And it enforces a 12-character minimum: these accounts can blacklist customers
+and export the customer list.
+
 ## Verification
 
 Migrated and exercised live against the local database (83,688 books, real
