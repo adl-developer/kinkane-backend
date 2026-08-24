@@ -13,6 +13,7 @@ export type { SubscriptionConfirmedPayload } from './transactional/subscription-
 export { sendSubscriptionPaymentFailedEmail } from './transactional/subscription-payment-failed';
 export { sendSubscriptionCancelledEmail } from './transactional/subscription-cancelled';
 export { sendReferralInviteEmail } from './transactional/referral-invite';
+export { sendContactMessageEmail } from './transactional/contact-message';
 
 // Notifications
 export { sendTrialEndingEmail } from './notifications/trial-ending';

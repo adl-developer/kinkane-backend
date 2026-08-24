@@ -1,7 +1,7 @@
 # Web eCommerce designs vs. the server — gap plan
 
-Status: **P0 complete** (2026-08-24, see `changelog/2026-08-24-p0-shop-gaps.md`),
-P1 and P2 not started. Written 2026-08-23. Audited against the
+Status: **P0 and P1 complete** (2026-08-24), P2 in progress. Written 2026-08-23.
+P1's reviews item is deliberately deferred — see below. Audited against the
 "Kinkané Web eCommerce" Figma (file `NPKXRFHdV9POc2NW88Ndsw`, last touched
 2026-08-20), all four pages: Web (26 frames), Admin (10), Mobile (14),
 Email Template.
@@ -133,7 +133,7 @@ Stripe session builder.
 
 # P1 — content surfaces the storefront links to
 
-## 4. Reviews (~1d for reader reviews, ~3d with editorial quotes)
+## 4. Reviews — **deferred** (decision 2 unresolved)
 
 The PDP has a four-tab strip: About | Excerpt | **Reviews** | You May Also Like.
 Excerpts are already served (`book_excerpts`, surfaced through
@@ -160,7 +160,7 @@ already lists them. The whole community router sits behind `requireAuth`
   system. Either add a small admin-entered table for them, or drop them from
   the design and show reader reviews. **Decision 2.**
 
-## 5. Contact Us (~0.5d)
+## 5. Contact Us — **done**
 
 Designed on the Mobile page, linked in the footer of every web frame, no
 endpoint exists.

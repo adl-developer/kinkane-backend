@@ -48,6 +48,10 @@ const envSchema = z.object({
 
   RESEND_API_KEY: z.string().min(1),
   EMAIL_FROM: z.string().email().default('hello@kinkane.app'),
+  // Where the Contact Us form delivers. Defaults to the From address so the
+  // form still works before anyone sets up a dedicated support mailbox — it
+  // just means support mail arrives wherever hello@ goes.
+  SUPPORT_INBOX: z.string().email().optional(),
   EMAIL_FROM_NAME: z.string().default('Kinkane'),
 
   // Base client URL, and the single source of truth for every user-facing link
@@ -413,6 +417,7 @@ export const config = {
     apiKey: env.RESEND_API_KEY,
     from: env.EMAIL_FROM,
     fromName: env.EMAIL_FROM_NAME,
+    supportInbox: env.SUPPORT_INBOX ?? env.EMAIL_FROM,
   },
   appUrl: env.APP_URL,
   referrals: {

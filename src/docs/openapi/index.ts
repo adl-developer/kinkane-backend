@@ -10,6 +10,7 @@ import { accountPaths } from './paths/account';
 import { commercePaths } from './paths/commerce';
 import { billingPaths } from './paths/billing';
 import { referralPaths } from './paths/referrals';
+import { supportPaths } from './paths/support';
 
 /**
  * Assembles the OpenAPI 3.0 document.
@@ -154,6 +155,7 @@ const tags = [
     description:
       'Invite links and the "Around the World" competition. Open to every signed-up account, lapsed ones included.',
   },
+  { name: 'Support', description: 'The Contact Us form. Public, rate limited, honeypot-protected.' },
 ];
 
 export function buildOpenApiDocument(req: Request): Record<string, unknown> {
@@ -187,6 +189,7 @@ export function buildOpenApiDocument(req: Request): Record<string, unknown> {
       ...commercePaths,
       ...billingPaths,
       ...referralPaths,
+      ...supportPaths,
     },
   };
 }

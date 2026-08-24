@@ -102,6 +102,20 @@ export const guestOrderLimiter = rateLimit({
   store: new RedisStore({ prefix: 'rl:guestorder:', sendCommand }),
 });
 
+/**
+ * Contact form. Unauthenticated and it sends mail, which makes it a spam relay
+ * if it is not bounded — three an hour is generous for a human with a problem
+ * and useless to anyone with a script.
+ */
+export const contactLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 3,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: json429,
+  store: new RedisStore({ prefix: 'rl:contact:', sendCommand }),
+});
+
 export const checkoutLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 20,
