@@ -5,6 +5,8 @@ import { userBooksService } from '../services/user-books.service';
 import { interactionsService } from '../services/interactions.service';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 import { config } from '../config';
+import { fromPresentment, resolveCurrency, resolveRequestCountry } from '../services/commerce/pricing';
+import { minorUnitsPerMajor } from '../lib/money';
 
 // z.coerce.boolean() would treat the literal string "false" as truthy (any non-empty
 // string coerces to true), so accepted values are explicit — see refreshQuerySchema in
@@ -37,6 +39,29 @@ const listSchema = z.object({
   productForm: z.string().min(1).max(10).optional(),
   publishingStatus: z.string().length(2).optional(),
   publisher: z.string().min(1).max(200).optional(),
+  // ISBN-13 as it is printed, hyphens and spaces optional. Matched exactly:
+  // an ISBN is either the book or it is not, and a partial one is a typo.
+  isbn: z
+    .string()
+    .trim()
+    .max(20)
+    .transform((v) => v.replace(/[\s-]/g, ''))
+    .refine((v) => /^\d{13}$/.test(v), { message: 'ISBN must be 13 digits' })
+    .optional(),
+  // Inclusive publication-year bounds. The floor is the year of the oldest
+  // plausible catalogue record rather than 0, so a mistyped year cannot produce
+  // a range that scans everything.
+  yearMin: z.coerce.number().int().min(1450).max(2200).optional(),
+  yearMax: z.coerce.number().int().min(1450).max(2200).optional(),
+  // Price bounds in **major units** of `currency` — 0 to 100 means $0-$100,
+  // matching the filter UI. Converted to GBP pence before it reaches the query.
+  priceMin: z.coerce.number().min(0).max(100_000).optional(),
+  priceMax: z.coerce.number().min(0).max(100_000).optional(),
+  // Which currency the price bounds are expressed in. Defaults to the currency
+  // this request would be quoted in, so a client that shows dollars and filters
+  // in dollars needs to send nothing.
+  currency: z.string().length(3).optional(),
+  sortBy: z.enum(['title', 'newest']).optional(),
   sort: z.enum(['asc', 'desc']).optional(),
   limit: z.coerce.number().int().min(1).max(50).default(20),
   offset: z.coerce.number().int().min(0).default(0),
@@ -58,7 +83,22 @@ const listSchema = z.object({
    * across pages. Ignored (with no error) when dedupe is off.
    */
   cursor: z.string().min(1).max(4096).optional(),
-});
+})
+  .refine((v) => v.yearMin === undefined || v.yearMax === undefined || v.yearMin <= v.yearMax, {
+    message: 'yearMin must not be after yearMax',
+    path: ['yearMin'],
+  })
+  .refine((v) => v.priceMin === undefined || v.priceMax === undefined || v.priceMin <= v.priceMax, {
+    message: 'priceMin must not exceed priceMax',
+    path: ['priceMin'],
+  })
+  // The price lives on the Gardners stock row, which only the shoppable path
+  // consults. Rejecting rather than ignoring: a filtered page that quietly came
+  // back unfiltered is a bug the client cannot see.
+  .refine((v) => (v.priceMin === undefined && v.priceMax === undefined) || v.shoppable, {
+    message: 'priceMin/priceMax require shoppable=true — only shoppable books have a price',
+    path: ['priceMin'],
+  });
 
 const basketRecsSchema = z.object({
   // Comma-separated so this stays a cacheable GET. Bounded to the same ceiling
@@ -146,7 +186,34 @@ export const booksController = {
       // request working when someone drops the flag.
       const cursor = parsed.data.dedupe ? decodeDedupeCursor(parsed.data.cursor) : null;
 
-      const result = await booksService.list({ ...parsed.data, cursor });
+      const { priceMin, priceMax, currency, ...rest } = parsed.data;
+
+      // Bounds arrive in the customer's currency and the catalogue stores GBP
+      // pence, so they are converted once here rather than per row. The
+      // currency is resolved the same way the cart resolves it, so the numbers
+      // being filtered on are the numbers the shop displayed.
+      let priceMinGbpPence: number | undefined;
+      let priceMaxGbpPence: number | undefined;
+      if (priceMin !== undefined || priceMax !== undefined) {
+        const resolved = resolveCurrency({
+          requested: currency,
+          countryCode: await resolveRequestCountry(req),
+        });
+        const perMajor = minorUnitsPerMajor(resolved);
+        if (priceMin !== undefined) {
+          priceMinGbpPence = fromPresentment(Math.round(priceMin * perMajor), resolved);
+        }
+        if (priceMax !== undefined) {
+          priceMaxGbpPence = fromPresentment(Math.round(priceMax * perMajor), resolved);
+        }
+      }
+
+      const result = await booksService.list({
+        ...rest,
+        priceMinGbpPence,
+        priceMaxGbpPence,
+        cursor,
+      });
       res.status(200).json({
         books: result.books,
         total: result.total,

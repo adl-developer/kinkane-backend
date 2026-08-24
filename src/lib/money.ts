@@ -86,6 +86,34 @@ export function convertFromGbpPence(
 }
 
 /**
+ * The inverse of convertFromGbpPence, for turning a *customer-supplied* amount
+ * back into the GBP pence the catalogue stores.
+ *
+ * Only ever used for filter bounds, never for money that is charged. The
+ * forward conversion rounds up (twice — the buffer, then the whole minor unit),
+ * so this cannot round-trip exactly, and a bound that is off by a penny is
+ * meaningless in a price filter. It must never be used to compute a price,
+ * where that same penny is somebody's money.
+ */
+export function toGbpPenceFromMinor(
+  minor: number,
+  currency: string,
+  rate: number,
+  bufferPercent = 0,
+): number {
+  const code = currency.toUpperCase();
+
+  if (code === 'GBP') return Math.round(minor);
+
+  if (!Number.isFinite(rate) || rate <= 0) {
+    throw Object.assign(new Error(`No usable exchange rate for ${code}`), { statusCode: 503 });
+  }
+
+  const major = minor / minorUnitsPerMajor(code);
+  return Math.round((major / (rate * (1 + bufferPercent / 100))) * 100);
+}
+
+/**
  * Formats a minor-unit amount for display/logging. Not used to build charges —
  * Stripe is always given the integer.
  */

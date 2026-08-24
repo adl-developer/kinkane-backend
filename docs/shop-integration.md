@@ -200,6 +200,37 @@ each line into the stored cart with `POST /api/v1/cart/items`, then clear its
 local copy. **There is no server-side merge.** If this is skipped, the user's
 basket appears to empty on login.
 
+## Filtering the shop
+
+`GET /books?shoppable=true` takes the filter set the shop's Filters panel needs:
+
+| Param | Notes |
+| --- | --- |
+| `isbn` | ISBN-13, exact. Hyphens and spaces are stripped, so the number as printed works. |
+| `yearMin` / `yearMax` | Publication year, inclusive both ends. Undated books drop out of a year-filtered result. |
+| `priceMin` / `priceMax` | **Major units** — `20` means $20, not 2000 cents. Requires `shoppable=true`. |
+| `currency` | Which currency the price bounds are in. Defaults to the currency this request would be quoted in. |
+| `sortBy` | `title` or `newest`. Pair with `sort=asc\|desc` for direction. |
+
+Three things worth knowing before wiring the panel up:
+
+- **Price bounds without `shoppable=true` are a 400, not an unfiltered page.**
+  The price lives on the supplier row that only the shoppable path consults, and
+  a filter that quietly did nothing would be invisible from the client.
+- **The price boundary is approximate by up to a penny.** The displayed price is
+  converted out of GBP with a rounding buffer, so converting the bound back
+  cannot be exact. Both ends are treated as inclusive, which means a book may
+  appear one penny outside the range rather than a matching book being hidden.
+- **`sortBy` is ignored whenever `q` is set.** Search results are ranked by
+  relevance, and reordering that ranking by title gives you neither. If the
+  panel offers both a search box and a sort, expect sort to have no effect while
+  a query is present — that is deliberate, not a bug.
+
+There is **no price sort**. Ordering on the supplier price means evaluating a
+correlated subquery for every candidate row before the page limit applies, which
+is the shape that has bitten this endpoint before. It needs measuring against
+the real table first.
+
 ## `shoppable` applies to the feeds too, and is off by default
 
 Every discovery feed takes the same `shoppable=true` flag as `GET /books`:

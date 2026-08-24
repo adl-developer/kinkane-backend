@@ -15,7 +15,7 @@
 import type { Request } from 'express';
 import { config } from '../../config';
 import { geoService } from '../geo.service';
-import { convertFromGbpPence, percentOf, toStripeAmount } from '../../lib/money';
+import { convertFromGbpPence, percentOf, toGbpPenceFromMinor, toStripeAmount } from '../../lib/money';
 import { normalizeCountryCode } from '../../lib/country';
 
 /**
@@ -127,6 +127,21 @@ export function toPresentment(gbpPence: number, currency: string): number {
     convertFromGbpPence(gbpPence, code, fxRateFor(code), config.commerce.currency.bufferPercent),
     code,
   );
+}
+
+/**
+ * The reverse, for filter bounds only: a price range the customer typed in
+ * their own currency, expressed as the GBP pence the catalogue stores.
+ *
+ * Not usable for charging anything — see toGbpPenceFromMinor. The buffer and
+ * the round-up in the forward direction mean the boundary is approximate by up
+ * to a penny either way, which is why the filter treats both bounds as
+ * inclusive: showing one book a penny outside the range is a better failure
+ * than hiding one inside it.
+ */
+export function fromPresentment(minor: number, currency: string): number {
+  const code = currency.toUpperCase();
+  return toGbpPenceFromMinor(minor, code, fxRateFor(code), config.commerce.currency.bufferPercent);
 }
 
 // ── Shipping ──────────────────────────────────────────────────────────────────

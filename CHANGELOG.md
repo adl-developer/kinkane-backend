@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-08-24
+
+### Features
+
+* collect a delivery phone number at checkout and pass it to the courier ([272eaa4](https://adl.github.com/adl-developer/kinkane-backend/commit/272eaa45993085fde7616eb690bf5a2d3a5260cf)) — [details](changelog/2026-08-24-checkout-phone-number.md)
+
+
 ## 2026-08-20
 
 ### Features

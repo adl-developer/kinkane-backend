@@ -135,6 +135,21 @@ export interface ListBooksOptions {
   productForm?: string;
   publishingStatus?: string;
   publisher?: string;
+  /** Exact ISBN-13. Narrower than `q`, and index-backed. */
+  isbn?: string;
+  /** Inclusive publication-year bounds. */
+  yearMin?: number;
+  yearMax?: number;
+  /**
+   * Inclusive price bounds in **GBP pence**, already converted from whatever
+   * currency the customer typed. Only meaningful with `shoppable` — the price
+   * lives on the Gardners row that flag joins against — and the controller
+   * rejects them otherwise rather than returning a silently unfiltered page.
+   */
+  priceMinGbpPence?: number;
+  priceMaxGbpPence?: number;
+  /** Which field to order by. Ignored whenever `q` is present — relevance wins. */
+  sortBy?: 'title' | 'newest';
   sort?: 'asc' | 'desc';
   limit: number;
   offset: number;
@@ -629,6 +644,37 @@ function buildPersonNamePrefixOrderBy(q: string): SQL[] {
 // callers can swap the cheap prefix-only tier in for the expensive full tier — see the
 // cheap-first strategy in list() — while still sharing the same genre/availability/etc.
 // filters.
+/**
+ * Ordering for a browse (no `q`). Backwards compatible by construction: with
+ * neither sortBy nor sort supplied this is `updatedAt`, exactly as before, and
+ * a bare `sort` still means title — the meaning it had when it was the only
+ * ordering knob there was.
+ *
+ * `newest` orders on publication_date, which is nullable; undated books sort
+ * last in both directions rather than crowding the top of a "newest" page,
+ * where Postgres would otherwise put them descending.
+ *
+ * There is deliberately no `price` here. Price lives on the correlated Gardners
+ * row, so ordering by it means evaluating that subquery for every candidate row
+ * *before* the LIMIT applies — the same shape as the title-sort regression
+ * documented on buildFastTitlePrefixOrderBy, and unmeasured against the real
+ * table. It needs an EXPLAIN against production data before it exists.
+ */
+function buildSortOrderBy(opts: ListBooksOptions): (SQL | PgColumn)[] {
+  const direction = opts.sort === 'desc' ? desc : asc;
+
+  switch (opts.sortBy) {
+    case 'title':
+      return [direction(books.title)];
+    case 'newest':
+      return [
+        sql`${books.publicationDate} ${opts.sort === 'asc' ? sql`ASC` : sql`DESC`} NULLS LAST`,
+      ];
+    default:
+      return opts.sort ? [direction(books.title)] : [books.updatedAt];
+  }
+}
+
 function buildWhereClause(opts: ListBooksOptions, searchCondition?: SQL): SQL | undefined {
   const conditions: SQL[] = [];
 
@@ -674,8 +720,29 @@ function buildWhereClause(opts: ListBooksOptions, searchCondition?: SQL): SQL | 
     conditions.push(ilike(books.publisherName, `%${opts.publisher}%`));
   }
 
+  if (opts.isbn) {
+    conditions.push(eq(books.isbn13, opts.isbn));
+  }
+
+  // Half-open in neither direction: a buyer who asks for 1990-2000 means both
+  // endpoints. Books with no publication date drop out of a year-filtered
+  // result, which is correct — an undated book cannot be shown to satisfy a
+  // date range.
+  if (opts.yearMin !== undefined) {
+    conditions.push(sql`${books.publicationDate} >= ${`${opts.yearMin}-01-01`}`);
+  }
+
+  if (opts.yearMax !== undefined) {
+    conditions.push(sql`${books.publicationDate} <= ${`${opts.yearMax}-12-31`}`);
+  }
+
   if (opts.shoppable) {
-    conditions.push(buildShoppableCondition());
+    conditions.push(
+      buildShoppableCondition({
+        minGbpPence: opts.priceMinGbpPence,
+        maxGbpPence: opts.priceMaxGbpPence,
+      }),
+    );
   }
 
   return conditions.length > 0 ? and(...conditions) : undefined;
@@ -1075,6 +1142,7 @@ export const booksService = {
     // added to this list.
     const {
       sort: _sort,
+      sortBy: _sortBy,
       limit: _limit,
       offset: _offset,
       dedupe: _dedupe,
@@ -1199,8 +1267,10 @@ export const booksService = {
           : 'broad'
       : 'broad';
 
-    // When a search query is present, relevance ranking takes priority and sort is ignored.
-    // Otherwise sort by title (asc/desc) when specified, falling back to updatedAt.
+    // When a search query is present, relevance ranking takes priority and both
+    // sortBy and sort are ignored — a page ordered by title that was *selected*
+    // by fuzzy relevance is neither one thing nor the other. Otherwise order by
+    // the requested field, falling back to updatedAt.
     const rowsWhere = opts.q
       ? buildWhereClause(
           opts,
@@ -1217,9 +1287,7 @@ export const booksService = {
         : rowsTier === 'cheap'
           ? buildTitlePrefixOrderBy(opts.q)
           : buildSearchOrderBy(opts.q)
-      : opts.sort
-        ? [opts.sort === 'desc' ? desc(books.title) : asc(books.title)]
-        : [books.updatedAt];
+      : buildSortOrderBy(opts);
 
     // With dedupe on, over-fetch a headroom pool per page so collapsing same-titled
     // editions still tends to leave a full page — see DEDUPE_POOL_HEADROOM. Without it,
