@@ -85,7 +85,7 @@ export const adminPaths = {
         '',
         '**`revenueMinor` sums presentment minor units across whatever currencies were charged**, and is labelled with `revenueCurrency`. That is correct only while the shop sells in a single currency; the moment it genuinely sells in several, this needs converting to a base currency. The label exists so the ambiguity is visible rather than silent.',
         '',
-        'Orders that were never paid for are excluded from both the count and the revenue — an abandoned Stripe redirect is not a sale.',
+        '**Everything here counts paid orders only — the cards and the Recent Orders table alike.** An abandoned Stripe redirect is not a sale, and a total that excluded them above a table that included them would be a dashboard arguing with itself. Abandoned checkouts are still reachable on the Orders screen, counted as `pending` and included in its `all` tab.',
         '',
         '`activeCustomers` means *placed a paid order in the last 12 months*. A customer who has never ordered counts as inactive, not new.',
       ].join('\n'),

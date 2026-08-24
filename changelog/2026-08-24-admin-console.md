@@ -83,6 +83,15 @@ lets someone spend money is not blocked.
 people reporting the same person is one decision; leaving the others open means
 the next admin re-reviews an account that is already blocked.
 
+**The dashboard counts paid orders only — cards and Recent Orders table alike.**
+First built with the cards filtered and the table unfiltered, which showed
+"TOTAL ORDERS 0" sitting directly above a table listing two of them: a dashboard
+arguing with itself. It also contradicted the rule the customer-facing order list
+already states — "an abandoned checkout is not an order, and listing one reads as
+a billing error". Abandoned checkouts stay reachable on the Orders screen,
+counted as `pending` and included in its `all` tab, which is where someone
+diagnosing a broken checkout would look.
+
 **"Active" means paid in the last 12 months.** A customer who has never ordered
 is inactive, not new — the operator wants to know who is buying.
 

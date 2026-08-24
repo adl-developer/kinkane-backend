@@ -35,6 +35,10 @@ export const adminDashboardService = {
   /**
    * The Overview cards plus the Recent Orders table.
    *
+   * Everything here counts **paid** orders only — cards and table alike. They
+   * have to agree: a total that excludes abandoned checkouts sitting above a
+   * table that includes them is a dashboard arguing with itself.
+   *
    * Every figure is "all time" as the design labels it, except the active
    * customer count. Live aggregates are fine at present volumes; if `orders`
    * grows past a few hundred thousand this wants a nightly rollup, because
@@ -78,7 +82,16 @@ export const adminDashboardService = {
         })
         .from(orders)
         .leftJoin(users, eq(users.id, orders.userId))
-        .orderBy(desc(orders.createdAt))
+        // Paid orders only, matching the cards above the table and the rule the
+        // customer-facing list already follows: an abandoned checkout is not an
+        // order. Without this the dashboard reads "TOTAL ORDERS 0" directly
+        // above a table listing two of them, which is how it was first built.
+        //
+        // Abandoned checkouts are still reachable — they are counted as
+        // `pending` on the Orders screen and included in its `all` tab, which is
+        // where someone diagnosing a broken checkout would go looking.
+        .where(isNotNull(orders.paidAt))
+        .orderBy(desc(orders.paidAt))
         .limit(recentLimit),
     ]);
 
