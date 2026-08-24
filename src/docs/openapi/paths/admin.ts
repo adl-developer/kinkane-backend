@@ -76,6 +76,36 @@ export const adminPaths = {
     },
   },
 
+  '/admin/console/auth/change-password': {
+    post: {
+      tags: [TAG],
+      summary: 'Change your own admin password',
+      description: [
+        'Requires the current password as well as the new one. Not ceremony: a console session lasts 12 hours, so an unattended laptop is a plausible way in, and without the check that is enough to lock the real owner out of an account that can suspend customers.',
+        '',
+        'The new password must be at least 12 characters and must differ from the current one — a no-op change means somebody believes they have rotated a credential when they have not.',
+        '',
+        '**Other sessions are not signed out.** A console token carries no password state, so existing tokens for this admin stay valid until they expire. If the concern is that somebody else holds a session, disable and recreate the account instead.',
+        '',
+        'This is also the endpoint to use straight after a first sign-in with `ADMIN_BOOTSTRAP_PASSWORD`.',
+      ].join('\n'),
+      requestBody: body(object({
+        currentPassword: { type: 'string', example: '••••••••••••' },
+        newPassword: { type: 'string', minLength: 12, example: '••••••••••••••••' },
+      }, ['currentPassword', 'newPassword'])),
+      responses: {
+        200: json('Changed.', object({ changed: { type: 'boolean', example: true } })),
+        400: json('Too short, or identical to the current password.', ref('ValidationError')),
+        429: resp('RateLimited'),
+        // Spread first so the more specific 401 below wins — adminErrors carries
+        // a generic one.
+        ...adminErrors,
+        401: json('The current password is wrong, or the session is invalid.',
+          object({ error: { type: 'string' }, code: { type: 'string', example: 'INVALID_CREDENTIALS' } })),
+      },
+    },
+  },
+
   '/admin/console/dashboard': {
     get: {
       tags: [TAG],

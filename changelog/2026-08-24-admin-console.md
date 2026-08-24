@@ -216,6 +216,31 @@ passwords and committing one is invisible until it is in the history forever.
 And it enforces a 12-character minimum: these accounts can blacklist customers
 and export the customer list.
 
+## The first admin on a server with no shell
+
+`npm run admin:create` needs a shell, and it is not in the production build —
+`tsconfig` compiles `src/**/*` only, and `tsx` is a devDependency. So on a
+platform where you cannot get a terminal, there was no way to create the first
+admin at all.
+
+Set `ADMIN_BOOTSTRAP_EMAIL` and `ADMIN_BOOTSTRAP_PASSWORD` and the server creates
+that admin on boot — **only while the admins table is empty.** Once one exists
+these are inert, so they cannot reset a live account or resurrect a deleted one.
+Set them, deploy, sign in, change the password, delete both.
+
+**There is deliberately no hardcoded default admin.** A password committed to
+the repo is a published password: it is in the git history, in every clone, and
+guessable from the product name — on an account that can suspend customers and
+export the entire customer list. Defaults also outlive the intention to change
+them, and nothing tells you whether one still stands. The credential comes from
+the environment, where the other secrets already live, and the operator picks it.
+
+`POST /admin/console/auth/change-password` is the other half: it takes the
+current password as well as the new one, enforces the same 12-character floor,
+and refuses a no-op change. It does **not** sign other sessions out — a console
+token carries no password state — and the docs say so rather than implying a
+logout that does not happen.
+
 ## Verification
 
 Migrated and exercised live against the local database (83,688 books, real

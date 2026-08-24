@@ -99,6 +99,36 @@ export const adminAuthService = {
     return admin;
   },
 
+  /**
+   * Changes an admin's own password.
+   *
+   * Requires the current one. Not ceremony: an admin session lasts 12 hours, so
+   * an unattended laptop is a plausible way in, and without this check that is
+   * enough to lock the real owner out of an account that can suspend customers.
+   *
+   * Every other session for that admin is invalidated by consequence — the token
+   * carries no password state, so this deliberately does *not* try to revoke
+   * them. Say so rather than implying a logout that does not happen.
+   */
+  async changePassword(adminId: number, currentPassword: string, newPassword: string): Promise<void> {
+    const [admin] = await db.select().from(admins).where(eq(admins.id, adminId)).limit(1);
+    if (!admin) throw httpError('Admin not found', 404);
+
+    const ok = await bcrypt.compare(currentPassword, admin.passwordHash);
+    if (!ok) throw httpError('Current password is incorrect', 401, 'INVALID_CREDENTIALS');
+
+    // Refusing a no-op change: it means the person thinks they have rotated a
+    // credential when they have not.
+    if (currentPassword === newPassword) {
+      throw httpError('The new password must be different', 400, 'PASSWORD_UNCHANGED');
+    }
+
+    await db
+      .update(admins)
+      .set({ passwordHash: await this.hashPassword(newPassword), updatedAt: new Date() })
+      .where(eq(admins.id, adminId));
+  },
+
   /** Used by the create-admin script; hashing lives in one place. */
   async hashPassword(password: string): Promise<string> {
     return bcrypt.hash(password, 10);

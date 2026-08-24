@@ -16,6 +16,13 @@ const loginSchema = z.object({
   password: z.string().min(1).max(200),
 });
 
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1).max(200),
+  // Same floor the seeding script enforces. These accounts can suspend a
+  // customer and export the customer list.
+  newPassword: z.string().min(12).max(200),
+});
+
 const pageSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
   offset: z.coerce.number().int().min(0).default(0),
@@ -106,6 +113,21 @@ export const adminController = {
   async me(req: Request, res: Response): Promise<void> {
     const { id, name, email, lastLoginAt } = (req as AdminRequest).admin;
     res.status(200).json({ admin: { id, name, email, lastLoginAt } });
+  },
+
+  /** POST /admin/console/auth/change-password */
+  async changePassword(req: Request, res: Response): Promise<void> {
+    const parsed = changePasswordSchema.safeParse(req.body);
+    if (!parsed.success) return badRequest(res, parsed.error);
+
+    const admin = (req as AdminRequest).admin;
+    await adminAuthService.changePassword(
+      admin.id,
+      parsed.data.currentPassword,
+      parsed.data.newPassword,
+    );
+
+    res.status(200).json({ changed: true });
   },
 
   /** GET /admin/dashboard */

@@ -23,6 +23,14 @@ const router = Router();
 // force against the app lock staff out of the console.
 router.post('/auth/login', adminLoginLimiter, wrapHttp(adminController.login));
 router.get('/auth/me', requireAdmin, wrapHttp(adminController.me));
+// Rate limited with the login bucket: it takes the current password, so it is
+// another place someone can guess one.
+router.post(
+  '/auth/change-password',
+  adminLoginLimiter,
+  requireAdmin,
+  wrapHttp(adminController.changePassword),
+);
 
 // Everything below needs a session.
 router.use(requireAdmin);
