@@ -7,10 +7,12 @@ import { PgDialect } from 'drizzle-orm/pg-core';
  * An uncached search runs count probes whose only product is the `total` caption. That
  * makes them invisible: nothing about the returned books changes when a probe degenerates,
  * so a regression here shows up as latency and nothing else. It has happened once already
- * — the probe that counts title and author matches together was written as a single scan
- * with the two conditions OR'd, Postgres could not estimate the author subquery and fell
- * back to a Seq Scan, and searches quietly went from milliseconds to 9.5 seconds each on a
- * 2M-row catalogue. No test failed, because every answer was still correct.
+ * — back when one probe counted title and author matches together, it was written as a
+ * single scan with the two conditions OR'd, Postgres could not estimate the author
+ * subquery and fell back to a Seq Scan, and searches quietly went from milliseconds to 9.5
+ * seconds each on a 2M-row catalogue. No test failed, because every answer was still
+ * correct. That blended probe is gone now — `type` picks one side and only that side is
+ * counted — but the OR guard below outlives it, because the shape is what was lethal.
  *
  * These pin the cost properties instead: the shape of the SQL, which probes are allowed to
  * run at all, and what happens when one overruns.
@@ -23,9 +25,10 @@ let issued: string[] = [];
 let issuedParams: unknown[][] = [];
 let settings: string[] = [];
 let counts: number[] = [];
-// Failure staged against the blended probe specifically — it is the only one wrapped in a
-// timeout, and aiming at "whichever query runs first" would test the wrong thing.
-let blendedError: unknown = null;
+// Failure staged against the author count probe specifically — it is the only probe
+// wrapped in a timeout, and aiming at "whichever query runs first" would test the wrong
+// thing.
+let authorCountError: unknown = null;
 // Lets a test fail a specific broad-tier pool stage, the way the time budget cancels one.
 let poolFailure: (() => unknown) | null = null;
 
@@ -59,9 +62,11 @@ function execute(query: unknown): Promise<{ count: number }[]> {
     const err = poolFailure();
     if (err) return Promise.reject(err);
   }
-  if (blendedError && /UNION/i.test(text)) {
-    const err = blendedError;
-    blendedError = null;
+  // Keyed on the author count probe: a COUNT over the contributor match set. The row
+  // fetch also queries book_contributors, so the COUNT is what distinguishes them.
+  if (authorCountError && /COUNT\(\*\)/i.test(text) && /book_contributors/i.test(text)) {
+    const err = authorCountError;
+    authorCountError = null;
     return Promise.reject(err);
   }
   return Promise.resolve([{ count: counts.shift() ?? 0 }]);
@@ -146,7 +151,7 @@ beforeEach(() => {
   issuedParams = [];
   settings = [];
   counts = [];
-  blendedError = null;
+  authorCountError = null;
   poolFailure = null;
   cachedRows = null;
   cachedCount = null;
@@ -156,32 +161,22 @@ beforeEach(() => {
   warn.mockClear();
 });
 
-describe('the blended count probe', () => {
-  // The regression, exactly: the probe that counts title and author matches together used
+describe('the author count probe', () => {
+  // The regression, exactly: the probe that counted title and author matches together used
   // to render as one scan with `... OR "books"."id" IN (SELECT ...)`. Postgres cannot
   // estimate that subquery's cardinality, so it assumed half the table (994,218 of
   // 1,988,039 measured on production) and, with no BitmapOr able to serve an OR across a
   // trigram predicate and a membership test, chose a full Seq Scan — 9.5s and 1.42GB of
-  // disk reads for a single probe. Both properties below are structural, because that is
-  // the only level at which this is detectable without a 2M-row fixture.
+  // disk reads for a single probe.
+  //
+  // Splitting title and author into separate searches removed the reason to ever write
+  // that OR. The guard stays anyway: the shape is what was lethal, and nothing about
+  // `type` stops someone reintroducing it.
   const orMembership = /\bOR\s+"books"\."id"\s+IN\s*\(/i;
-  const topLevelUnion = /\)\s*UNION\s*\(\s*SELECT/i;
-
-  it('unions two independently bounded branches instead of OR-ing them into one scan', async () => {
-    stageCachedPage(5);
-    counts = [3, 4, 7];
-    await list();
-
-    const blended = issued.find((sql) => topLevelUnion.test(sql));
-    expect(blended, 'no probe unioned its branches at the top level').toBeDefined();
-    // Each branch carries its own LIMIT. A single cap on the merged result would leave the
-    // branches themselves unbounded, which is the cost this shape exists to bound.
-    expect(blended!.match(/limit \$/gi)?.length).toBeGreaterThanOrEqual(2);
-  });
 
   it('never ORs the author subquery into a title scan', async () => {
     stageCachedPage(5);
-    counts = [3, 4, 7];
+    counts = [3, 4];
     await list();
 
     expect(
@@ -190,14 +185,28 @@ describe('the blended count probe', () => {
     ).toEqual([]);
   });
 
-  it('keeps the author membership test conjunctive within its own branch', async () => {
-    stageCachedPage(5);
-    counts = [3, 4, 7];
-    await list();
+  it('keeps the author membership test conjunctive within its own probe', async () => {
+    cachedRows = null;
+    cachedCount = null;
+    counts = [7];
+    await list({ searchType: 'author' });
 
-    const blended = issued.find((sql) => topLevelUnion.test(sql))!;
-    // AND, not OR: the branch filters an already-indexed scan rather than widening it.
-    expect(blended).toMatch(/and\s+"books"\."id"\s+IN\s*\(/i);
+    const probe = issued.find((sql) => /COUNT\(\*\)/i.test(sql) && /book_contributors/i.test(sql));
+    expect(probe, 'an author search ran no count probe').toBeDefined();
+    // AND, not OR: the probe filters an already-indexed scan rather than widening it.
+    expect(probe!).toMatch(/and\s+"books"\."id"\s+IN\s*\(/i);
+  });
+
+  it('bounds the match set inside the subquery', async () => {
+    cachedRows = null;
+    cachedCount = null;
+    counts = [7];
+    await list({ searchType: 'author' });
+
+    const probe = issued.find((sql) => /COUNT\(\*\)/i.test(sql) && /book_contributors/i.test(sql))!;
+    // One cap on the outer count would leave the contributor scan itself unbounded, which
+    // is the cost this shape exists to bound.
+    expect(probe.match(/limit \$/gi)?.length).toBeGreaterThanOrEqual(2);
   });
 });
 
@@ -220,12 +229,32 @@ describe('which probes are allowed to run', () => {
     expect(issued).toHaveLength(1);
   });
 
-  it('runs the blended probe when the count is missing', async () => {
+  it('never probes the author side for a title search', async () => {
+    // The whole point of `type`: a title search has no reason to count names, and used to
+    // pay for a blended union probe on every uncached search.
     stageCachedPage(20);
     cachedCount = null;
-    counts = [3, 4, 7];
+    counts = [3, 4];
     await list();
-    expect(authorProbes().length).toBeGreaterThan(0);
+    expect(
+      authorProbes(),
+      'a title search probed the author side',
+    ).toEqual([]);
+  });
+
+  it('probes the author side, and only that side, for an author search', async () => {
+    stageCachedPage(20);
+    cachedCount = null;
+    counts = [7];
+    await list({ searchType: 'author' });
+
+    expect(authorProbes().length, 'an author search ran no author probe').toBeGreaterThan(0);
+    // No title ladder: an author search does not choose between title tiers, so the two
+    // title probes that used to run unconditionally have nothing to decide.
+    expect(
+      issued.filter((sql) => /COUNT\(\*\)/i.test(sql) && !/book_contributors/i.test(sql)),
+      'an author search ran a title count probe',
+    ).toEqual([]);
   });
 
   // The pagination case, and the reason this gate exists: the rows for a new offset are a
@@ -233,16 +262,25 @@ describe('which probes are allowed to run', () => {
   // is still warm. The title probes still have to run to choose a row tier, but the blended
   // probe has nothing left to contribute, and re-running it cost 3.5s for "harry&offset=20"
   // and 11.5s for "bookkeeping&offset=20" purely to recompute a number already in Redis.
-  it('skips it when rows must be fetched but the count is cached', async () => {
+  it('skips the count probe when rows must be fetched but the count is cached', async () => {
     cachedRows = null;
     cachedCount = '398';
-    counts = [3, 4];
-    const r = await list({ offset: 20 });
+    counts = [];
+    const r = await list({ searchType: 'author', offset: 20 });
 
     expect(
       authorProbes(),
       'the author side was probed despite the count already being cached',
     ).toEqual([]);
+    expect(r.total).toBe(398);
+  });
+
+  it('still runs the title probes on a cache miss, to pick a row tier', async () => {
+    cachedRows = null;
+    cachedCount = '398';
+    counts = [3, 4];
+    const r = await list({ offset: 20 });
+
     expect(issued.length, 'title probes must still run, to pick a row tier').toBeGreaterThan(0);
     expect(r.total).toBe(398);
   });
@@ -261,11 +299,11 @@ describe('when a probe overruns its statement timeout', () => {
     code: '57014',
   });
 
-  it('degrades to the title-only counts instead of failing the search', async () => {
+  it('degrades to a lower-bound total instead of failing the search', async () => {
     stageCachedPage(6);
-    counts = [3, 4];
-    blendedError = timeout;
-    const r = await list();
+    counts = [];
+    authorCountError = timeout;
+    const r = await list({ searchType: 'author' });
 
     expect(r.totalIsApproximate).toBe(true);
     expect(warn).toHaveBeenCalled();
@@ -274,9 +312,9 @@ describe('when a probe overruns its statement timeout', () => {
 
   it('does not cache a degraded count, so the next request retries', async () => {
     stageCachedPage(6);
-    counts = [3, 4];
-    blendedError = timeout;
-    await list();
+    counts = [];
+    authorCountError = timeout;
+    await list({ searchType: 'author' });
 
     // Caching a lower bound would pin it under COUNT_TTL — half an hour of a wrong caption
     // from one slow query.
@@ -285,9 +323,9 @@ describe('when a probe overruns its statement timeout', () => {
 
   it('still propagates errors that are not a timeout', async () => {
     stageCachedPage(6);
-    counts = [3, 4];
-    blendedError = Object.assign(new Error('syntax error'), { code: '42601' });
-    await expect(list()).rejects.toThrow('syntax error');
+    counts = [];
+    authorCountError = Object.assign(new Error('syntax error'), { code: '42601' });
+    await expect(list({ searchType: 'author' })).rejects.toThrow('syntax error');
   });
 });
 
@@ -428,30 +466,30 @@ describe('the fuzzy tier time budget', () => {
   });
 });
 
-describe('which tier the author branch of a broad search uses', () => {
+describe("which tier an author search's own ladder uses", () => {
   // The regression this pins: the author branch used to inherit the *title* branch's tier,
   // so a query that matched no title prefix sent the author lookup straight to its fuzzy
   // tier — a trigram/FTS scan over the whole contributor table. On the production
   // catalogue that exceeded the broad tier's time budget, was cancelled, and the branch
   // returned nothing.
   //
-  // The two tiers measure different things, and a query can be hard for one and trivial
-  // for the other. "peace adzo medie" matches no title prefix at all, yet is an exact
-  // prefix of a person_name — the cheap tier answers it from the name index. Escalating in
-  // lockstep meant the one genuinely correct result was the one dropped, and the page came
-  // back as title near-misses only. Cheap has to be tried on its own merits first.
+  // Splitting the sides makes lockstep escalation impossible by construction — there is no
+  // title tier left to inherit. What still has to hold is the ladder inside the author
+  // search: cheap first, fuzzy only if the cheap tier matched nothing at all. "peace adzo
+  // medie" matches no title prefix but is an exact prefix of a person_name, which the
+  // cheap tier answers from the name index in microseconds.
   //
   // Asserted on the SQL, because the difference is invisible in the returned rows: both
   // tiers return author matches, and the broken one returned none only at a scale no unit
   // test can reproduce.
-  const stageBroadTier = () => {
+  const stageAuthorSearch = () => {
     cachedRows = null;
     cachedCount = null;
-    counts = [0, 0, 0];
+    counts = [0];
   };
 
-  // The author branch's own queries during the row fetch — not the count probes, which
-  // have always used the cheap tier and are governed separately above.
+  // The author search's own row-fetch queries — not the count probe, which always uses the
+  // cheap tier and is governed separately above.
   const authorFetches = () =>
     issued.filter((sql) => /book_contributors/i.test(sql) && !/COUNT\(\*\)/i.test(sql));
 
@@ -459,12 +497,12 @@ describe('which tier the author branch of a broad search uses', () => {
   // cheap tier has neither.
   const isFuzzyAuthorSql = (sql: string) => /<%/.test(sql) || /to_tsvector\('simple'/i.test(sql);
 
-  it('tries the cheap tier even when the title branch has fallen through to broad', async () => {
-    stageBroadTier();
-    await list();
+  it('tries the cheap tier first', async () => {
+    stageAuthorSearch();
+    await list({ searchType: 'author' });
 
     const fetches = authorFetches();
-    expect(fetches.length, 'the author branch issued no query at all').toBeGreaterThan(0);
+    expect(fetches.length, 'the author search issued no query at all').toBeGreaterThan(0);
     expect(
       fetches.some((sql) => !isFuzzyAuthorSql(sql)),
       'every author query used the fuzzy tier — the cheap tier was skipped entirely',
@@ -472,8 +510,8 @@ describe('which tier the author branch of a broad search uses', () => {
   });
 
   it('asks the cheap tier before the fuzzy one, never the other way round', async () => {
-    stageBroadTier();
-    await list();
+    stageAuthorSearch();
+    await list({ searchType: 'author' });
 
     const fetches = authorFetches();
     const firstFuzzy = fetches.findIndex(isFuzzyAuthorSql);
@@ -485,9 +523,21 @@ describe('which tier the author branch of a broad search uses', () => {
     }
   });
 
+  it('never runs the title ladder for an author search', async () => {
+    stageAuthorSearch();
+    await list({ searchType: 'author' });
+
+    // The fuzzy *title* pool is the most expensive query a search can run. An author
+    // search has no business reaching it, whatever its own tier ends up being.
+    expect(
+      issued.filter((sql) => /word_similarity/i.test(sql) && /FROM\s*\(\s*SELECT/i.test(sql)),
+      'an author search ran the fuzzy title pool',
+    ).toEqual([]);
+  });
+
   it('leaves the fuzzy escalation inside the time budget', async () => {
-    stageBroadTier();
-    await list();
+    stageAuthorSearch();
+    await list({ searchType: 'author' });
 
     // The escalation is still the branch that can overrun, so it must stay wrapped — a
     // cheap-first branch that ran the fuzzy tier unguarded would trade one failure mode
@@ -501,11 +551,10 @@ describe('which tier the author branch of a broad search uses', () => {
 
 describe('when the exact band already has rows', () => {
   // The fuzzy pool is the most expensive query a search can run — a word_similarity
-  // ranking over a bounded candidate pool, and the multi-second part on a full
-  // catalogue. Reaching the broad tier means no *title* matched a prefix, but the exact
-  // band spans names too, and a name match outranks anything the fuzzy pool can produce.
-  // Running it anyway spends that query purely to pad the page out below results that
-  // are already correct.
+  // ranking over a bounded candidate pool, and the multi-second part on a full catalogue.
+  // It is reserved for queries the cheap tiers cannot answer *at all* at this offset:
+  // returning a handful of genuine prefix matches is both far faster and better ranked
+  // than padding a page out with fuzzy near-misses.
   //
   // Staged as counts rather than rows because that is how the decision is actually made:
   // deriving it from what the fetch returned would make page 2 of a query answer
@@ -513,21 +562,21 @@ describe('when the exact band already has rows', () => {
   const poolQueries = () =>
     issued.filter((sql) => /word_similarity/i.test(sql) && /FROM\s*\(\s*SELECT/i.test(sql));
 
-  it('skips the fuzzy pool when a name matched exactly', async () => {
+  it('skips the fuzzy pool while the cheap tier still has rows', async () => {
     cachedRows = null;
     cachedCount = null;
-    // fast = 0 and cheap = 0 put the rows on the broad tier; blended > 0 says the exact
-    // band is non-empty anyway, which on that tier can only mean a name matched.
-    counts = [0, 0, 3];
+    // fast = 0 sends it past the fast tier, but the cheap tier matched 3 — which is
+    // supply the fuzzy pool has nothing to add above.
+    counts = [0, 3];
     await list();
 
-    expect(poolQueries(), 'the fuzzy pool ran despite an exact name match').toEqual([]);
+    expect(poolQueries(), 'the fuzzy pool ran despite an exact title match').toEqual([]);
   });
 
   it('still runs the fuzzy pool when nothing matched exactly at all', async () => {
     cachedRows = null;
     cachedCount = null;
-    counts = [0, 0, 0];
+    counts = [0, 0];
     await list();
 
     // The converse, so the test above cannot be satisfied by never running the pool.
@@ -535,7 +584,7 @@ describe('when the exact band already has rows', () => {
   });
 
   it('does not change its mind between pages when the count is cached', async () => {
-    // Paginating skips the blended probe, because the count is cached under a
+    // Paginating recomputes the title probes but not the count, which is cached under a
     // page-independent key. If the band decision read only the freshly computed probes it
     // would see zero here and drop to the fuzzy tier that page 1 skipped.
     cachedRows = null;
@@ -550,19 +599,18 @@ describe('when the exact band already has rows', () => {
 describe('which tier serves a deep page', () => {
   // The tier decides both which rows exist and what order they come in, so a query that
   // changes tier partway through pagination restarts partway down a different list. That
-  // is not theoretical: q="roald dahl" has 9 title-prefix matches and 13 with word
-  // prefixes, but 40 rows once name matches are counted. Testing the title count alone
-  // dropped offset 20 to the broad tier with half the supply unspent, and page 3
-  // reprinted page 1.
+  // is not theoretical: q="harry" changed tier partway through pagination and page 3
+  // reprinted page 1. The band the ladder measures is now exactly the side being searched,
+  // which is what makes the count and the rows agree about what is left.
   const poolQueries = () =>
     issued.filter((sql) => /word_similarity/i.test(sql) && /FROM\s*\(\s*SELECT/i.test(sql));
 
   it('stays on the cheap tier while the exact band still has rows', async () => {
     cachedRows = null;
     cachedCount = null;
-    // Title counts alone would fall through at this offset; the blended count says the
-    // band is far from exhausted, because most of its rows matched on a name.
-    counts = [0, 5, 50];
+    // The fast tier cannot fill this page, but the cheap tier has 50 matches — far past
+    // the offset, so the ladder must hold rather than escalate.
+    counts = [0, 50];
     await list({ offset: 20, limit: 10 });
 
     // The cheap tier fetches its titles with the prefix/word-prefix condition. The broad
@@ -577,7 +625,7 @@ describe('which tier serves a deep page', () => {
   it('still falls to broad once the whole band is exhausted', async () => {
     cachedRows = null;
     cachedCount = null;
-    counts = [0, 5, 8];
+    counts = [0, 8];
     await list({ offset: 20, limit: 10 });
 
     // The converse: the guard must be a real test of supply, not a way to never escalate.
@@ -591,7 +639,7 @@ describe('which tier serves a deep page', () => {
     // every remaining repeat on q="harry" once the tier flip above was fixed.
     cachedRows = null;
     cachedCount = null;
-    counts = [500, 500, 500];
+    counts = [500, 500];
     await list({ offset: 0, limit: 10 });
 
     expect(selectOrderBys.length, 'no ordered row fetch was issued').toBeGreaterThan(0);

@@ -42,14 +42,23 @@ router.get('/recommendations', optionalAuth, booksController.basketRecommendatio
 
 /**
  * GET /books
- * Query params: q, genre, availability, productForm, publishingStatus, publisher,
- * isbn, yearMin, yearMax, priceMin, priceMax, currency, sortBy, sort, limit,
- * offset, dedupe, shoppable, cursor
+ * Query params: q, type, genre, availability, productForm, publishingStatus,
+ * publisher, isbn, yearMin, yearMax, priceMin, priceMax, currency, sortBy, sort,
+ * limit, offset, dedupe, shoppable, cursor
  *
- * `q` matches both title and author name. Title matches rank first, except when
- * nothing matched a title properly — then an exact author match outranks the
- * fuzzy title near-misses. `total` stays capped for searches (see
- * totalIsApproximate); paginate on `hasMore`.
+ * `type=title|author` picks which side of the catalogue `q` matches, defaulting
+ * to `title`. The two are never searched together: each is a different query
+ * against a different index with its own tier ladder, and blending them means
+ * ranking a title match against a name match, which no index can order. A caller
+ * that wants both asks twice and shows two lists. `type` is ignored when `q` is
+ * absent.
+ *
+ * `type=author` matches any contributor — editors, translators and illustrators
+ * included — with ONIX A01 authors ranked above them, so searching an editor by
+ * name still finds the volume they edited.
+ *
+ * `total` stays capped for searches (see totalIsApproximate); paginate on
+ * `hasMore`.
  *
  * `dedupe=true` collapses same-titled editions down to the best one (see
  * dedupeByTitle in lib/dedupe.ts) — off by default so every edition stays

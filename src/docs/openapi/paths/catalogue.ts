@@ -17,7 +17,9 @@ export const cataloguePaths = {
       description: [
         'The main catalogue query. Every filter is optional; with none supplied it pages through the whole catalogue.',
         '',
-        '**Searching.** `q` matches titles *and* author names in one pass. Title matches rank first — except when nothing matched a title properly, in which case an exact author match outranks the fuzzy title near-misses. That rule is why searching an author’s name returns their books rather than a list of coincidental title matches.',
+        '**Searching.** `q` matches one side of the catalogue, chosen by `type`: book titles (the default) or contributor names. The two are never blended into one page — each is a query against a different index with its own relevance ladder, and ranking a title match against a name match needs an ordering no index can supply. A UI that wants both runs two requests and presents two lists.',
+        '',
+        '`type=author` matches **any** contributor, with ONIX A01 authors ranked above editors, translators and illustrators — so searching an editor by name still finds the volume they edited, just below the books actually written by anyone of that name.',
         '',
         '**Pagination has two modes, and they are not interchangeable:**',
         '',
@@ -26,7 +28,10 @@ export const cataloguePaths = {
       ].join('\n'),
       parameters: [
         param('q', 'query', { type: 'string', minLength: 1, maxLength: 200 },
-          'Free-text search across title and author name.', { example: 'evaristo' }),
+          'Free-text search. Which side it matches is set by `type`.', { example: 'evaristo' }),
+        param('type', 'query', { type: 'string', enum: ['title', 'author'], default: 'title' },
+          'Which side of the catalogue `q` searches. `title` (default) matches book titles; `author` matches contributor names. There is no combined mode — run two requests if you want both. Ignored when `q` is absent.',
+          { example: 'author' }),
         param('genre', 'query', { type: 'string', maxLength: 300 },
           'Genre name or slug. Comma-separate for several.', { example: 'literary-fiction' }),
         param('availability', 'query', { type: 'string', minLength: 2, maxLength: 2 },

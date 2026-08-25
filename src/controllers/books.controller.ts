@@ -34,6 +34,15 @@ const similarSchema = z.object({
 
 const listSchema = z.object({
   q: z.string().min(1).max(200).optional(),
+  /**
+   * Which side of the catalogue `q` searches. Defaults to titles.
+   *
+   * There is deliberately no 'all': the two are never blended into one page. A
+   * caller that wants both asks twice and presents two lists, which is the only
+   * honest shape — ranking a title match against a name match needs an ordering
+   * no index can supply. Ignored when `q` is absent.
+   */
+  type: z.enum(['title', 'author']).default('title'),
   genre: z.string().min(1).max(300).optional(),
   availability: z.string().length(2).optional(),
   productForm: z.string().min(1).max(10).optional(),
@@ -203,7 +212,7 @@ export const booksController = {
       // request working when someone drops the flag.
       const cursor = parsed.data.dedupe ? decodeDedupeCursor(parsed.data.cursor) : null;
 
-      const { priceMin, priceMax, currency, ...rest } = parsed.data;
+      const { priceMin, priceMax, currency, type, ...rest } = parsed.data;
 
       // Bounds arrive in the customer's currency and the catalogue stores GBP
       // pence, so they are converted once here rather than per row. The
@@ -231,6 +240,7 @@ export const booksController = {
 
       const result = await booksService.list({
         ...rest,
+        searchType: type,
         currency: resolved,
         priceMinGbpPence,
         priceMaxGbpPence,
