@@ -528,7 +528,7 @@ export function buildAuthorMatchSource(rawQ: string, tier: 'cheap' | 'broad'): S
   // would scale with how common the name fragment is rather than with the page.
   const exactPrefix = (tierTag: number, role: SQL) => sql`
     (
-      SELECT bc.book_id, ${sql.raw(String(tierTag))} AS tier
+      SELECT bc.book_id, ${sql.raw(String(tierTag))} AS tier, 1::real AS score
       FROM book_contributors bc
       WHERE ${role}
         AND lower(${NAME}) LIKE lower(${prefix})
@@ -537,7 +537,7 @@ export function buildAuthorMatchSource(rawQ: string, tier: 'cheap' | 'broad'): S
 
   const wordPrefixArm = (tierTag: number, role: SQL) => sql`
     (
-      SELECT bc.book_id, ${sql.raw(String(tierTag))} AS tier
+      SELECT bc.book_id, ${sql.raw(String(tierTag))} AS tier, 1::real AS score
       FROM book_contributors bc
       WHERE ${role}
         AND bc.person_name IS NOT NULL
@@ -557,7 +557,7 @@ export function buildAuthorMatchSource(rawQ: string, tier: 'cheap' | 'broad'): S
       ? sql`
     UNION ALL
     (
-      SELECT bc.book_id, 4 AS tier
+      SELECT bc.book_id, 4 AS tier, word_similarity(${q}, ${NAME}) AS score
       FROM book_contributors bc
       WHERE bc.person_name IS NOT NULL
         AND (
@@ -608,7 +608,18 @@ export function buildAuthorMatchCondition(q: string, tier: 'cheap' | 'broad'): S
 // Everything here is bounded: at most branchLimit × OVERFETCH ids, sorted in memory.
 const AUTHOR_ID_OVERFETCH = 5;
 
-// Book ids whose author matched, mapped to their best (lowest) name-match tier.
+/** A matched book's best name-match tier, and how well the name actually scored. */
+type AuthorMatchRank = { tier: number; score: number };
+
+// Book ids whose name matched, mapped to their best (lowest) tier and best score.
+//
+// Score is what separates rows *within* a tier, and it only carries information in the
+// fuzzy tier — the exact tiers are all equally exact and report a flat 1. Without it every
+// fuzzy match ties and the sort falls through to title order, so a name that scored a
+// perfect 1.0 lands wherever the alphabet puts it: measured, "Christine McLaughlin"
+// matched her book at word_similarity 1.0 and still sat past position 50, behind "100
+// Buttercream Flowers" and "4.50 from Paddington". Tier decides the band, score orders
+// within it.
 //
 // The ORDER BY has to be total, and has to be the same order the caller finally displays
 // in — not just "tier first". `take` grows with the requested page, so page 2 asks for a
@@ -616,37 +627,43 @@ const AUTHOR_ID_OVERFETCH = 5;
 // the two samples are different arbitrary subsets of the tied rows and pages overlap. That
 // is not hypothetical: with a bare ORDER BY MIN(tier), a prolific author's page 2 repeated
 // a book from page 1, because 171 rows tied at tier 0 and Postgres was free to return any
-// 30 of them. Ordering by (tier, title, id) makes every sample a prefix of the next one.
+// 30 of them. Ordering by (tier, score, title, id) makes every sample a prefix of the next
+// one — id last, because it is the only column guaranteed to break every remaining tie.
 async function rankAuthorMatches(
   conn: Pick<typeof db, 'execute'>,
   q: string,
   tier: 'cheap' | 'broad',
   take: number,
-): Promise<Map<number, number>> {
-  const ranked = await conn.execute<{ id: number; tier: number }>(sql`
-    SELECT m.book_id AS id, MIN(m.tier) AS tier
+): Promise<Map<number, AuthorMatchRank>> {
+  const ranked = await conn.execute<{ id: number; tier: number; score: number }>(sql`
+    SELECT m.book_id AS id, MIN(m.tier) AS tier, MAX(m.score) AS score
     FROM ${buildAuthorMatchSource(q, tier)} m
     JOIN ${books} ON ${books.id} = m.book_id
     GROUP BY m.book_id, ${books.title}
-    ORDER BY MIN(m.tier), lower(${books.title}), m.book_id
+    ORDER BY MIN(m.tier), MAX(m.score) DESC, lower(${books.title}), m.book_id
     LIMIT ${take}
   `);
 
-  const tierById = new Map<number, number>();
-  for (const row of ranked as unknown as { id: number; tier: number }[]) {
-    tierById.set(Number(row.id), Number(row.tier));
+  const rankById = new Map<number, AuthorMatchRank>();
+  for (const row of ranked as unknown as { id: number; tier: number; score: number }[]) {
+    rankById.set(Number(row.id), { tier: Number(row.tier), score: Number(row.score) });
   }
-  return tierById;
+  return rankById;
 }
 
-// Exact-prefix names first, then alphabetically within a tier. Must be the same total
-// order rankAuthorMatches applies in SQL, including the id tiebreak — the ranking decides
-// *which* rows a page can contain and this decides where they sit, so a disagreement
-// between them puts a row on two pages or on none.
-function byAuthorTierThenTitle<T extends { id: number; title: string }>(tierById: Map<number, number>) {
+// Exact-prefix names first, then by how well the name scored, then alphabetically. Must
+// be the same total order rankAuthorMatches applies in SQL, including the id tiebreak —
+// the ranking decides *which* rows a page can contain and this decides where they sit, so
+// a disagreement between them puts a row on two pages or on none. Every key here has a
+// counterpart in that ORDER BY, in the same sequence and the same direction.
+function byAuthorTierThenTitle<T extends { id: number; title: string }>(
+  rankById: Map<number, AuthorMatchRank>,
+) {
   return (a: T, b: T) => {
-    const byTier = tierById.get(a.id)! - tierById.get(b.id)!;
-    if (byTier !== 0) return byTier;
+    const [ra, rb] = [rankById.get(a.id)!, rankById.get(b.id)!];
+    if (ra.tier !== rb.tier) return ra.tier - rb.tier;
+    // Descending: a better score sorts earlier, matching MAX(m.score) DESC.
+    if (ra.score !== rb.score) return rb.score - ra.score;
     const [at, bt] = [a.title.toLowerCase(), b.title.toLowerCase()];
     if (at !== bt) return at < bt ? -1 : 1;
     return a.id - b.id;

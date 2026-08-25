@@ -11,6 +11,7 @@
 
 ### Bug Fixes
 
+* find an author whose name was filed with an extra space ([47d35c4](https://adl.github.com/adl-developer/kinkane-backend/commit/47d35c4003f80a5b8d4a08936cc169dbf13e090d)) — [details](changelog/2026-08-25-author-search-tier.md)
 * stop an author search losing the author's own books to the fuzzy tier ([63820e4](https://adl.github.com/adl-developer/kinkane-backend/commit/63820e46d7f545ef3cfad611b111995c6121d32d)) — [details](changelog/2026-08-25-author-search-tier.md)
 
 

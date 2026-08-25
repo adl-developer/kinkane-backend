@@ -153,3 +153,35 @@ describe('buildAuthorMatchSource', () => {
     expect(sql).toMatch(/union all/i);
   });
 });
+
+describe('scoring within a tier', () => {
+  // Tier decides the band; score orders within it. Without a score every fuzzy match ties
+  // and the sort falls through to title order, which is how a name matching at
+  // word_similarity 1.0 ended up past position 50 behind "100 Buttercream Flowers".
+  it('gives the fuzzy arm a real score and the exact arms a constant one', () => {
+    const broad = compile('king', 'broad');
+    // The fuzzy arm scores by actual similarity...
+    expect(broad).toMatch(/word_similarity\(\$\d+, btrim\(regexp_replace\(bc\.person_name/i);
+    // ...while the exact arms are all equally exact and say so with a constant, rather
+    // than paying to compute a similarity that would always be 1.
+    expect(broad).toMatch(/1::real AS score/i);
+  });
+
+  it('scores every branch, so no branch sorts as null', () => {
+    // A branch missing the column would make its rows compare as NULL against scored ones
+    // and sort unpredictably — the union requires the same column list from every arm
+    // anyway, so this pins the intent rather than the syntax.
+    for (const tier of ['cheap', 'broad'] as const) {
+      const sql = compile('king', tier);
+      const branches = sql.match(/select\s+bc\.book_id/gi)?.length ?? 0;
+      const scores = sql.match(/AS score/gi)?.length ?? 0;
+      expect(scores, `${tier}: ${branches} branches but ${scores} scored`).toBe(branches);
+    }
+  });
+
+  it('does not compute a similarity score on the cheap tier', () => {
+    // word_similarity() per row is the expensive part; the cheap tier must not acquire it
+    // as a side effect of scoring.
+    expect(compile('king', 'cheap')).not.toMatch(/word_similarity/i);
+  });
+});
