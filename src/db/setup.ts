@@ -10,6 +10,7 @@ dotenv.config();
 import postgres from 'postgres';
 import { resolveSslMode } from './ssl';
 import { COUNTRY_SEED } from './seeds/countries';
+import { NORMALISED_PERSON_NAME } from '../lib/contributor-name';
 
 const sql = postgres(process.env.DATABASE_URL!, {
   ssl: resolveSslMode(process.env.DATABASE_URL!),
@@ -64,18 +65,34 @@ async function main() {
   // does ILIKE/word_similarity against book_contributors.person_name — same
   // shape of query as book title search, so it needs the same trigram index.
   //
-  // Partial on role = 'A01': every author query filters to that role (a book's
-  // editors, translators and illustrators are not what someone typing a name is
-  // looking for), and without it in the index that filter can only be applied
-  // after the index has already returned every contributor row matching the name.
+  // Covers every contributor role, not just authors. These were partial on role = 'A01'
+  // on the reasoning that a book's editors, translators and illustrators are not what
+  // someone typing a name is looking for. That holds as a *ranking* rule and is kept as
+  // one (an A01 match outranks every other role — see buildAuthorMatchSource), but it is
+  // wrong as a filter: about one book in five has no A01 contributor at all — edited
+  // collections, translated works, illustrated children's books — and under a partial
+  // index those are unreachable by name at any spelling. The reported case was an edited
+  // volume whose editor is credited B01 and who therefore matched nothing.
   //
-  // Note the new name. The predicate is part of an index's definition, not something
+  // The role predicate now lives only in the query, where the name match is selective
+  // enough that rechecking role against the heap is cheap. The alternative — keeping the
+  // A01 partials alongside these — buys a marginally tighter scan for common name
+  // fragments at the cost of four indexes to maintain on a table that ingestion bulk
+  // loads into. Not worth it until a measurement says otherwise.
+  //
+  // Note the new names. The predicate is part of an index's definition, not something
   // CREATE INDEX IF NOT EXISTS will reconcile — against a database that already has the
-  // old unpartitioned index, re-running the statement under its original name is a silent
-  // no-op and the predicate never lands. Hence a distinct name, with the superseded index
-  // dropped below once this one exists.
-  await sql`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_book_contributors_author_name_trgm ON book_contributors USING GIN (person_name gin_trgm_ops) WHERE role = 'A01'`;
+  // partial index, re-running the statement under its old name is a silent no-op and the
+  // widened definition never lands. Hence distinct names, with the superseded indexes
+  // dropped below once these exist.
+  // Built over the normalised name, not the raw column — see lib/contributor-name.ts for
+  // why, and note that the query must use the identical expression or this index is dead
+  // weight. The expression comes from that module for exactly that reason.
+  await sql.unsafe(
+    `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_book_contributors_name_trgm ON book_contributors USING GIN ((${NORMALISED_PERSON_NAME}) gin_trgm_ops)`,
+  );
   await sql`DROP INDEX CONCURRENTLY IF EXISTS idx_book_contributors_person_name_trgm`;
+  await sql`DROP INDEX CONCURRENTLY IF EXISTS idx_book_contributors_author_name_trgm`;
 
   // The author-name counterpart of idx_books_title_lower_pattern above, and it exists
   // for the same reason: the trigram index serves ILIKE, but for a common name fragment
@@ -85,7 +102,12 @@ async function main() {
   // in buildAuthorMatchCondition — the step that decides which matches survive its LIMIT.
   // Same caveats as the title version: plain LIKE only (text_pattern_ops matches no other
   // operator), and CONCURRENTLY so it builds without locking the table against writes.
-  await sql`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_book_contributors_author_name_lower_pattern ON book_contributors (lower(person_name) text_pattern_ops) WHERE role = 'A01'`;
+  // Widened off role = 'A01' for the same reason as the trigram index above, and
+  // normalised for the same reason as well.
+  await sql.unsafe(
+    `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_book_contributors_name_lower_pattern ON book_contributors (lower(${NORMALISED_PERSON_NAME}) text_pattern_ops)`,
+  );
+  await sql`DROP INDEX CONCURRENTLY IF EXISTS idx_book_contributors_author_name_lower_pattern`;
 
   // ANN index for the "similar"/"personalized" cosine-distance (<=>) queries.
   // Without this, ORDER BY embedding <=> vector is a brute-force scan that

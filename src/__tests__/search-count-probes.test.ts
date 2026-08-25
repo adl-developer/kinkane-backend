@@ -70,11 +70,23 @@ function execute(query: unknown): Promise<{ count: number }[]> {
 // A row fetch that yields nothing. Enough to let list() run its uncached-rows path, which
 // is the only way to reach the state where rows must be fetched but the count need not be
 // recomputed — the pagination case the blended probe is gated on.
+// The row fetches go through db.select(), not db.execute(), so they never reach `issued`.
+// Their WHERE and ORDER BY are recorded here instead — which tier served a page, and
+// whether its ordering breaks ties, are only visible in those two.
+let selectWheres: string[] = [];
+let selectOrderBys: string[] = [];
+
 function selectChain(): unknown {
   const chain: Record<string, unknown> = {
     from: () => chain,
-    where: () => chain,
-    orderBy: () => chain,
+    where: (w: unknown) => {
+      if (w !== undefined) selectWheres.push(render(w));
+      return chain;
+    },
+    orderBy: (...parts: unknown[]) => {
+      selectOrderBys.push(parts.map(render).join(', '));
+      return chain;
+    },
     limit: () => chain,
     offset: () => chain,
     then: (resolve: (rows: unknown[]) => unknown) => resolve([]),
@@ -139,6 +151,8 @@ beforeEach(() => {
   cachedRows = null;
   cachedCount = null;
   cacheWrites = [];
+  selectWheres = [];
+  selectOrderBys = [];
   warn.mockClear();
 });
 
@@ -411,5 +425,178 @@ describe('the fuzzy tier time budget', () => {
     stageBroadTier();
     poolFailure = () => Object.assign(new Error('relation missing'), { code: '42P01' });
     await expect(list()).rejects.toThrow('relation missing');
+  });
+});
+
+describe('which tier the author branch of a broad search uses', () => {
+  // The regression this pins: the author branch used to inherit the *title* branch's tier,
+  // so a query that matched no title prefix sent the author lookup straight to its fuzzy
+  // tier — a trigram/FTS scan over the whole contributor table. On the production
+  // catalogue that exceeded the broad tier's time budget, was cancelled, and the branch
+  // returned nothing.
+  //
+  // The two tiers measure different things, and a query can be hard for one and trivial
+  // for the other. "peace adzo medie" matches no title prefix at all, yet is an exact
+  // prefix of a person_name — the cheap tier answers it from the name index. Escalating in
+  // lockstep meant the one genuinely correct result was the one dropped, and the page came
+  // back as title near-misses only. Cheap has to be tried on its own merits first.
+  //
+  // Asserted on the SQL, because the difference is invisible in the returned rows: both
+  // tiers return author matches, and the broken one returned none only at a scale no unit
+  // test can reproduce.
+  const stageBroadTier = () => {
+    cachedRows = null;
+    cachedCount = null;
+    counts = [0, 0, 0];
+  };
+
+  // The author branch's own queries during the row fetch — not the count probes, which
+  // have always used the cheap tier and are governed separately above.
+  const authorFetches = () =>
+    issued.filter((sql) => /book_contributors/i.test(sql) && !/COUNT\(\*\)/i.test(sql));
+
+  // `<%` and the FTS pass over person_name are what make the fuzzy tier expensive; the
+  // cheap tier has neither.
+  const isFuzzyAuthorSql = (sql: string) => /<%/.test(sql) || /to_tsvector\('simple'/i.test(sql);
+
+  it('tries the cheap tier even when the title branch has fallen through to broad', async () => {
+    stageBroadTier();
+    await list();
+
+    const fetches = authorFetches();
+    expect(fetches.length, 'the author branch issued no query at all').toBeGreaterThan(0);
+    expect(
+      fetches.some((sql) => !isFuzzyAuthorSql(sql)),
+      'every author query used the fuzzy tier — the cheap tier was skipped entirely',
+    ).toBe(true);
+  });
+
+  it('asks the cheap tier before the fuzzy one, never the other way round', async () => {
+    stageBroadTier();
+    await list();
+
+    const fetches = authorFetches();
+    const firstFuzzy = fetches.findIndex(isFuzzyAuthorSql);
+    const firstCheap = fetches.findIndex((sql) => !isFuzzyAuthorSql(sql));
+
+    expect(firstCheap, 'no cheap author query was issued').toBeGreaterThanOrEqual(0);
+    if (firstFuzzy >= 0) {
+      expect(firstCheap).toBeLessThan(firstFuzzy);
+    }
+  });
+
+  it('leaves the fuzzy escalation inside the time budget', async () => {
+    stageBroadTier();
+    await list();
+
+    // The escalation is still the branch that can overrun, so it must stay wrapped — a
+    // cheap-first branch that ran the fuzzy tier unguarded would trade one failure mode
+    // for a worse one.
+    const fetches = authorFetches();
+    if (fetches.some(isFuzzyAuthorSql)) {
+      expect(settings.filter((sql) => /statement_timeout/i.test(sql)).length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe('when the exact band already has rows', () => {
+  // The fuzzy pool is the most expensive query a search can run — a word_similarity
+  // ranking over a bounded candidate pool, and the multi-second part on a full
+  // catalogue. Reaching the broad tier means no *title* matched a prefix, but the exact
+  // band spans names too, and a name match outranks anything the fuzzy pool can produce.
+  // Running it anyway spends that query purely to pad the page out below results that
+  // are already correct.
+  //
+  // Staged as counts rather than rows because that is how the decision is actually made:
+  // deriving it from what the fetch returned would make page 2 of a query answer
+  // differently from page 1.
+  const poolQueries = () =>
+    issued.filter((sql) => /word_similarity/i.test(sql) && /FROM\s*\(\s*SELECT/i.test(sql));
+
+  it('skips the fuzzy pool when a name matched exactly', async () => {
+    cachedRows = null;
+    cachedCount = null;
+    // fast = 0 and cheap = 0 put the rows on the broad tier; blended > 0 says the exact
+    // band is non-empty anyway, which on that tier can only mean a name matched.
+    counts = [0, 0, 3];
+    await list();
+
+    expect(poolQueries(), 'the fuzzy pool ran despite an exact name match').toEqual([]);
+  });
+
+  it('still runs the fuzzy pool when nothing matched exactly at all', async () => {
+    cachedRows = null;
+    cachedCount = null;
+    counts = [0, 0, 0];
+    await list();
+
+    // The converse, so the test above cannot be satisfied by never running the pool.
+    expect(poolQueries().length).toBeGreaterThan(0);
+  });
+
+  it('does not change its mind between pages when the count is cached', async () => {
+    // Paginating skips the blended probe, because the count is cached under a
+    // page-independent key. If the band decision read only the freshly computed probes it
+    // would see zero here and drop to the fuzzy tier that page 1 skipped.
+    cachedRows = null;
+    cachedCount = '3';
+    counts = [0, 0];
+    await list({ offset: 0 });
+
+    expect(poolQueries(), 'a later page fell to the fuzzy tier the first page skipped').toEqual([]);
+  });
+});
+
+describe('which tier serves a deep page', () => {
+  // The tier decides both which rows exist and what order they come in, so a query that
+  // changes tier partway through pagination restarts partway down a different list. That
+  // is not theoretical: q="roald dahl" has 9 title-prefix matches and 13 with word
+  // prefixes, but 40 rows once name matches are counted. Testing the title count alone
+  // dropped offset 20 to the broad tier with half the supply unspent, and page 3
+  // reprinted page 1.
+  const poolQueries = () =>
+    issued.filter((sql) => /word_similarity/i.test(sql) && /FROM\s*\(\s*SELECT/i.test(sql));
+
+  it('stays on the cheap tier while the exact band still has rows', async () => {
+    cachedRows = null;
+    cachedCount = null;
+    // Title counts alone would fall through at this offset; the blended count says the
+    // band is far from exhausted, because most of its rows matched on a name.
+    counts = [0, 5, 50];
+    await list({ offset: 20, limit: 10 });
+
+    // The cheap tier fetches its titles with the prefix/word-prefix condition. The broad
+    // tier never issues that fetch at all, so its presence is what identifies the tier.
+    expect(
+      selectWheres.some((w) => /ilike/i.test(w) && !/<%/.test(w)),
+      'no cheap-tier title fetch — the tier fell through while the band still had rows',
+    ).toBe(true);
+    expect(poolQueries(), 'the fuzzy pool ran while the exact band still had rows').toEqual([]);
+  });
+
+  it('still falls to broad once the whole band is exhausted', async () => {
+    cachedRows = null;
+    cachedCount = null;
+    counts = [0, 5, 8];
+    await list({ offset: 20, limit: 10 });
+
+    // The converse: the guard must be a real test of supply, not a way to never escalate.
+    expect(poolQueries().length).toBeGreaterThan(0);
+  });
+
+  it('orders every title fetch by a column that breaks every tie', async () => {
+    // Each page fetches a larger LIMIT than the last, so without a total order two pages
+    // get different arbitrary subsets of the tied rows and overlap. Editions of one book
+    // share a title exactly, so ties are common rather than exotic — this accounted for
+    // every remaining repeat on q="harry" once the tier flip above was fixed.
+    cachedRows = null;
+    cachedCount = null;
+    counts = [500, 500, 500];
+    await list({ offset: 0, limit: 10 });
+
+    expect(selectOrderBys.length, 'no ordered row fetch was issued').toBeGreaterThan(0);
+    for (const ordering of selectOrderBys) {
+      expect(ordering, `ordering has no id tiebreak: ${ordering}`).toMatch(/"id"(\s+asc)?\s*$/i);
+    }
   });
 });
