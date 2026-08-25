@@ -1,21 +1,6 @@
 # Changelog
 
 
-## 2026-08-25
-
-### Features
-
-* answer a search from exact matches before falling back to fuzzy ones ([210c767](https://adl.github.com/adl-developer/kinkane-backend/commit/210c767af04db172135904c415ce500a09e96c9e)) — [details](changelog/2026-08-25-search-exact-band.md)
-* find a book by the name of its editor, translator or illustrator ([f449fac](https://adl.github.com/adl-developer/kinkane-backend/commit/f449fac838b895378e0f0684d6769f251e09daf7)) — [details](changelog/2026-08-25-search-exact-band.md)
-* let name search reach books credited to an editor or translator ([24824ed](https://adl.github.com/adl-developer/kinkane-backend/commit/24824ed50dfd4e7d4bf126788e13d38e85427b86)) — [details](changelog/2026-08-25-author-search-tier.md)
-
-### Bug Fixes
-
-* put the closest name match first when a search is misspelled ([661f818](https://adl.github.com/adl-developer/kinkane-backend/commit/661f8187bec5d51a9223939b85ea3afc0b9cff69)) — [details](changelog/2026-08-25-search-exact-band.md)
-* find an author whose name was filed with an extra space ([47d35c4](https://adl.github.com/adl-developer/kinkane-backend/commit/47d35c4003f80a5b8d4a08936cc169dbf13e090d)) — [details](changelog/2026-08-25-author-search-tier.md)
-* stop an author search losing the author's own books to the fuzzy tier ([63820e4](https://adl.github.com/adl-developer/kinkane-backend/commit/63820e46d7f545ef3cfad611b111995c6121d32d)) — [details](changelog/2026-08-25-author-search-tier.md)
-
-
 ## 2026-08-24
 
 ### Features
@@ -209,6 +194,7 @@
 
 * stop deploys failing when the index build needs more memory ([be01bd6](https://adl.github.com/adl-developer/kinkane-backend/commit/be01bd64307cb72525b62a2bbb084d33cc356fc0)) — [details](changelog/2026-07-25-parallel-index-build-shared-memory.md)
 * speed up the vector search index build during deploys ([ab1768a](https://adl.github.com/adl-developer/kinkane-backend/commit/ab1768a38f6866ff1fae3f0f308790301b42450b)) — [details](changelog/2026-07-25-parallel-index-build-shared-memory.md)
+* speed up the vector search index build during deploys ([fe14cba](https://adl.github.com/adl-developer/kinkane-backend/commit/fe14cba68d5ed54fd4c0588736b14a656085d6c4)) — [details](changelog/2026-07-25-parallel-index-build-shared-memory.md)
 * make book and author search actually use their trigram index ([4a14d7b](https://adl.github.com/adl-developer/kinkane-backend/commit/4a14d7ba0a3a0119eb6bf118a3e6ac000eb4eb02)) — [details](changelog/2026-07-25-books-list-count-caching.md)
 * stop book browsing and recommendations from loading slowly ([818e55f](https://adl.github.com/adl-developer/kinkane-backend/commit/818e55f2a45d333dbe53fd86227bee1214de27be)) — [details](changelog/2026-07-25-books-recommendations-performance.md)
 
