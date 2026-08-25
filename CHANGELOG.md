@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-08-25
+
+### Bug Fixes
+
+* stop an author search losing the author's own books to the fuzzy tier ([63820e4](https://adl.github.com/adl-developer/kinkane-backend/commit/63820e46d7f545ef3cfad611b111995c6121d32d)) — [details](changelog/2026-08-25-author-search-tier.md)
+
+
 ## 2026-08-24
 
 ### Features
