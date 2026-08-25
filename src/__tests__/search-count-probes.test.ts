@@ -70,11 +70,23 @@ function execute(query: unknown): Promise<{ count: number }[]> {
 // A row fetch that yields nothing. Enough to let list() run its uncached-rows path, which
 // is the only way to reach the state where rows must be fetched but the count need not be
 // recomputed — the pagination case the blended probe is gated on.
+// The row fetches go through db.select(), not db.execute(), so they never reach `issued`.
+// Their WHERE and ORDER BY are recorded here instead — which tier served a page, and
+// whether its ordering breaks ties, are only visible in those two.
+let selectWheres: string[] = [];
+let selectOrderBys: string[] = [];
+
 function selectChain(): unknown {
   const chain: Record<string, unknown> = {
     from: () => chain,
-    where: () => chain,
-    orderBy: () => chain,
+    where: (w: unknown) => {
+      if (w !== undefined) selectWheres.push(render(w));
+      return chain;
+    },
+    orderBy: (...parts: unknown[]) => {
+      selectOrderBys.push(parts.map(render).join(', '));
+      return chain;
+    },
     limit: () => chain,
     offset: () => chain,
     then: (resolve: (rows: unknown[]) => unknown) => resolve([]),
@@ -139,6 +151,8 @@ beforeEach(() => {
   cachedRows = null;
   cachedCount = null;
   cacheWrites = [];
+  selectWheres = [];
+  selectOrderBys = [];
   warn.mockClear();
 });
 
@@ -530,5 +544,59 @@ describe('when the exact band already has rows', () => {
     await list({ offset: 0 });
 
     expect(poolQueries(), 'a later page fell to the fuzzy tier the first page skipped').toEqual([]);
+  });
+});
+
+describe('which tier serves a deep page', () => {
+  // The tier decides both which rows exist and what order they come in, so a query that
+  // changes tier partway through pagination restarts partway down a different list. That
+  // is not theoretical: q="roald dahl" has 9 title-prefix matches and 13 with word
+  // prefixes, but 40 rows once name matches are counted. Testing the title count alone
+  // dropped offset 20 to the broad tier with half the supply unspent, and page 3
+  // reprinted page 1.
+  const poolQueries = () =>
+    issued.filter((sql) => /word_similarity/i.test(sql) && /FROM\s*\(\s*SELECT/i.test(sql));
+
+  it('stays on the cheap tier while the exact band still has rows', async () => {
+    cachedRows = null;
+    cachedCount = null;
+    // Title counts alone would fall through at this offset; the blended count says the
+    // band is far from exhausted, because most of its rows matched on a name.
+    counts = [0, 5, 50];
+    await list({ offset: 20, limit: 10 });
+
+    // The cheap tier fetches its titles with the prefix/word-prefix condition. The broad
+    // tier never issues that fetch at all, so its presence is what identifies the tier.
+    expect(
+      selectWheres.some((w) => /ilike/i.test(w) && !/<%/.test(w)),
+      'no cheap-tier title fetch — the tier fell through while the band still had rows',
+    ).toBe(true);
+    expect(poolQueries(), 'the fuzzy pool ran while the exact band still had rows').toEqual([]);
+  });
+
+  it('still falls to broad once the whole band is exhausted', async () => {
+    cachedRows = null;
+    cachedCount = null;
+    counts = [0, 5, 8];
+    await list({ offset: 20, limit: 10 });
+
+    // The converse: the guard must be a real test of supply, not a way to never escalate.
+    expect(poolQueries().length).toBeGreaterThan(0);
+  });
+
+  it('orders every title fetch by a column that breaks every tie', async () => {
+    // Each page fetches a larger LIMIT than the last, so without a total order two pages
+    // get different arbitrary subsets of the tied rows and overlap. Editions of one book
+    // share a title exactly, so ties are common rather than exotic — this accounted for
+    // every remaining repeat on q="harry" once the tier flip above was fixed.
+    cachedRows = null;
+    cachedCount = null;
+    counts = [500, 500, 500];
+    await list({ offset: 0, limit: 10 });
+
+    expect(selectOrderBys.length, 'no ordered row fetch was issued').toBeGreaterThan(0);
+    for (const ordering of selectOrderBys) {
+      expect(ordering, `ordering has no id tiebreak: ${ordering}`).toMatch(/"id"(\s+asc)?\s*$/i);
+    }
   });
 });

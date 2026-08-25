@@ -11,6 +11,7 @@
 
 ### Bug Fixes
 
+* put the closest name match first when a search is misspelled ([661f818](https://adl.github.com/adl-developer/kinkane-backend/commit/661f8187bec5d51a9223939b85ea3afc0b9cff69)) — [details](changelog/2026-08-25-search-exact-band.md)
 * find an author whose name was filed with an extra space ([47d35c4](https://adl.github.com/adl-developer/kinkane-backend/commit/47d35c4003f80a5b8d4a08936cc169dbf13e090d)) — [details](changelog/2026-08-25-author-search-tier.md)
 * stop an author search losing the author's own books to the fuzzy tier ([63820e4](https://adl.github.com/adl-developer/kinkane-backend/commit/63820e46d7f545ef3cfad611b111995c6121d32d)) — [details](changelog/2026-08-25-author-search-tier.md)
 

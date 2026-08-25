@@ -706,7 +706,12 @@ function buildTitlePrefixCondition(q: string): SQL {
 
 function buildTitlePrefixOrderBy(q: string): SQL[] {
   const prefix = q + '%';
-  return [sql`CASE WHEN ${books.title} ILIKE ${prefix} THEN 0 ELSE 1 END`, asc(books.title)];
+  // id last, for the same reason rankAuthorMatches carries one: without a total order,
+  // tied titles are returned in whatever order Postgres finds convenient, and since each
+  // page fetches a larger LIMIT than the last, two pages get different arbitrary subsets
+  // of the tie and overlap. Duplicate and near-duplicate titles are common here (editions
+  // of one book share a title exactly), so the ties are not rare.
+  return [sql`CASE WHEN ${books.title} ILIKE ${prefix} THEN 0 ELSE 1 END`, asc(books.title), asc(books.id)];
 }
 
 // Backed by idx_books_title_lower_pattern (see setup.ts) — a functional btree on
@@ -738,7 +743,11 @@ function buildFastTitlePrefixCondition(q: string): SQL {
 // near each other), so it degenerates into scanning ~800k rows one at a time (70s+
 // measured) — the exact regression this index exists to avoid.
 function buildFastTitlePrefixOrderBy(): SQL[] {
-  return [sql`lower(${books.title})`];
+  // See buildTitlePrefixOrderBy for why the id is here. It costs this tier its index-only
+  // sort — lower(title) alone can be walked straight off idx_books_title_lower_pattern —
+  // but the tier's match set is already bounded by the page, so the extra sort is over
+  // tens of rows, and measured it does not move the timings.
+  return [sql`lower(${books.title})`, asc(books.id)];
 }
 
 // Cheap tier for authorSuggestions()'s grouped-by-name query — prefix/word-prefix
@@ -1449,10 +1458,19 @@ export const booksService = {
     // editions, nowhere near a 20-row page) hit the slowest path and timed out. Returning
     // that handful of genuine matches is both far faster and better ranked than padding
     // the page out with fuzzy near-misses.
+    //
+    // The cheap tier is held while the *exact band* still has rows, not merely while the
+    // title count does. The two are different numbers: the probes measure titles only, but
+    // the tier's output is titles merged with name matches, so a title-only test abandons
+    // the tier while it still has plenty to give. Measured on "roald dahl": 9 title-prefix
+    // matches, 13 with word prefixes, but 40 rows once names are counted — so at offset 20
+    // the ladder fell to broad with half the supply unspent, and because broad is a
+    // different ordering over a different set (author rows lead, title rows follow) the
+    // raw offset landed near the top of it. Page 3 reprinted page 1.
     const rowsTier: SearchTier = opts.q
       ? fastCount >= pageEnd
         ? 'fast'
-        : cheapCount > opts.offset
+        : exactBandCount > opts.offset
           ? 'cheap'
           : 'broad'
       : 'broad';
