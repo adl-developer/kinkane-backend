@@ -10,6 +10,7 @@ dotenv.config();
 import postgres from 'postgres';
 import { resolveSslMode } from './ssl';
 import { COUNTRY_SEED } from './seeds/countries';
+import { NORMALISED_PERSON_NAME } from '../lib/contributor-name';
 
 const sql = postgres(process.env.DATABASE_URL!, {
   ssl: resolveSslMode(process.env.DATABASE_URL!),
@@ -84,7 +85,12 @@ async function main() {
   // partial index, re-running the statement under its old name is a silent no-op and the
   // widened definition never lands. Hence distinct names, with the superseded indexes
   // dropped below once these exist.
-  await sql`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_book_contributors_name_trgm ON book_contributors USING GIN (person_name gin_trgm_ops)`;
+  // Built over the normalised name, not the raw column — see lib/contributor-name.ts for
+  // why, and note that the query must use the identical expression or this index is dead
+  // weight. The expression comes from that module for exactly that reason.
+  await sql.unsafe(
+    `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_book_contributors_name_trgm ON book_contributors USING GIN ((${NORMALISED_PERSON_NAME}) gin_trgm_ops)`,
+  );
   await sql`DROP INDEX CONCURRENTLY IF EXISTS idx_book_contributors_person_name_trgm`;
   await sql`DROP INDEX CONCURRENTLY IF EXISTS idx_book_contributors_author_name_trgm`;
 
@@ -96,8 +102,11 @@ async function main() {
   // in buildAuthorMatchCondition — the step that decides which matches survive its LIMIT.
   // Same caveats as the title version: plain LIKE only (text_pattern_ops matches no other
   // operator), and CONCURRENTLY so it builds without locking the table against writes.
-  // Widened off role = 'A01' for the same reason as the trigram index above.
-  await sql`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_book_contributors_name_lower_pattern ON book_contributors (lower(person_name) text_pattern_ops)`;
+  // Widened off role = 'A01' for the same reason as the trigram index above, and
+  // normalised for the same reason as well.
+  await sql.unsafe(
+    `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_book_contributors_name_lower_pattern ON book_contributors (lower(${NORMALISED_PERSON_NAME}) text_pattern_ops)`,
+  );
   await sql`DROP INDEX CONCURRENTLY IF EXISTS idx_book_contributors_author_name_lower_pattern`;
 
   // ANN index for the "similar"/"personalized" cosine-distance (<=>) queries.

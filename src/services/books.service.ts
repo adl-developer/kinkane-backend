@@ -24,6 +24,7 @@ import {
   getUserExclusions,
 } from '../lib/exclusions';
 import { logger } from '../lib/logger';
+import { normalisedNameSql, normaliseNameQuery } from '../lib/contributor-name';
 import { redis } from '../lib/redis';
 import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-excerpts.service';
 import { TRENDING_SCORED_TYPES, trendingScoreSql } from './interactions.service';
@@ -506,9 +507,21 @@ function buildSearchOrderBy(q: string): SQL[] {
 // deliberately role-blind: by the time it runs, the question is no longer who is credited
 // how, but whether any name resembles the query. Callers must run it inside
 // withWordSimilarityThreshold, since it uses the <% operator.
-export function buildAuthorMatchSource(q: string, tier: 'cheap' | 'broad'): SQL {
+export function buildAuthorMatchSource(rawQ: string, tier: 'cheap' | 'broad'): SQL {
+  // Both sides of every comparison below are normalised: the column by NAME, the search
+  // term here. The prefix tiers compare with LIKE/ILIKE, which are literal, so a name
+  // stored as "Catherine  Eschle" is unreachable by "Catherine Eschle" unless the
+  // doubled space is collapsed out of the comparison on both sides. See
+  // lib/contributor-name.ts. Normalising here rather than at the call sites means a
+  // caller cannot forget: the count probe, the row fetch and suggestions all reach the
+  // name tiers through this function.
+  const q = normaliseNameQuery(rawQ);
   const prefix = q + '%';
   const wordPrefix = '% ' + q + '%';
+  // Interpolated raw, because it is a column expression rather than a value. It must stay
+  // character-identical to the index definition in db/setup.ts — that is the whole reason
+  // both come from the same constant.
+  const NAME = sql.raw(normalisedNameSql('bc.person_name'));
 
   // Every branch is capped independently. A single cap on the union would leave each
   // branch to produce its whole match set before the merge could discard it, so cost
@@ -518,7 +531,7 @@ export function buildAuthorMatchSource(q: string, tier: 'cheap' | 'broad'): SQL 
       SELECT bc.book_id, ${sql.raw(String(tierTag))} AS tier
       FROM book_contributors bc
       WHERE ${role}
-        AND lower(bc.person_name) LIKE lower(${prefix})
+        AND lower(${NAME}) LIKE lower(${prefix})
       LIMIT ${AUTHOR_MATCH_LIMIT}
     )`;
 
@@ -528,7 +541,7 @@ export function buildAuthorMatchSource(q: string, tier: 'cheap' | 'broad'): SQL 
       FROM book_contributors bc
       WHERE ${role}
         AND bc.person_name IS NOT NULL
-        AND bc.person_name ILIKE ${wordPrefix}
+        AND ${NAME} ILIKE ${wordPrefix}
       LIMIT ${AUTHOR_MATCH_LIMIT}
     )`;
 
@@ -548,10 +561,10 @@ export function buildAuthorMatchSource(q: string, tier: 'cheap' | 'broad'): SQL 
       FROM book_contributors bc
       WHERE bc.person_name IS NOT NULL
         AND (
-          ${q} <% bc.person_name
+          ${q} <% ${NAME}
           ${
             q.length >= 3
-              ? sql` OR to_tsvector('simple', bc.person_name) @@ plainto_tsquery('simple', ${q})`
+              ? sql` OR to_tsvector('simple', ${NAME}) @@ plainto_tsquery('simple', ${q})`
               : sql``
           }
         )

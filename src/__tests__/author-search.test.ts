@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { buildAuthorMatchCondition, buildAuthorMatchSource } from '../services/books.service';
+import { normalisedNameSql, normaliseNameQuery } from '../lib/contributor-name';
 
 // Search matches a book by its author's name as well as by its title. The risk in that
 // feature is never correctness of the match — it's cost: book_contributors is the larger
@@ -38,12 +39,39 @@ describe('buildAuthorMatchCondition', () => {
   });
 
   it('exposes the prefix tier as a WHERE the pattern index can range-scan', () => {
-    // Plain LIKE against lower(person_name): text_pattern_ops matches no other operator,
+    // Plain LIKE against the normalised name: text_pattern_ops matches no other operator,
     // and it has to be in the WHERE — an index can serve a predicate, not an ORDER BY
     // over an expression.
     expect(compile('king', 'cheap')).toMatch(
-      /where[\s\S]*lower\(bc\.person_name\) like lower\(\$\d+\)/i,
+      /where[\s\S]*lower\(btrim\(regexp_replace\(bc\.person_name[\s\S]*?\)\) like lower\(\$\d+\)/i,
     );
+  });
+
+  it('matches the same normalising expression the index is built over', () => {
+    // An expression index only serves a query whose expression matches it exactly. A
+    // one-character drift is not an error — it is a silent sequential scan over the whole
+    // contributor table, which is the cost this search is built to avoid. Both sides come
+    // from lib/contributor-name.ts; this pins that the query really uses it.
+    expect(compile('king', 'cheap')).toContain(normalisedNameSql('bc.person_name'));
+  });
+
+  it('does not strip the letter s out of the name it is normalising', () => {
+    // In a JavaScript string literal '\s' is not a recognised escape and collapses to a
+    // bare 's', which turns the whitespace-collapsing expression into one that deletes
+    // every "s" from every name. It is not a syntax error at any layer: it fails quietly
+    // and returns plausible-looking wrong matches. Asserted on the emitted SQL, and on a
+    // round trip through the JavaScript-side normaliser, because the two have to agree.
+    expect(compile('king', 'cheap')).toContain("'\\s+'");
+    expect(compile('king', 'cheap')).not.toContain("'s+'");
+    expect(normaliseNameQuery('Rossen  Smith')).toBe('Rossen Smith');
+  });
+
+  it('normalises the search term the same way as the column', () => {
+    // Both sides have to be normalised: normalising only the column would leave a query
+    // typed with a doubled space unable to match a cleanly stored name.
+    expect(normaliseNameQuery('  Catherine   Eschle  ')).toBe('Catherine Eschle');
+    // Idempotent, so a caller that has already cleaned its term is not penalised.
+    expect(normaliseNameQuery(normaliseNameQuery('a  b'))).toBe('a b');
   });
 
   it('is uncorrelated — the subquery never references the outer books row', () => {
