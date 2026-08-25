@@ -1,10 +1,26 @@
 # Changelog
 
 
+## 2026-08-25
+
+### Features
+
+* answer a search from exact matches before falling back to fuzzy ones ([210c767](https://adl.github.com/adl-developer/kinkane-backend/commit/210c767af04db172135904c415ce500a09e96c9e)) — [details](changelog/2026-08-25-search-exact-band.md)
+* find a book by the name of its editor, translator or illustrator ([f449fac](https://adl.github.com/adl-developer/kinkane-backend/commit/f449fac838b895378e0f0684d6769f251e09daf7)) — [details](changelog/2026-08-25-search-exact-band.md)
+* let name search reach books credited to an editor or translator ([24824ed](https://adl.github.com/adl-developer/kinkane-backend/commit/24824ed50dfd4e7d4bf126788e13d38e85427b86)) — [details](changelog/2026-08-25-author-search-tier.md)
+
+### Bug Fixes
+
+* put the closest name match first when a search is misspelled ([661f818](https://adl.github.com/adl-developer/kinkane-backend/commit/661f8187bec5d51a9223939b85ea3afc0b9cff69)) — [details](changelog/2026-08-25-search-exact-band.md)
+* find an author whose name was filed with an extra space ([47d35c4](https://adl.github.com/adl-developer/kinkane-backend/commit/47d35c4003f80a5b8d4a08936cc169dbf13e090d)) — [details](changelog/2026-08-25-author-search-tier.md)
+* stop an author search losing the author's own books to the fuzzy tier ([63820e4](https://adl.github.com/adl-developer/kinkane-backend/commit/63820e46d7f545ef3cfad611b111995c6121d32d)) — [details](changelog/2026-08-25-author-search-tier.md)
+
+
 ## 2026-08-24
 
 ### Features
 
+* create the first admin from the environment, and let admins change their password ([cc59935](https://adl.github.com/adl-developer/kinkane-backend/commit/cc59935318224fe1461ec828e88e5d2bae25d5a3)) — [details](changelog/2026-08-24-admin-console.md)
 * seed admin accounts from a file, and document every setting ([6e5a273](https://adl.github.com/adl-developer/kinkane-backend/commit/6e5a2738be47bd27ad6cd992294ef08dae8dab4a)) — [details](changelog/2026-08-24-order-confirmation-email.md)
 * email a confirmation when an order is paid for ([7b17245](https://adl.github.com/adl-developer/kinkane-backend/commit/7b17245d74c1513e05e6faf76ace5ae92d0116ee)) — [details](changelog/2026-08-24-order-confirmation-email.md)
 * show prices on the discovery carousels ([e717e01](https://adl.github.com/adl-developer/kinkane-backend/commit/e717e01ed000f7c81e1031ef1ae47a3b038b8e48)) — [details](changelog/2026-08-24-admin-console.md)
