@@ -19,9 +19,15 @@ describe('buildAuthorMatchCondition', () => {
   it('caps every branch, not just the merged result', () => {
     // A single cap on the outer result is not enough: an uncapped branch still has to
     // produce its whole match set before the merge can discard it, so cost would scale
-    // with how common the name fragment is — one cap per branch.
-    const limits = compile('king', 'cheap').match(/limit \$\d+/gi) ?? [];
-    expect(limits).toHaveLength(2);
+    // with how common the name fragment is — one cap per branch. Asserted as a ratio
+    // rather than a fixed count, so adding a tier can't quietly leave it uncapped.
+    for (const tier of ['cheap', 'broad'] as const) {
+      const sql = compile('king', tier);
+      const branches = sql.match(/select\s+bc\.book_id/gi)?.length ?? 0;
+      const limits = sql.match(/limit \$\d+/gi)?.length ?? 0;
+      expect(branches, `${tier}: no branches found`).toBeGreaterThan(0);
+      expect(limits, `${tier}: ${branches} branches but ${limits} caps`).toBe(branches);
+    }
   });
 
   it('never sorts on a computed expression', () => {
@@ -48,12 +54,37 @@ describe('buildAuthorMatchCondition', () => {
     expect(subquery).not.toMatch(/books\.\s*"?id"?/i);
   });
 
-  it('restricts matches to primary authors', () => {
-    // A01 is ONIX's code for "author"; a book's editors, translators and illustrators
-    // are not what someone typing a name into search is looking for. It's a fixed
-    // literal rather than a bound parameter so it can also serve as the predicate of
-    // the partial indexes this query depends on.
-    expect(compile('king', 'cheap')).toMatch(/bc\.role = 'A01'/);
+  it('ranks primary authors above other contributors, rather than filtering to them', () => {
+    // This used to filter to A01 outright, on the reasoning that a book's editors,
+    // translators and illustrators are not what someone typing a name is looking for.
+    // That is right as a ranking rule and wrong as a filter: about one book in five has
+    // no A01 contributor at all, and those were unreachable by name at any spelling.
+    //
+    // So both predicates must be present, and the A01 arms must carry the lower (better)
+    // tier tag. A01 stays a fixed literal rather than a bound parameter so it reads as
+    // part of the query's shape.
+    const sql = compile('king', 'cheap');
+    expect(sql).toMatch(/bc\.role = 'A01'/);
+    expect(sql).toMatch(/bc\.role <> 'A01'/);
+
+    const tierOf = (rolePredicate: RegExp) => {
+      const at = sql.search(rolePredicate);
+      // The tier tag is emitted ahead of its branch's WHERE clause.
+      const tags = [...sql.slice(0, at).matchAll(/(\d+) AS tier/gi)];
+      return Number(tags[tags.length - 1][1]);
+    };
+    expect(tierOf(/bc\.role = 'A01'/)).toBeLessThan(tierOf(/bc\.role <> 'A01'/));
+  });
+
+  it('ranks an exact match on any role above a fuzzy match on an author', () => {
+    // The ladder's load-bearing property, and the reason role is the inner sort key
+    // rather than the outer one. Someone typing "Catherine Eschle" wants the volume she
+    // edited — an exact prefix hit — not a fuzzy slide to "Catherine Dawson".
+    const sql = compile('king', 'broad');
+    const fuzzyAt = sql.search(/<%/);
+    const otherRoleAt = sql.search(/bc\.role <> 'A01'/);
+    expect(fuzzyAt, 'the broad tier emitted no fuzzy arm').toBeGreaterThanOrEqual(0);
+    expect(otherRoleAt).toBeLessThan(fuzzyAt);
   });
 
   it('keeps the fuzzy tiers out of the cheap condition', () => {

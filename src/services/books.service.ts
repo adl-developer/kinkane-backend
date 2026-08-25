@@ -471,56 +471,103 @@ function buildSearchOrderBy(q: string): SQL[] {
 // any index, so Postgres has to consume and rank *every* matching contributor row before
 // the LIMIT applies. Cost then scales with how common the fragment is — the same
 // unbounded-work shape SEARCH_COUNT_CAP exists to prevent on the count side. Splitting
-// them caps each branch independently: the sort at the end sees at most 2×the cap rows
-// no matter how popular the name.
+// them caps each branch independently: the sort at the end sees at most one cap's worth
+// of rows per branch, no matter how popular the name.
 //
-// The split also puts the prefix tier where an index can serve it. Branch 0 matches on
-// lower(person_name) LIKE — plain LIKE, not ILIKE, since text_pattern_ops matches no
+// The split also puts the prefix tiers where an index can serve them. Tiers 0 and 2 match
+// on lower(person_name) LIKE — plain LIKE, not ILIKE, since text_pattern_ops matches no
 // other operator — which EXPLAIN confirms is an indexed range scan on
-// idx_book_contributors_author_name_lower_pattern, the same trick
-// buildFastTitlePrefixCondition uses on titles. Branch 1 is the trigram GIN's job.
+// idx_book_contributors_name_lower_pattern, the same trick buildFastTitlePrefixCondition
+// uses on titles. The word-prefix tiers are the trigram GIN's job. Both indexes cover
+// every role, so the role predicate is a cheap recheck rather than the thing that decides
+// whether an index can be used at all — see db/setup.ts.
 //
-// Ordering by tier decides which rows survive when the match set exceeds the cap: exact
-// prefix matches ("chimamanda" → "Chimamanda Ngozi Adichie") win over word-prefix ones
-// ("adichie" matching mid-name). Branch 1 doesn't repeat the plain-prefix arm — branch 0
-// already covers it, and duplicate book ids cost nothing in an IN (...).
+// Ordering by tier decides which rows survive when the match set exceeds the cap, and in
+// what order the page finally reads. Two things are being ranked at once:
 //
-// 'broad' adds the fuzzy tiers (trigram word-similarity + FTS over the name) and is only
-// used when the title branch has already fallen through to its own broad tier — i.e. when
-// nothing cheaper matched at all. Callers must run it inside withWordSimilarityThreshold,
-// since it uses the <% operator.
+//   how the name matched — an exact prefix ("chimamanda" → "Chimamanda Ngozi Adichie")
+//   beats a word prefix ("adichie" matching mid-name), which beats a fuzzy near-miss;
+//
+//   how the person is credited — A01 (ONIX's "author") beats every other role.
+//
+// Match quality is the *outer* key and role the inner one, which is the whole point of
+// the ladder. An exact prefix hit on an editor is a far stronger signal than a trigram
+// near-miss on an author: someone typing "Catherine Eschle" wants the volume she edited,
+// not a fuzzy slide to "Catherine Dawson". Ranking role first would invert that, and
+// filtering non-A01 rows out entirely — which is what this did until now — loses the
+// edited volume at any spelling. About one book in five has no A01 contributor at all,
+// so that was not an edge case.
+//
+// Tiers 1 and 3 don't repeat their plain-prefix arms — tiers 0 and 2 already cover them,
+// and duplicate book ids cost nothing to a caller that takes MIN(tier) per book.
+//
+// 'broad' adds tier 4, the fuzzy arm (trigram word-similarity + FTS over the name), and is
+// only reached when nothing above it matched at all. It is deliberately last and
+// deliberately role-blind: by the time it runs, the question is no longer who is credited
+// how, but whether any name resembles the query. Callers must run it inside
+// withWordSimilarityThreshold, since it uses the <% operator.
 export function buildAuthorMatchSource(q: string, tier: 'cheap' | 'broad'): SQL {
   const prefix = q + '%';
   const wordPrefix = '% ' + q + '%';
 
+  // Every branch is capped independently. A single cap on the union would leave each
+  // branch to produce its whole match set before the merge could discard it, so cost
+  // would scale with how common the name fragment is rather than with the page.
+  const exactPrefix = (tierTag: number, role: SQL) => sql`
+    (
+      SELECT bc.book_id, ${sql.raw(String(tierTag))} AS tier
+      FROM book_contributors bc
+      WHERE ${role}
+        AND lower(bc.person_name) LIKE lower(${prefix})
+      LIMIT ${AUTHOR_MATCH_LIMIT}
+    )`;
+
+  const wordPrefixArm = (tierTag: number, role: SQL) => sql`
+    (
+      SELECT bc.book_id, ${sql.raw(String(tierTag))} AS tier
+      FROM book_contributors bc
+      WHERE ${role}
+        AND bc.person_name IS NOT NULL
+        AND bc.person_name ILIKE ${wordPrefix}
+      LIMIT ${AUTHOR_MATCH_LIMIT}
+    )`;
+
+  // <> 'A01' rather than an allow-list of roles. The tier ranking already keeps editors,
+  // translators and illustrators below authors, so there is nothing to gain by naming
+  // them — and an allow-list would silently drop whichever ONIX role a future feed
+  // introduces, which is the failure this change exists to remove.
+  const isAuthor = sql`bc.role = 'A01'`;
+  const isOtherContributor = sql`bc.role <> 'A01'`;
+
   const fuzzy =
     tier === 'broad'
-      ? q.length >= 3
-        ? sql` OR ${q} <% bc.person_name
-               OR to_tsvector('simple', bc.person_name) @@ plainto_tsquery('simple', ${q})`
-        : sql` OR ${q} <% bc.person_name`
+      ? sql`
+    UNION ALL
+    (
+      SELECT bc.book_id, 4 AS tier
+      FROM book_contributors bc
+      WHERE bc.person_name IS NOT NULL
+        AND (
+          ${q} <% bc.person_name
+          ${
+            q.length >= 3
+              ? sql` OR to_tsvector('simple', bc.person_name) @@ plainto_tsquery('simple', ${q})`
+              : sql``
+          }
+        )
+      LIMIT ${AUTHOR_MATCH_LIMIT}
+    )`
       : sql``;
 
   return sql`(
-    (
-      SELECT bc.book_id, 0 AS tier
-      FROM book_contributors bc
-      WHERE bc.role = 'A01'
-        AND lower(bc.person_name) LIKE lower(${prefix})
-      LIMIT ${AUTHOR_MATCH_LIMIT}
-    )
+    ${exactPrefix(0, isAuthor)}
     UNION ALL
-    (
-      SELECT bc.book_id, 1 AS tier
-      FROM book_contributors bc
-      WHERE bc.role = 'A01'
-        AND bc.person_name IS NOT NULL
-        AND (
-          bc.person_name ILIKE ${wordPrefix}
-          ${fuzzy}
-        )
-      LIMIT ${AUTHOR_MATCH_LIMIT}
-    )
+    ${wordPrefixArm(1, isAuthor)}
+    UNION ALL
+    ${exactPrefix(2, isOtherContributor)}
+    UNION ALL
+    ${wordPrefixArm(3, isOtherContributor)}
+    ${fuzzy}
   )`;
 }
 

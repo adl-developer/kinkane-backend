@@ -3,6 +3,10 @@
 
 ## 2026-08-25
 
+### Features
+
+* let name search reach books credited to an editor or translator ([24824ed](https://adl.github.com/adl-developer/kinkane-backend/commit/24824ed50dfd4e7d4bf126788e13d38e85427b86)) — [details](changelog/2026-08-25-author-search-tier.md)
+
 ### Bug Fixes
 
 * stop an author search losing the author's own books to the fuzzy tier ([63820e4](https://adl.github.com/adl-developer/kinkane-backend/commit/63820e46d7f545ef3cfad611b111995c6121d32d)) — [details](changelog/2026-08-25-author-search-tier.md)
