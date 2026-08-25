@@ -55,7 +55,7 @@ This is one of two independent services that share the same PostgreSQL database:
 | PostgreSQL | 14+ | Must have `pg_trgm` and `pgvector` extensions enabled (handled by `onix_ingester`) |
 | Redis | 6+ | Required for rate limiting and the email job queue |
 | Google Gemini API key | — | Same key used by `onix_ingester` — see [AI Recommendations](#ai-recommendations) |
-| SendGrid API key | — | Required for transactional and marketing emails — see [Email](#email) |
+| Resend API key | — | Required for transactional and marketing emails — see [Email](#email) |
 
 ---
 
@@ -278,7 +278,7 @@ server/
 │   │   ├── gemini.ts                # Gemini embedding + explanation helpers
 │   │   ├── logger.ts                # Structured JSON logger
 │   │   ├── redis.ts                 # ioredis client (rate limiting)
-│   │   └── sendgrid.ts              # SendGrid client initialisation
+│   │   └── resend.ts                # Resend client initialisation
 │   ├── workers/
 │   │   └── email.worker.ts          # BullMQ worker — processes all email job types
 │   ├── services/
@@ -341,10 +341,11 @@ JWT_REFRESH_SECRET=your_refresh_token_secret_min_32_chars
 ACCESS_TOKEN_TTL=900        # 15 minutes
 REFRESH_TOKEN_TTL=2592000   # 30 days
 
-# Firebase Admin SDK — from your Firebase project service account JSON
-FIREBASE_PROJECT_ID=your-firebase-project-id
-FIREBASE_CLIENT_EMAIL=firebase-adminsdk-xxxxx@your-project.iam.gserviceaccount.com
-FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+# Firebase Admin SDK — the whole service account JSON, base64-encoded:
+#   base64 -i serviceAccountKey.json
+# (the individual FIREBASE_PROJECT_ID / _CLIENT_EMAIL / _PRIVATE_KEY vars still
+# work as a fallback — see the Firebase setup section)
+FIREBASE_SERVICE_ACCOUNT_B64=eyJ0eXBlIjoic2VydmljZV9hY2NvdW50Iiwi...
 
 # Google Gemini — same API key as onix_ingester
 # GEMINI_EMBEDDING_MODEL must match the model used to embed books (default: text-embedding-004)
@@ -356,14 +357,14 @@ GEMINI_FLASH_MODEL=gemini-2.5-flash-lite
 # Set to 168 for a full week, 24 for a single day, etc.
 GUEST_SESSION_TTL_HOURS=72
 
-# SendGrid — https://app.sendgrid.com/settings/api_keys
-SENDGRID_API_KEY=SG.your-api-key-here
-EMAIL_FROM=hello@kinkane.com
+# Resend — https://resend.com/api-keys
+RESEND_API_KEY=re_your-api-key-here
+EMAIL_FROM=hello@kinkane.app
 EMAIL_FROM_NAME=Kinkane
 
 # Frontend base URL — used to build links in emails (e.g. password reset)
 # Use http://localhost:3001 (or your frontend's port) in development
-APP_URL=https://kinkane.com
+APP_URL=https://kinkane.app
 ```
 
 **Why two JWT secrets?** Access and refresh tokens are signed with different secrets. A leaked access token cannot be used to forge a refresh token.
@@ -836,7 +837,7 @@ All book endpoints are **public** — no auth required.
 
 #### `GET /api/v1/books/search`
 
-Typeahead suggestions. Designed to be called on every keystroke. Returns up to 15 results. Minimum 2 characters.
+Typeahead suggestions. Designed to be called on every keystroke. Returns up to 15 results. Minimum 1 character.
 
 **Query parameters**
 
@@ -844,6 +845,7 @@ Typeahead suggestions. Designed to be called on every keystroke. Returns up to 1
 |-------|------|-------------|
 | `q` | string | The text being typed. Min 2, max 100 chars |
 | `limit` | number | Max suggestions. 1–15, default `8` |
+| `dedupe` | `true`/`false` | Collapse same-titled editions down to the best one. Default `false` — pass `true` (e.g. the mobile app) to avoid showing the same book twice under different ISBNs |
 
 **Response `200`**
 ```json
@@ -882,12 +884,15 @@ Paginated book list with optional filters and full-text search.
 | `publisher` | string | Partial match on publisher name |
 | `limit` | number | 1–50, default `20` |
 | `offset` | number | Default `0` |
+| `dedupe` | `true`/`false` | Collapse same-titled editions down to the best one (has a cover > has a description + genre + is available to order > newest publication date > has a price). Default `false` — pass `true` (e.g. the mobile app) so browsing/search doesn't show the same title once per ISBN. When on, `totalIsApproximate` is always `true`: paginate on `hasMore`, not `total` |
 
 **Response `200`**
 ```json
 {
   "books": [ { "id": 42, "title": "...", "contributors": [], "genres": [], "prices": [] } ],
   "total": 1,
+  "totalIsApproximate": false,
+  "hasMore": false,
   "limit": 20,
   "offset": 0
 }
@@ -1237,8 +1242,8 @@ All outgoing emails are processed through a **BullMQ** queue backed by Redis. Em
 
 **Why a queue instead of direct sends?**
 - Automatic retries with exponential backoff (3 attempts, 2s → 4s)
-- Survives transient SendGrid outages without losing emails
-- Controlled concurrency (5 simultaneous sends) respects SendGrid rate limits
+- Survives transient Resend outages without losing emails
+- Controlled concurrency (5 simultaneous sends) respects Resend rate limits
 - Priority lanes ensure password reset emails jump ahead of bulk newsletter jobs
 - Full job history visible in Bull Board
 
@@ -1280,7 +1285,7 @@ Task: enqueueEmail('weekly-digest', { to, payload }) per active user
 
 ## Email
 
-All emails are sent via **SendGrid** and routed through the BullMQ queue. Email templates live in `src/emails/` organised by type.
+All emails are sent via **Resend** and routed through the BullMQ queue. Email templates live in `src/emails/` organised by type.
 
 ### Email types
 
@@ -1308,12 +1313,15 @@ await enqueueEmail('trial-ending', { to: user.email, name: user.name, daysLeft: 
 
 The helper is fully typed — TypeScript will catch mismatched payloads at compile time.
 
-### SendGrid setup
+### Resend setup
 
-1. Create an account at [sendgrid.com](https://sendgrid.com)
-2. Go to **Settings → API Keys** and create a key with **Mail Send** permission
-3. Verify your sender domain or email address under **Settings → Sender Authentication**
-4. Add `SENDGRID_API_KEY` and `EMAIL_FROM` to your `.env`
+1. Create an account at [resend.com](https://resend.com)
+2. Go to **API Keys** and create a key with **Sending access**
+3. Add and verify your sender domain under **Domains** (DNS records for SPF/DKIM).
+   The domain must match the one in `EMAIL_FROM` or every send is rejected.
+4. Enable click/open tracking under **Domains → Tracking** if you want it — Resend
+   configures tracking per domain, not per message
+5. Add `RESEND_API_KEY` and `EMAIL_FROM` to your `.env`
 
 ---
 
@@ -1326,7 +1334,7 @@ npm install
 # 2. Set up environment
 cp .env.example .env
 # Fill in DATABASE_URL, REDIS_URL, JWT secrets, Firebase credentials,
-# GEMINI_API_KEY, SENDGRID_API_KEY, and APP_URL
+# GEMINI_API_KEY, RESEND_API_KEY, and APP_URL
 
 # 3. Apply migrations
 npm run db:migrate
@@ -1349,7 +1357,7 @@ Once running, the **Bull Board** queue dashboard is available at `http://localho
 
 ### Environment variables on Render
 
-Set all values from [Environment Variables](#environment-variables) in the Render dashboard. `DATABASE_URL` is injected automatically from the linked database. `REDIS_URL` is injected automatically from the linked Redis instance. Set `SENDGRID_API_KEY`, `EMAIL_FROM`, `EMAIL_FROM_NAME`, and `APP_URL` manually.
+Set all values from [Environment Variables](#environment-variables) in the Render dashboard. `DATABASE_URL` is injected automatically from the linked database. `REDIS_URL` is injected automatically from the linked Redis instance. Set `RESEND_API_KEY`, `EMAIL_FROM`, `EMAIL_FROM_NAME`, and `APP_URL` manually.
 
 ### Pre-deploy command
 
@@ -1379,7 +1387,24 @@ Start:  node dist/server.js
 
 1. Go to **Project Settings → Service accounts**
 2. Click **Generate new private key** — downloads a JSON file
-3. Copy these three values into your `.env`:
+3. Base64-encode the whole file and set the result as a single variable:
+
+```bash
+base64 -i serviceAccountKey.json
+```
+
+```
+FIREBASE_SERVICE_ACCOUNT_B64=<the base64 output>
+```
+
+The server decodes this and reads `project_id`, `client_email` and `private_key` out of the JSON.
+
+**Use this form for Render and any other dashboard-configured environment.** A raw PEM private key does not survive a web form intact: dashboards store the value verbatim, so wrapping double quotes become part of the string and multi-line pastes can arrive with the newlines flattened. Either way OpenSSL rejects the key and Firebase fails to start with the unhelpful message `error:1E08010C:DECODER routines::unsupported`. Base64 contains no characters a form can mangle.
+
+<details>
+<summary>Alternative: the three fields individually</summary>
+
+Still supported, and fine in a local `.env` where dotenv handles the quoting:
 
 ```
 FIREBASE_PROJECT_ID      ← "project_id"
@@ -1387,7 +1412,29 @@ FIREBASE_CLIENT_EMAIL    ← "client_email"
 FIREBASE_PRIVATE_KEY     ← "private_key"
 ```
 
-Keep the private key wrapped in double quotes and leave the `\n` characters as-is.
+Keep the private key wrapped in double quotes and leave the `\n` characters as-is. These are read only when `FIREBASE_SERVICE_ACCOUNT_B64` is unset.
+
+</details>
+
+### Checking the credentials work
+
+```bash
+npm run firebase:check
+```
+
+Reports which credential source is in use, whether the private key is well-formed PEM, and whether Google actually accepts it (it mints a real access token). Pass a Firebase ID token as an argument — `npm run firebase:check -- <idToken>` — to also verify the exact path `POST /api/v1/auth/social` takes. It prints no secret material; keys are reported by length and SHA-256 prefix, so the output is safe to paste into a ticket.
+
+Run it in Render's shell (**Shell** tab on the service) to check the deployed environment without waiting on a deploy and a login attempt.
+
+### Getting an ID token to test with
+
+Call `firebaseUser.getIdToken()` in the mobile app after signing in. Tokens last one hour.
+
+`scripts/google-signin-test.html` does the same from a browser, via a real Google sign-in popup — see the comment at the top of that file for how to run it. It needs a **Web** app registered in the Firebase project first; only Android and iOS are registered today, so it won't work until someone adds one.
+
+### Failure behaviour
+
+The server exits at startup if neither form is configured, and throws with a diagnostic message if the key is present but unparseable — Firebase backs social sign-in and push, so a server running without it would pass health checks while rejecting every Google login.
 
 ### 3. Mobile integration
 
@@ -1403,4 +1450,5 @@ For the onboarding flow, the `guestSessionId` must survive the OAuth redirect. E
 ### Service account security
 
 - Never commit the service account JSON or your `.env` to version control
-- On Render, set `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, and `FIREBASE_PRIVATE_KEY` as environment variables in the dashboard
+- On Render, set `FIREBASE_SERVICE_ACCOUNT_B64` as an environment variable in the dashboard
+- If a key is ever pasted somewhere it shouldn't be — a chat, a ticket, a log — treat it as compromised: generate a new one under **Service accounts** and delete the old key, rather than assuming it went unnoticed

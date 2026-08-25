@@ -15,12 +15,12 @@ const router = Router();
 /**
  * POST /api/v1/auth/signup
  *
- * Creates a new email/password account. The user must have completed the
- * onboarding quiz first — `guestSessionId` is required and is used to migrate
- * their preferences, chosen books, and interaction signals onto the new account.
+ * Creates a new email/password account. `guestSessionId` is optional — if the
+ * user completed the onboarding quiz first and supplies it, their preferences,
+ * chosen books, and interaction signals are migrated onto the new account.
  * A 90-day Kinkane Plus trial is started synchronously before tokens are returned.
  *
- * Body: { name, email, password, guestSessionId }
+ * Body: { name, email, password, guestSessionId? }
  * Returns 201: { user: { id, name, email, emailVerified }, accessToken, refreshToken }
  * Errors: 400 validation | 409 email already registered
  */
@@ -72,11 +72,11 @@ router.post('/logout', authController.logout);
  * Kinkane Plus trial is started. If an account with the same email already
  * exists, the social provider is linked to it (no new account, no trial).
  *
- * `guestSessionId` is required for new registrations — it migrates the
- * onboarding data onto the new account in the background.
- * For returning users (paths 1 and 2) the field is optional and ignored.
+ * `guestSessionId` is optional. For a new registration, if supplied, it migrates
+ * the onboarding data onto the new account in the background.
+ * For returning users (paths 1 and 2) the field is ignored either way.
  *
- * Body: { idToken, guestSessionId }
+ * Body: { idToken, guestSessionId? }
  * Returns 201 (new account) or 200 (returning user):
  *   { user: { id, name, email, emailVerified }, accessToken, refreshToken }
  * Errors: 400 validation | 401 invalid Firebase token | 422 no email on social account
@@ -174,7 +174,13 @@ router.post('/change-password', requireAuth, authController.changePassword);
  * Returns 200: {
  *   user: {
  *     id, name, email, emailVerified, photoUrl, joinedYear,
- *     subscription: { tier, status, trialDaysLeft, trialEndsAt },
+ *     subscription: {
+ *       tier, status,
+ *       plan,              // 'monthly' | 'annual' | null (null while free/trialing)
+ *       trialDaysLeft, trialEndsAt,
+ *       currentPeriodEnd,  // paid-through date; renews unless cancelAtPeriodEnd
+ *       cancelAtPeriodEnd,
+ *     },
  *     providers: string[]   // e.g. ['google.com', 'password']
  *   }
  * }

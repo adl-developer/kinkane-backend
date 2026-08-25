@@ -1,4 +1,5 @@
 import app from './app';
+import { bootstrapFirstAdmin } from './services/admin/bootstrap.service';
 import { config } from './config';
 import { logger } from './lib/logger';
 import { connectRedis, disconnectRedis } from './lib/redis';
@@ -6,10 +7,30 @@ import { startGuestCleanupCron, stopGuestCleanupCron } from './jobs/guest-cleanu
 import { startWeeklyDigestCron, stopWeeklyDigestCron } from './jobs/weekly-digest.cron';
 import { startRecommendationCron, stopRecommendationCron } from './jobs/recommendation.cron';
 import { startTrialExpiryCron, stopTrialExpiryCron } from './jobs/trial-expiry.cron';
+import {
+  startSubscriptionReconciliationCron,
+  stopSubscriptionReconciliationCron,
+} from './jobs/subscription-reconciliation.cron';
+import {
+  startPreferenceHistoryCleanupCron,
+  stopPreferenceHistoryCleanupCron,
+} from './jobs/preference-history-cleanup.cron';
+import {
+  startInteractionCleanupCron,
+  stopInteractionCleanupCron,
+} from './jobs/interaction-cleanup.cron';
+import {
+  startOrderReconciliationCron,
+  stopOrderReconciliationCron,
+  startBestsellerRefreshCron,
+  stopBestsellerRefreshCron,
+} from './jobs/order-reconciliation.cron';
 import { startEmailWorker, stopEmailWorker } from './workers/email.worker';
+import { startFulfilmentWorker, stopFulfilmentWorker } from './workers/fulfilment.worker';
 import { startPushWorker, stopPushWorker } from './workers/push.worker';
 import { emailQueue, bullConnection } from './lib/email-queue';
 import { pushQueue } from './lib/push-queue';
+import { fulfilmentQueue } from './lib/fulfilment-queue';
 
 async function main(): Promise<void> {
   await connectRedis();
@@ -18,8 +39,19 @@ async function main(): Promise<void> {
   const weeklyDigestTask = startWeeklyDigestCron();
   const recommendationCronTask = startRecommendationCron();
   const trialExpiryCronTask = startTrialExpiryCron();
+  const subscriptionReconciliationTask = startSubscriptionReconciliationCron();
+  const preferenceHistoryCleanupTask = startPreferenceHistoryCleanupCron();
+  const interactionCleanupTask = startInteractionCleanupCron();
+  const orderReconciliationTask = startOrderReconciliationCron();
+  const bestsellerRefreshTask = startBestsellerRefreshCron();
   const emailWorker = startEmailWorker();
   const pushWorker = startPushWorker();
+  const fulfilmentWorker = startFulfilmentWorker();
+
+  // Creates the first admin from ADMIN_BOOTSTRAP_* when the table is empty, and
+  // does nothing otherwise. Awaited so the console is usable the moment the
+  // server accepts traffic, rather than a moment after.
+  await bootstrapFirstAdmin();
 
   const server = app.listen(config.port, () => {
     logger.info('kinkane-server started', { port: config.port, env: config.nodeEnv });
@@ -31,6 +63,11 @@ async function main(): Promise<void> {
     stopWeeklyDigestCron(weeklyDigestTask);
     stopRecommendationCron(recommendationCronTask);
     stopTrialExpiryCron(trialExpiryCronTask);
+    stopSubscriptionReconciliationCron(subscriptionReconciliationTask);
+    stopPreferenceHistoryCleanupCron(preferenceHistoryCleanupTask);
+    stopInteractionCleanupCron(interactionCleanupTask);
+    stopOrderReconciliationCron(orderReconciliationTask);
+    stopBestsellerRefreshCron(bestsellerRefreshTask);
     // server.close() stops accepting new connections and waits for in-flight
     // requests to finish — disconnect Redis only after they drain so that any
     // in-flight cache/rate-limit call can still reach Redis.
@@ -40,6 +77,10 @@ async function main(): Promise<void> {
       await emailQueue.close();
       await stopPushWorker(pushWorker);
       await pushQueue.close();
+      // Waits for an in-flight Gardners submission to finish: killing one
+      // mid-SFTP-write would leave a partial .ORD file on their server.
+      await stopFulfilmentWorker(fulfilmentWorker);
+      await fulfilmentQueue.close();
       await bullConnection.quit();
       await disconnectRedis();
       process.exit(0);

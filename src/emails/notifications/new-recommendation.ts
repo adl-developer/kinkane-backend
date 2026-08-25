@@ -1,4 +1,6 @@
-import { sgMail, FROM } from '../../lib/sendgrid';
+import { sendEmail, FROM } from '../../lib/resend';
+import { emailLayout, ctaButton, greeting, signOff, escapeHtml, p } from '../lib/layout';
+import { unsubscribeUrl } from '../../lib/unsubscribe-token';
 
 export interface RecommendedBook {
   title: string;
@@ -12,19 +14,27 @@ export async function sendNewRecommendationEmail(
   name: string,
   book: RecommendedBook,
 ): Promise<void> {
-  await sgMail.send({
+  const safeName = escapeHtml(name);
+  const safeTitle = escapeHtml(book.title);
+  const safeAuthor = escapeHtml(book.author);
+  const safeReason = escapeHtml(book.reason);
+  const title = 'We found a book for you';
+
+  const body = [
+    greeting(safeName),
+    p('Based on your reading preferences, we think you might enjoy:'),
+    `<p style="margin:0 0 20px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:14px;line-height:22.75px;color:#262626;"><strong>${safeTitle}</strong><br /><span style="color:#52514E;">by ${safeAuthor}</span></p>`,
+    p(safeReason),
+    p('Add it to your bookshelf, explore similar titles, or start reading today.'),
+    ctaButton('View Recommendation', book.url),
+    signOff('Until your next great read,'),
+  ].join('\n');
+
+  await sendEmail({
     to,
     from: FROM,
-    subject: 'We found a book for you',
-    html: `
-      <p>Hi ${name},</p>
-      <p>Based on your reading preferences, we think you might enjoy:</p>
-      <p><strong>${book.title}</strong><br/>by ${book.author}</p>
-      <p>${book.reason}</p>
-      <p>Add it to your bookshelf, explore similar titles, or start reading today.</p>
-      <p><a href="${book.url}" style="background:#1a1a1a;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;display:inline-block;">View Recommendation</a></p>
-      <p>Until your next great read,<br/>The Kinkané Team</p>
-    `,
+    subject: title,
+    html: emailLayout(title, body, unsubscribeUrl(to)),
     text: `Hi ${name},\n\nBased on your reading preferences, we think you might enjoy:\n\n${book.title}\nby ${book.author}\n\n${book.reason}\n\nAdd it to your bookshelf, explore similar titles, or start reading today.\n${book.url}\n\nUntil your next great read,\nThe Kinkané Team`,
   });
 }

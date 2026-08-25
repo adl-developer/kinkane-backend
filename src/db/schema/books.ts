@@ -105,6 +105,9 @@ export const books = pgTable(
     isRemovedIdx: index('idx_books_is_removed').on(t.isRemoved),
     // Supports GET /books' default (no q/sort) ORDER BY updated_at LIMIT/OFFSET
     updatedAtIdx: index('idx_books_updated_at').on(t.updatedAt),
+    // Supports trending()'s fallback ORDER BY publication_date DESC LIMIT — without
+    // this, that query was a full parallel sequential scan + sort of the whole table.
+    publicationDateIdx: index('idx_books_publication_date').on(t.publicationDate),
   }),
 );
 

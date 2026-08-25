@@ -8,9 +8,11 @@ import * as dotenv from 'dotenv';
 dotenv.config();
 
 import postgres from 'postgres';
+import { resolveSslMode } from './ssl';
+import { COUNTRY_SEED } from './seeds/countries';
 
 const sql = postgres(process.env.DATABASE_URL!, {
-  ssl: process.env.DATABASE_URL!.includes('sslmode=require') ? 'require' : false,
+  ssl: resolveSslMode(process.env.DATABASE_URL!),
 });
 
 async function main() {
@@ -42,10 +44,48 @@ async function main() {
   await sql`CREATE INDEX IF NOT EXISTS idx_books_search_vector ON books USING GIN (search_vector)`;
   await sql`CREATE INDEX IF NOT EXISTS idx_books_title_trgm  ON books USING GIN (title gin_trgm_ops)`;
 
-  // Author search/suggestions (buildAuthorBookSearchCondition, authorSuggestions)
+  // Prefix search (title ILIKE 'q%') has no case-insensitive-friendly index today:
+  // idx_books_title is a plain (case-sensitive) btree, so ILIKE can't range-scan it —
+  // EXPLAIN ANALYZE showed it falling back to a full index-order scan filtering out
+  // 800k+ rows one at a time (70s+) for a common prefix. idx_books_title_trgm (GIN) is
+  // what actually serves ILIKE today, but for very common words (e.g. "the", matching
+  // ~30% of the 1.1M-row table) the index becomes a poor filter — Postgres gets a lossy
+  // bitmap back and has to reread and recheck hundreds of thousands of heap pages
+  // (~4.3s measured). This functional index lets `lower(title) LIKE lower(q) || '%'`
+  // (note: LIKE, not ILIKE — text_pattern_ops only matches the plain LIKE operator) do a
+  // genuine indexed range scan instead, independent of how common the prefix is.
+  //
+  // CONCURRENTLY avoids locking books against reads/writes while this builds against
+  // the live table (takes two passes instead of one, and can't run inside a
+  // transaction — must stay as its own top-level statement, not batched with others).
+  await sql`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_books_title_lower_pattern ON books (lower(title) text_pattern_ops)`;
+
+  // Author search/suggestions (buildAuthorMatchCondition, authorSuggestions)
   // does ILIKE/word_similarity against book_contributors.person_name — same
   // shape of query as book title search, so it needs the same trigram index.
-  await sql`CREATE INDEX IF NOT EXISTS idx_book_contributors_person_name_trgm ON book_contributors USING GIN (person_name gin_trgm_ops)`;
+  //
+  // Partial on role = 'A01': every author query filters to that role (a book's
+  // editors, translators and illustrators are not what someone typing a name is
+  // looking for), and without it in the index that filter can only be applied
+  // after the index has already returned every contributor row matching the name.
+  //
+  // Note the new name. The predicate is part of an index's definition, not something
+  // CREATE INDEX IF NOT EXISTS will reconcile — against a database that already has the
+  // old unpartitioned index, re-running the statement under its original name is a silent
+  // no-op and the predicate never lands. Hence a distinct name, with the superseded index
+  // dropped below once this one exists.
+  await sql`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_book_contributors_author_name_trgm ON book_contributors USING GIN (person_name gin_trgm_ops) WHERE role = 'A01'`;
+  await sql`DROP INDEX CONCURRENTLY IF EXISTS idx_book_contributors_person_name_trgm`;
+
+  // The author-name counterpart of idx_books_title_lower_pattern above, and it exists
+  // for the same reason: the trigram index serves ILIKE, but for a common name fragment
+  // ("jo", "sm") it becomes a poor filter and Postgres falls back to rechecking a large
+  // number of heap pages. This functional index gives `lower(person_name) LIKE lower(q||'%')`
+  // a genuine indexed range scan instead, which is what orders the bounded candidate set
+  // in buildAuthorMatchCondition — the step that decides which matches survive its LIMIT.
+  // Same caveats as the title version: plain LIKE only (text_pattern_ops matches no other
+  // operator), and CONCURRENTLY so it builds without locking the table against writes.
+  await sql`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_book_contributors_author_name_lower_pattern ON book_contributors (lower(person_name) text_pattern_ops) WHERE role = 'A01'`;
 
   // ANN index for the "similar"/"personalized" cosine-distance (<=>) queries.
   // Without this, ORDER BY embedding <=> vector is a brute-force scan that
@@ -62,7 +102,27 @@ async function main() {
   // shared_buffers and other concurrent connections — revisit if the plan
   // changes size.
   await sql`SET maintenance_work_mem = '256MB'`;
+  // Parallel index builds coordinate workers through a dynamic shared-memory
+  // segment sized roughly in proportion to maintenance_work_mem — on this
+  // managed instance that segment request exceeded available shared-memory
+  // space once maintenance_work_mem was raised (`could not resize shared
+  // memory segment ... No space left on device`). Disabling parallel workers
+  // for this one statement avoids needing that segment at all; the build
+  // runs single-threaded instead, still with the larger memory budget above.
+  await sql`SET max_parallel_maintenance_workers = 0`;
   await sql`CREATE INDEX IF NOT EXISTS idx_books_embedding_hnsw ON books USING hnsw (embedding vector_cosine_ops)`;
+
+  // ── Country reference data ────────────────────────────────────────────────
+  // Seeded here rather than in a migration so it stays correctable: a continent
+  // assignment is a scoring rule (10 points vs 20), and re-running setup is the
+  // supported way to fix one. Upsert on the name/continent so an existing row is
+  // corrected rather than skipped, which ON CONFLICT DO NOTHING would do.
+  await sql`
+    INSERT INTO countries ${sql(COUNTRY_SEED, 'code', 'name', 'continent')}
+    ON CONFLICT (code) DO UPDATE
+      SET name = EXCLUDED.name, continent = EXCLUDED.continent
+  `;
+  console.log(`Seeded ${COUNTRY_SEED.length} countries.`);
 
   console.log('Setup complete.');
   await sql.end();

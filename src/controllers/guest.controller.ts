@@ -10,9 +10,56 @@ const selectionsSchema = z.object({
     .array(z.number().int().positive())
     .min(1, 'At least 1 book must be chosen')
     .max(5, 'A maximum of 5 books can be chosen'),
+
+  // Books swiped away on the same screen. Optional — a user can pick their 5
+  // without rejecting anything. Unbounded above by design: the recommendation
+  // list runs to 100 books and a thorough swiper can reject most of them.
+  dislikedBookIds: z
+    .array(z.number().int().positive())
+    .default([]),
+});
+
+const referralSchema = z.object({
+  referralCode: z.string().trim().regex(/^[0-9A-Za-z]{6,32}$/, 'Invalid referral code'),
 });
 
 export const guestController = {
+  /**
+   * POST /api/v1/guest-sessions/:id/referral
+   * Parks a referral code on the session so it survives until signup.
+   */
+  async attachReferral(req: Request, res: Response): Promise<void> {
+    const { id } = req.params;
+
+    if (!uuidRegex.test(id)) {
+      res.status(400).json({ error: 'Invalid session ID' });
+      return;
+    }
+
+    const parsed = referralSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+
+    try {
+      // The code is stored without being validated against referral_codes. A
+      // code that turns out not to exist has to read as "no referral" at signup,
+      // not as an error here — the person onboarding cannot fix someone else's
+      // bad link, and blocking them over it would cost an account to save a
+      // point.
+      const ok = await guestService.attachReferralCode(id, parsed.data.referralCode);
+      if (!ok) {
+        res.status(404).json({ error: 'Session not found or expired' });
+        return;
+      }
+      res.status(200).json({ ok: true });
+    } catch (err: unknown) {
+      logger.error('Unexpected error attaching referral code', { error: (err as Error).message });
+      res.status(500).json({ error: 'An unexpected error occurred' });
+    }
+  },
+
   /**
    * POST /api/v1/guest-sessions/:id/selections
    * Saves the 5 books the user chose from the recommendation results.
@@ -32,7 +79,11 @@ export const guestController = {
     }
 
     try {
-      const result = await guestService.saveSelections(id, parsed.data.chosenBookIds);
+      const result = await guestService.saveSelections(
+        id,
+        parsed.data.chosenBookIds,
+        parsed.data.dislikedBookIds,
+      );
       if (!result) {
         res.status(404).json({ error: 'Session not found or expired' });
         return;

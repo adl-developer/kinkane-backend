@@ -29,12 +29,36 @@ const router = Router();
  * user's reading list (user_books) and interaction signals (user_interactions)
  * when they create an account.
  *
+ * Books the user swiped away on that screen can be sent in the same call.
+ * They're parked on the guest session and promoted into the user's permanent
+ * rejection history at registration, after which they are filtered out of
+ * every recommendation surface — quiz results, the personalized feed, "you
+ * may also like", and recommendation emails.
+ *
  * Params: id — the guestSessionId returned by POST /recommendations
- * Body:   { chosenBookIds: number[] }  — 1 to 5 book IDs
+ * Body:   { chosenBookIds: number[],      — 1 to 5 book IDs
+ *           dislikedBookIds?: number[] }  — books swiped away, optional
  * Returns 200: { ok: true }
  * Errors: 400 invalid UUID or validation failure | 404 session not found or expired
  */
 router.post('/:id/selections', guestSessionLimiter, guestController.saveSelections);
+
+/**
+ * POST /api/v1/guest-sessions/:id/referral
+ *
+ * Parks a referral code on the guest session so it survives until the user
+ * creates an account. Call this when the app holds both a session and a code
+ * (from a /r/ link, a deep link, or the "Have an invite code?" field).
+ *
+ * The code is stored as given and only resolved at signup — an unknown code
+ * reads as "no referral" then, rather than failing onboarding here.
+ *
+ * Params: id — the guestSessionId
+ * Body:   { referralCode: string }
+ * Returns 200: { ok: true }
+ * Errors: 400 invalid UUID or code format | 404 session not found or expired
+ */
+router.post('/:id/referral', guestSessionLimiter, guestController.attachReferral);
 
 /**
  * GET /api/v1/guest-sessions/:id

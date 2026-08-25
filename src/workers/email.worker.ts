@@ -15,9 +15,13 @@ import {
   sendFollowRequestEmail,
   sendFollowAcceptedEmail,
   sendRateReviewReminderEmail,
-  sendPostCommentEmail,
-  sendPostLikeEmail,
+  sendSubscriptionConfirmedEmail,
+  sendSubscriptionPaymentFailedEmail,
+  sendSubscriptionCancelledEmail,
+  sendReferralInviteEmail,
+  sendOrderConfirmedEmail,
 } from '../emails';
+import { notificationPreferencesService } from '../services/notification-preferences.service';
 import { logger } from '../lib/logger';
 
 // ── Job processor ─────────────────────────────────────────────────────────────
@@ -63,6 +67,14 @@ async function processEmailJob(job: Job): Promise<void> {
     }
     case 'newsletter': {
       const { to, payload } = job.data as EmailJobMap['newsletter'];
+      // The opt-out check lives here rather than at the enqueue site so that
+      // every newsletter passes it, including anything enqueued by future
+      // admin or campaign tooling. Marketing mail sent to someone who
+      // unsubscribed is a compliance problem, not just an annoyance.
+      if (!(await notificationPreferencesService.isMarketingEnabledByEmail(to))) {
+        logger.info('Skipping newsletter for unsubscribed recipient', { to });
+        break;
+      }
       await sendNewsletterEmail(to, payload);
       break;
     }
@@ -96,14 +108,31 @@ async function processEmailJob(job: Job): Promise<void> {
       await sendRateReviewReminderEmail(to, userName, book);
       break;
     }
-    case 'post-comment': {
-      const { to, name: userName, commenterName, bookTitle, commentPreview } = job.data as EmailJobMap['post-comment'];
-      await sendPostCommentEmail(to, userName, commenterName, bookTitle, commentPreview);
+    case 'subscription-confirmed': {
+      const { to, name: userName, plan, isFounding, currentPeriodEnd } =
+        job.data as EmailJobMap['subscription-confirmed'];
+      await sendSubscriptionConfirmedEmail(to, userName, { plan, isFounding, currentPeriodEnd });
       break;
     }
-    case 'post-like': {
-      const { to, name: userName, likerName, bookTitle } = job.data as EmailJobMap['post-like'];
-      await sendPostLikeEmail(to, userName, likerName, bookTitle);
+    case 'subscription-payment-failed': {
+      const { to, name: userName, amountCents, currency } =
+        job.data as EmailJobMap['subscription-payment-failed'];
+      await sendSubscriptionPaymentFailedEmail(to, userName, amountCents, currency);
+      break;
+    }
+    case 'subscription-cancelled': {
+      const { to, name: userName, accessEndsAt } = job.data as EmailJobMap['subscription-cancelled'];
+      await sendSubscriptionCancelledEmail(to, userName, accessEndsAt);
+      break;
+    }
+    case 'referral-invite': {
+      const { to, referrerName, link } = job.data as EmailJobMap['referral-invite'];
+      await sendReferralInviteEmail(to, referrerName, link);
+      break;
+    }
+    case 'order-confirmed': {
+      const { to, name: buyerName, payload } = job.data as EmailJobMap['order-confirmed'];
+      await sendOrderConfirmedEmail(to, buyerName, payload);
       break;
     }
     default: {
@@ -119,7 +148,7 @@ async function processEmailJob(job: Job): Promise<void> {
 export function startEmailWorker(): Worker {
   const worker = new Worker('emails', processEmailJob, {
     connection: bullConnection,
-    concurrency: 5, // process up to 5 emails simultaneously — respects SendGrid rate limits
+    concurrency: 5, // process up to 5 emails simultaneously — respects Resend rate limits
   });
 
   worker.on('completed', (job) => {

@@ -13,18 +13,20 @@ import {
   uniqueIndex,
   customType,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { users, readerTypeEnum } from './users';
 import { books, vector } from './books';
 
 // Shared shape for the dislikes object used in both guest sessions and user preferences.
 // Exported so recommendations.service.ts can import the canonical type.
-export interface Dislikes {
-  emotionalTone?: string[];
-  pacingStructure?: string[];
-  writingStyle?: string[];
-  genreFocus?: string[];
-  commitmentLevel?: string[];
-}
+//
+// Deliberately open: the categories and the labels inside them are owned by the
+// onboarding UI, not by this schema. Whatever the client sends is stored and fed
+// into the preference text as-is, so the frontend can add, rename or reword a
+// category without a backend deploy. The categories in use at the time of writing
+// are emotionalTone, contentSensitivity, pacingStructure, writingStyle, genreFocus
+// and commitmentLevel, but nothing here depends on that list.
+export type Dislikes = Record<string, string[]>;
 
 // ── Guest Sessions ─────────────────────────────────────────────────────────────
 // Temporary record created at the end of the onboarding flow (after the user
@@ -44,9 +46,17 @@ export const guestSessions = pgTable(
     // The 5 books the user chose from the recommendation results.
     // Null until the client calls POST /guest-sessions/:id/selections.
     chosenBookIds: jsonb('chosen_book_ids').$type<number[]>(),
+    // Books the user swiped away on that same recommendation list. Held here
+    // only until registration, when migrateGuestSession copies them into
+    // user_disliked_books — a guest has no user row to hang them off yet.
+    dislikedBookIds: jsonb('disliked_book_ids').$type<number[]>(),
     readerType: readerTypeEnum('reader_type'),
     // Ties back to recommendation_cache.input_hash so we can retrieve the result if needed
     recommendationHash: varchar('recommendation_hash', { length: 64 }),
+    // Referral code captured before the account existed — someone who follows an
+    // invite link lands in onboarding first, and the code has to survive until
+    // there is a user row to attribute. Read once by signup, then irrelevant.
+    referralCode: varchar('referral_code', { length: 32 }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   },
@@ -94,7 +104,10 @@ export const userInteractions = pgTable(
     bookId: integer('book_id')
       .notNull()
       .references(() => books.id, { onDelete: 'cascade' }),
-    // 'view' | 'purchase' | 'high_rating' | 'wishlist' | 'chosen_from_recommendation'
+    // 'view' | 'like' | 'want_to_read' | 'reading' | 'read' | 'purchase' |
+    // 'high_rating' | 'chosen_from_recommendation'
+    // See INTERACTION_TYPES / INTERACTION_WEIGHTS in services/interactions.service.ts,
+    // which owns what each type is worth to the trending feed.
     type: varchar('type', { length: 50 }).notNull(),
     // Relative importance of this signal — higher = stronger influence on future recommendations
     weight: real('weight').notNull().default(1.0),
@@ -104,8 +117,18 @@ export const userInteractions = pgTable(
     userIdIdx: index('idx_user_interactions_user_id').on(t.userId),
     bookIdIdx: index('idx_user_interactions_book_id').on(t.bookId),
     typeIdx: index('idx_user_interactions_type').on(t.type),
-    // Supports the trending query: WHERE created_at > NOW()-30d GROUP BY book_id ORDER BY SUM(weight)
-    trendingIdx: index('idx_user_interactions_trending').on(t.createdAt, t.bookId),
+    // Supports the trending query, which now also filters on type:
+    //   WHERE created_at > NOW()-30d AND type IN (...) GROUP BY book_id
+    // Column order matters — created_at leads because it's the range predicate, and
+    // type before book_id lets the whole scan stay index-only.
+    trendingIdx: index('idx_user_interactions_trending').on(t.createdAt, t.type, t.bookId),
+    // Caps every non-view signal at one row per user per book, permanently. This is
+    // what makes like → unlike → like farming worth exactly one row. Views are
+    // excluded because they're meant to recur over time; they're rate-limited in
+    // Redis instead (see VIEW_DEDUPE_TTL).
+    uniqueNonView: uniqueIndex('idx_user_interactions_unique_non_view')
+      .on(t.userId, t.bookId, t.type)
+      .where(sql`${t.type} <> 'view'`),
   }),
 );
 
@@ -124,7 +147,9 @@ export const userBooks = pgTable(
       .references(() => books.id, { onDelete: 'cascade' }),
     // 'want_to_read' | 'reading' | 'read' — null means no reading status has been set
     status: varchar('status', { length: 20 }),
-    // 'chosen_from_onboarding' | 'manual' | 'recommended'
+    // 'chosen_from_onboarding' | 'chosen_from_quiz' | 'manual' | 'recommended'
+    // — 'chosen_from_quiz' is a pick from a retake (POST /recommendations/selections),
+    // as distinct from the first-run picks migrated in at signup.
     source: varchar('source', { length: 50 }).notNull().default('manual'),
     // Optional note the user writes about the book (max 1000 chars enforced at API layer)
     note: text('note'),

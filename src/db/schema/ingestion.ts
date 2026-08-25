@@ -10,7 +10,6 @@ import {
   varchar,
   text,
   timestamp,
-  jsonb,
   index,
 } from 'drizzle-orm/pg-core';
 
@@ -66,9 +65,23 @@ export const ingestionChunks = pgTable(
     bookCount: integer('book_count'),
     processedBooks: integer('processed_books').default(0),
     bullJobId: varchar('bull_job_id', { length: 200 }),
-    // Parsed book data stored here temporarily; cleared after chunk is processed.
-    // Keeps large payloads out of Redis.
-    data: jsonb('data'),
+    /**
+     * R2 key for the JSON file holding this chunk's parsed OnixProduct[].
+     * Null once the chunk has been processed and the R2 object deleted.
+     *
+     * Replaces an earlier `data` jsonb column that held the payload inline.
+     * onix_ingester moved these to R2 and shipped the column change as its own
+     * SQL file — but migration ownership for these tables moved to the server,
+     * so that file never ran on deploy and the ingester spent weeks failing
+     * with `column "data_key" does not exist`. It was eventually patched by
+     * hand on the database, which left this schema describing a column that no
+     * longer exists and omitting the one that does. Any migration generated
+     * from the stale definition would have dropped `data_key` and broken
+     * ingestion all over again.
+     *
+     * The ingester writes this column; the server only owns its migration.
+     */
+    dataKey: varchar('data_key', { length: 500 }),
     errorMessage: text('error_message'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),

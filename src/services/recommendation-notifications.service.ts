@@ -8,7 +8,9 @@ import {
   users,
   notificationPreferences,
   recommendationEmailLog,
+  userDislikedBooks,
 } from '../db/schema';
+import { buildWorkExclusionCondition, getUserExclusions } from '../lib/exclusions';
 import { enqueueEmail } from '../lib/email-queue';
 import { enqueuePush } from '../lib/push-queue';
 import { config } from '../config';
@@ -27,8 +29,13 @@ export interface UnsentRecommendation {
 
 /**
  * Runs a pgvector similarity search against the user's preference embedding,
- * excluding books already on their shelf and books we have already emailed them.
- * Returns the top match, or null if the pool is exhausted.
+ * excluding books already on their shelf, books we have already emailed them,
+ * and books they have rejected. Returns the top match, or null if the pool is
+ * exhausted.
+ *
+ * Rejected books matter more here than anywhere else: an unwanted book in a
+ * feed is a scroll past, the same book in an unprompted email is us not
+ * listening.
  */
 export async function pickUnsentRecommendation(userId: number): Promise<UnsentRecommendation | null> {
   const [prefs] = await db
@@ -40,6 +47,11 @@ export async function pickUnsentRecommendation(userId: number): Promise<UnsentRe
   if (!prefs?.preferenceEmbedding) return null;
 
   const vectorLiteral = `[${prefs.preferenceEmbedding.join(',')}]`;
+
+  // Work-level exclusions can't be expressed as a join on book_id — they match
+  // other editions of a rejected book — so they come in as a WHERE predicate.
+  const exclusions = await getUserExclusions(userId);
+  const workExclusion = buildWorkExclusionCondition(exclusions.works);
 
   // Single query: LEFT JOIN exclusions let Postgres filter on indexed columns
   // rather than building a potentially large NOT IN (...) list client-side.
@@ -57,11 +69,17 @@ export async function pickUnsentRecommendation(userId: number): Promise<UnsentRe
       recommendationEmailLog,
       and(eq(recommendationEmailLog.bookId, books.id), eq(recommendationEmailLog.userId, userId)),
     )
+    .leftJoin(
+      userDislikedBooks,
+      and(eq(userDislikedBooks.bookId, books.id), eq(userDislikedBooks.userId, userId)),
+    )
     .where(
       and(
         sql`(${books.embedding} <=> ${vectorLiteral}::vector) < ${SIMILARITY_THRESHOLD}`,
         isNull(userBooks.bookId),
         isNull(recommendationEmailLog.bookId),
+        isNull(userDislikedBooks.bookId),
+        workExclusion,
       ),
     )
     .orderBy(sql`${books.embedding} <=> ${vectorLiteral}::vector`)

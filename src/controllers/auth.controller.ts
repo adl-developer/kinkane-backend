@@ -3,6 +3,32 @@ import { z } from 'zod';
 import { authService } from '../services/auth.service';
 import { AuthenticatedRequest } from '../middleware/auth.middleware';
 import { logger } from '../lib/logger';
+import { geoService } from '../services/geo.service';
+import type { SignupContext } from '../services/auth.service';
+
+// Referral codes are Crockford base32 (no I/L/O/U), but accept anything of the
+// right shape and let the lookup decide — a typo'd code has to read as "no
+// referral", never as a 400 that blocks the account.
+const referralCodeSchema = z.string().trim().regex(/^[0-9A-Za-z]{6,32}$/).optional();
+
+const channelSchema = z.enum(['whatsapp', 'sms', 'email', 'copy', 'link']).optional();
+
+/**
+ * Assembles the referral/geography context for a signup.
+ *
+ * Never throws: geolocation is best-effort, and an account must be creatable
+ * when it is unconfigured or fails.
+ */
+async function buildSignupContext(
+  req: Request,
+  data: { referralCode?: string; referralChannel?: string },
+): Promise<SignupContext> {
+  return {
+    referralCode: data.referralCode,
+    channel: data.referralChannel,
+    country: await geoService.resolveFromRequest(req),
+  };
+}
 
 const signupSchema = z.object({
   name: z.string().min(1, 'Name is required').max(100),
@@ -15,8 +41,12 @@ const signupSchema = z.object({
     .regex(/[a-z]/, 'Password must contain at least one lowercase letter')
     .regex(/[0-9]/, 'Password must contain at least one number')
     .regex(/[!@#$%^&*()\-_+=\[\]{}|;:,.<>?`~]/, 'Password must contain at least one special character'),
-  // Required — the user always goes through onboarding before creating an account
-  guestSessionId: z.string().uuid(),
+  // Optional — most users go through onboarding first, but it's not required
+  guestSessionId: z.string().uuid().optional(),
+  // Referral code, when the user arrived through an invite link or typed one on
+  // the signup screen. Falls back to whatever is parked on the guest session.
+  referralCode: referralCodeSchema,
+  referralChannel: channelSchema,
 });
 
 const loginSchema = z.object({
@@ -36,6 +66,8 @@ const socialSchema = z.object({
   idToken: z.string().min(1),
   // Optional for returning users; required for brand-new accounts (enforced in the service layer)
   guestSessionId: z.string().uuid().optional(),
+  referralCode: referralCodeSchema,
+  referralChannel: channelSchema,
 });
 
 const deleteAccountSchema = z.object({
@@ -85,7 +117,8 @@ export const authController = {
     const { name, email, password, guestSessionId } = parsed.data;
 
     try {
-      const { user, tokens } = await authService.signup(name, email, password, guestSessionId);
+      const context = await buildSignupContext(req, parsed.data);
+      const { user, tokens } = await authService.signup(name, email, password, guestSessionId, context);
       res.status(201).json({
         user,
         accessToken: tokens.accessToken,
@@ -329,9 +362,11 @@ export const authController = {
     }
 
     try {
+      const context = await buildSignupContext(req, parsed.data);
       const { user, tokens, isNewUser } = await authService.socialLogin(
         parsed.data.idToken,
         parsed.data.guestSessionId,
+        context,
       );
       res.status(isNewUser ? 201 : 200).json({
         user,

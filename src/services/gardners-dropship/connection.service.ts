@@ -27,6 +27,41 @@ const SFTP_KEEPALIVE_OPTIONS = {
   readyTimeout: 20_000,
 };
 
+/**
+ * Whether talking to Gardners is currently forbidden.
+ *
+ * **In development, nothing reaches Gardners' SFTP at all** — not an order
+ * file, not an ack poll, not a directory listing. A developer running the API
+ * locally with production credentials in `.env` (which is the normal setup
+ * here, since the catalogue feeds need them) would otherwise put real order
+ * files into a real supplier's HOMEORD directory as a side effect of clicking
+ * through a checkout. `TESTING=Y` on the order is not sufficient protection:
+ * it is a per-order flag someone can turn off, and it still transmits.
+ *
+ * This is the single choke point for the Home Delivery account, so the guard
+ * covers the queued fulfilment worker, the ack-polling cron, and the admin
+ * endpoint alike.
+ *
+ * `GARDNERS_DROPSHIP_ALLOW_IN_DEV=true` is the deliberate opt-out, and exists
+ * for exactly one reason: `scripts/gardners-dropship-test.ts` is a manual tool
+ * whose entire purpose is to talk to Gardners from a developer machine. It
+ * defaults to false, so the guarantee holds unless someone consciously sets it.
+ */
+export function isDropshipSftpBlocked(): boolean {
+  return config.nodeEnv === 'development' && !config.gardnersDropship.allowInDev;
+}
+
+/** Thrown instead of connecting when {@link isDropshipSftpBlocked} holds. */
+export class DropshipSftpBlockedError extends Error {
+  constructor() {
+    super(
+      'Refusing to contact Gardners SFTP: NODE_ENV is development. ' +
+        'Set GARDNERS_DROPSHIP_ALLOW_IN_DEV=true only if you intend to send real traffic to the supplier.',
+    );
+    this.name = 'DropshipSftpBlockedError';
+  }
+}
+
 function requireCredentials() {
   const { host, port, username, password } = config.gardnersDropship.sftp;
   if (!host || !username || !password) {
@@ -39,6 +74,12 @@ function requireCredentials() {
 }
 
 export async function withDropshipSftp<T>(fn: (client: SftpClient) => Promise<T>): Promise<T> {
+  // Checked before credentials, so a blocked environment fails the same way
+  // whether or not real credentials happen to be present.
+  if (isDropshipSftpBlocked()) {
+    throw new DropshipSftpBlockedError();
+  }
+
   const { host, port, username, password } = requireCredentials();
   const client = new SftpClient();
   await client.connect({ host, port, username, password, ...SFTP_KEEPALIVE_OPTIONS });

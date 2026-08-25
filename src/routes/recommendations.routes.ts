@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { requireAuth } from '../middleware/auth.middleware';
+import { requirePlus } from '../middleware/require-plus.middleware';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 import { recommendationsController } from '../controllers/recommendations.controller';
 import { recommendationsLimiter } from '../middleware/rate-limit.middleware';
@@ -24,14 +25,17 @@ const router = Router();
  *   feelings: string[3],          — exactly 3 (preset labels or freeform ≤200 chars)
  *   bookIds?: number[],           — up to 10 books they've already enjoyed
  *   genres: string[3],            — exactly 3 from the allowed genre enum
- *   dislikes?: {                  — reading experiences to avoid (all sub-fields optional)
- *     emotionalTone?: string[],
- *     pacingStructure?: string[],
- *     writingStyle?: string[],
- *     genreFocus?: string[],
- *     commitmentLevel?: string[]  — "long book (500+ pages)" and/or "series commitment"
- *                                    apply hard SQL filters before the similarity search
- *   }
+ *   dislikes?: Record<string, string[]>
+ *                                 — reading experiences to avoid, grouped by whatever
+ *                                    category keys the onboarding UI uses (currently
+ *                                    emotionalTone, contentSensitivity, pacingStructure,
+ *                                    writingStyle, genreFocus, commitmentLevel). Keys and
+ *                                    labels are not validated against a fixed list — each
+ *                                    label is ≤200 chars and feeds the preference embedding.
+ *                                    The labels "long book (500+ pages)" and
+ *                                    "series commitment" additionally apply hard SQL
+ *                                    filters before the similarity search, in whichever
+ *                                    category they appear.
  * }
  *
  * Returns 200: {
@@ -39,6 +43,13 @@ const router = Router();
  *   guestSessionId: string,   — store this immediately; required for the next two steps
  *   expiresAt: string         — ISO timestamp when the guest session expires
  * }
+ * Unauthenticated by design — this is the guest onboarding flow and runs
+ * before an account exists. A guest has no rejection history to filter on;
+ * books they swipe away here are saved to the guest session and start
+ * applying once registration turns them into a user. A signed-in reader
+ * retaking the quiz goes through PATCH /refresh instead, which does apply
+ * their rejections.
+ *
  * Errors: 400 validation | 429 rate limit (20 req/hour — each uncached request calls Gemini)
  */
 router.post('/', recommendationsLimiter, recommendationsController.getRecommendations);
@@ -53,7 +64,11 @@ router.post('/', recommendationsLimiter, recommendationsController.getRecommenda
  * Note: the data model currently has no "region" preference — only
  * feelings (mood), genres, dislikes (avoid), and bookIds are stored.
  *
- * Returns 200: { preferences: { feelings, genres, dislikes, bookIds } }
+ * `dislikedBookIds` is every book the user has ever swiped away, accumulated
+ * across onboarding and every subsequent quiz. It is read from its own
+ * append-only table rather than the preferences row.
+ *
+ * Returns 200: { preferences: { feelings, genres, dislikes, bookIds, dislikedBookIds } }
  * Errors: 401 unauthenticated | 404 no preferences saved yet (e.g. never completed onboarding)
  */
 router.get('/preferences', requireAuth, (req: Request, res: Response) =>
@@ -84,16 +99,63 @@ router.get('/preferences', requireAuth, (req: Request, res: Response) =>
  *   feelings: string[3],
  *   bookIds?: number[],
  *   genres: string[3],
- *   dislikes?: { emotionalTone?, pacingStructure?, writingStyle?, genreFocus?, commitmentLevel? }
+ *   dislikes?: Record<string, string[]>  — see POST /recommendations above; open shape
  * }
  *
- * Returns 200: { preferences: { feelings, genres, dislikes, bookIds } }
+ * The body is strict: `dislikedBookIds` used to be accepted here and now
+ * belongs to POST /selections, so sending it returns 400 rather than silently
+ * dropping the user's swipes.
+ *
+ * Results never include books the user has rejected or already has on their
+ * shelf, whatever this body says — that comes from the server's own record
+ * (see getUserExclusions), so a client that sends nothing extra still gets a
+ * clean list.
+ *
+ * Returns 200: { preferences: { feelings, genres, dislikes, bookIds, dislikedBookIds } }
+ *              — dislikedBookIds is the full accumulated set, read-only here
  *      or, with ?includeRecommendations=true:
  *         { recommendations: [{ bookId, rank, explanation }] }
- * Errors: 400 validation | 401 unauthenticated | 429 rate limit
+ * Errors: 400 validation | 401 unauthenticated | 403 not a Plus member | 429 rate limit
  */
-router.patch('/refresh', requireAuth, recommendationsLimiter, (req: Request, res: Response) =>
+router.patch('/refresh', requireAuth, requirePlus, recommendationsLimiter, (req: Request, res: Response) =>
   recommendationsController.refresh(req as AuthenticatedRequest, res),
+);
+
+/**
+ * POST /api/v1/recommendations/selections
+ *
+ * Saves the books a signed-in user picked after retaking the quiz — the
+ * logged-in twin of POST /guest-sessions/:id/selections. Call it after
+ * PATCH /refresh?includeRecommendations=true, with the picks made from that
+ * response. Plus-gated for the same reason /refresh is: this only exists to
+ * finish a retake, and only Plus members can start one.
+ *
+ * Unlike the guest version, nothing is parked for later. There is already a
+ * user, so the chosen books go onto their shelf and into the interaction log
+ * immediately, and swiped-away books go straight into their permanent rejection
+ * history. This is the only way a signed-in user's rejections get recorded.
+ *
+ * Both lists feed the exclusion set, so a book picked or rejected here cannot
+ * come back in a later quiz, the personalized feed, "you may also like", or a
+ * recommendation email.
+ *
+ * A chosen book already on the shelf keeps the status, note and source the user
+ * gave it — this call never overwrites their own edits.
+ *
+ * Reader type is re-inferred from the new picks and recorded in the preference
+ * history, but `users.readerType` (what settings displays) is deliberately left
+ * unchanged — a retake is evidence about taste, not a decision the user made
+ * about how they want to be labelled.
+ *
+ * Body: { chosenBookIds: number[],      — 1 to 5 book IDs
+ *         dislikedBookIds?: number[] }  — books swiped away, optional, additive
+ * Returns 200: { readerType, books: [{ id, title, coverUrl }] }
+ *              — readerType is the freshly inferred value, null if inference failed
+ * Errors: 400 validation or unknown book ID | 401 unauthenticated |
+ *         403 not a Plus member | 429 rate limit
+ */
+router.post('/selections', requireAuth, requirePlus, recommendationsLimiter, (req: Request, res: Response) =>
+  recommendationsController.saveSelections(req as AuthenticatedRequest, res),
 );
 
 export default router;

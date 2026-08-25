@@ -6,12 +6,30 @@ import { db } from '../db';
 import { users, refreshTokens, userProviders, guestSessions, userPreferences, userInteractions, userBooks, userSubscriptions, subscriptionEvents, passwordResetTokens, emailVerificationTokens, books, bookContributors, notificationPreferences } from '../db/schema';
 import { config } from '../config';
 import { admin } from '../lib/firebase';
+import { adminNotificationsService } from './admin/notifications.service';
 import { logger } from '../lib/logger';
 import { enqueueEmail } from '../lib/email-queue';
 import { generateEmbedding } from '../lib/gemini';
 import { buildPreferenceText } from './recommendations.service';
+import { preferenceHistoryService } from './preference-history.service';
+import { dislikedBooksService } from './disliked-books.service';
+import { subscriptionStateService } from './subscriptions/state.service';
+import { checkoutService } from './subscriptions/checkout.service';
+import { referralsService } from './referrals.service';
+import { referralScoringService } from './referral-scoring.service';
+import type { CountrySource } from './geo.service';
+import type { SubscriptionTier, SubscriptionStatus, SubscriptionPlan } from '../db/schema';
 
 const BCRYPT_ROUNDS = 12;
+
+/**
+ * How old a Firebase ID token's `auth_time` may be and still count as "fresh"
+ * proof of ownership for a sensitive action. Set generously — the client has
+ * to prompt a re-auth, wait for the OS provider sheet, and post — but well
+ * inside a Firebase ID token's own 1-hour validity so a cached token can't
+ * stand in for a real just-now sign-in.
+ */
+const MAX_TOKEN_AGE_SECONDS = 5 * 60;
 
 export interface TokenPair {
   accessToken: string;
@@ -27,12 +45,23 @@ export interface AuthUser {
 
 export interface MeUser extends AuthUser {
   photoUrl: string | null;
+  /** E.164, or null. Shown on the account screen and prefilled at checkout. */
+  phone: string | null;
   joinedYear: number;
   subscription: {
-    tier: 'free' | 'plus';
-    status: 'active' | 'trialing' | 'expired' | 'cancelled';
+    tier: SubscriptionTier;
+    // Sourced from the enum rather than restated, so adding a Stripe-driven
+    // status (past_due, incomplete) can't leave this contract behind.
+    status: SubscriptionStatus;
+    // Which recurring interval was bought — null while free or trialing.
+    plan: SubscriptionPlan | null;
     trialDaysLeft: number | null;
     trialEndsAt: Date | null;
+    // End of the paid period Stripe has already collected for. Read together
+    // with cancelAtPeriodEnd: it's a renewal date unless that flag is set, in
+    // which case it's the date access actually ends.
+    currentPeriodEnd: Date | null;
+    cancelAtPeriodEnd: boolean;
   };
   providers: string[];
 }
@@ -43,6 +72,26 @@ function hashToken(raw: string): string {
 
 function generateRefreshToken(): string {
   return crypto.randomBytes(40).toString('hex');
+}
+
+/**
+ * Stops a blacklisted account signing in.
+ *
+ * Checked **after** the password, deliberately. Checking first would turn the
+ * login form into an oracle for which addresses are blocked, and someone who
+ * types the wrong password should get the same answer either way.
+ *
+ * The message says the account is blocked rather than pretending the password
+ * is wrong: a blocked customer who keeps resetting a password that works is a
+ * support ticket nobody can resolve.
+ */
+function assertNotBlacklisted(blacklistedAt: Date | null): void {
+  if (blacklistedAt !== null) {
+    throw Object.assign(new Error('This account has been suspended. Contact support.'), {
+      statusCode: 403,
+      code: 'ACCOUNT_SUSPENDED',
+    });
+  }
 }
 
 export function signAccessToken(userId: number, email: string): string {
@@ -116,6 +165,8 @@ async function generatePreferenceEmbedding(
  * if any step fails the user account is still fully usable; the error is logged.
  *
  * Steps:
+ *  0. Promote books swiped away during onboarding into the user's permanent
+ *     rejection history (user_disliked_books)
  *  1. Save structured preferences (feelings, genres, dislikes, liked books)
  *  2. Seed reading list with the 5 chosen books (status: want_to_read)
  *  3. Record those choices as interactions (type: chosen_from_recommendation)
@@ -145,6 +196,14 @@ async function migrateGuestSession(userId: number, sessionId: string): Promise<v
     }
 
     const session = deleted[0];
+    const dislikedBookIds = session.dislikedBookIds ?? [];
+
+    // 0. Books swiped away during onboarding become the user's permanent
+    // rejection history. Written before the history snapshot below so that
+    // snapshot records the set the user actually finished onboarding with.
+    if (dislikedBookIds.length > 0) {
+      await dislikedBooksService.record(userId, dislikedBookIds, 'onboarding_selection', { tx });
+    }
 
     // 1. User preferences
     await tx.insert(userPreferences).values({
@@ -154,6 +213,22 @@ async function migrateGuestSession(userId: number, sessionId: string): Promise<v
       genres: session.genres,
       dislikes: session.dislikes,
     });
+
+    // Baseline entry in the preference audit log. Runs inside the transaction
+    // so it rolls back with the rest if migration fails. Reader type is passed
+    // explicitly because the users row isn't updated until a few lines below.
+    await preferenceHistoryService.record(
+      userId,
+      {
+        feelings: session.feelings,
+        bookIds: session.bookIds,
+        genres: session.genres,
+        dislikes: session.dislikes,
+        dislikedBookIds,
+      },
+      'onboarding',
+      { readerType: session.readerType ?? null, tx },
+    );
 
     // Generate and store the preference embedding outside the transaction
     // (Gemini call — non-blocking, failure is logged but does not affect signup).
@@ -185,14 +260,19 @@ async function migrateGuestSession(userId: number, sessionId: string): Promise<v
         )
         .onConflictDoNothing();
 
-      await tx.insert(userInteractions).values(
-        (session.chosenBookIds ?? []).map((bookId) => ({
-          userId,
-          bookId,
-          type: 'chosen_from_recommendation',
-          weight: 1.0,
-        })),
-      );
+      await tx
+        .insert(userInteractions)
+        .values(
+          (session.chosenBookIds ?? []).map((bookId) => ({
+            userId,
+            bookId,
+            type: 'chosen_from_recommendation',
+            weight: 1.0,
+          })),
+        )
+        // A repeated book ID in chosenBookIds would now violate the partial unique
+        // index on (user_id, book_id, type) and abort the whole migration transaction.
+        .onConflictDoNothing();
     }
 
     logger.info('Guest session migrated successfully', { sessionId, userId });
@@ -243,6 +323,61 @@ async function issueEmailVerification(userId: number, email: string, name: strin
   });
 }
 
+// ── Referral attribution ──────────────────────────────────────────────────────
+
+/**
+ * Everything a new account needs to be placed in the referral competition:
+ * which code brought them (if any), and where they are.
+ *
+ * Optional throughout — signup predates all of this, and an account must still
+ * be creatable when no code was used, when geolocation is unconfigured, or when
+ * the lookup simply failed.
+ */
+export interface SignupContext {
+  referralCode?: string;
+  country?: { code: string | null; source: CountrySource };
+  channel?: string;
+  clickId?: number | null;
+}
+
+/**
+ * Resolves which referral code applies: an explicit one from the request wins,
+ * otherwise whatever was parked on the guest session when the user followed an
+ * invite link before creating an account.
+ */
+async function resolveReferralCode(
+  explicit: string | undefined,
+  guestSessionId: string | undefined,
+): Promise<string | undefined> {
+  if (explicit) return explicit;
+  if (!guestSessionId) return undefined;
+
+  const [session] = await db
+    .select({ referralCode: guestSessions.referralCode })
+    .from(guestSessions)
+    .where(eq(guestSessions.id, guestSessionId))
+    .limit(1);
+
+  return session?.referralCode ?? undefined;
+}
+
+/**
+ * Circuit detection, run after the signup transaction has committed.
+ *
+ * Deliberately fire-and-forget: it reads and writes rows belonging to users far
+ * outside the one signing up, and no scoring bug should ever be able to stop an
+ * account being created. Attribution is the durable fact; circuits are derived
+ * from it and can be recomputed at any time.
+ */
+function detectCircuitsInBackground(referredUserId: number): void {
+  referralScoringService.detectCircuits(referredUserId).catch((err) => {
+    logger.error('Circuit detection failed after signup', {
+      referredUserId,
+      error: (err as Error).message,
+    });
+  });
+}
+
 // ── Auth service ──────────────────────────────────────────────────────────────
 
 export const authService = {
@@ -250,7 +385,8 @@ export const authService = {
     name: string,
     email: string,
     password: string,
-    guestSessionId: string,
+    guestSessionId: string | undefined,
+    context: SignupContext = {},
   ): Promise<{ user: AuthUser; tokens: TokenPair }> {
     const existing = await db
       .select({ id: users.id })
@@ -269,34 +405,76 @@ export const authService = {
     const trialEndsAt = new Date();
     trialEndsAt.setDate(trialEndsAt.getDate() + TRIAL_DAYS);
 
+    const referralCode = await resolveReferralCode(context.referralCode, guestSessionId);
+
     // Atomic: user + subscription committed together — if either insert fails,
     // neither row persists and the client can safely retry without hitting a 409.
     const user = await db.transaction(async (tx) => {
       const [u] = await tx
         .insert(users)
-        .values({ name: name.trim(), email: email.toLowerCase().trim(), passwordHash })
+        .values({
+          name: name.trim(),
+          email: email.toLowerCase().trim(),
+          passwordHash,
+          // Resolved once, here, and then frozen — see geo.service for why it is
+          // never re-derived on later requests.
+          countryCode: context.country?.code ?? null,
+          countrySource: context.country?.source ?? 'unknown',
+          countryResolvedAt: new Date(),
+        })
         .returning({ id: users.id, name: users.name, email: users.email, emailVerified: users.emailVerified });
-      await tx.insert(userSubscriptions).values({ userId: u.id, tier: 'plus', status: 'trialing', trialEndsAt });
+      const [sub] = await tx
+        .insert(userSubscriptions)
+        .values({ userId: u.id, tier: 'plus', status: 'trialing', trialEndsAt })
+        .returning();
       await tx.insert(subscriptionEvents).values({ userId: u.id, event: 'started', newTrialEndsAt: trialEndsAt });
+      // Opens the first history interval, so a user's state timeline starts at
+      // signup rather than at whatever their first change happens to be.
+      await subscriptionStateService.recordHistory(tx, sub, 'signup', null);
       await tx.insert(notificationPreferences).values({ userId: u.id });
+
+      // Attribution rides the same transaction as the account it describes.
+      // Written outside it, a referral row could survive a signup that rolled
+      // back, or vanish while the account it belongs to persists.
+      if (referralCode) {
+        await referralsService.attributeSignup(tx, {
+          referredUserId: u.id,
+          code: referralCode,
+          redeemerCountry: context.country?.code ?? null,
+          channel: context.channel,
+          clickId: context.clickId,
+        });
+      }
+
       return u;
     });
 
+    if (referralCode) detectCircuitsInBackground(user.id);
+
     const tokens = await issueTokenPair(user.id, user.email);
 
-    migrateGuestSession(user.id, guestSessionId).catch((err) => {
-      logger.error('Guest session migration failed after signup', {
-        guestSessionId,
-        userId: user.id,
-        error: (err as Error).message,
+    if (guestSessionId) {
+      migrateGuestSession(user.id, guestSessionId).catch((err) => {
+        logger.error('Guest session migration failed after signup', {
+          guestSessionId,
+          userId: user.id,
+          error: (err as Error).message,
+        });
       });
-    });
+    }
 
     enqueueEmail('welcome', { to: user.email, name: user.name }).catch((err) => {
       logger.error('Failed to enqueue welcome email after signup', {
         userId: user.id,
         error: (err as Error).message,
       });
+    });
+
+    void adminNotificationsService.emit({
+      type: 'customer_registered',
+      title: 'New customer registered',
+      body: `${user.name} created an account.`,
+      userId: user.id,
     });
 
     issueEmailVerification(user.id, user.email, user.name).catch((err) => {
@@ -327,6 +505,8 @@ export const authService = {
     if (!user || !valid) {
       throw Object.assign(new Error('Invalid email or password'), { statusCode: 401 });
     }
+
+    assertNotBlacklisted(user.blacklistedAt);
 
     const tokens = await issueTokenPair(user.id, user.email);
 
@@ -363,7 +543,7 @@ export const authService = {
     }
 
     const [user] = await db
-      .select({ id: users.id, email: users.email })
+      .select({ id: users.id, email: users.email, blacklistedAt: users.blacklistedAt })
       .from(users)
       .where(eq(users.id, consumed.userId))
       .limit(1);
@@ -371,6 +551,14 @@ export const authService = {
     if (!user) {
       throw Object.assign(new Error('User not found'), { statusCode: 401 });
     }
+
+    // Refreshing is signing in again, and has to be gated the same way.
+    // Without this a blacklisted user simply never logs in again: their client
+    // keeps trading a refresh token for a fresh pair, indefinitely, and the
+    // block only ever bites someone who happened to be signed out when it
+    // landed. The consumed token is already deleted above, so a rejected
+    // refresh also ends that session rather than leaving it retryable.
+    assertNotBlacklisted(user.blacklistedAt);
 
     return issueTokenPair(user.id, user.email);
   },
@@ -561,9 +749,89 @@ export const authService = {
     });
   },
 
-  async deleteAccount(userId: number, password: string): Promise<void> {
+  /**
+   * Confirms a sensitive action is really being taken by the account owner,
+   * not just whoever is holding a valid session token. Accepts either the
+   * account password (for password-based accounts) or a fresh Firebase ID
+   * token from the same social provider they signed up with (for accounts
+   * with no password).
+   *
+   * "Fresh" is enforced by the caller's promise that this ID token comes
+   * from a re-authentication the app just prompted for. Firebase's own
+   * `auth_time` claim is checked against `MAX_TOKEN_AGE_SECONDS` below so a
+   * long-lived token cached elsewhere on the device can't stand in for a
+   * fresh sign-in.
+   */
+  async verifyOwnership(
+    userId: number,
+    credential: { password?: string; idToken?: string },
+  ): Promise<void> {
+    if (credential.password) {
+      await this.verifyPassword(userId, credential.password);
+      return;
+    }
+    if (credential.idToken) {
+      await this.verifyFreshIdToken(userId, credential.idToken);
+      return;
+    }
+    throw Object.assign(new Error('A password or a fresh sign-in is required'), {
+      statusCode: 400,
+    });
+  },
+
+  /**
+   * Verifies a fresh Firebase ID token and confirms it belongs to a provider
+   * account already linked to `userId`. Same guarantee as `verifyPassword`
+   * for accounts that never had one.
+   */
+  async verifyFreshIdToken(userId: number, idToken: string): Promise<void> {
+    let decoded: admin.auth.DecodedIdToken;
+    try {
+      decoded = await admin.auth().verifyIdToken(idToken);
+    } catch {
+      throw Object.assign(new Error('Invalid or expired sign-in token'), { statusCode: 401 });
+    }
+
+    // Freshness — a Firebase ID token stays valid for an hour, so `auth_time`
+    // (when the user actually signed in) is what says whether this reflects
+    // a real just-now re-auth or an hour-old cached login.
+    const authTime = decoded.auth_time * 1000;
+    if (Date.now() - authTime > MAX_TOKEN_AGE_SECONDS * 1000) {
+      throw Object.assign(new Error('Sign in again to confirm this change'), { statusCode: 401 });
+    }
+
+    const provider = decoded.firebase.sign_in_provider;
+    const providerUid = decoded.uid;
+
+    const [linked] = await db
+      .select({ id: userProviders.id })
+      .from(userProviders)
+      .where(
+        and(
+          eq(userProviders.userId, userId),
+          eq(userProviders.provider, provider),
+          eq(userProviders.providerUid, providerUid),
+        ),
+      )
+      .limit(1);
+
+    if (!linked) {
+      // The token is valid Firebase but belongs to a different account
+      // than the caller's session — treat identically to a wrong password,
+      // so probing this endpoint can't reveal which provider account maps
+      // to which internal user.
+      throw Object.assign(new Error('Incorrect sign-in'), { statusCode: 401 });
+    }
+  },
+
+  /**
+   * Confirms a sensitive action is really being taken by the account owner,
+   * not just whoever is holding a valid session token. Shared by every
+   * password-confirmed flow (account deletion, changing subscription plan).
+   */
+  async verifyPassword(userId: number, password: string): Promise<void> {
     const [user] = await db
-      .select({ id: users.id, name: users.name, email: users.email, passwordHash: users.passwordHash })
+      .select({ passwordHash: users.passwordHash })
       .from(users)
       .where(eq(users.id, userId))
       .limit(1);
@@ -583,6 +851,32 @@ export const authService = {
     if (!valid) {
       throw Object.assign(new Error('Incorrect password'), { statusCode: 401 });
     }
+  },
+
+  async deleteAccount(userId: number, password: string): Promise<void> {
+    const [user] = await db
+      .select({ id: users.id, name: users.name, email: users.email })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+
+    if (!user) {
+      throw Object.assign(new Error('User not found'), { statusCode: 404 });
+    }
+
+    await this.verifyPassword(userId, password);
+
+    // Stop billing BEFORE the row goes. Deleting the user cascades away
+    // user_subscriptions, and with it the only record of which Stripe
+    // subscription belonged to them — so a subscription not cancelled by this
+    // point carries on charging a card forever, with nothing left in our
+    // database tying it back to anyone.
+    //
+    // This never throws. Deletion is a right the user is exercising, and
+    // Stripe being unreachable is our problem, not a reason to refuse it; a
+    // failure is logged loudly with every identifier needed to finish the job
+    // by hand.
+    await checkoutService.terminateForAccountDeletion(userId);
 
     // Explicitly revoke tokens before deleting the user row so there is no
     // window where a valid token exists for a non-existent account (regardless
@@ -608,6 +902,7 @@ export const authService = {
         email: users.email,
         emailVerified: users.emailVerified,
         photoUrl: users.photoUrl,
+        phone: users.phone,
         createdAt: users.createdAt,
       })
       .from(users)
@@ -630,24 +925,10 @@ export const authService = {
 
     // Lazy write: if the trial deadline has passed but nothing has flipped the
     // row yet (the cron sweep runs periodically, not instantly), do it now so
-    // status/tier reflect reality and the transition is recorded.
-    if (sub.status === 'trialing' && sub.trialEndsAt && sub.trialEndsAt < new Date()) {
-      const expiredAt = new Date();
-      const previousTrialEndsAt = sub.trialEndsAt;
-      await db.transaction(async (tx) => {
-        await tx
-          .update(userSubscriptions)
-          .set({ status: 'expired', tier: 'free', trialExpiredAt: expiredAt, updatedAt: expiredAt })
-          .where(eq(userSubscriptions.id, sub!.id));
-        await tx.insert(subscriptionEvents).values({
-          userId,
-          event: 'expired',
-          previousTrialEndsAt,
-          newTrialEndsAt: null,
-        });
-      });
-      sub = { ...sub, status: 'expired', tier: 'free', trialExpiredAt: expiredAt };
-    }
+    // status/tier reflect reality and the transition is recorded. Returns null
+    // if there was nothing to do or another writer got there first, in which
+    // case the row we already read is still the truth.
+    sub = (await subscriptionStateService.expireTrialIfDue(sub)) ?? sub;
 
     const providerRows = await db
       .select({ provider: userProviders.provider })
@@ -668,8 +949,11 @@ export const authService = {
       subscription: {
         tier: sub.tier,
         status: sub.status,
+        plan: sub.plan,
         trialDaysLeft,
         trialEndsAt: sub.trialEndsAt,
+        currentPeriodEnd: sub.currentPeriodEnd,
+        cancelAtPeriodEnd: sub.cancelAtPeriodEnd,
       },
       providers: providerRows.map((r) => r.provider),
     };
@@ -690,6 +974,7 @@ export const authService = {
   async socialLogin(
     idToken: string,
     guestSessionId: string | undefined,
+    context: SignupContext = {},
   ): Promise<{ user: AuthUser; tokens: TokenPair; isNewUser: boolean }> {
     let decoded: admin.auth.DecodedIdToken;
     try {
@@ -717,13 +1002,21 @@ export const authService = {
 
     if (existingProvider) {
       const [user] = await db
-        .select({ id: users.id, name: users.name, email: users.email, emailVerified: users.emailVerified })
+        .select({
+          id: users.id, name: users.name, email: users.email,
+          emailVerified: users.emailVerified, blacklistedAt: users.blacklistedAt,
+        })
         .from(users)
         .where(eq(users.id, existingProvider.userId))
         .limit(1);
 
+      // Same gate as the password login. A block that stops one sign-in method
+      // and waves through "Continue with Google" is not a block.
+      assertNotBlacklisted(user.blacklistedAt);
+
       const tokens = await issueTokenPair(user.id, user.email);
-      return { user, tokens, isNewUser: false };
+      const { blacklistedAt: _blacklistedAt, ...safeUser } = user;
+      return { user: safeUser, tokens, isNewUser: false };
     }
 
     // 2. Check if a user with the same email already exists (account linking)
@@ -734,6 +1027,10 @@ export const authService = {
       .limit(1);
 
     if (existingUser) {
+      // Checked before the provider is linked, not after: a blacklisted account
+      // must not quietly gain a new sign-in method on the way to being refused.
+      assertNotBlacklisted(existingUser.blacklistedAt);
+
       await db.insert(userProviders).values({ userId: existingUser.id, provider, providerUid });
 
       // Backfill photo if missing
@@ -749,45 +1046,77 @@ export const authService = {
       };
     }
 
-    // 3. Brand new user — guestSessionId is required to migrate onboarding data
-    if (!guestSessionId) {
-      throw Object.assign(
-        new Error('guestSessionId is required when creating a new account via social login'),
-        { statusCode: 400 },
-      );
-    }
-
+    // 3. Brand new user — guestSessionId is optional and, if given, migrates onboarding data
     const trialEndsAt = new Date();
     trialEndsAt.setDate(trialEndsAt.getDate() + TRIAL_DAYS);
+
+    const referralCode = await resolveReferralCode(context.referralCode, guestSessionId);
 
     // Atomic: user + provider link + subscription committed together.
     const newUser = await db.transaction(async (tx) => {
       const [u] = await tx
         .insert(users)
-        .values({ name, email, photoUrl, emailVerified: true })
+        .values({
+          name,
+          email,
+          photoUrl,
+          emailVerified: true,
+          countryCode: context.country?.code ?? null,
+          countrySource: context.country?.source ?? 'unknown',
+          countryResolvedAt: new Date(),
+        })
         .returning({ id: users.id, name: users.name, email: users.email, emailVerified: users.emailVerified });
       await tx.insert(userProviders).values({ userId: u.id, provider, providerUid });
-      await tx.insert(userSubscriptions).values({ userId: u.id, tier: 'plus', status: 'trialing', trialEndsAt });
+      const [sub] = await tx
+        .insert(userSubscriptions)
+        .values({ userId: u.id, tier: 'plus', status: 'trialing', trialEndsAt })
+        .returning();
       await tx.insert(subscriptionEvents).values({ userId: u.id, event: 'started', newTrialEndsAt: trialEndsAt });
+      await subscriptionStateService.recordHistory(tx, sub, 'signup', null);
       await tx.insert(notificationPreferences).values({ userId: u.id });
+
+      // Social signup is a signup: it earns the referrer points exactly as the
+      // email path does. Easy to overlook, and the two paths diverging would
+      // mean a whole class of referral silently scoring nothing.
+      if (referralCode) {
+        await referralsService.attributeSignup(tx, {
+          referredUserId: u.id,
+          code: referralCode,
+          redeemerCountry: context.country?.code ?? null,
+          channel: context.channel,
+          clickId: context.clickId,
+        });
+      }
+
       return u;
     });
 
+    if (referralCode) detectCircuitsInBackground(newUser.id);
+
     const tokens = await issueTokenPair(newUser.id, newUser.email);
 
-    migrateGuestSession(newUser.id, guestSessionId).catch((err) => {
-      logger.error('Guest session migration failed after social login', {
-        guestSessionId,
-        userId: newUser.id,
-        error: (err as Error).message,
+    if (guestSessionId) {
+      migrateGuestSession(newUser.id, guestSessionId).catch((err) => {
+        logger.error('Guest session migration failed after social login', {
+          guestSessionId,
+          userId: newUser.id,
+          error: (err as Error).message,
+        });
       });
-    });
+    }
 
     enqueueEmail('welcome', { to: newUser.email, name: newUser.name }).catch((err) => {
       logger.error('Failed to enqueue welcome email after social signup', {
         userId: newUser.id,
         error: (err as Error).message,
       });
+    });
+
+    void adminNotificationsService.emit({
+      type: 'customer_registered',
+      title: 'New customer registered',
+      body: `${newUser.name} created an account.`,
+      userId: newUser.id,
     });
 
     return { user: newUser, tokens, isNewUser: true };

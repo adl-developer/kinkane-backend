@@ -1,0 +1,204 @@
+<!doctype html>
+<!--
+  Performs a real Google OAuth round trip and prints the resulting Firebase ID
+  token, so POST /api/v1/auth/social can be tested with a genuine
+  sign_in_provider of "google.com".
+
+  Serve it over http — Firebase rejects file:// origins:
+
+      python3 -m http.server 5555 --directory server/scripts
+
+  then open http://localhost:5555/google-signin-test.html. "localhost" is
+  already an authorized domain in the Firebase project, and Google sign-in is
+  already enabled.
+
+  ⚠️  Needs a *Web* app's apiKey. This project registers only Android and iOS
+  apps, whose keys are restricted to their own platforms, so this page will not
+  work until someone adds a Web app under Project settings → General → Your
+  apps. The key is remembered in localStorage between runs.
+
+  The page deliberately doesn't call the API itself — CORS is restricted to
+  config.appUrl. Copy the curl command it prints and run that instead.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kinkané — Google sign-in test harness</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font: 15px/1.55 ui-sans-serif, -apple-system, system-ui, sans-serif;
+    max-width: 46rem; margin: 0 auto; padding: 2.5rem 1.25rem 4rem;
+  }
+  h1 { font-size: 1.35rem; margin: 0 0 .35rem; }
+  p.sub { margin: 0 0 2rem; opacity: .7; }
+  fieldset { border: 1px solid color-mix(in srgb, currentColor 20%, transparent); border-radius: 8px; padding: 1rem 1.1rem 1.25rem; margin: 0 0 1.25rem; }
+  legend { padding: 0 .4rem; font-weight: 600; font-size: .85rem; text-transform: uppercase; letter-spacing: .04em; opacity: .65; }
+  label { display: block; font-size: .8rem; opacity: .75; margin: .7rem 0 .25rem; }
+  input, textarea {
+    width: 100%; box-sizing: border-box; padding: .5rem .6rem; border-radius: 6px;
+    border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+    background: color-mix(in srgb, currentColor 4%, transparent); color: inherit;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .82rem;
+  }
+  textarea { resize: vertical; }
+  button {
+    font: inherit; font-weight: 550; padding: .6rem 1.1rem; margin-top: 1rem;
+    border-radius: 6px; border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+    background: color-mix(in srgb, currentColor 8%, transparent); color: inherit; cursor: pointer;
+  }
+  button:hover { background: color-mix(in srgb, currentColor 14%, transparent); }
+  button.small { padding: .3rem .7rem; font-size: .78rem; margin: .5rem 0 0; }
+  #status { margin: 1rem 0 0; font-size: .87rem; min-height: 1.4em; }
+  .err { color: #c0392b; }
+  .ok { color: #1e8449; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: .3rem .9rem; margin: .8rem 0 0; font-size: .85rem; }
+  dt { opacity: .6; }
+  dd { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
+  dd.flag-good { color: #1e8449; font-weight: 600; }
+  dd.flag-bad { color: #c0392b; font-weight: 600; }
+  pre { background: color-mix(in srgb, currentColor 7%, transparent); padding: .8rem; border-radius: 6px; overflow-x: auto; font-size: .78rem; }
+  [hidden] { display: none !important; }
+  ol { padding-left: 1.2rem; font-size: .88rem; opacity: .85; }
+  li { margin: .3rem 0; }
+</style>
+</head>
+<body>
+
+<h1>Google sign-in test harness</h1>
+<p class="sub">Performs a real Google OAuth round trip and hands back the Firebase ID token, so <code>POST /api/v1/auth/social</code> can be tested with <code>sign_in_provider: google.com</code> rather than a synthetic custom token.</p>
+
+<fieldset>
+  <legend>Firebase web config</legend>
+  <ol>
+    <li>Firebase Console → Project settings → General → <strong>Your apps</strong> → add a <strong>Web</strong> app if there isn't one (this project only has Android and iOS registered).</li>
+    <li>Copy its <code>apiKey</code> below. The Android/iOS keys usually won't work here — they're restricted to their own apps.</li>
+  </ol>
+  <label for="apiKey">apiKey</label>
+  <input id="apiKey" placeholder="AIza…" autocomplete="off" spellcheck="false">
+  <label for="authDomain">authDomain</label>
+  <input id="authDomain" value="kinkane-7adf9.firebaseapp.com" spellcheck="false">
+  <label for="projectId">projectId</label>
+  <input id="projectId" value="kinkane-7adf9" spellcheck="false">
+  <button id="signIn">Sign in with Google</button>
+  <button id="signOutBtn" class="small" hidden>Sign out</button>
+  <p id="status"></p>
+</fieldset>
+
+<fieldset id="result" hidden>
+  <legend>ID token</legend>
+  <dl id="claims"></dl>
+  <label for="token">Raw token (valid 1 hour)</label>
+  <textarea id="token" rows="5" readonly></textarea>
+  <button id="copy" class="small">Copy token</button>
+  <label for="curl">Test the endpoint</label>
+  <pre id="curl"></pre>
+  <button id="copyCurl" class="small">Copy curl command</button>
+  <p class="sub" style="margin:1rem 0 0; font-size:.82rem;">The page can't call the API directly — CORS is restricted to <code>config.appUrl</code>. Run the command in a terminal instead.</p>
+</fieldset>
+
+<script type="module">
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
+import {
+  getAuth, GoogleAuthProvider, signInWithPopup, signOut,
+} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
+
+const $ = (id) => document.getElementById(id);
+const status = $('status');
+const say = (msg, cls = '') => { status.textContent = msg; status.className = cls; };
+
+// Remember the key between reloads — it's a public client key, and retyping it
+// every run is the main friction in using this page.
+const saved = localStorage.getItem('kinkane.apiKey');
+if (saved) $('apiKey').value = saved;
+
+let auth = null;
+
+function connect() {
+  const apiKey = $('apiKey').value.trim();
+  if (!apiKey) throw new Error('Enter the web app apiKey first.');
+  localStorage.setItem('kinkane.apiKey', apiKey);
+  const app = initializeApp({
+    apiKey,
+    authDomain: $('authDomain').value.trim(),
+    projectId: $('projectId').value.trim(),
+  }, 'harness-' + Date.now());
+  return getAuth(app);
+}
+
+function decode(jwt) {
+  const part = jwt.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+  return JSON.parse(decodeURIComponent(escape(atob(part))));
+}
+
+function render(idToken) {
+  const c = decode(idToken);
+  const provider = c.firebase?.sign_in_provider;
+  const rows = [
+    ['sign_in_provider', provider, provider === 'google.com'],
+    ['email', c.email, Boolean(c.email)],
+    ['email_verified', String(c.email_verified), c.email_verified === true],
+    ['uid', c.user_id ?? c.sub, true],
+    ['aud (project)', c.aud, c.aud === $('projectId').value.trim()],
+    ['expires', new Date(c.exp * 1000).toLocaleTimeString(), true],
+  ];
+  $('claims').innerHTML = rows.map(([k, v, good]) =>
+    `<dt>${k}</dt><dd class="${good ? 'flag-good' : 'flag-bad'}">${v ?? '—'}</dd>`).join('');
+
+  $('token').value = idToken;
+  // Single-quoted JSON so the token pastes safely into a shell.
+  $('curl').textContent =
+    `curl -sS -X POST http://localhost:3000/api/v1/auth/social \\\n` +
+    `  -H 'Content-Type: application/json' \\\n` +
+    `  -d '{"idToken":"${idToken}"}' | jq`;
+  $('result').hidden = false;
+  $('signOutBtn').hidden = false;
+
+  if (!c.email) {
+    say('Signed in, but the token carries no email claim — /auth/social will return 422.', 'err');
+  } else if (provider !== 'google.com') {
+    say(`Signed in, but sign_in_provider is "${provider}", not google.com.`, 'err');
+  } else {
+    say(`Real Google round trip complete for ${c.email}.`, 'ok');
+  }
+}
+
+$('signIn').addEventListener('click', async () => {
+  try {
+    say('Opening Google…');
+    auth = connect();
+    const provider = new GoogleAuthProvider();
+    // Force the chooser so a second run can use a different account.
+    provider.setCustomParameters({ prompt: 'select_account' });
+    const cred = await signInWithPopup(auth, provider);
+    render(await cred.user.getIdToken());
+  } catch (err) {
+    const code = err.code ?? '';
+    let hint = '';
+    if (code.includes('api-key')) hint = ' — the apiKey is wrong, or restricted to Android/iOS. Register a Web app in the Firebase console.';
+    else if (code.includes('unauthorized-domain')) hint = ' — add this page\'s hostname under Authentication → Settings → Authorized domains.';
+    else if (code.includes('popup-blocked')) hint = ' — allow popups for this page and retry.';
+    else if (code.includes('popup-closed')) hint = ' — the Google window was closed before finishing.';
+    say(`${code || 'Error'}: ${err.message}${hint}`, 'err');
+  }
+});
+
+$('signOutBtn').addEventListener('click', async () => {
+  if (auth) await signOut(auth);
+  $('result').hidden = true;
+  $('signOutBtn').hidden = true;
+  say('Signed out. Sign in again for a fresh token.');
+});
+
+const copyTo = (btn, getText) => btn.addEventListener('click', async () => {
+  await navigator.clipboard.writeText(getText());
+  const original = btn.textContent;
+  btn.textContent = 'Copied';
+  setTimeout(() => { btn.textContent = original; }, 1200);
+});
+copyTo($('copy'), () => $('token').value);
+copyTo($('copyCurl'), () => $('curl').textContent);
+</script>
+</body>
+</html>

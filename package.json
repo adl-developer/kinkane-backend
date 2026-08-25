@@ -12,15 +12,17 @@
     "db:init": "npm run db:migrate && tsx src/db/setup.ts",
     "db:reset": "tsx src/db/reset.ts",
     "gardners:dropship-test": "tsx scripts/gardners-dropship-test.ts",
+    "firebase:check": "tsx scripts/check-firebase.ts",
     "changelog": "node scripts/generate-changelog.mjs",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "admin:create": "tsx scripts/create-admin.ts",
+    "seed:demo": "tsx scripts/seed-demo.ts"
   },
   "dependencies": {
     "@bull-board/api": "^7.1.5",
     "@bull-board/express": "^7.1.5",
     "@google/generative-ai": "^0.24.1",
-    "@sendgrid/mail": "^8.1.6",
     "@types/cors": "^2.8.19",
     "bcryptjs": "^2.4.3",
     "bullmq": "^5.77.6",
@@ -37,7 +39,10 @@
     "p-limit": "^7.3.0",
     "postgres": "^3.4.4",
     "rate-limit-redis": "^5.0.0",
+    "resend": "^6.18.1",
     "ssh2-sftp-client": "^12.1.1",
+    "stripe": "^22.4.0",
+    "swagger-ui-express": "^5.0.1",
     "zod": "^3.23.8"
   },
   "devDependencies": {
@@ -48,6 +53,7 @@
     "@types/node": "^22.10.0",
     "@types/node-cron": "^3.0.11",
     "@types/ssh2-sftp-client": "^9.0.6",
+    "@types/swagger-ui-express": "^4.1.8",
     "conventional-changelog-cli": "^5.0.0",
     "drizzle-kit": "^0.27.2",
     "tsx": "^4.19.2",

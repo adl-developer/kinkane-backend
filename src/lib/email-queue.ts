@@ -1,7 +1,9 @@
 import IORedis from 'ioredis';
 import { Queue } from 'bullmq';
 import { config } from '../config';
-import type { RecommendedBook, NewsletterPayload, WeeklyDigestPayload } from '../emails';
+import type {
+  RecommendedBook, NewsletterPayload, WeeklyDigestPayload, OrderConfirmedPayload,
+} from '../emails';
 
 // BullMQ requires maxRetriesPerRequest: null — a separate connection from the
 // main redis instance (which uses maxRetriesPerRequest: 1 for rate limiting).
@@ -27,8 +29,15 @@ export interface EmailJobMap {
   'follow-request':       { to: string; receiverName: string; senderName: string };
   'follow-accepted':      { to: string; senderName: string; accepterName: string };
   'rate-review-reminder': { to: string; name: string; book: { title: string; author: string; url: string } };
-  'post-comment':         { to: string; name: string; commenterName: string; bookTitle: string; commentPreview: string };
-  'post-like':            { to: string; name: string; likerName: string; bookTitle: string };
+  // No post-like / post-comment jobs by design: social activity notifies via
+  // push and the in-app feed only, never email. See community.service.ts.
+  'subscription-confirmed':     { to: string; name: string; plan: 'monthly' | 'annual'; isFounding: boolean; currentPeriodEnd: string | null };
+  'subscription-payment-failed':{ to: string; name: string; amountCents: number | null; currency: string | null };
+  'subscription-cancelled':     { to: string; name: string; accessEndsAt: string | null };
+  // No videoUrl: the campaign copy has no slot for it, and the copy set in
+  // force is decided at send time rather than baked into the job.
+  'referral-invite':            { to: string; referrerName: string; link: string };
+  'order-confirmed':            { to: string; name: string | null; payload: OrderConfirmedPayload };
 }
 
 export type EmailJobName = keyof EmailJobMap;
@@ -37,6 +46,10 @@ export type EmailJobName = keyof EmailJobMap;
 // Lower number = higher priority. Password reset is critical (user is blocked).
 
 export const EMAIL_PRIORITY: Record<EmailJobName, number> = {
+  // Highest of the transactional set: somebody has just been charged, and for a
+  // guest this email is the only copy of their tracking code that will ever
+  // exist. It must not queue behind a newsletter.
+  'order-confirmed':    1,
   'password-reset':     1,
   'password-changed':   1,
   'account-deleted':    1,
@@ -51,8 +64,15 @@ export const EMAIL_PRIORITY: Record<EmailJobName, number> = {
   'follow-request':       7,
   'follow-accepted':      7,
   'rate-review-reminder': 7,
-  'post-comment':         7,
-  'post-like':            8,
+  // Billing mail is as critical as password mail — a payment failure the user
+  // doesn't see becomes a cancellation they didn't choose.
+  'subscription-confirmed':     1,
+  'subscription-payment-failed':1,
+  'subscription-cancelled':     1,
+  // A person is standing in the app waiting to see the invite land in their
+  // friend's inbox, which puts it above digests but below anything a user is
+  // actually blocked on.
+  'referral-invite':            5,
 };
 
 // ── Queue ─────────────────────────────────────────────────────────────────────

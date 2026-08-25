@@ -2,6 +2,8 @@ import {
   pgTable,
   serial,
   varchar,
+  text,
+  char,
   boolean,
   timestamp,
   integer,
@@ -39,8 +41,44 @@ export const users = pgTable(
     passwordHash: varchar('password_hash', { length: 500 }),
     photoUrl: varchar('photo_url', { length: 1000 }),
     emailVerified: boolean('email_verified').default(false).notNull(),
+    // E.164, or null — most accounts never supply one. Collected at checkout
+    // as a delivery contact and editable from the profile screen; it is not an
+    // identity or a login factor, and nothing authenticates against it.
+    phone: varchar('phone', { length: 32 }),
     shelfVisibility: shelfVisibilityEnum('shelf_visibility').notNull().default('public'),
     readerType: readerTypeEnum('reader_type'),
+    // ── Competition geography ──────────────────────────────────────────────
+    // ISO 3166-1 alpha-2, resolved once at signup and then immutable except by
+    // an admin correction. Deliberately not re-resolved on later logins: a user
+    // who travels must not silently move country mid-competition, and a field
+    // that drifts underneath the leaderboard is impossible to reason about.
+    //
+    // No foreign key to `countries` on purpose — a geo lookup can return a code
+    // the seed doesn't carry (AQ, or user-assigned codes like XK), and an FK
+    // would turn that into a failed signup. Unrecognised codes simply score
+    // nothing.
+    countryCode: char('country_code', { length: 2 }),
+    // How country_code was determined: 'header' (trusted CDN geo header),
+    // 'maxmind' (local GeoLite2 lookup), 'admin' (manual correction), or
+    // 'unknown'. Kept so the accuracy of the signal can be audited later
+    // without guessing which path produced any given row.
+    countrySource: varchar('country_source', { length: 20 }),
+    countryResolvedAt: timestamp('country_resolved_at', { withTimezone: true }),
+    // ── Blacklist ──────────────────────────────────────────────────────────
+    // Set from the admin console, from either the Customers list or a report.
+    // Null means in good standing; a timestamp means blocked. Stored as a time
+    // rather than a boolean so "when did this happen" is answerable without an
+    // audit table.
+    //
+    // What it blocks: signing in, and checking out. It deliberately does *not*
+    // delete or hide their existing content — moderation is reversible and
+    // destroying posts on a blacklist is not.
+    blacklistedAt: timestamp('blacklisted_at', { withTimezone: true }),
+    // No FK to `admins`: schema/users.ts is imported by nearly everything, and
+    // pointing it at the admin table would make the customer schema depend on
+    // the staff one. The id is enough to resolve a name when the console asks.
+    blacklistedBy: integer('blacklisted_by'),
+    blacklistReason: text('blacklist_reason'),
     searchVector: tsvector('search_vector'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),

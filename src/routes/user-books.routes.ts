@@ -1,9 +1,15 @@
 import { Router, Request, Response } from 'express';
 import { requireAuth } from '../middleware/auth.middleware';
+import { requirePlus } from '../middleware/require-plus.middleware';
 import { userBooksController } from '../controllers/user-books.controller';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 
 const router = Router();
+
+// The bookshelf is a Plus feature, but only to *build*. Reading it stays free
+// so a lapsed member never loses sight of what they saved, and removing an
+// entry stays free so they can always clean up after themselves — the
+// "retain, read-only" downgrade.
 
 /**
  * GET /user-books?q=harry&sort=asc&limit=20&offset=0
@@ -22,7 +28,7 @@ router.get('/', requireAuth, (req: Request, res: Response) =>
  * - First call: inserts with sensible defaults for omitted fields.
  * - Subsequent calls: updates only the supplied fields.
  */
-router.put('/:bookId', requireAuth, (req: Request, res: Response) =>
+router.put('/:bookId', requireAuth, requirePlus, (req: Request, res: Response) =>
   userBooksController.upsert(req as AuthenticatedRequest, res),
 );
 
@@ -53,7 +59,7 @@ router.delete('/:bookId', requireAuth, (req: Request, res: Response) =>
  * Returns 200: { success: true }
  * Errors: 404 book not found
  */
-router.post('/:bookId/like', requireAuth, (req: Request, res: Response) =>
+router.post('/:bookId/like', requireAuth, requirePlus, (req: Request, res: Response) =>
   userBooksController.like(req as AuthenticatedRequest, res),
 );
 

@@ -1,17 +1,35 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
-import { booksService } from '../services/books.service';
+import { booksService, decodeDedupeCursor } from '../services/books.service';
 import { userBooksService } from '../services/user-books.service';
+import { interactionsService } from '../services/interactions.service';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
+import { config } from '../config';
+import { fromPresentment, resolveCurrency, resolveRequestCountry } from '../services/commerce/pricing';
+import { minorUnitsPerMajor } from '../lib/money';
+
+// z.coerce.boolean() would treat the literal string "false" as truthy (any non-empty
+// string coerces to true), so accepted values are explicit — see refreshQuerySchema in
+// recommendations.controller.ts for the same pattern.
+const dedupeParam = z.enum(['true', 'false']).default('false').transform((v) => v === 'true');
 
 const suggestionsSchema = z.object({
-  q: z.string().min(2, 'Query must be at least 2 characters').max(100),
+  q: z.string().min(1, 'Query must not be empty').max(100),
   limit: z.coerce.number().int().min(1).max(15).default(8),
-  type: z.enum(['title', 'author']).default('title'),
+  // Defaults to matching both title and author. The single-sided values stay accepted so
+  // existing callers that pass type=title or type=author keep their current behaviour.
+  type: z.enum(['all', 'title', 'author']).default('all'),
+  // Opt-in: collapses same-titled editions down to the best one (cover > complete dataset >
+  // newest publication date > has a price). Off by default so the web app can show every
+  // edition; the mobile app passes ?dedupe=true.
+  dedupe: dedupeParam,
 });
 
 const similarSchema = z.object({
   limit: z.coerce.number().int().min(1).max(20).default(10),
+  // See the note on shoppable in listSchema — a PDP's "you may also like"
+  // carries Add buttons, so the shop should pass true.
+  shoppable: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
 });
 
 const listSchema = z.object({
@@ -21,12 +39,125 @@ const listSchema = z.object({
   productForm: z.string().min(1).max(10).optional(),
   publishingStatus: z.string().length(2).optional(),
   publisher: z.string().min(1).max(200).optional(),
+  // ISBN-13 as it is printed, hyphens and spaces optional. Matched exactly:
+  // an ISBN is either the book or it is not, and a partial one is a typo.
+  isbn: z
+    .string()
+    .trim()
+    .max(20)
+    .transform((v) => v.replace(/[\s-]/g, ''))
+    .refine((v) => /^\d{13}$/.test(v), { message: 'ISBN must be 13 digits' })
+    .optional(),
+  // Inclusive publication-year bounds. The floor is the year of the oldest
+  // plausible catalogue record rather than 0, so a mistyped year cannot produce
+  // a range that scans everything.
+  yearMin: z.coerce.number().int().min(1450).max(2200).optional(),
+  yearMax: z.coerce.number().int().min(1450).max(2200).optional(),
+  // Price bounds in **major units** of `currency` — 0 to 100 means $0-$100,
+  // matching the filter UI. Converted to GBP pence before it reaches the query.
+  priceMin: z.coerce.number().min(0).max(100_000).optional(),
+  priceMax: z.coerce.number().min(0).max(100_000).optional(),
+  // Which currency the price bounds are expressed in. Defaults to the currency
+  // this request would be quoted in, so a client that shows dollars and filters
+  // in dollars needs to send nothing.
+  currency: z.string().length(3).optional(),
+  sortBy: z.enum(['title', 'newest']).optional(),
   sort: z.enum(['asc', 'desc']).optional(),
   limit: z.coerce.number().int().min(1).max(50).default(20),
   offset: z.coerce.number().int().min(0).default(0),
+  // Opt-in: collapses same-titled editions down to the best one — see dedupeParam above.
+  dedupe: dedupeParam,
+  /**
+   * Opt-in: drops books the shop cannot list — no ISBN13, no price, or an
+   * unsuppliable Gardners report code. Off by default: discovery, search and
+   * reading lists browse the whole catalogue, and only the e-commerce section
+   * wants the narrowed view. Out-of-stock books are kept and carry `inStock`
+   * so the shop can badge them. See buildShoppableCondition in books.service
+   * for what this does and does not check.
+   */
+  shoppable: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
+  /**
+   * Opaque pagination token, only meaningful when dedupe=true. When supplied
+   * the server resumes at the raw position it encodes and filters out any
+   * titles the previous page returned, so a title cannot appear twice
+   * across pages. Ignored (with no error) when dedupe is off.
+   */
+  cursor: z.string().min(1).max(4096).optional(),
+})
+  .refine((v) => v.yearMin === undefined || v.yearMax === undefined || v.yearMin <= v.yearMax, {
+    message: 'yearMin must not be after yearMax',
+    path: ['yearMin'],
+  })
+  .refine((v) => v.priceMin === undefined || v.priceMax === undefined || v.priceMin <= v.priceMax, {
+    message: 'priceMin must not exceed priceMax',
+    path: ['priceMin'],
+  })
+  // The price lives on the Gardners stock row, which only the shoppable path
+  // consults. Rejecting rather than ignoring: a filtered page that quietly came
+  // back unfiltered is a bug the client cannot see.
+  .refine((v) => (v.priceMin === undefined && v.priceMax === undefined) || v.shoppable, {
+    message: 'priceMin/priceMax require shoppable=true — only shoppable books have a price',
+    path: ['priceMin'],
+  });
+
+const basketRecsSchema = z.object({
+  // Comma-separated so this stays a cacheable GET. Bounded to the same ceiling
+  // as a cart, because a basket cannot legitimately be larger than one.
+  bookIds: z.string().min(1).transform((v, ctx) => {
+    const ids = v.split(',').map((part) => Number(part.trim()));
+    if (ids.some((id) => !Number.isInteger(id) || id <= 0)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'bookIds must be positive integers' });
+      return z.NEVER;
+    }
+    if (ids.length > config.commerce.cart.maxItems) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Too many books' });
+      return z.NEVER;
+    }
+    return [...new Set(ids)];
+  }),
+  limit: z.coerce.number().int().min(1).max(20).default(8),
+  shoppable: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
 });
 
+/**
+ * The currency a shop surface should quote in, or undefined when the caller did
+ * not ask to shop.
+ *
+ * Resolved per request rather than baked into a cached feed, for the same
+ * reason the price itself is attached after the cache: a visitor in Lagos and
+ * one in Berlin hit the same cached pool and must not see each other's money.
+ */
+export async function shopCurrency(
+  req: Request,
+  shoppable: boolean | undefined,
+): Promise<string | undefined> {
+  if (!shoppable) return undefined;
+  return resolveCurrency({ countryCode: await resolveRequestCountry(req) });
+}
+
 export const booksController = {
+  /** GET /api/v1/books/recommendations?bookIds=1,2,3 */
+  async basketRecommendations(req: Request, res: Response): Promise<void> {
+    const parsed = basketRecsSchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+
+    // Optional auth: guests hold their basket client-side, so this is usually
+    // anonymous. A signed-in caller additionally gets rejected books filtered.
+    const userId = (req as AuthenticatedRequest).user?.id;
+    const books = await booksService.basketRecommendations(
+      parsed.data.bookIds,
+      parsed.data.limit,
+      userId,
+      parsed.data.shoppable,
+      await shopCurrency(req, parsed.data.shoppable),
+    );
+
+    res.status(200).json({ books });
+  },
+
   async suggestions(req: Request, res: Response): Promise<void> {
     const parsed = suggestionsSchema.safeParse(req.query);
     if (!parsed.success) {
@@ -35,7 +166,7 @@ export const booksController = {
     }
 
     try {
-      const results = await booksService.suggestions(parsed.data.q, parsed.data.limit, parsed.data.type);
+      const results = await booksService.suggestions(parsed.data.q, parsed.data.limit, parsed.data.type, parsed.data.dedupe);
       res.status(200).json({ suggestions: results, type: parsed.data.type });
     } catch (err: unknown) {
       const e = err as Error;
@@ -67,12 +198,58 @@ export const booksController = {
     }
 
     try {
-      const result = await booksService.list(parsed.data);
+      // Cursor is only meaningful with dedupe. Silently ignoring it in the
+      // offset-only path is more forgiving than a 400 and keeps a hand-crafted
+      // request working when someone drops the flag.
+      const cursor = parsed.data.dedupe ? decodeDedupeCursor(parsed.data.cursor) : null;
+
+      const { priceMin, priceMax, currency, ...rest } = parsed.data;
+
+      // Bounds arrive in the customer's currency and the catalogue stores GBP
+      // pence, so they are converted once here rather than per row. The
+      // currency is resolved the same way the cart resolves it, so the numbers
+      // being filtered on are the numbers the shop displayed.
+      // Resolved for every shoppable request, not only filtered ones: it is
+      // both the currency the bounds are read in and the currency prices come
+      // back in, so a client filters and displays in the same units.
+      const resolved =
+        rest.shoppable || priceMin !== undefined || priceMax !== undefined
+          ? resolveCurrency({ requested: currency, countryCode: await resolveRequestCountry(req) })
+          : undefined;
+
+      let priceMinGbpPence: number | undefined;
+      let priceMaxGbpPence: number | undefined;
+      if (resolved && (priceMin !== undefined || priceMax !== undefined)) {
+        const perMajor = minorUnitsPerMajor(resolved);
+        if (priceMin !== undefined) {
+          priceMinGbpPence = fromPresentment(Math.round(priceMin * perMajor), resolved);
+        }
+        if (priceMax !== undefined) {
+          priceMaxGbpPence = fromPresentment(Math.round(priceMax * perMajor), resolved);
+        }
+      }
+
+      const result = await booksService.list({
+        ...rest,
+        currency: resolved,
+        priceMinGbpPence,
+        priceMaxGbpPence,
+        cursor,
+      });
       res.status(200).json({
         books: result.books,
         total: result.total,
+        // `total` is capped for search queries (see SEARCH_COUNT_CAP) — when
+        // totalIsApproximate is true it's a floor, not an exact count, and clients should
+        // paginate on hasMore rather than computing page counts from total.
+        totalIsApproximate: result.totalIsApproximate,
+        hasMore: result.hasMore,
         limit: parsed.data.limit,
         offset: parsed.data.offset,
+        // Present only for dedupe requests. Pass this back as ?cursor= for the
+        // next page — offset-style pagination on the dedupe path could return
+        // the same title on consecutive pages, which cursors prevent.
+        nextCursor: result.nextCursor,
       });
     } catch (err: unknown) {
       const e = err as Error;
@@ -111,6 +288,14 @@ export const booksController = {
       const userId = (req as Partial<AuthenticatedRequest>).user?.id;
       const userStatus = userId ? await userBooksService.getStatus(userId, id) : null;
 
+      // Record the view as a trending signal. Only for signed-in callers — the
+      // interactions table requires a user_id, so anonymous views are dropped
+      // rather than attributed. Not awaited: this endpoint is the hottest read in
+      // the app and analytics must not sit in front of the response.
+      if (userId) {
+        interactionsService.recordFireAndForget(userId, id, 'view');
+      }
+
       res.status(200).json({ book, publicNotes, userStatus });
     } catch (err: unknown) {
       const e = err as Error;
@@ -138,7 +323,18 @@ export const booksController = {
         return;
       }
 
-      const results = await booksService.similar(id, parsed.data.limit);
+      // Optional-auth: the product page this feeds is public, so there may be
+      // no viewer at all. When there is one, their id filters out books they
+      // have already rejected; when there isn't, everyone sees the same
+      // similarity ranking.
+      const userId = (req as AuthenticatedRequest).user?.id;
+      const results = await booksService.similar(
+        id,
+        parsed.data.limit,
+        userId,
+        parsed.data.shoppable,
+        await shopCurrency(req, parsed.data.shoppable),
+      );
       res.status(200).json({ books: results });
     } catch (err: unknown) {
       const e = err as Error;

@@ -1,19 +1,24 @@
-import { sgMail, FROM } from '../../lib/sendgrid';
+import { sendEmail, FROM } from '../../lib/resend';
+import { emailLayout, ctaButton, greeting, signOff, escapeHtml, p } from '../lib/layout';
 
 export async function sendEmailChangeNotifyEmail(to: string, name: string, cancelUrl: string): Promise<void> {
-  await sgMail.send({
+  const safeName = escapeHtml(name);
+  const title = 'Email change requested';
+
+  const body = [
+    greeting(safeName),
+    p('A request has been made to change the email address on your Kinkané account.'),
+    p('If you made this request, you can ignore this message — the change will complete once you verify the new address.'),
+    p('If you did <strong>not</strong> make this request, please cancel it immediately:'),
+    ctaButton('Cancel Email Change', cancelUrl),
+    signOff('This link will expire in 15 minutes.'),
+  ].join('\n');
+
+  await sendEmail({
     to,
     from: FROM,
     subject: 'Email change requested for your Kinkané account',
-    html: `
-      <p>Hi ${name},</p>
-      <p>A request has been made to change the email address on your Kinkané account.</p>
-      <p>If you made this request, you can ignore this message — the change will complete once you verify the new address.</p>
-      <p>If you did <strong>not</strong> make this request, please cancel it immediately using the link below:</p>
-      <p><a href="${cancelUrl}">Cancel this email change</a></p>
-      <p>This link will expire in 15 minutes.</p>
-      <p>The Kinkané Team</p>
-    `,
+    html: emailLayout(title, body),
     text: `Hi ${name},\n\nA request has been made to change the email address on your Kinkané account.\n\nIf you made this request, you can ignore this message.\n\nIf you did NOT make this request, cancel it here:\n${cancelUrl}\n\nThis link will expire in 15 minutes.\n\nThe Kinkané Team`,
   });
 }

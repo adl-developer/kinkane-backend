@@ -1,9 +1,8 @@
 import { eq, and, gt, inArray } from 'drizzle-orm';
 import { db } from '../db';
-import { guestSessions, books, bookContributors, bookGenres, genres, type GuestSession, type Dislikes } from '../db/schema';
+import { guestSessions, books, type GuestSession, type Dislikes } from '../db/schema';
 import { config } from '../config';
-import { inferReaderType, type BookContext } from '../lib/gemini';
-import { logger } from '../lib/logger';
+import { fetchAndInferReaderType } from '../lib/reader-type';
 
 export interface CreateGuestSessionInput {
   displayName: string;
@@ -14,51 +13,30 @@ export interface CreateGuestSessionInput {
   recommendationHash?: string;
 }
 
-async function fetchAndInferReaderType(bookIds: number[]): Promise<ReturnType<typeof inferReaderType> extends Promise<infer T> ? T : never> {
-  if (bookIds.length === 0) return null;
-
-  try {
-    const [bookRows, contributors, genreRows] = await Promise.all([
-      db.select({ id: books.id, title: books.title }).from(books).where(inArray(books.id, bookIds)),
-      db
-        .select({ bookId: bookContributors.bookId, personName: bookContributors.personName })
-        .from(bookContributors)
-        .where(and(inArray(bookContributors.bookId, bookIds), eq(bookContributors.role, 'A01')))
-        .orderBy(bookContributors.sequenceNumber),
-      db
-        .select({ bookId: bookGenres.bookId, name: genres.name })
-        .from(bookGenres)
-        .innerJoin(genres, eq(genres.id, bookGenres.genreId))
-        .where(inArray(bookGenres.bookId, bookIds)),
-    ]);
-
-    const authorMap = new Map<number, string[]>();
-    for (const c of contributors) {
-      if (!authorMap.has(c.bookId)) authorMap.set(c.bookId, []);
-      if (c.personName) authorMap.get(c.bookId)!.push(c.personName);
-    }
-
-    const genreMap = new Map<number, string[]>();
-    for (const g of genreRows) {
-      if (!genreMap.has(g.bookId)) genreMap.set(g.bookId, []);
-      genreMap.get(g.bookId)!.push(g.name);
-    }
-
-    const bookContexts: BookContext[] = bookRows.map((b) => ({
-      bookId: b.id,
-      title: b.title,
-      authors: authorMap.get(b.id) ?? [],
-      genres: genreMap.get(b.id) ?? [],
-    }));
-
-    return inferReaderType(bookContexts);
-  } catch (err) {
-    logger.error('Failed to fetch book context for reader type inference', { error: (err as Error).message });
-    return null;
-  }
-}
-
 export const guestService = {
+  /**
+   * Parks a referral code on an existing guest session so it survives until
+   * there is a user row to attribute it to.
+   *
+   * A separate call rather than a field on create() because guest sessions are
+   * created several layers down inside the recommendations flow, and a referral
+   * code has nothing to do with generating recommendations — threading it
+   * through every one of those call sites would put competition plumbing in the
+   * middle of an unrelated feature. The client calls this once it holds both a
+   * session and a code.
+   *
+   * Returns false when the session doesn't exist or has expired.
+   */
+  async attachReferralCode(sessionId: string, referralCode: string): Promise<boolean> {
+    const updated = await db
+      .update(guestSessions)
+      .set({ referralCode: referralCode.toUpperCase() })
+      .where(and(eq(guestSessions.id, sessionId), gt(guestSessions.expiresAt, new Date())))
+      .returning({ id: guestSessions.id });
+
+    return updated.length > 0;
+  },
+
   /**
    * Creates a guest session at recommendation time.
    * chosenBookIds starts as null — populated later via saveSelections.
@@ -89,16 +67,27 @@ export const guestService = {
    * Saves the user's 5 chosen books against an existing guest session and
    * infers their reader type via Gemini from those book selections.
    * Returns false if the session doesn't exist or has expired.
+   *
+   * Books swiped away on the same screen are parked on the session too. They
+   * do nothing for this guest — there's no user row to hang a rejection
+   * history off yet, and this quiz's results are already generated — but
+   * migrateGuestSession promotes them into user_disliked_books at signup, so
+   * they start filtering recommendations from the user's very first feed.
    */
   async saveSelections(
     id: string,
     chosenBookIds: number[],
+    dislikedBookIds: number[] = [],
   ): Promise<{ readerType: string | null; books: { id: number; title: string; coverUrl: string | null }[] } | null> {
     const readerType = await fetchAndInferReaderType(chosenBookIds);
 
     const [updated] = await db
       .update(guestSessions)
-      .set({ chosenBookIds, readerType: readerType ?? undefined })
+      .set({
+        chosenBookIds,
+        dislikedBookIds: [...new Set(dislikedBookIds)],
+        readerType: readerType ?? undefined,
+      })
       .where(
         and(
           eq(guestSessions.id, id),

@@ -12,11 +12,20 @@ import emailChangeRoutes from './email-change.routes';
 import communityRoutes from './community.routes';
 import usersRoutes from './users.routes';
 import exploreRoutes from './explore.routes';
-import userSubscriptionRoutes from './user-subscription.routes';
+import subscriptionRoutes from './subscriptions.routes';
 import notificationPreferencesRoutes from './notification-preferences.routes';
+import preferenceHistoryRoutes from './preference-history.routes';
+import unsubscribeRoutes from './unsubscribe.routes';
+import contactRoutes from './contact.routes';
+import settingsRoutes from './settings.routes';
 import notificationsRoutes from './notifications.routes';
 import deviceTokensRoutes from './device-tokens.routes';
 import reportsRoutes from './reports.routes';
+import referralsRoutes from './referrals.routes';
+import paymentsRoutes from './payments.routes';
+import cartRoutes from './cart.routes';
+import ordersRoutes from './orders.routes';
+import savedBooksRoutes from './saved-books.routes';
 
 const router = Router();
 
@@ -40,11 +49,30 @@ v1.use('/user/email-change', emailChangeRoutes);
 v1.use('/community', communityRoutes);
 v1.use('/users', usersRoutes);
 v1.use('/explore', exploreRoutes);
-v1.use('/user/subscription', userSubscriptionRoutes);
+v1.use('/user/subscription', subscriptionRoutes);
 v1.use('/user/notification-preferences', notificationPreferencesRoutes);
+v1.use('/user/preference-history', preferenceHistoryRoutes);
 v1.use('/user/notifications', notificationsRoutes);
 v1.use('/user/device-tokens', deviceTokensRoutes);
 v1.use('/reports', reportsRoutes);
+// Open to every signed-up user — the router itself deliberately applies
+// requireAuth without requirePlus. See referrals.routes.ts.
+v1.use('/referrals', referralsRoutes);
+// Payment confirmation by reference — covers subscriptions and book orders alike.
+v1.use('/payments', paymentsRoutes);
+// The shop. Deliberately requireAuth only, with no requirePlus anywhere —
+// buying is open to every signed-up user.
+v1.use('/cart', cartRoutes);
+v1.use('/orders', ordersRoutes);
+// The shop's purchase wishlist. requireAuth only — never requirePlus.
+v1.use('/saved-books', savedBooksRoutes);
+v1.use('/unsubscribe', unsubscribeRoutes);
+// Public by design — the people most likely to need the contact form are the
+// ones who cannot get into their account.
+v1.use('/contact', contactRoutes);
+// Storefront-wide copy the admin console controls. Public: it is what every
+// visitor sees anyway.
+v1.use('/settings', settingsRoutes);
 
 router.use('/v1', v1);
 
