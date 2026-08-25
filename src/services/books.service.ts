@@ -1154,6 +1154,11 @@ async function fetchSearchPage(
   // The page size to fetch per branch — opts.limit normally, or opts.limit +
   // DEDUPE_POOL_HEADROOM when the caller is about to dedupe the merged result.
   pageSize: number,
+  // Whether the exact band — cheap title OR cheap name, in any contributor role — has
+  // rows at this offset. Only consulted on the broad tier, where it is the difference
+  // between "nothing matched exactly, go fuzzy" and "a name matched exactly, and the
+  // fuzzy pool has nothing to add above it". See the broad branch below.
+  exactBandSatisfied = false,
 ) {
   const branchLimit = opts.offset + pageSize + 1;
 
@@ -1203,10 +1208,24 @@ async function fetchSearchPage(
       );
     };
 
-    [titleRows, authorRows] = await Promise.all([
-      fetchBroadTitleBranch(opts, q, branchLimit),
-      authorBranch(),
-    ]);
+    if (exactBandSatisfied) {
+      // Reaching the broad tier means no title matched a prefix at this offset — so if
+      // the exact band still has rows, they are name matches, and every one of them
+      // outranks anything the fuzzy pool could produce. Running it anyway would spend
+      // the most expensive query in the search (a word_similarity ranking over a bounded
+      // pool, the multi-second part on the full catalogue) purely to pad the page out
+      // below results that are already correct.
+      //
+      // This is the "if that's not there" in the ladder doing real work: fuzzy matching
+      // of any kind is reserved for queries that matched nothing exactly, anywhere.
+      titleRows = [];
+      authorRows = await authorQuery(db, 'cheap');
+    } else {
+      [titleRows, authorRows] = await Promise.all([
+        fetchBroadTitleBranch(opts, q, branchLimit),
+        authorBranch(),
+      ]);
+    }
   } else {
     [titleRows, authorRows] = await Promise.all([titleQuery(db), authorQuery(db)]);
   }
@@ -1379,6 +1398,18 @@ export const booksService = {
     // probes — max() rather than a sum, which would double-count books matching both.
     const searchMatchCount = Math.max(fastCount, cheapCount, blendedCount);
 
+    // Size of the exact band: everything the cheap tiers match, by title or by a name in
+    // any contributor role. The cached total is folded in because it *is* this number —
+    // it is only ever derived from cheap-tier probes, never from the fuzzy tier — and
+    // when a paginating request finds the count already cached, blendedCount is not
+    // recomputed. Without this, page 2 of an exact-name search would see a blendedCount
+    // of 0, conclude the exact band was empty, and drop to the fuzzy tier that page 1
+    // correctly skipped: the same query answered two different ways on two pages.
+    const exactBandCount = Math.max(
+      searchMatchCount,
+      cachedCount != null ? parseInt(cachedCount, 10) : 0,
+    );
+
     type SearchTier = 'fast' | 'cheap' | 'broad';
     const pageEnd = opts.offset + opts.limit;
     // The broad tier is now reserved for searches the cheaper tiers can't answer *at all*
@@ -1437,7 +1468,17 @@ export const booksService = {
         })
       : (async () => {
           const fetched = opts.q
-            ? await fetchSearchPage({ ...opts, offset: effectiveOffset }, opts.q, rowsTier, rowsWhere, rowsOrderBy, overfetchLimit)
+            ? await fetchSearchPage(
+                { ...opts, offset: effectiveOffset },
+                opts.q,
+                rowsTier,
+                rowsWhere,
+                rowsOrderBy,
+                overfetchLimit,
+                // Compared against the same offset the tier ladder above uses, so the two
+                // decisions cannot disagree about whether this page is inside the band.
+                exactBandCount > effectiveOffset,
+              )
             : await db
                 .select(LIST_COLUMNS)
                 .from(books)

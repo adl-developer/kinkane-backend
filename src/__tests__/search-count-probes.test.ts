@@ -484,3 +484,51 @@ describe('which tier the author branch of a broad search uses', () => {
     }
   });
 });
+
+describe('when the exact band already has rows', () => {
+  // The fuzzy pool is the most expensive query a search can run — a word_similarity
+  // ranking over a bounded candidate pool, and the multi-second part on a full
+  // catalogue. Reaching the broad tier means no *title* matched a prefix, but the exact
+  // band spans names too, and a name match outranks anything the fuzzy pool can produce.
+  // Running it anyway spends that query purely to pad the page out below results that
+  // are already correct.
+  //
+  // Staged as counts rather than rows because that is how the decision is actually made:
+  // deriving it from what the fetch returned would make page 2 of a query answer
+  // differently from page 1.
+  const poolQueries = () =>
+    issued.filter((sql) => /word_similarity/i.test(sql) && /FROM\s*\(\s*SELECT/i.test(sql));
+
+  it('skips the fuzzy pool when a name matched exactly', async () => {
+    cachedRows = null;
+    cachedCount = null;
+    // fast = 0 and cheap = 0 put the rows on the broad tier; blended > 0 says the exact
+    // band is non-empty anyway, which on that tier can only mean a name matched.
+    counts = [0, 0, 3];
+    await list();
+
+    expect(poolQueries(), 'the fuzzy pool ran despite an exact name match').toEqual([]);
+  });
+
+  it('still runs the fuzzy pool when nothing matched exactly at all', async () => {
+    cachedRows = null;
+    cachedCount = null;
+    counts = [0, 0, 0];
+    await list();
+
+    // The converse, so the test above cannot be satisfied by never running the pool.
+    expect(poolQueries().length).toBeGreaterThan(0);
+  });
+
+  it('does not change its mind between pages when the count is cached', async () => {
+    // Paginating skips the blended probe, because the count is cached under a
+    // page-independent key. If the band decision read only the freshly computed probes it
+    // would see zero here and drop to the fuzzy tier that page 1 skipped.
+    cachedRows = null;
+    cachedCount = '3';
+    counts = [0, 0];
+    await list({ offset: 0 });
+
+    expect(poolQueries(), 'a later page fell to the fuzzy tier the first page skipped').toEqual([]);
+  });
+});
