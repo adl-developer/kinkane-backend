@@ -5,6 +5,7 @@
 
 ### Features
 
+* create the first admin from the environment, and let admins change their password ([cc59935](https://adl.github.com/adl-developer/kinkane-backend/commit/cc59935318224fe1461ec828e88e5d2bae25d5a3)) — [details](changelog/2026-08-24-admin-console.md)
 * seed admin accounts from a file, and document every setting ([6e5a273](https://adl.github.com/adl-developer/kinkane-backend/commit/6e5a2738be47bd27ad6cd992294ef08dae8dab4a)) — [details](changelog/2026-08-24-order-confirmation-email.md)
 * email a confirmation when an order is paid for ([7b17245](https://adl.github.com/adl-developer/kinkane-backend/commit/7b17245d74c1513e05e6faf76ace5ae92d0116ee)) — [details](changelog/2026-08-24-order-confirmation-email.md)
 * show prices on the discovery carousels ([e717e01](https://adl.github.com/adl-developer/kinkane-backend/commit/e717e01ed000f7c81e1031ef1ae47a3b038b8e48)) — [details](changelog/2026-08-24-admin-console.md)

@@ -1113,28 +1113,52 @@ async function fetchSearchPage(
   const titleQuery = (conn: Pick<typeof db, 'select'>) =>
     conn.select(LIST_COLUMNS).from(books).where(titleWhere).orderBy(...titleOrderBy).limit(branchLimit);
 
-  // The author branch only reaches for its fuzzy tier when the title branch has already
-  // fallen through to its own — i.e. nothing cheaper matched anywhere. Escalating the two
-  // together keeps the expensive trigram/FTS path off every ordinary search.
-  const authorQuery = (conn: Pick<typeof db, 'select' | 'execute'>) =>
-    fetchAuthorBranch(conn, opts, q, tier === 'broad' ? 'broad' : 'cheap', branchLimit);
+  // The author branch keeps the expensive trigram/FTS path off every ordinary search by
+  // trying its cheap tier first, regardless of which tier the *title* branch landed on.
+  //
+  // These two used to be escalated together: a broad title tier forced a broad author
+  // tier. That is wrong, because the tiers measure different things. "peace adzo medie"
+  // matches no title prefix, so the title branch falls to broad — but it is an exact
+  // prefix of a person_name, which the cheap tier answers from the name index in
+  // microseconds. Escalating in lockstep sent that query straight to the fuzzy name scan
+  // over the whole contributor table, which on the production catalogue exceeded
+  // BROAD_TIME_BUDGET_MS, was cancelled, and returned nothing — so the one genuinely
+  // correct result was dropped and the page came back as title near-misses only.
+  //
+  // Cheap-first is what suggestions() has always done (see authorSuggestionsFor), and the
+  // blended count probe already counts with the cheap tier — which is why the reported
+  // total could include a book the rows themselves had lost.
+  const authorQuery = (conn: Pick<typeof db, 'select' | 'execute'>, authorTier: 'cheap' | 'broad' = 'cheap') =>
+    fetchAuthorBranch(conn, opts, q, authorTier, branchLimit);
 
   let titleRows: Awaited<ReturnType<typeof titleQuery>>;
   let authorRows: Awaited<ReturnType<typeof authorQuery>>;
   if (tier === 'broad') {
-    // Each branch scopes its own GUCs now, so they run concurrently and a title stage
-    // cancelled by the time budget cannot take the author query down with it. The author
-    // branch gets the same ceiling: it is bounded by AUTHOR_MATCH_LIMIT and has never been
-    // the slow side, but "an ambiguous search answers within the budget" has to hold for
-    // the whole tier, not just the branch that was measured to be expensive. Losing it
-    // costs the author-matched rows, not the page.
+    // Each branch scopes its own GUCs, so they run concurrently and a title stage
+    // cancelled by the time budget cannot take the author query down with it.
+    //
+    // Within the author branch, cheap comes first: an index-backed name-prefix hit is both
+    // the fastest answer available and a better one than anything the fuzzy tier could
+    // produce, so it settles the branch outright. Only a query that matched no name at all
+    // is worth paying the fuzzy scan for, and that escalation keeps the budget it always
+    // had — "an ambiguous search answers within the budget" has to hold for the whole
+    // tier, not just the branch that was measured to be expensive. Losing the escalation
+    // to a timeout costs the author-matched rows, not the page.
+    const authorBranch = async (): Promise<Awaited<ReturnType<typeof authorQuery>>> => {
+      const cheapRows = await authorQuery(db, 'cheap');
+      if (cheapRows.length > 0) return cheapRows;
+      return withBroadTierSession(BROAD_TIME_BUDGET_MS, (conn) => authorQuery(conn, 'broad')).catch(
+        (err: unknown) => {
+          if (!isStatementTimeout(err)) throw err;
+          logger.warn('Author branch of the fuzzy tier hit its time budget — omitting it', { q });
+          return [] as Awaited<ReturnType<typeof authorQuery>>;
+        },
+      );
+    };
+
     [titleRows, authorRows] = await Promise.all([
       fetchBroadTitleBranch(opts, q, branchLimit),
-      withBroadTierSession(BROAD_TIME_BUDGET_MS, (conn) => authorQuery(conn)).catch((err: unknown) => {
-        if (!isStatementTimeout(err)) throw err;
-        logger.warn('Author branch of the fuzzy tier hit its time budget — omitting it', { q });
-        return [] as Awaited<ReturnType<typeof authorQuery>>;
-      }),
+      authorBranch(),
     ]);
   } else {
     [titleRows, authorRows] = await Promise.all([titleQuery(db), authorQuery(db)]);

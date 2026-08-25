@@ -413,3 +413,74 @@ describe('the fuzzy tier time budget', () => {
     await expect(list()).rejects.toThrow('relation missing');
   });
 });
+
+describe('which tier the author branch of a broad search uses', () => {
+  // The regression this pins: the author branch used to inherit the *title* branch's tier,
+  // so a query that matched no title prefix sent the author lookup straight to its fuzzy
+  // tier — a trigram/FTS scan over the whole contributor table. On the production
+  // catalogue that exceeded the broad tier's time budget, was cancelled, and the branch
+  // returned nothing.
+  //
+  // The two tiers measure different things, and a query can be hard for one and trivial
+  // for the other. "peace adzo medie" matches no title prefix at all, yet is an exact
+  // prefix of a person_name — the cheap tier answers it from the name index. Escalating in
+  // lockstep meant the one genuinely correct result was the one dropped, and the page came
+  // back as title near-misses only. Cheap has to be tried on its own merits first.
+  //
+  // Asserted on the SQL, because the difference is invisible in the returned rows: both
+  // tiers return author matches, and the broken one returned none only at a scale no unit
+  // test can reproduce.
+  const stageBroadTier = () => {
+    cachedRows = null;
+    cachedCount = null;
+    counts = [0, 0, 0];
+  };
+
+  // The author branch's own queries during the row fetch — not the count probes, which
+  // have always used the cheap tier and are governed separately above.
+  const authorFetches = () =>
+    issued.filter((sql) => /book_contributors/i.test(sql) && !/COUNT\(\*\)/i.test(sql));
+
+  // `<%` and the FTS pass over person_name are what make the fuzzy tier expensive; the
+  // cheap tier has neither.
+  const isFuzzyAuthorSql = (sql: string) => /<%/.test(sql) || /to_tsvector\('simple'/i.test(sql);
+
+  it('tries the cheap tier even when the title branch has fallen through to broad', async () => {
+    stageBroadTier();
+    await list();
+
+    const fetches = authorFetches();
+    expect(fetches.length, 'the author branch issued no query at all').toBeGreaterThan(0);
+    expect(
+      fetches.some((sql) => !isFuzzyAuthorSql(sql)),
+      'every author query used the fuzzy tier — the cheap tier was skipped entirely',
+    ).toBe(true);
+  });
+
+  it('asks the cheap tier before the fuzzy one, never the other way round', async () => {
+    stageBroadTier();
+    await list();
+
+    const fetches = authorFetches();
+    const firstFuzzy = fetches.findIndex(isFuzzyAuthorSql);
+    const firstCheap = fetches.findIndex((sql) => !isFuzzyAuthorSql(sql));
+
+    expect(firstCheap, 'no cheap author query was issued').toBeGreaterThanOrEqual(0);
+    if (firstFuzzy >= 0) {
+      expect(firstCheap).toBeLessThan(firstFuzzy);
+    }
+  });
+
+  it('leaves the fuzzy escalation inside the time budget', async () => {
+    stageBroadTier();
+    await list();
+
+    // The escalation is still the branch that can overrun, so it must stay wrapped — a
+    // cheap-first branch that ran the fuzzy tier unguarded would trade one failure mode
+    // for a worse one.
+    const fetches = authorFetches();
+    if (fetches.some(isFuzzyAuthorSql)) {
+      expect(settings.filter((sql) => /statement_timeout/i.test(sql)).length).toBeGreaterThan(0);
+    }
+  });
+});
