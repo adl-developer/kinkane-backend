@@ -133,6 +133,16 @@ const PROBE_STATEMENT_TIMEOUT_MS = 5000;
 
 export interface ListBooksOptions {
   q?: string;
+  /**
+   * Which side of the catalogue `q` matches: book titles, or contributor names.
+   * Defaults to 'title' at the controller, and is ignored entirely when `q` is
+   * absent — a filter-only browse matches nothing textual.
+   *
+   * The two are never searched together. Each is a different query against a
+   * different index with its own tier ladder, and the caller is expected to know
+   * which one it wants.
+   */
+  searchType?: BookSearchType;
   genre?: string;
   availability?: string;
   productForm?: string;
@@ -288,6 +298,13 @@ export interface BookListItem {
 // matches both and merges the results; the single-sided values exist for callers that
 // already know what the user is looking for, such as a dedicated author filter.
 export type SuggestionType = 'all' | 'title' | 'author';
+
+// Which side of the catalogue `GET /books?q=` matches against. Unlike SuggestionType
+// there is no 'all': the two are searched separately and never merged. A caller that
+// wants both asks twice and presents the results as two lists, which is the honest
+// shape — a blended page has to rank a title match against a name match, and no index
+// can supply that ordering (see fetchTitleSearchPage / fetchAuthorSearchPage).
+export type BookSearchType = 'title' | 'author';
 
 export interface SuggestionItem {
   id: number;
@@ -1011,73 +1028,27 @@ async function withBroadTierSession<T>(
   });
 }
 
-// Counts the union of two conditions, each bounded independently.
+// Fetches one page of search results from exactly one side of the catalogue — titles or
+// contributor names, never both.
 //
-// The obvious shape — one scan with the conditions OR'd together — is a trap. Postgres
-// cannot estimate the cardinality of the author subquery, so `id IN (...)` falls back to
-// the default 0.5 selectivity: on the production catalogue it estimated 994,218 rows
-// against 1,988,039 actual, i.e. exactly reltuples/2. An OR across a trigram-indexable
-// predicate and a subquery membership test cannot be served by a BitmapOr in any case, so
-// the planner chose a Seq Scan and evaluated the hashed SubPlan once per row. The LIMIT
-// could only cut that short for terms common enough to hit the cap early, which inverted
-// the cost profile: "harry" stopped after ~560k rows (2.5s), while a selective term like
-// "bookkeeping" (51 matches) had to scan all 1.98M rows to prove there were no more —
-// 9.5s and 1.42GB of disk reads for one probe.
+// The two used to be fetched as parallel branches and merged title-first. That merge is
+// gone: `type` now says which side to search, so there is one branch, one ordering, and
+// no cross-branch ranking to invent. What the merge cost is worth recording, because it
+// is why the split was always there physically even when the API hid it — the title
+// branch's speed comes entirely from its ORDER BY matching an index's own ordering (see
+// buildFastTitlePrefixOrderBy), and no single index can order a title match against a
+// name match, so a blended query made Postgres sort the whole candidate set: ~322k rows
+// for a prefix like "the".
 //
-// Splitting the branches keeps each on its own index and lets UNION dedupe the ids.
-// Verified on production to return identical counts (51, 0, 24 for bookkeeping,
-// zephyrbook, chimamanda) at 15-30x less cost.
-//
-// Each branch carries its own cap, so this can reach 2*cap where the OR'd form stopped at
-// cap. Both are far above SEARCH_COUNT_CAP, which every caller clamps the total to, so the
-// reported figure is unchanged.
-async function countUnionUpTo(
-  whereA: SQL | undefined,
-  whereB: SQL | undefined,
-  cap: number,
-): Promise<number> {
-  return withStatementTimeout(PROBE_STATEMENT_TIMEOUT_MS, async (conn) => {
-    const rows = await conn.execute<{ count: number }>(
-      sql`SELECT COUNT(*)::int AS count FROM (
-            (SELECT ${books.id} FROM ${books} WHERE ${whereA ?? sql`TRUE`} LIMIT ${cap})
-            UNION
-            (SELECT ${books.id} FROM ${books} WHERE ${whereB ?? sql`TRUE`} LIMIT ${cap})
-          ) t`,
-    );
-    return Number((rows as unknown as { count: number }[])[0]?.count ?? 0);
-  });
-}
+// Each side keeps its own tier ladder, because they escalate on different evidence:
+//   - titles: fast prefix → cheap word-prefix → broad (trigram/FTS over a bounded pool)
+//   - names:  cheap name-prefix → broad (trigram/FTS over book_contributors)
+// They are deliberately not escalated in lockstep. "peace adzo medie" matches no title
+// prefix at all but is an exact prefix of a person_name, which the cheap name tier answers
+// from its index in microseconds — under the old lockstep escalation that query went
+// straight to the fuzzy name scan, exceeded its time budget, was cancelled, and returned
+// nothing. Now it is simply an author search, and never touches the title ladder.
 
-// Fetches one page of search results as two independently-bounded branches — books
-// matched by title, then books matched by their author's name — merged title-first.
-//
-// Why two queries instead of one OR'd condition: the title branch's speed comes entirely
-// from its ORDER BY matching an index's own ordering (see buildFastTitlePrefixOrderBy).
-// A blended query has to rank title matches against author matches, which no single index
-// can order, so Postgres would sort the whole candidate set — for a common prefix like
-// "the" that is ~322k rows, the exact regression buildFastTitlePrefixCondition exists to
-// avoid. Split in two, each branch keeps its own index-ordered plan and its own LIMIT, and
-// the merge happens over at most 2×(offset+limit) rows in memory.
-//
-// Which branch leads depends on how well the title side actually matched, because the two
-// branches carry very different confidence at different tiers:
-//   - fast/cheap: the title branch is prefix or word-prefix matching, a strong signal, and
-//     a query is more often a title than a name — so titles lead.
-//   - broad: the title branch has fallen through to trigram/FTS, i.e. nothing matched a
-//     title properly and it is returning fuzzy near-misses. An exact author-name match is
-//     a far better answer than a fuzzy title one, so the author branch leads.
-// Concretely, "Roderick Hunt" produced a page led by "Life of Sir Roderick I. Murchison"
-// before this distinction existed, with the author's own books below the fold — the exact
-// query this feature is for, answered with noise.
-//
-// Within a branch, no cross-branch relevance score is attempted: none of the indexes
-// involved can supply one, and computing it would mean ranking the merged set in SQL,
-// which is what makes the single-query version slow.
-//
-// The branches fetch from row 0 rather than pushing `offset` into SQL, since the offset
-// applies to the merged sequence, not to either branch — so a deep page transfers
-// offset+limit rows per branch. That is bounded by the max page size (50) and by
-// SEARCH_COUNT_CAP making pagination past ~1000 rows meaningless for a search anyway.
 // Ranks the broad tier against a bounded pool instead of the whole fuzzy match set.
 //
 // The inner LIMIT is the whole point and has to stay inside the subquery: it caps the rows
@@ -1181,7 +1152,7 @@ async function fetchBroadTitleBranch(opts: ListBooksOptions, q: string, branchLi
   return rows;
 }
 
-async function fetchSearchPage(
+async function fetchTitleSearchPage(
   opts: ListBooksOptions,
   q: string,
   tier: 'fast' | 'cheap' | 'broad',
@@ -1190,97 +1161,54 @@ async function fetchSearchPage(
   // match set. The broad tier ignores it and ranks inside its own bounded pool instead —
   // see rankBroadCandidates for why it cannot simply sort what it matches.
   titleOrderBy: (SQL | PgColumn)[],
-  // The page size to fetch per branch — opts.limit normally, or opts.limit +
-  // DEDUPE_POOL_HEADROOM when the caller is about to dedupe the merged result.
+  // The page size to fetch — opts.limit normally, or opts.limit + DEDUPE_POOL_HEADROOM
+  // when the caller is about to dedupe the result.
   pageSize: number,
-  // Whether the exact band — cheap title OR cheap name, in any contributor role — has
-  // rows at this offset. Only consulted on the broad tier, where it is the difference
-  // between "nothing matched exactly, go fuzzy" and "a name matched exactly, and the
-  // fuzzy pool has nothing to add above it". See the broad branch below.
-  exactBandSatisfied = false,
 ) {
   const branchLimit = opts.offset + pageSize + 1;
 
-  const titleQuery = (conn: Pick<typeof db, 'select'>) =>
-    conn.select(LIST_COLUMNS).from(books).where(titleWhere).orderBy(...titleOrderBy).limit(branchLimit);
-
-  // The author branch keeps the expensive trigram/FTS path off every ordinary search by
-  // trying its cheap tier first, regardless of which tier the *title* branch landed on.
-  //
-  // These two used to be escalated together: a broad title tier forced a broad author
-  // tier. That is wrong, because the tiers measure different things. "peace adzo medie"
-  // matches no title prefix, so the title branch falls to broad — but it is an exact
-  // prefix of a person_name, which the cheap tier answers from the name index in
-  // microseconds. Escalating in lockstep sent that query straight to the fuzzy name scan
-  // over the whole contributor table, which on the production catalogue exceeded
-  // BROAD_TIME_BUDGET_MS, was cancelled, and returned nothing — so the one genuinely
-  // correct result was dropped and the page came back as title near-misses only.
-  //
-  // Cheap-first is what suggestions() has always done (see authorSuggestionsFor), and the
-  // blended count probe already counts with the cheap tier — which is why the reported
-  // total could include a book the rows themselves had lost.
-  const authorQuery = (conn: Pick<typeof db, 'select' | 'execute'>, authorTier: 'cheap' | 'broad' = 'cheap') =>
-    fetchAuthorBranch(conn, opts, q, authorTier, branchLimit);
-
-  let titleRows: Awaited<ReturnType<typeof titleQuery>>;
-  let authorRows: Awaited<ReturnType<typeof authorQuery>>;
   if (tier === 'broad') {
-    // Each branch scopes its own GUCs, so they run concurrently and a title stage
-    // cancelled by the time budget cannot take the author query down with it.
-    //
-    // Within the author branch, cheap comes first: an index-backed name-prefix hit is both
-    // the fastest answer available and a better one than anything the fuzzy tier could
-    // produce, so it settles the branch outright. Only a query that matched no name at all
-    // is worth paying the fuzzy scan for, and that escalation keeps the budget it always
-    // had — "an ambiguous search answers within the budget" has to hold for the whole
-    // tier, not just the branch that was measured to be expensive. Losing the escalation
-    // to a timeout costs the author-matched rows, not the page.
-    const authorBranch = async (): Promise<Awaited<ReturnType<typeof authorQuery>>> => {
-      const cheapRows = await authorQuery(db, 'cheap');
-      if (cheapRows.length > 0) return cheapRows;
-      return withBroadTierSession(BROAD_TIME_BUDGET_MS, (conn) => authorQuery(conn, 'broad')).catch(
-        (err: unknown) => {
-          if (!isStatementTimeout(err)) throw err;
-          logger.warn('Author branch of the fuzzy tier hit its time budget — omitting it', { q });
-          return [] as Awaited<ReturnType<typeof authorQuery>>;
-        },
-      );
-    };
-
-    if (exactBandSatisfied) {
-      // Reaching the broad tier means no title matched a prefix at this offset — so if
-      // the exact band still has rows, they are name matches, and every one of them
-      // outranks anything the fuzzy pool could produce. Running it anyway would spend
-      // the most expensive query in the search (a word_similarity ranking over a bounded
-      // pool, the multi-second part on the full catalogue) purely to pad the page out
-      // below results that are already correct.
-      //
-      // This is the "if that's not there" in the ladder doing real work: fuzzy matching
-      // of any kind is reserved for queries that matched nothing exactly, anywhere.
-      titleRows = [];
-      authorRows = await authorQuery(db, 'cheap');
-    } else {
-      [titleRows, authorRows] = await Promise.all([
-        fetchBroadTitleBranch(opts, q, branchLimit),
-        authorBranch(),
-      ]);
-    }
-  } else {
-    [titleRows, authorRows] = await Promise.all([titleQuery(db), authorQuery(db)]);
+    // The pool query applies every filter itself, so this returns rows already ranked.
+    const rows = await fetchBroadTitleBranch(opts, q, branchLimit);
+    return rows.slice(opts.offset, branchLimit);
   }
 
-  // A book matching on both sides must appear once, at its leading branch's position.
-  const ordered = tier === 'broad' ? [...authorRows, ...titleRows] : [...titleRows, ...authorRows];
-  const seen = new Set<number>();
-  const merged: typeof titleRows = [];
-  for (const row of ordered) {
-    if (seen.has(row.id)) continue;
-    seen.add(row.id);
-    merged.push(row);
-  }
+  // Offset is pushed into SQL rather than sliced off in memory: with no merge, the offset
+  // applies directly to this branch's own ordering. The index-ordered plan is what makes
+  // the fast tier fast, and it survives an OFFSET untouched.
+  return db
+    .select(LIST_COLUMNS)
+    .from(books)
+    .where(titleWhere)
+    .orderBy(...titleOrderBy)
+    .limit(pageSize + 1)
+    .offset(opts.offset);
+}
 
-  // One row beyond the page, so the caller can derive `hasMore` without a second query.
-  return merged.slice(opts.offset, branchLimit);
+// The name side. Its ladder is cheap-first and escalates only on an empty result: an
+// index-backed name-prefix hit is both the fastest answer available and a better one than
+// anything the fuzzy tier could produce, so it settles the search outright. Only a query
+// that matched no name at all is worth paying the fuzzy scan for.
+//
+// Losing the escalation to a timeout costs the fuzzy rows, not the request — an author
+// search that overruns its budget answers empty rather than 500ing.
+async function fetchAuthorSearchPage(opts: ListBooksOptions, q: string, pageSize: number) {
+  const branchLimit = opts.offset + pageSize + 1;
+
+  const cheapRows = await fetchAuthorBranch(db, opts, q, 'cheap', branchLimit);
+  if (cheapRows.length > 0) return cheapRows.slice(opts.offset, branchLimit);
+
+  const broadRows = await withBroadTierSession(BROAD_TIME_BUDGET_MS, (conn) =>
+    fetchAuthorBranch(conn, opts, q, 'broad', branchLimit),
+  ).catch((err: unknown) => {
+    if (!isStatementTimeout(err)) throw err;
+    logger.warn('Fuzzy author search hit its time budget — returning no name matches', { q });
+    return [] as Awaited<ReturnType<typeof fetchAuthorBranch>>;
+  });
+
+  // Sliced rather than offset in SQL: the ranking lives in rankAuthorMatches' id ordering,
+  // which the row fetch discards and re-applies in memory (see byAuthorTierThenTitle).
+  return broadRows.slice(opts.offset, branchLimit);
 }
 
 // ── Public service ────────────────────────────────────────────────────────────
@@ -1316,7 +1244,11 @@ export const booksService = {
     // v5: withdrawn titles (is_removed) are filtered out of every list path now, so a v4
     // entry can hold rows and totals that include books this endpoint must no longer
     // return. Bumping retires them instead of serving them until their TTL lapses.
-    const rowsCacheKey = `books:list:v5:${createHash('sha256').update(JSON.stringify(opts)).digest('hex')}`;
+    // v6: `q` no longer matches titles and author names together — opts now carries
+    // `searchType`, and a v5 entry for the same query holds the old blended page. The new
+    // field changes every hash on its own, so this bump is belt-and-braces, but a stale
+    // blended page is exactly the kind of thing that should not outlive the deploy.
+    const rowsCacheKey = `books:list:v6:${createHash('sha256').update(JSON.stringify(opts)).digest('hex')}`;
     // Keyed only on the fields that affect the count (not limit/offset/sort) so every
     // page of the same filter — and every sort direction — shares one cached total.
     //
@@ -1336,7 +1268,9 @@ export const booksService = {
       cursor: _cursor,
       ...countFilters
     } = opts;
-    const countCacheKey = `books:count:v4:${createHash('sha256')
+    // v5: see the v6 note on the rows key — a blended total is wrong for either single
+    // side, and `searchType` rides in countFilters via the rest-destructure above.
+    const countCacheKey = `books:count:v5:${createHash('sha256')
       .update(JSON.stringify(countFilters))
       .digest('hex')}`;
 
@@ -1373,27 +1307,42 @@ export const booksService = {
     // the same total instead of it drifting by whichever page computed it first.
     //
     // The tier probes below measure the *title* match set only, because that is what they
-    // are choosing between — the author branch is fetched separately and has its own
-    // bounded cost (see buildAuthorMatchCondition), so it never influences which title
-    // tier is used. The reported total is a third, blended probe: it has to count books
-    // matched by either side, and a title probe alone would undercount a search like
-    // "chimamanda" to zero.
+    // are choosing between. An author search never runs them: its ladder escalates on
+    // whether any name matched, which the branch itself already knows, so there is nothing
+    // for a probe to decide. That also retires the blended union probe this used to need —
+    // counting "books matched by either side" was its whole purpose, and there is no
+    // longer an either.
+    const isAuthorSearch = opts.searchType === 'author';
     let fastCount = 0;
     let cheapCount = 0;
-    let blendedCount = 0;
-    // Set when the blended probe gave up, so the total it feeds is known to be a lower
-    // bound rather than a real count — see the total handling further down.
-    let blendedProbeIncomplete = false;
+    // Set when the author count probe gave up, so the total it feeds is known to be a
+    // lower bound rather than a real count — see the total handling further down.
+    let countProbeIncomplete = false;
     // The probes answer two separate questions, and a request rarely needs both. The title
     // probes pick the row tier, so they are only needed when the rows have to be fetched;
-    // the blended probe feeds nothing but the total, so it is only needed when the total is
-    // not already cached. Running both sets whenever *either* was missing meant paginating
-    // re-ran the expensive one on every new offset despite the count being cached under a
-    // page-independent key for COUNT_TTL — 3.5s for "harry&offset=20" and 11.5s for
-    // "bookkeeping&offset=20", entirely to recompute a number already in Redis.
+    // a count probe feeds nothing but the total, so it is only needed when the total is
+    // not already cached.
     const needsTier = !cachedRows;
     const needsCount = cachedCount == null;
-    if (opts.q && (needsTier || needsCount)) {
+    if (opts.q && isAuthorSearch) {
+      // One probe, and only for the caption. The name match set is bounded by
+      // buildAuthorMatchCondition's own LIMIT, so this is cheap by construction — but it
+      // is still the fuzzy tier's neighbour, so a timeout degrades the total rather than
+      // failing the search.
+      if (needsCount) {
+        cheapCount = await countUpTo(
+          buildWhereClause(opts, buildAuthorMatchCondition(opts.q, 'cheap')),
+          SEARCH_COUNT_CAP + 1,
+        ).catch((err: unknown) => {
+          if (!isStatementTimeout(err)) throw err;
+          logger.warn('Author search count probe timed out — reporting a lower bound', {
+            q: opts.q,
+          });
+          countProbeIncomplete = true;
+          return 0;
+        });
+      }
+    } else if (opts.q && (needsTier || needsCount)) {
       const q = opts.q;
       fastCount = await countUpTo(
         buildWhereClause(opts, buildFastTitlePrefixCondition(q)),
@@ -1402,48 +1351,21 @@ export const booksService = {
       // Once the fast tier alone has hit the cap, neither wider probe can change any answer
       // this function produces: rowsTier below already resolves to 'fast', and the reported
       // total is Math.min(_, SEARCH_COUNT_CAP), which fastCount has itself already exceeded.
-      // The blended probe used to run unconditionally and in parallel, so every search for a
-      // common word paid for a trigram scan plus an author lookup whose result was then
-      // discarded by that clamp — ~2.5s of it on production for "harry".
       if (fastCount <= SEARCH_COUNT_CAP) {
-        const [cheap, blended] = await Promise.all([
-          countUpTo(
-            buildWhereClause(opts, buildTitlePrefixCondition(q)),
-            SEARCH_COUNT_CAP + 1,
-          ),
-          !needsCount
-            ? Promise.resolve(0)
-            : countUnionUpTo(
-                buildWhereClause(opts, buildTitlePrefixCondition(q)),
-                buildWhereClause(opts, buildAuthorMatchCondition(q, 'cheap')),
-                SEARCH_COUNT_CAP + 1,
-              ).catch((err: unknown) => {
-                if (!isStatementTimeout(err)) throw err;
-                // The total is the only thing this probe feeds, and callers already read it
-                // as a lower bound. Degrading to the title-only counts keeps the search
-                // answerable instead of failing the whole request on a caption.
-                logger.warn('Blended search count probe timed out — reporting a lower bound', {
-                  q,
-                });
-                blendedProbeIncomplete = true;
-                return 0;
-              }),
-        ]);
-        cheapCount = cheap;
-        blendedCount = blended;
+        cheapCount = await countUpTo(
+          buildWhereClause(opts, buildTitlePrefixCondition(q)),
+          SEARCH_COUNT_CAP + 1,
+        );
       }
     }
-    // blendedCount already counts the union of both branches, so it dominates the title-only
-    // probes — max() rather than a sum, which would double-count books matching both.
-    const searchMatchCount = Math.max(fastCount, cheapCount, blendedCount);
+    const searchMatchCount = Math.max(fastCount, cheapCount);
 
-    // Size of the exact band: everything the cheap tiers match, by title or by a name in
-    // any contributor role. The cached total is folded in because it *is* this number —
-    // it is only ever derived from cheap-tier probes, never from the fuzzy tier — and
-    // when a paginating request finds the count already cached, blendedCount is not
-    // recomputed. Without this, page 2 of an exact-name search would see a blendedCount
-    // of 0, conclude the exact band was empty, and drop to the fuzzy tier that page 1
-    // correctly skipped: the same query answered two different ways on two pages.
+    // Size of the exact band: everything the cheap tier matches on the side being searched.
+    // The cached total is folded in because it *is* this number — it is only ever derived
+    // from cheap-tier probes, never from the fuzzy tier — and a paginating request that
+    // finds the count already cached does not recompute it. Without this, page 2 would see
+    // a count of 0, conclude the exact band was empty, and drop to the fuzzy tier that
+    // page 1 correctly skipped: the same query answered two different ways on two pages.
     const exactBandCount = Math.max(
       searchMatchCount,
       cachedCount != null ? parseInt(cachedCount, 10) : 0,
@@ -1459,15 +1381,14 @@ export const booksService = {
     // that handful of genuine matches is both far faster and better ranked than padding
     // the page out with fuzzy near-misses.
     //
-    // The cheap tier is held while the *exact band* still has rows, not merely while the
-    // title count does. The two are different numbers: the probes measure titles only, but
-    // the tier's output is titles merged with name matches, so a title-only test abandons
-    // the tier while it still has plenty to give. Measured on "roald dahl": 9 title-prefix
-    // matches, 13 with word prefixes, but 40 rows once names are counted — so at offset 20
-    // the ladder fell to broad with half the supply unspent, and because broad is a
-    // different ordering over a different set (author rows lead, title rows follow) the
-    // raw offset landed near the top of it. Page 3 reprinted page 1.
-    const rowsTier: SearchTier = opts.q
+    // The cheap tier is held while the exact band still has rows at this offset, so the
+    // ladder cannot abandon a tier with supply left to give.
+    //
+    // An author search sits outside this ladder entirely — its escalation is "did any name
+    // match at all", which fetchAuthorSearchPage decides from the branch's own result. The
+    // value here is inert for it, and only kept well-defined so the rowsWhere/rowsOrderBy
+    // expressions below stay total.
+    const rowsTier: SearchTier = opts.q && !isAuthorSearch
       ? fastCount >= pageEnd
         ? 'fast'
         : exactBandCount > opts.offset
@@ -1479,7 +1400,10 @@ export const booksService = {
     // sortBy and sort are ignored — a page ordered by title that was *selected*
     // by fuzzy relevance is neither one thing nor the other. Otherwise order by
     // the requested field, falling back to updatedAt.
-    const rowsWhere = opts.q
+    // An author search's WHERE lives inside its own branch (the name match is a subquery
+    // over book_contributors, not a predicate on books), so there is no title condition to
+    // build for it — buildWhereClause with no extra condition is what its branch filters by.
+    const rowsWhere = opts.q && !isAuthorSearch
       ? buildWhereClause(
           opts,
           rowsTier === 'fast'
@@ -1489,7 +1413,7 @@ export const booksService = {
               : buildSearchCondition(opts.q),
         )
       : buildWhereClause(opts);
-    const rowsOrderBy = opts.q
+    const rowsOrderBy = opts.q && !isAuthorSearch
       ? rowsTier === 'fast'
         ? buildFastTitlePrefixOrderBy()
         : rowsTier === 'cheap'
@@ -1516,17 +1440,20 @@ export const booksService = {
         })
       : (async () => {
           const fetched = opts.q
-            ? await fetchSearchPage(
-                { ...opts, offset: effectiveOffset },
-                opts.q,
-                rowsTier,
-                rowsWhere,
-                rowsOrderBy,
-                overfetchLimit,
-                // Compared against the same offset the tier ladder above uses, so the two
-                // decisions cannot disagree about whether this page is inside the band.
-                exactBandCount > effectiveOffset,
-              )
+            ? isAuthorSearch
+              ? await fetchAuthorSearchPage(
+                  { ...opts, offset: effectiveOffset },
+                  opts.q,
+                  overfetchLimit,
+                )
+              : await fetchTitleSearchPage(
+                  { ...opts, offset: effectiveOffset },
+                  opts.q,
+                  rowsTier,
+                  rowsWhere,
+                  rowsOrderBy,
+                  overfetchLimit,
+                )
             : await db
                 .select(LIST_COLUMNS)
                 .from(books)
@@ -1645,7 +1572,7 @@ export const booksService = {
             const total = Math.min(searchMatchCount, SEARCH_COUNT_CAP);
             // A degraded count must not be cached for COUNT_TTL — the next request should get
             // a fresh attempt rather than inherit this lower bound for the next half hour.
-            if (!blendedProbeIncomplete) {
+            if (!countProbeIncomplete) {
               await redis.set(countCacheKey, String(total), 'EX', COUNT_TTL);
             }
             return total;
@@ -1683,7 +1610,7 @@ export const booksService = {
     const totalIsApproximate =
       (!!opts.q && total >= SEARCH_COUNT_CAP) ||
       !!opts.dedupe ||
-      blendedProbeIncomplete ||
+      countProbeIncomplete ||
       // The floor only raises the total when the probes undercounted, which makes what we
       // report a lower bound by construction.
       total > probedTotal;
@@ -1874,7 +1801,8 @@ export const booksService = {
       authorRows = authorPool.filter((r) => !titleIds.has(r.id));
     }
 
-    // Same rule as the paginated search (see fetchSearchPage): titles lead, unless nothing
+    // The typeahead still blends both sides (see SuggestionType) and so still needs a
+    // rule for which leads: titles do, unless nothing
     // matched a title with any confidence and the author side did. A fuzzy title match is
     // a guess; an exact author match is an answer. "Jennifer Dussling" put "Elizabeth
     // Jennings: 'The Inward War'" — a trigram near-miss on Jennings/Jennifer — above seven
