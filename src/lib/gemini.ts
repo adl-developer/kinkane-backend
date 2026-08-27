@@ -32,6 +32,22 @@ export async function generateEmbedding(text: string): Promise<number[]> {
 
 // ── Explanations ──────────────────────────────────────────────────────────────
 
+/**
+ * Stands in for the reader's first name inside a generated explanation.
+ *
+ * The name is *not* written into the cached text, because a recommendation
+ * result set is shared between every reader whose quiz answers hash the same
+ * way (displayName is deliberately excluded from that hash — see hashInput).
+ * Baking "Elisabeth," into the stored string would mean the next reader with
+ * identical answers gets a cache hit and reads someone else's name.
+ *
+ * So the model writes this token, the cache stores the token, and the real
+ * name is substituted on the way out to each reader. Keeping the name out of
+ * the prompt input also keeps it out of the embedding and out of Gemini's
+ * request payload entirely.
+ */
+export const NAME_PLACEHOLDER = '{{name}}';
+
 export interface BookContext {
   bookId: number;
   title: string;
@@ -168,9 +184,11 @@ async function generateExplanationsChunk(
   const prompt = `You are a book recommendation assistant. For each book below, write a warm, specific explanation of why it is a great match for this reader.
 
 Rules:
+- Address the reader directly, using the literal token ${NAME_PLACEHOLDER} exactly where their name should appear. Write ${NAME_PLACEHOLDER} verbatim — do not invent, guess or substitute a real name, and do not describe the token.
+- Every explanation must contain ${NAME_PLACEHOLDER} exactly once. Vary where it sits and how the sentence is built so a list of these does not read like a mail merge — "${NAME_PLACEHOLDER}, you wanted something meaningful but not heavy." and "This one moves gently, ${NAME_PLACEHOLDER}, and still challenges you." are both good.
 - Focus ONLY on what connects the book to the reader's preferences — feelings they want, genres they enjoy, books they have loved, or themes that resonate.
 - Never mention what doesn't fit, what the reader dislikes, or any mismatch. Every sentence must be a positive reason to read this book.
-- Each explanation must be STRICTLY 250 characters or fewer.
+- Each explanation must be STRICTLY 250 characters or fewer, counting ${NAME_PLACEHOLDER} as the name it stands in for (assume about 10 characters).
 - Be specific and human — reference actual feelings, genres, or titles from the preferences below.
 - Return ONLY a valid JSON array with no markdown, no code fences, no extra text: [{"bookId": number, "explanation": "string"}, ...]
 

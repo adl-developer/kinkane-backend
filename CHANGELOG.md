@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-08-27
+
+### Bug Fixes
+
+* stop recommending books with no author, and books the reader already told us about ([6133e45](https://adl.github.com/adl-developer/kinkane-backend/commit/6133e45d03220e8b390ad50c889fca68cd615f53)) — [details](changelog/2026-08-27-recommendation-author-exclusions.md)
+
+
 ## 2026-08-25
 
 ### Features
