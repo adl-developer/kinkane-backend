@@ -1,4 +1,4 @@
-import { eq, and, sql, isNull } from 'drizzle-orm';
+import { eq, and, sql, isNull, isNotNull } from 'drizzle-orm';
 import { db } from '../db';
 import {
   books,
@@ -95,10 +95,21 @@ export async function pickUnsentRecommendation(userId: number): Promise<UnsentRe
 
   if (!top) return null;
 
+  // Named contributors only. The predicate above guarantees the book has *an*
+  // author, not that the lowest-sequence A01 row is the one carrying the name —
+  // a book credited with a nameless A01 at sequence 1 and a real author at
+  // sequence 2 would otherwise be emailed out as "Unknown".
   const [contributor] = await db
     .select({ personName: bookContributors.personName })
     .from(bookContributors)
-    .where(and(eq(bookContributors.bookId, top.id), eq(bookContributors.role, 'A01')))
+    .where(
+      and(
+        eq(bookContributors.bookId, top.id),
+        eq(bookContributors.role, 'A01'),
+        isNotNull(bookContributors.personName),
+        sql`btrim(${bookContributors.personName}) <> ''`,
+      ),
+    )
     .orderBy(bookContributors.sequenceNumber)
     .limit(1);
 

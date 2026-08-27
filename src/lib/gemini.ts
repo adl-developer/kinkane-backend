@@ -188,7 +188,7 @@ Rules:
 - Every explanation must contain ${NAME_PLACEHOLDER} exactly once. Vary where it sits and how the sentence is built so a list of these does not read like a mail merge — "${NAME_PLACEHOLDER}, you wanted something meaningful but not heavy." and "This one moves gently, ${NAME_PLACEHOLDER}, and still challenges you." are both good.
 - Focus ONLY on what connects the book to the reader's preferences — feelings they want, genres they enjoy, books they have loved, or themes that resonate.
 - Never mention what doesn't fit, what the reader dislikes, or any mismatch. Every sentence must be a positive reason to read this book.
-- Each explanation must be STRICTLY 250 characters or fewer, counting ${NAME_PLACEHOLDER} as the name it stands in for (assume about 10 characters).
+- Each explanation must be STRICTLY ${MAX_EXPLANATION_LENGTH} characters or fewer, counting ${NAME_PLACEHOLDER} as the name it stands in for (assume about 10 characters).
 - Be specific and human — reference actual feelings, genres, or titles from the preferences below.
 - Return ONLY a valid JSON array with no markdown, no code fences, no extra text: [{"bookId": number, "explanation": "string"}, ...]
 
@@ -233,9 +233,45 @@ ${bookList}
   // Enforce the 250-char cap as a hard safety net regardless of what the model returns
   return (parsed as ExplanationResult[]).map((item) => ({
     bookId: item.bookId,
-    explanation: (item.explanation ?? '').slice(0, 250),
+    explanation: truncateExplanation(item.explanation ?? ''),
   }));
 }
+
+/**
+ * Applies the hard character cap without ever cutting through the name token.
+ *
+ * A plain slice can land inside `{{name}}` and leave a fragment like `{{na`,
+ * which nothing downstream can recognise as a token — so it survives
+ * substitution and renders verbatim on the card, then sits in the cache for the
+ * next 48 hours. The prompt asks the model to budget ten characters for a name
+ * the stored token spells in eight, so output landing just over the cap with
+ * the token near the end is invited rather than freakish.
+ *
+ * Any trailing partial token is removed along with the punctuation left
+ * dangling in front of it, so the explanation ends as a clean sentence. It
+ * loses its name in that case, which is the correct trade: an impersonal
+ * explanation reads fine, a fragment of template syntax does not.
+ */
+export function truncateExplanation(explanation: string): string {
+  if (explanation.length <= MAX_EXPLANATION_LENGTH) return explanation;
+
+  let sliced = explanation.slice(0, MAX_EXPLANATION_LENGTH);
+
+  // Longest first, so `{{nam` is matched before `{{n`.
+  for (let len = NAME_PLACEHOLDER.length - 1; len > 0; len--) {
+    if (sliced.endsWith(NAME_PLACEHOLDER.slice(0, len))) {
+      sliced = sliced.slice(0, -len);
+      break;
+    }
+  }
+
+  // Trailing separators are trimmed whether or not a fragment was removed: the
+  // cut can land just before the token as easily as inside it, and either way
+  // the punctuation that was there to attach the name is now dangling.
+  return sliced.replace(/[\s,;:—-]+$/, '');
+}
+
+const MAX_EXPLANATION_LENGTH = 250;
 
 // ── Reader Type Inference ─────────────────────────────────────────────────────
 

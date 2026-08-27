@@ -77,13 +77,7 @@ export function buildWorkExclusionCondition(works: ExcludedWork[]): SQL | undefi
     WHERE excluded_work.title = lower(btrim(${books.title}))
       AND (
         excluded_work.author IS NULL
-        OR NOT EXISTS (
-          SELECT 1
-          FROM book_contributors bc
-          WHERE bc.book_id = ${books.id}
-            AND bc.role = 'A01'
-            AND bc.person_name IS NOT NULL
-        )
+        OR NOT EXISTS (${namedAuthorSubquery()})
         OR EXISTS (
           SELECT 1
           FROM book_contributors bc
@@ -93,6 +87,27 @@ export function buildWorkExclusionCondition(works: ExcludedWork[]): SQL | undefi
         )
       )
   )`;
+}
+
+/**
+ * The single definition of "this catalogue row has a real, named author",
+ * used by every site that has to make that call. It exists because the answer
+ * was previously spelled out three times with two different meanings: a
+ * contributor row carrying an empty name counted as an author in one place and
+ * not in another, so the same book could be filtered from one surface and
+ * shown on the next. `hasNamedAuthor` below is the in-memory twin of exactly
+ * this rule.
+ *
+ * Emitted as a subquery body so callers can wrap it in EXISTS or NOT EXISTS
+ * without restating the conditions.
+ */
+function namedAuthorSubquery(): SQL {
+  return sql`SELECT 1
+      FROM book_contributors bc
+      WHERE bc.book_id = ${books.id}
+        AND bc.role = 'A01'
+        AND bc.person_name IS NOT NULL
+        AND btrim(bc.person_name) <> ''`;
 }
 
 /**
@@ -109,14 +124,18 @@ export function buildWorkExclusionCondition(works: ExcludedWork[]): SQL | undefi
  * while a predicate lets the search top itself back up.
  */
 export function buildHasAuthorCondition(): SQL {
-  return sql`EXISTS (
-    SELECT 1
-    FROM book_contributors bc
-    WHERE bc.book_id = ${books.id}
-      AND bc.role = 'A01'
-      AND bc.person_name IS NOT NULL
-      AND btrim(bc.person_name) <> ''
-  )`;
+  return sql`EXISTS (${namedAuthorSubquery()})`;
+}
+
+/**
+ * True when at least one A01 contributor carries a usable name. The in-memory
+ * twin of `namedAuthorSubquery` — a contributor whose name is blank or only
+ * whitespace is not an author, matching `btrim(person_name) <> ''` in SQL.
+ */
+export function hasNamedAuthor(
+  contributors: { role: string | null; personName: string | null }[],
+): boolean {
+  return contributors.some((c) => c.role === 'A01' && !!c.personName?.trim());
 }
 
 /**
@@ -158,13 +177,15 @@ export function filterExcludedWorks<
     const excludedAuthors = authorsByTitle.get(normalizeForMatch(item.title));
     if (!excludedAuthors) return true;
 
-    const itemAuthors = item.contributors
-      .filter((c) => c.role === 'A01' && c.personName)
-      .map((c) => normalizeForMatch(c.personName as string));
-
     // An untagged catalogue row has nothing to disprove the title match with,
     // so the title alone decides — mirrors the NOT EXISTS branch in the SQL.
-    if (itemAuthors.length === 0) return false;
+    // Blank and whitespace-only names count as untagged here exactly as they
+    // do there; that agreement is the point of sharing hasNamedAuthor.
+    if (!hasNamedAuthor(item.contributors)) return false;
+
+    const itemAuthors = item.contributors
+      .filter((c) => c.role === 'A01' && !!c.personName?.trim())
+      .map((c) => normalizeForMatch(c.personName as string));
 
     return !excludedAuthors.some(
       (author) => author === null || itemAuthors.includes(author),
@@ -316,11 +337,14 @@ export async function resolveWorkSnapshots(
       .orderBy(bookContributors.sequenceNumber),
   ]);
 
-  // First A01 contributor wins — sequence-ordered above, and the exclusion only
-  // needs one author to anchor the match.
+  // First *named* A01 contributor wins — sequence-ordered above, and the
+  // exclusion only needs one author to anchor the match. A blank name is
+  // skipped rather than recorded, so a snapshot's author is either a real name
+  // or null; anything else would make an exclusion look author-qualified while
+  // matching nothing.
   const primaryAuthor = new Map<number, string>();
   for (const c of contributors) {
-    if (c.personName && !primaryAuthor.has(c.bookId)) {
+    if (c.personName?.trim() && !primaryAuthor.has(c.bookId)) {
       primaryAuthor.set(c.bookId, c.personName);
     }
   }

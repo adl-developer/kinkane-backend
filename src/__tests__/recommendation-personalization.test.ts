@@ -3,7 +3,7 @@ import {
   personalizeExplanations,
   toFirstName,
 } from '../services/recommendations.service';
-import { NAME_PLACEHOLDER } from '../lib/gemini';
+import { NAME_PLACEHOLDER, truncateExplanation } from '../lib/gemini';
 
 // The reader's name never enters the recommendation cache: a result set is
 // shared by everyone whose quiz answers hash the same way, so the cached text
@@ -108,5 +108,53 @@ describe('personalizeExplanations', () => {
   it('passes through an empty explanation from a failed Gemini chunk', () => {
     const [out] = personalizeExplanations([item('')], 'Elisabeth');
     expect(out.explanation).toBe('');
+  });
+});
+
+describe('truncateExplanation', () => {
+  // The cap is enforced on the model's raw output, which still contains the
+  // name token — so the cut must never land inside it. A fragment like "{{na"
+  // is unrecognisable to the substitution step, survives it, and renders as
+  // template syntax on the card for the life of the cache entry.
+  it('leaves a short explanation alone', () => {
+    expect(truncateExplanation('Short and sweet.')).toBe('Short and sweet.');
+  });
+
+  it('caps an over-long explanation', () => {
+    expect(truncateExplanation('A'.repeat(400))).toHaveLength(250);
+  });
+
+  it('never leaves a partial token when the cut lands inside one', () => {
+    const raw = 'A'.repeat(244) + `, ${NAME_PLACEHOLDER}.`;
+    const out = truncateExplanation(raw);
+    expect(out).not.toContain('{');
+    expect(out).toBe('A'.repeat(244));
+  });
+
+  it('removes the punctuation left dangling by a stripped token', () => {
+    const raw = 'B'.repeat(240) + ` for you, ${NAME_PLACEHOLDER}.`;
+    expect(truncateExplanation(raw).endsWith('for you')).toBe(true);
+  });
+
+  it('handles a cut that lands after only the first brace', () => {
+    const raw = 'C'.repeat(249) + `${NAME_PLACEHOLDER}.`;
+    expect(truncateExplanation(raw)).toBe('C'.repeat(249));
+  });
+
+  it('keeps a whole token that finishes exactly at the cap', () => {
+    const raw = 'D'.repeat(242) + NAME_PLACEHOLDER + 'EXTRA';
+    const out = truncateExplanation(raw);
+    expect(out).toContain(NAME_PLACEHOLDER);
+    expect(out).toHaveLength(250);
+  });
+
+  it('produces text that still personalizes cleanly after truncation', () => {
+    const raw = 'E'.repeat(200) + ` ${NAME_PLACEHOLDER}, read this one.` + 'F'.repeat(60);
+    const [out] = personalizeExplanations(
+      [{ bookId: 1, rank: 1, explanation: truncateExplanation(raw) }],
+      'Elisabeth',
+    );
+    expect(out.explanation).not.toContain('{');
+    expect(out.explanation).toContain('Elisabeth');
   });
 });

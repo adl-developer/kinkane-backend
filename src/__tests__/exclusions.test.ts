@@ -4,6 +4,7 @@ import {
   buildHasAuthorCondition,
   buildWorkExclusionCondition,
   filterExcludedWorks,
+  hasNamedAuthor,
   normalizeForMatch,
   type UserExclusions,
 } from '../lib/exclusions';
@@ -165,8 +166,52 @@ describe('filterExcludedWorks', () => {
     expect(kept.map((b) => b.id)).toEqual([99]);
   });
 
+  it('treats a blank contributor name as no author at all', () => {
+    // The SQL twin tests btrim(person_name) <> '', so a contributor row
+    // carrying an empty name must count as untagged here too — otherwise the
+    // same book is dropped from one surface and served on the next.
+    const kept = filterExcludedWorks(
+      [{ id: 99, title: 'Dune', contributors: [{ role: 'A01', personName: '' }] }],
+      exclusions({ works: [{ title: 'dune', author: 'frank herbert' }] }),
+    );
+    expect(kept).toHaveLength(0);
+  });
+
+  it('treats a whitespace-only contributor name as no author at all', () => {
+    const kept = filterExcludedWorks(
+      [{ id: 99, title: 'Dune', contributors: [{ role: 'A01', personName: '   ' }] }],
+      exclusions({ works: [{ title: 'dune', author: 'frank herbert' }] }),
+    );
+    expect(kept).toHaveLength(0);
+  });
+
   it('returns the list untouched when the user has rejected nothing', () => {
     const items = [item(1, 'Dune', ['Frank Herbert'])];
     expect(filterExcludedWorks(items, exclusions({}))).toBe(items);
+  });
+});
+
+describe('hasNamedAuthor', () => {
+  it('accepts a named primary author', () => {
+    expect(hasNamedAuthor([{ role: 'A01', personName: 'Frank Herbert' }])).toBe(true);
+  });
+
+  it('rejects a blank or whitespace-only name', () => {
+    expect(hasNamedAuthor([{ role: 'A01', personName: '' }])).toBe(false);
+    expect(hasNamedAuthor([{ role: 'A01', personName: '   ' }])).toBe(false);
+    expect(hasNamedAuthor([{ role: 'A01', personName: null }])).toBe(false);
+  });
+
+  it('does not count a translator as an author', () => {
+    expect(hasNamedAuthor([{ role: 'B06', personName: 'Frank Herbert' }])).toBe(false);
+  });
+
+  it('accepts a book whose named author sits behind a nameless one', () => {
+    expect(
+      hasNamedAuthor([
+        { role: 'A01', personName: null },
+        { role: 'A01', personName: 'Chinua Achebe' },
+      ]),
+    ).toBe(true);
   });
 });
