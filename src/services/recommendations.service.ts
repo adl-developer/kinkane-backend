@@ -17,6 +17,7 @@ import { recommendationCache, type RecommendationItem } from '../db/schema/recom
 import type { Dislikes } from '../db/schema/onboarding';
 import { dedupeByTitle } from '../lib/dedupe';
 import {
+  buildHasAuthorCondition,
   buildWorkExclusionCondition,
   bustPersonalizedFeedCache,
   bustUserExclusions,
@@ -165,8 +166,9 @@ function likedBooksToWorks(
 
 /**
  * The full WHERE set shared by both entry points: dislike filters, format
- * intent, and everything the user has told us not to show them — the books
- * they said they've already read, plus every book they've ever swiped away.
+ * intent, a named-author requirement, and everything the user has told us not
+ * to show them — the books they said they've already read, plus every book
+ * they've ever swiped away.
  *
  * The work-level exclusion is applied here, in SQL, rather than by filtering
  * the result array afterwards. Post-filtering would silently return a short
@@ -190,6 +192,7 @@ function buildBaseConditions(
   return [
     ...buildDislikeConditions(input.dislikes),
     ...(formatCondition ? [formatCondition] : []),
+    buildHasAuthorCondition(),
     ...(excludedIds.length > 0 ? [notInArray(books.id, excludedIds)] : []),
     ...(workCondition ? [workCondition] : []),
   ];

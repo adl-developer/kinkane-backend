@@ -5,6 +5,7 @@
 
 ### Features
 
+* choose whether a book search matches titles or authors ([fb91bb0](https://adl.github.com/adl-developer/kinkane-backend/commit/fb91bb0fd2ace357eb369e6e5ee92c6bb6e0813b)) — [details](changelog/2026-08-25-search-exact-band.md)
 * answer a search from exact matches before falling back to fuzzy ones ([210c767](https://adl.github.com/adl-developer/kinkane-backend/commit/210c767af04db172135904c415ce500a09e96c9e)) — [details](changelog/2026-08-25-search-exact-band.md)
 * find a book by the name of its editor, translator or illustrator ([f449fac](https://adl.github.com/adl-developer/kinkane-backend/commit/f449fac838b895378e0f0684d6769f251e09daf7)) — [details](changelog/2026-08-25-search-exact-band.md)
 * let name search reach books credited to an editor or translator ([24824ed](https://adl.github.com/adl-developer/kinkane-backend/commit/24824ed50dfd4e7d4bf126788e13d38e85427b86)) — [details](changelog/2026-08-25-author-search-tier.md)

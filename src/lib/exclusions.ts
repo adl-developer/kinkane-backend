@@ -40,10 +40,19 @@ export function normalizeForMatch(value: string): string {
  * list grows — a reader who has rejected 200 books gets the same shape of
  * query as one who has rejected 3.
  *
- * A work with a null author matches on title alone. That is the deliberate
- * looser branch: if we don't know who wrote the book the user rejected, not
- * re-recommending a same-titled book is the better error than recommending
- * the thing they just swiped away.
+ * The match is by title, with the author acting as a tie-breaker that only
+ * gets to *rescue* a same-titled book — never to let one through on a
+ * technicality. So a candidate is excluded when its title matches and any of:
+ *
+ *  - the rejection has no author recorded (we don't know who wrote the book
+ *    the user rejected), or
+ *  - the candidate has no A01 author recorded (an untagged catalogue row), or
+ *  - the two authors match.
+ *
+ * Only a same-titled book by a *known, different* author survives. Both
+ * unknown-author branches deliberately err towards over-excluding: one missing
+ * book in a list of a hundred costs nothing, while re-recommending the book
+ * someone just told us they'd read reads as the quiz not listening.
  *
  * Returns undefined for an empty list so callers can spread it into an
  * `and(...)` without a special case.
@@ -68,6 +77,13 @@ export function buildWorkExclusionCondition(works: ExcludedWork[]): SQL | undefi
     WHERE excluded_work.title = lower(btrim(${books.title}))
       AND (
         excluded_work.author IS NULL
+        OR NOT EXISTS (
+          SELECT 1
+          FROM book_contributors bc
+          WHERE bc.book_id = ${books.id}
+            AND bc.role = 'A01'
+            AND bc.person_name IS NOT NULL
+        )
         OR EXISTS (
           SELECT 1
           FROM book_contributors bc
@@ -80,14 +96,39 @@ export function buildWorkExclusionCondition(works: ExcludedWork[]): SQL | undefi
 }
 
 /**
+ * "This book has a named author."
+ *
+ * A catalogue row with no A01 contributor — or one whose contributor row
+ * exists but carries no name — is not a recommendable book: the reader sees a
+ * cover, a title, and a blank where the author should be, which reads as a
+ * broken record rather than a suggestion. The ONIX feeds have real gaps here,
+ * so this is a live condition rather than a theoretical one.
+ *
+ * Applied as a WHERE predicate rather than a post-filter for the same reason
+ * the work exclusion is: dropping rows afterwards silently shortens the list,
+ * while a predicate lets the search top itself back up.
+ */
+export function buildHasAuthorCondition(): SQL {
+  return sql`EXISTS (
+    SELECT 1
+    FROM book_contributors bc
+    WHERE bc.book_id = ${books.id}
+      AND bc.role = 'A01'
+      AND bc.person_name IS NOT NULL
+      AND btrim(bc.person_name) <> ''
+  )`;
+}
+
+/**
  * The in-memory twin of `buildWorkExclusionCondition`, for lists that have
  * already been built and can't be re-queried — specifically the per-book
  * "you may also like" cache, which is shared across users and so can only be
  * filtered after it's read.
  *
- * Applies the identical rule: excluded by ID, or title matches and the author
- * matches too unless the rejection has no author recorded. Any divergence
- * between this and the SQL version is a bug in whichever one is wrong.
+ * Applies the identical rule: excluded by ID, or the title matches and the
+ * author does not actively contradict it — see buildWorkExclusionCondition for
+ * the three branches. Any divergence between this and the SQL version is a bug
+ * in whichever one is wrong.
  */
 export function filterExcludedWorks<
   T extends {
@@ -120,6 +161,10 @@ export function filterExcludedWorks<
     const itemAuthors = item.contributors
       .filter((c) => c.role === 'A01' && c.personName)
       .map((c) => normalizeForMatch(c.personName as string));
+
+    // An untagged catalogue row has nothing to disprove the title match with,
+    // so the title alone decides — mirrors the NOT EXISTS branch in the SQL.
+    if (itemAuthors.length === 0) return false;
 
     return !excludedAuthors.some(
       (author) => author === null || itemAuthors.includes(author),

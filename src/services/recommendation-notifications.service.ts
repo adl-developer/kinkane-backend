@@ -10,7 +10,11 @@ import {
   recommendationEmailLog,
   userDislikedBooks,
 } from '../db/schema';
-import { buildWorkExclusionCondition, getUserExclusions } from '../lib/exclusions';
+import {
+  buildHasAuthorCondition,
+  buildWorkExclusionCondition,
+  getUserExclusions,
+} from '../lib/exclusions';
 import { enqueueEmail } from '../lib/email-queue';
 import { enqueuePush } from '../lib/push-queue';
 import { config } from '../config';
@@ -30,8 +34,8 @@ export interface UnsentRecommendation {
 /**
  * Runs a pgvector similarity search against the user's preference embedding,
  * excluding books already on their shelf, books we have already emailed them,
- * and books they have rejected. Returns the top match, or null if the pool is
- * exhausted.
+ * books they have rejected, and anything with no named author. Returns the top
+ * match, or null if the pool is exhausted.
  *
  * Rejected books matter more here than anywhere else: an unwanted book in a
  * feed is a scroll past, the same book in an unprompted email is us not
@@ -80,6 +84,10 @@ export async function pickUnsentRecommendation(userId: number): Promise<UnsentRe
         isNull(recommendationEmailLog.bookId),
         isNull(userDislikedBooks.bookId),
         workExclusion,
+        // An email whose subject line names a book with no author is worse
+        // than no email at all — this is the one surface where the pick is
+        // unprompted, so a broken-looking record has nowhere to hide.
+        buildHasAuthorCondition(),
       ),
     )
     .orderBy(sql`${books.embedding} <=> ${vectorLiteral}::vector`)
