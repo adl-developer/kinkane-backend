@@ -17,6 +17,7 @@ import { recommendationCache, type RecommendationItem } from '../db/schema/recom
 import type { Dislikes } from '../db/schema/onboarding';
 import { dedupeByTitle } from '../lib/dedupe';
 import {
+  buildHasAuthorCondition,
   buildWorkExclusionCondition,
   bustPersonalizedFeedCache,
   bustUserExclusions,
@@ -26,7 +27,12 @@ import {
   type ExcludedWork,
   type UserExclusions,
 } from '../lib/exclusions';
-import { generateEmbedding, generateExplanations, type BookContext } from '../lib/gemini';
+import {
+  generateEmbedding,
+  generateExplanations,
+  NAME_PLACEHOLDER,
+  type BookContext,
+} from '../lib/gemini';
 import { fetchAndInferReaderType } from '../lib/reader-type';
 import { guestService } from './guest.service';
 import { dislikedBooksService } from './disliked-books.service';
@@ -52,6 +58,10 @@ const SIMILARITY_THRESHOLD = 0.5;
 // strict match (see fetchCandidateBooks).
 const BACKFILL_SIMILARITY_THRESHOLD = 0.7;
 const CACHE_TTL_HOURS = 48;
+// v2 — explanations now carry the reader-name token (see NAME_PLACEHOLDER).
+// v3 — explanations must address the reader in second person, so entries
+//      written under v2 (which allowed "Elisabeth will love this") are retired.
+const EXPLANATION_PROMPT_VERSION = 3;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -98,6 +108,12 @@ export interface RecommendationResult {
 // Two users with the same tastes but different names get the same cached recommendations.
 function hashInput(input: RecommendationInput, dislikedBookIds: number[] = []): string {
   const normalized = {
+    // Not a preference — a cache-buster. The explanation prompt changes what
+    // the stored text *is* (v2 introduced the reader-name token), so entries
+    // written by an older prompt have to be retired rather than served for the
+    // rest of their 48-hour TTL. Bump this whenever a prompt change alters the
+    // shape of what gets cached, not merely its wording.
+    promptVersion: EXPLANATION_PROMPT_VERSION,
     feelings: [...input.feelings].sort(),
     bookIds: [...input.bookIds].sort((a, b) => a - b),
     genres: [...input.genres].sort(),
@@ -113,6 +129,72 @@ function hashInput(input: RecommendationInput, dislikedBookIds: number[] = []): 
   };
   return createHash('sha256').update(JSON.stringify(normalized)).digest('hex');
 }
+
+/**
+ * The name as it should read inside a sentence: the first whitespace-separated
+ * token of whatever the reader gave us. "Elisabeth Mensah" addresses as
+ * "Elisabeth", because "Elisabeth Mensah, you wanted something meaningful"
+ * reads like a form letter.
+ *
+ * Length-capped because displayName accepts up to 100 characters and every one
+ * of them would land inside a 250-character explanation.
+ */
+export function toFirstName(displayName: string | null | undefined): string {
+  const first = (displayName ?? '').trim().split(/\s+/)[0] ?? '';
+  return first.slice(0, MAX_NAME_LENGTH);
+}
+
+/**
+ * Swaps the name token in cached explanation text for this reader's actual
+ * name. Runs on every read path — including cache hits, which is the whole
+ * point: the stored text is shared between readers and only becomes personal
+ * here.
+ *
+ * Deliberately not re-truncated to 250 characters afterwards. The model is
+ * told to budget for the name, so the substituted string lands close to the
+ * cap either way, and slicing here would cut a real sentence mid-word — a
+ * worse outcome than a card running a few characters long.
+ *
+ * With no usable name, the token is removed rather than left visible: a
+ * literal "{{name}}" on a recommendation card is the one failure mode worth
+ * engineering against. A leading "{{name}}, " is dropped whole and the
+ * sentence re-capitalised, so it degrades to a clean impersonal explanation.
+ */
+export function personalizeExplanations(
+  items: RecommendationItem[],
+  displayName: string | null | undefined,
+): RecommendationItem[] {
+  const name = toFirstName(displayName);
+
+  return items.map((item) => ({
+    ...item,
+    explanation: applyReaderName(item.explanation, name),
+  }));
+}
+
+function applyReaderName(explanation: string, name: string): string {
+  if (!explanation.includes(NAME_PLACEHOLDER)) return explanation;
+
+  if (name) {
+    return explanation.split(NAME_PLACEHOLDER).join(name);
+  }
+
+  // No name to insert. Strip the token along with the punctuation that was
+  // only there to attach it to the sentence.
+  const stripped = explanation
+    .split(`${NAME_PLACEHOLDER}, `)
+    .join('')
+    .split(`, ${NAME_PLACEHOLDER}`)
+    .join('')
+    .split(NAME_PLACEHOLDER)
+    .join('')
+    .trim();
+
+  return stripped.charAt(0).toUpperCase() + stripped.slice(1);
+}
+
+/** Long enough for any real first name, short enough not to eat the card. */
+const MAX_NAME_LENGTH = 40;
 
 /** Fetches the title and primary authors for books the user says they've enjoyed. */
 async function fetchLikedBooks(
@@ -165,8 +247,9 @@ function likedBooksToWorks(
 
 /**
  * The full WHERE set shared by both entry points: dislike filters, format
- * intent, and everything the user has told us not to show them — the books
- * they said they've already read, plus every book they've ever swiped away.
+ * intent, a named-author requirement, and everything the user has told us not
+ * to show them — the books they said they've already read, plus every book
+ * they've ever swiped away.
  *
  * The work-level exclusion is applied here, in SQL, rather than by filtering
  * the result array afterwards. Post-filtering would silently return a short
@@ -190,6 +273,7 @@ function buildBaseConditions(
   return [
     ...buildDislikeConditions(input.dislikes),
     ...(formatCondition ? [formatCondition] : []),
+    buildHasAuthorCondition(),
     ...(excludedIds.length > 0 ? [notInArray(books.id, excludedIds)] : []),
     ...(workCondition ? [workCondition] : []),
   ];
@@ -468,7 +552,12 @@ export const recommendationsService = {
     const redisHit = await redis.get(redisCacheKey);
     if (redisHit) {
       logger.info('Recommendation Redis cache hit', { hash });
-      const cachedResults = JSON.parse(redisHit) as RecommendationItem[];
+      // Substituted per reader, not per cache entry — the stored text carries
+      // the name token, this caller's name goes in here.
+      const cachedResults = personalizeExplanations(
+        JSON.parse(redisHit) as RecommendationItem[],
+        input.displayName,
+      );
       const { id: guestSessionId, expiresAt } = await guestService.create({
         displayName: input.displayName,
         feelings: input.feelings,
@@ -505,7 +594,11 @@ export const recommendationsService = {
         dislikes: input.dislikes,
         recommendationHash: hash,
       });
-      return { recommendations: cached.results, guestSessionId, expiresAt };
+      return {
+        recommendations: personalizeExplanations(cached.results, input.displayName),
+        guestSessionId,
+        expiresAt,
+      };
     }
 
     logger.info('Recommendation cache miss — generating', { hash });
@@ -629,7 +722,12 @@ export const recommendationsService = {
       recommendationHash: hash,
     });
 
-    return { recommendations: results, guestSessionId, expiresAt };
+    // Cached above with the token intact; personalized only on the way out.
+    return {
+      recommendations: personalizeExplanations(results, input.displayName),
+      guestSessionId,
+      expiresAt,
+    };
   },
 
   /**
@@ -831,7 +929,12 @@ async function computeRecommendations(
     .where(eq(users.id, userId))
     .limit(1);
 
+  // Only ever used as a hashInput field, which discards it — the hash is
+  // name-blind by design. The reader-facing name is `readerName` below, which
+  // stays null when we have nothing real, so the explanation degrades to an
+  // impersonal sentence rather than greeting someone as "User".
   const displayName = userRow?.name ?? 'User';
+  const readerName = userRow?.name ?? null;
 
   // Everything this user has ever swiped away. Loaded before the cache lookup
   // because it's part of the cache key — a user who rejected three books since
@@ -845,7 +948,7 @@ async function computeRecommendations(
   // Check recommendation cache first — no need to re-run Gemini for identical inputs
   const redisHit = await redis.get(redisCacheKey);
   if (redisHit) {
-    return JSON.parse(redisHit) as RecommendationItem[];
+    return personalizeExplanations(JSON.parse(redisHit) as RecommendationItem[], readerName);
   }
 
   const [cached] = await db
@@ -857,7 +960,7 @@ async function computeRecommendations(
   if (cached) {
     const ttlSeconds = Math.floor((cached.expiresAt.getTime() - now.getTime()) / 1000);
     await redis.set(redisCacheKey, JSON.stringify(cached.results), 'EX', ttlSeconds);
-    return cached.results;
+    return personalizeExplanations(cached.results, readerName);
   }
 
   // Full pipeline — embedding + pgvector + Gemini explanations
@@ -931,7 +1034,8 @@ async function computeRecommendations(
     redis.set(redisCacheKey, JSON.stringify(results), 'EX', CACHE_TTL_HOURS * 60 * 60),
   ]);
 
-  return results;
+  // Both caches above hold the name token; the name is this reader's alone.
+  return personalizeExplanations(results, readerName);
 }
 
 /**

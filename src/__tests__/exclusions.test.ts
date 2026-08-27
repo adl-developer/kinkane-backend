@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import {
+  buildHasAuthorCondition,
   buildWorkExclusionCondition,
   filterExcludedWorks,
+  hasNamedAuthor,
   normalizeForMatch,
   type UserExclusions,
 } from '../lib/exclusions';
@@ -63,14 +65,41 @@ describe('buildWorkExclusionCondition', () => {
   });
 
   it('emits one VALUES row per work, so the plan does not grow a clause per book', () => {
-    const { sql } = compile(
+    // The invariant is that the query *shape* is constant: one rejection and a
+    // hundred produce the same subquery structure, differing only in how many
+    // rows the VALUES list carries.
+    const one = compile(buildWorkExclusionCondition([{ title: 'a', author: 'x' }])).sql;
+    const many = compile(
       buildWorkExclusionCondition([
         { title: 'a', author: 'x' },
         { title: 'b', author: 'y' },
         { title: 'c', author: 'z' },
       ]),
-    );
-    expect(sql.match(/NOT EXISTS/g)).toHaveLength(1);
+    ).sql;
+
+    expect(many.match(/NOT EXISTS/g)).toHaveLength(one.match(/NOT EXISTS/g)!.length);
+    expect(many.match(/EXISTS/g)).toHaveLength(one.match(/EXISTS/g)!.length);
+  });
+
+  it('lets an untagged catalogue row be excluded on title alone', () => {
+    // Without this branch, a same-titled book that simply has no A01
+    // contributor slips past an author-qualified rejection.
+    const { sql } = compile(buildWorkExclusionCondition([{ title: 'dune', author: 'frank herbert' }]));
+    expect(sql).toContain('NOT EXISTS');
+    expect(sql).toContain("bc.role = 'A01'");
+  });
+});
+
+describe('buildHasAuthorCondition', () => {
+  it('requires a named A01 contributor', () => {
+    const { sql } = compile(buildHasAuthorCondition());
+    expect(sql).toContain("bc.role = 'A01'");
+    expect(sql).toContain('bc.person_name IS NOT NULL');
+  });
+
+  it('does not treat a blank name as an author', () => {
+    const { sql } = compile(buildHasAuthorCondition());
+    expect(sql).toContain('btrim(bc.person_name)');
   });
 });
 
@@ -108,15 +137,81 @@ describe('filterExcludedWorks', () => {
   });
 
   it('only considers primary (A01) authors, not translators or editors', () => {
+    // A translator credit is not an author credit, so this row counts as
+    // having no author at all — which means the title match stands and the
+    // book is dropped. (It is not kept on the strength of the B06 name
+    // happening to equal the rejected author.)
     const kept = filterExcludedWorks(
       [item(99, 'Dune', ['Frank Herbert'], 'B06')],
+      exclusions({ works: [{ title: 'dune', author: 'frank herbert' }] }),
+    );
+    expect(kept).toHaveLength(0);
+  });
+
+  it('drops a same-titled book that has no author recorded at all', () => {
+    const kept = filterExcludedWorks(
+      [item(99, 'Dune', [])],
+      exclusions({ works: [{ title: 'dune', author: 'frank herbert' }] }),
+    );
+    expect(kept).toHaveLength(0);
+  });
+
+  it('still keeps an unrelated book with no author recorded', () => {
+    // The looser branch only fires on a title match — it is not a blanket
+    // "drop everything untagged" rule.
+    const kept = filterExcludedWorks(
+      [item(99, 'Neuromancer', [])],
       exclusions({ works: [{ title: 'dune', author: 'frank herbert' }] }),
     );
     expect(kept.map((b) => b.id)).toEqual([99]);
   });
 
+  it('treats a blank contributor name as no author at all', () => {
+    // The SQL twin tests btrim(person_name) <> '', so a contributor row
+    // carrying an empty name must count as untagged here too — otherwise the
+    // same book is dropped from one surface and served on the next.
+    const kept = filterExcludedWorks(
+      [{ id: 99, title: 'Dune', contributors: [{ role: 'A01', personName: '' }] }],
+      exclusions({ works: [{ title: 'dune', author: 'frank herbert' }] }),
+    );
+    expect(kept).toHaveLength(0);
+  });
+
+  it('treats a whitespace-only contributor name as no author at all', () => {
+    const kept = filterExcludedWorks(
+      [{ id: 99, title: 'Dune', contributors: [{ role: 'A01', personName: '   ' }] }],
+      exclusions({ works: [{ title: 'dune', author: 'frank herbert' }] }),
+    );
+    expect(kept).toHaveLength(0);
+  });
+
   it('returns the list untouched when the user has rejected nothing', () => {
     const items = [item(1, 'Dune', ['Frank Herbert'])];
     expect(filterExcludedWorks(items, exclusions({}))).toBe(items);
+  });
+});
+
+describe('hasNamedAuthor', () => {
+  it('accepts a named primary author', () => {
+    expect(hasNamedAuthor([{ role: 'A01', personName: 'Frank Herbert' }])).toBe(true);
+  });
+
+  it('rejects a blank or whitespace-only name', () => {
+    expect(hasNamedAuthor([{ role: 'A01', personName: '' }])).toBe(false);
+    expect(hasNamedAuthor([{ role: 'A01', personName: '   ' }])).toBe(false);
+    expect(hasNamedAuthor([{ role: 'A01', personName: null }])).toBe(false);
+  });
+
+  it('does not count a translator as an author', () => {
+    expect(hasNamedAuthor([{ role: 'B06', personName: 'Frank Herbert' }])).toBe(false);
+  });
+
+  it('accepts a book whose named author sits behind a nameless one', () => {
+    expect(
+      hasNamedAuthor([
+        { role: 'A01', personName: null },
+        { role: 'A01', personName: 'Chinua Achebe' },
+      ]),
+    ).toBe(true);
   });
 });
