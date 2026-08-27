@@ -1,5 +1,14 @@
 # `GET /books?q=` searches titles or authors, not both
 
+> **Superseded on 2026-08-27.** This landed on `GET /api/v1/books`, changing what
+> existing clients got from a plain `?q=`. It has since been moved to
+> `GET /api/v2/books` and v1 restored to blending both sides — see
+> [2026-08-27-books-v2-search-type.md](2026-08-27-books-v2-search-type.md). The
+> design below is unchanged and still describes v2 exactly; only the URL it lives
+> at, and the "Behaviour worth knowing" note about breaking existing clients, are
+> out of date.
+
+
 `GET /books?q=` used to match book titles *and* contributor names in a single
 request, blending the two into one ranked page. It no longer does. A new
 `type` parameter picks the side:

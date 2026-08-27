@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
 import { booksService, decodeDedupeCursor } from '../services/books.service';
+import type { BookSearchType } from '../services/books.service';
 import { userBooksService } from '../services/user-books.service';
 import { interactionsService } from '../services/interactions.service';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
@@ -32,17 +33,13 @@ const similarSchema = z.object({
   shoppable: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
 });
 
-const listSchema = z.object({
+// Everything both versions of GET /books accept. `type` is the only difference between
+// them, and it is validated separately (see searchTypeParam) rather than extended onto
+// this object: the two .refine() calls at the bottom turn it into a ZodEffects, which has
+// no .extend(). Parsing the one parameter on its own is less machinery than making the
+// refinements generic, and it keeps every shared filter defined exactly once.
+const listSchemaBase = z.object({
   q: z.string().min(1).max(200).optional(),
-  /**
-   * Which side of the catalogue `q` searches. Defaults to titles.
-   *
-   * There is deliberately no 'all': the two are never blended into one page. A
-   * caller that wants both asks twice and presents two lists, which is the only
-   * honest shape — ranking a title match against a name match needs an ordering
-   * no index can supply. Ignored when `q` is absent.
-   */
-  type: z.enum(['title', 'author']).default('title'),
   genre: z.string().min(1).max(300).optional(),
   availability: z.string().length(2).optional(),
   productForm: z.string().min(1).max(10).optional(),
@@ -109,6 +106,41 @@ const listSchema = z.object({
     path: ['priceMin'],
   });
 
+/**
+ * `type` on `GET /api/v2/books`. Which side of the catalogue `q` searches, defaulting to
+ * titles.
+ *
+ * There is deliberately no 'all': the two are never blended into one page. A caller that
+ * wants both asks twice and presents two lists, which is the only honest shape — ranking a
+ * title match against a name match needs an ordering no index can supply. Ignored when `q`
+ * is absent, so a UI can keep one query-string builder for both its browse and its search.
+ *
+ * v1 does not accept this at all — see rejectTypeParam.
+ */
+const searchTypeParam = z.enum(['title', 'author']).default('title');
+
+/**
+ * v1's half of the same contract: `type` is rejected outright rather than ignored.
+ *
+ * Ignoring it would be the quieter option and the wrong one. A client that has already
+ * adopted `type` would keep getting the blended page and no indication that the parameter
+ * it is sending does nothing — an author search silently answered with title matches looks
+ * like a ranking bug, not a versioning mistake. The 400 names v2 so the fix is the URL.
+ *
+ * Returns true when it has already answered the request.
+ */
+function rejectTypeParam(req: Request, res: Response): boolean {
+  if (req.query.type === undefined) return false;
+  res.status(400).json({
+    error: {
+      type: [
+        'type is not supported on v1 of this endpoint, which always searches titles and author names together. Use GET /api/v2/books?type=title|author to choose one side.',
+      ],
+    },
+  });
+  return true;
+}
+
 const basketRecsSchema = z.object({
   // Comma-separated so this stays a cacheable GET. Bounded to the same ceiling
   // as a cart, because a basket cannot legitimately be larger than one.
@@ -142,6 +174,92 @@ export async function shopCurrency(
 ): Promise<string | undefined> {
   if (!shoppable) return undefined;
   return resolveCurrency({ countryCode: await resolveRequestCountry(req) });
+}
+
+/**
+ * The shared body of both versions of `GET /books`. Everything except which side `q`
+ * matches is identical, so it lives here once — a new filter, a pagination fix or a
+ * pricing change lands on v1 and v2 together, which is the point of them sharing a
+ * service rather than v2 being a fork.
+ *
+ * `searchType` is undefined for v1, and that is meaningful rather than merely absent:
+ * booksService.list reads it as "search both sides and merge" (see fetchBlendedSearchPage).
+ * It is passed positionally rather than read off the query so neither version can pick up
+ * the other's behaviour from a stray parameter.
+ */
+async function runList(
+  req: Request,
+  res: Response,
+  searchType: BookSearchType | undefined,
+): Promise<void> {
+  const parsed = listSchemaBase.safeParse(req.query);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+    return;
+  }
+
+  try {
+    // Cursor is only meaningful with dedupe. Silently ignoring it in the
+    // offset-only path is more forgiving than a 400 and keeps a hand-crafted
+    // request working when someone drops the flag.
+    const cursor = parsed.data.dedupe ? decodeDedupeCursor(parsed.data.cursor) : null;
+
+    const { priceMin, priceMax, currency, ...rest } = parsed.data;
+
+    // Bounds arrive in the customer's currency and the catalogue stores GBP
+    // pence, so they are converted once here rather than per row. The
+    // currency is resolved the same way the cart resolves it, so the numbers
+    // being filtered on are the numbers the shop displayed.
+    // Resolved for every shoppable request, not only filtered ones: it is
+    // both the currency the bounds are read in and the currency prices come
+    // back in, so a client filters and displays in the same units.
+    const resolved =
+      rest.shoppable || priceMin !== undefined || priceMax !== undefined
+        ? resolveCurrency({ requested: currency, countryCode: await resolveRequestCountry(req) })
+        : undefined;
+
+    let priceMinGbpPence: number | undefined;
+    let priceMaxGbpPence: number | undefined;
+    if (resolved && (priceMin !== undefined || priceMax !== undefined)) {
+      const perMajor = minorUnitsPerMajor(resolved);
+      if (priceMin !== undefined) {
+        priceMinGbpPence = fromPresentment(Math.round(priceMin * perMajor), resolved);
+      }
+      if (priceMax !== undefined) {
+        priceMaxGbpPence = fromPresentment(Math.round(priceMax * perMajor), resolved);
+      }
+    }
+
+    const result = await booksService.list({
+      ...rest,
+      // Spread before this line cannot contain searchType — listSchemaBase has no `type`
+      // — so v1 never sets the key at all, which is what booksService.list keys the
+      // blended path (and its cache entries) on.
+      ...(searchType ? { searchType } : {}),
+      currency: resolved,
+      priceMinGbpPence,
+      priceMaxGbpPence,
+      cursor,
+    });
+    res.status(200).json({
+      books: result.books,
+      total: result.total,
+      // `total` is capped for search queries (see SEARCH_COUNT_CAP) — when
+      // totalIsApproximate is true it's a floor, not an exact count, and clients should
+      // paginate on hasMore rather than computing page counts from total.
+      totalIsApproximate: result.totalIsApproximate,
+      hasMore: result.hasMore,
+      limit: parsed.data.limit,
+      offset: parsed.data.offset,
+      // Present only for dedupe requests. Pass this back as ?cursor= for the
+      // next page — offset-style pagination on the dedupe path could return
+      // the same title on consecutive pages, which cursors prevent.
+      nextCursor: result.nextCursor,
+    });
+  } catch (err: unknown) {
+    const e = err as Error;
+    res.status(500).json({ error: e.message });
+  }
 }
 
 export const booksController = {
@@ -199,72 +317,41 @@ export const booksController = {
     }
   },
 
+  /**
+   * `GET /api/v1/books` — frozen. `q` matches titles *and* author names in one page,
+   * merged title-first. No `type`; sending one is a 400 (see rejectTypeParam).
+   *
+   * This is not the behaviour anyone would design today — fetchBlendedSearchPage in
+   * books.service.ts says why at length — and it is kept because clients are pointed at
+   * it. v2 is where the blending stops.
+   */
   async list(req: Request, res: Response): Promise<void> {
-    const parsed = listSchema.safeParse(req.query);
-    if (!parsed.success) {
-      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+    if (rejectTypeParam(req, res)) return;
+    await runList(req, res, undefined);
+  },
+
+  /**
+   * `GET /api/v2/books` — the same parameters plus `type=title|author`, defaulting to
+   * `title`. Identical to v1 in every other respect, including pagination, dedupe, price
+   * filtering and the response shape; the whole of the difference is which side `q`
+   * matches.
+   */
+  async listV2(req: Request, res: Response): Promise<void> {
+    const parsedType = searchTypeParam.safeParse(req.query.type);
+    if (!parsedType.success) {
+      // Worded here rather than relayed from zod, because the value people actually send
+      // is `all`, and "invalid enum value" does not tell them that blending is gone rather
+      // than spelled differently.
+      res.status(400).json({
+        error: {
+          type: [
+            "type must be 'title' or 'author'. There is no combined mode — run one request per side and present two lists.",
+          ],
+        },
+      });
       return;
     }
-
-    try {
-      // Cursor is only meaningful with dedupe. Silently ignoring it in the
-      // offset-only path is more forgiving than a 400 and keeps a hand-crafted
-      // request working when someone drops the flag.
-      const cursor = parsed.data.dedupe ? decodeDedupeCursor(parsed.data.cursor) : null;
-
-      const { priceMin, priceMax, currency, type, ...rest } = parsed.data;
-
-      // Bounds arrive in the customer's currency and the catalogue stores GBP
-      // pence, so they are converted once here rather than per row. The
-      // currency is resolved the same way the cart resolves it, so the numbers
-      // being filtered on are the numbers the shop displayed.
-      // Resolved for every shoppable request, not only filtered ones: it is
-      // both the currency the bounds are read in and the currency prices come
-      // back in, so a client filters and displays in the same units.
-      const resolved =
-        rest.shoppable || priceMin !== undefined || priceMax !== undefined
-          ? resolveCurrency({ requested: currency, countryCode: await resolveRequestCountry(req) })
-          : undefined;
-
-      let priceMinGbpPence: number | undefined;
-      let priceMaxGbpPence: number | undefined;
-      if (resolved && (priceMin !== undefined || priceMax !== undefined)) {
-        const perMajor = minorUnitsPerMajor(resolved);
-        if (priceMin !== undefined) {
-          priceMinGbpPence = fromPresentment(Math.round(priceMin * perMajor), resolved);
-        }
-        if (priceMax !== undefined) {
-          priceMaxGbpPence = fromPresentment(Math.round(priceMax * perMajor), resolved);
-        }
-      }
-
-      const result = await booksService.list({
-        ...rest,
-        searchType: type,
-        currency: resolved,
-        priceMinGbpPence,
-        priceMaxGbpPence,
-        cursor,
-      });
-      res.status(200).json({
-        books: result.books,
-        total: result.total,
-        // `total` is capped for search queries (see SEARCH_COUNT_CAP) — when
-        // totalIsApproximate is true it's a floor, not an exact count, and clients should
-        // paginate on hasMore rather than computing page counts from total.
-        totalIsApproximate: result.totalIsApproximate,
-        hasMore: result.hasMore,
-        limit: parsed.data.limit,
-        offset: parsed.data.offset,
-        // Present only for dedupe requests. Pass this back as ?cursor= for the
-        // next page — offset-style pagination on the dedupe path could return
-        // the same title on consecutive pages, which cursors prevent.
-        nextCursor: result.nextCursor,
-      });
-    } catch (err: unknown) {
-      const e = err as Error;
-      res.status(500).json({ error: e.message });
-    }
+    await runList(req, res, parsedType.data);
   },
 
   async getById(req: Request, res: Response): Promise<void> {
