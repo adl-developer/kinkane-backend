@@ -48,6 +48,28 @@ export async function generateEmbedding(text: string): Promise<number[]> {
  */
 export const NAME_PLACEHOLDER = '{{name}}';
 
+/**
+ * True when the explanation speaks to the reader rather than about them.
+ *
+ * The name is a form of address, not a subject: "{{name}}, you wanted
+ * something meaningful" is the app talking to a reader, while "{{name}} will
+ * love this" is the app talking about one to somebody else. A second-person
+ * pronoun is the cheap, reliable marker of the difference — third-person
+ * phrasing about the reader essentially never contains one.
+ *
+ * Used to decide whether a generated explanation is worth keeping, not to
+ * rewrite it: an explanation that fails this is sent back through the same
+ * retry rounds that handle a chunk the model dropped entirely.
+ */
+export function isSecondPerson(explanation: string): boolean {
+  return /\byou(?:r|rs|rself)?\b/i.test(explanation);
+}
+
+/** An explanation we should ask the model to produce again. */
+function needsRegeneration(explanation: string | undefined): boolean {
+  return !explanation?.trim() || !isSecondPerson(explanation);
+}
+
 export interface BookContext {
   bookId: number;
   title: string;
@@ -184,8 +206,11 @@ async function generateExplanationsChunk(
   const prompt = `You are a book recommendation assistant. For each book below, write a warm, specific explanation of why it is a great match for this reader.
 
 Rules:
-- Address the reader directly, using the literal token ${NAME_PLACEHOLDER} exactly where their name should appear. Write ${NAME_PLACEHOLDER} verbatim — do not invent, guess or substitute a real name, and do not describe the token.
-- Every explanation must contain ${NAME_PLACEHOLDER} exactly once. Vary where it sits and how the sentence is built so a list of these does not read like a mail merge — "${NAME_PLACEHOLDER}, you wanted something meaningful but not heavy." and "This one moves gently, ${NAME_PLACEHOLDER}, and still challenges you." are both good.
+- Write TO the reader, never ABOUT them. Use second person throughout — "you", "your". The reader is being spoken to directly by the app, so their name is a form of address, never the subject of a sentence.
+- Address them by name using the literal token ${NAME_PLACEHOLDER} exactly where their name should appear. Write ${NAME_PLACEHOLDER} verbatim — do not invent, guess or substitute a real name, and do not describe the token.
+- Every explanation must contain ${NAME_PLACEHOLDER} exactly once, and must also use "you" or "your" at least once. Vary where the name sits and how the sentence is built so a list of these does not read like a mail merge.
+- GOOD (second person — talking to them): "${NAME_PLACEHOLDER}, you wanted something meaningful but not heavy. This moves gently, but still challenges you." / "This one moves gently, ${NAME_PLACEHOLDER}, and still challenges you." / "You said you wanted escape, ${NAME_PLACEHOLDER} — this delivers it."
+- BAD (third person — talking about them, never do this): "${NAME_PLACEHOLDER} will love this." / "Perfect for ${NAME_PLACEHOLDER}, who enjoys slow-burn romance." / "Readers like ${NAME_PLACEHOLDER} tend to enjoy this one." / "This is a great match for ${NAME_PLACEHOLDER}'s taste."
 - Focus ONLY on what connects the book to the reader's preferences — feelings they want, genres they enjoy, books they have loved, or themes that resonate.
 - Never mention what doesn't fit, what the reader dislikes, or any mismatch. Every sentence must be a positive reason to read this book.
 - Each explanation must be STRICTLY ${MAX_EXPLANATION_LENGTH} characters or fewer, counting ${NAME_PLACEHOLDER} as the name it stands in for (assume about 10 characters).
@@ -402,7 +427,7 @@ export async function generateExplanations(
   const retryDeadline = Date.now() + MISSING_RETRY_BUDGET_MS;
 
   for (let round = 1; round <= MAX_MISSING_RETRY_ROUNDS; round++) {
-    const missingBooks = books.filter((b) => !explanationMap.get(b.bookId)?.trim());
+    const missingBooks = books.filter((b) => needsRegeneration(explanationMap.get(b.bookId)));
     if (missingBooks.length === 0) break;
 
     if (Date.now() >= retryDeadline) {
@@ -413,7 +438,7 @@ export async function generateExplanations(
       break;
     }
 
-    logger.warn('Retrying books with missing/empty explanations', {
+    logger.warn('Retrying books with missing, empty or third-person explanations', {
       round,
       bookIds: missingBooks.map((b) => b.bookId),
     });
@@ -437,7 +462,12 @@ export async function generateExplanations(
       generateExplanationsChunk(preferenceText, missingBooks),
     );
     for (const r of retryResults) {
-      if (r.explanation.trim()) {
+      // A clean second-person answer always wins. Otherwise a non-empty reply
+      // still beats nothing, but must not overwrite something we already have
+      // — retrying should never trade down.
+      if (!needsRegeneration(r.explanation)) {
+        explanationMap.set(r.bookId, r.explanation);
+      } else if (r.explanation.trim() && !explanationMap.get(r.bookId)?.trim()) {
         explanationMap.set(r.bookId, r.explanation);
       }
     }
@@ -447,6 +477,21 @@ export async function generateExplanations(
   if (stillMissing.length > 0) {
     logger.error('Gemini explanations still missing after all retry rounds — falling back to empty string', {
       bookIds: stillMissing.map((b) => b.bookId),
+      rounds: MAX_MISSING_RETRY_ROUNDS,
+    });
+  }
+
+  // Kept rather than discarded: copy that reads about the reader instead of to
+  // them is still accurate and still better than a blank card. Logged because
+  // a rising count here means the prompt is losing its grip on the voice.
+  const stillThirdPerson = books.filter((b) => {
+    const explanation = explanationMap.get(b.bookId);
+    return !!explanation?.trim() && !isSecondPerson(explanation);
+  });
+  if (stillThirdPerson.length > 0) {
+    logger.warn('Gemini explanations still not in second person after all retry rounds', {
+      bookIds: stillThirdPerson.map((b) => b.bookId),
+      count: stillThirdPerson.length,
       rounds: MAX_MISSING_RETRY_ROUNDS,
     });
   }

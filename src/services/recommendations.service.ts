@@ -59,7 +59,9 @@ const SIMILARITY_THRESHOLD = 0.5;
 const BACKFILL_SIMILARITY_THRESHOLD = 0.7;
 const CACHE_TTL_HOURS = 48;
 // v2 — explanations now carry the reader-name token (see NAME_PLACEHOLDER).
-const EXPLANATION_PROMPT_VERSION = 2;
+// v3 — explanations must address the reader in second person, so entries
+//      written under v2 (which allowed "Elisabeth will love this") are retired.
+const EXPLANATION_PROMPT_VERSION = 3;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 

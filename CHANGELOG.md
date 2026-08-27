@@ -9,6 +9,7 @@
 
 ### Bug Fixes
 
+* keep template text and "Unknown" authors off recommendation cards ([8a14feb](https://adl.github.com/adl-developer/kinkane-backend/commit/8a14feb555497ead2bdc4b6ad1283efcc0ab2b12)) — [details](changelog/2026-08-27-recommendation-author-exclusions.md)
 * stop recommending books with no author, and books the reader already told us about ([6133e45](https://adl.github.com/adl-developer/kinkane-backend/commit/6133e45d03220e8b390ad50c889fca68cd615f53)) — [details](changelog/2026-08-27-recommendation-author-exclusions.md)
 
 

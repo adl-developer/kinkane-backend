@@ -3,7 +3,7 @@ import {
   personalizeExplanations,
   toFirstName,
 } from '../services/recommendations.service';
-import { NAME_PLACEHOLDER, truncateExplanation } from '../lib/gemini';
+import { NAME_PLACEHOLDER, truncateExplanation, isSecondPerson } from '../lib/gemini';
 
 // The reader's name never enters the recommendation cache: a result set is
 // shared by everyone whose quiz answers hash the same way, so the cached text
@@ -156,5 +156,33 @@ describe('truncateExplanation', () => {
     );
     expect(out.explanation).not.toContain('{');
     expect(out.explanation).toContain('Elisabeth');
+  });
+});
+
+describe('isSecondPerson', () => {
+  // The rule this guards: the app speaks TO the reader, never ABOUT them. The
+  // name is a form of address, not the subject of the sentence.
+  it('accepts the app speaking to the reader', () => {
+    expect(isSecondPerson('Elisabeth, you wanted something meaningful, but not heavy.')).toBe(true);
+    expect(isSecondPerson('This moves gently, Elisabeth, and still challenges you.')).toBe(true);
+    expect(isSecondPerson('It matches your love of slow-burn romance.')).toBe(true);
+    expect(isSecondPerson('This one is yours, Elisabeth.')).toBe(true);
+    expect(isSecondPerson("You're going to fall for this one, Elisabeth.")).toBe(true);
+  });
+
+  it('rejects the app speaking about the reader', () => {
+    expect(isSecondPerson('Elisabeth will love this quiet, hopeful novel.')).toBe(false);
+    expect(isSecondPerson('Perfect for Elisabeth, who enjoys slow-burn romance.')).toBe(false);
+    expect(isSecondPerson('Readers like Elisabeth tend to enjoy this one.')).toBe(false);
+    expect(isSecondPerson("A great match for Elisabeth's taste in fiction.")).toBe(false);
+  });
+
+  it('is not fooled by "you" inside another word', () => {
+    expect(isSecondPerson('A story of youth and ambition for Elisabeth.')).toBe(false);
+    expect(isSecondPerson('Set in a young republic, this suits Elisabeth.')).toBe(false);
+  });
+
+  it('treats an empty explanation as not second person', () => {
+    expect(isSecondPerson('')).toBe(false);
   });
 });

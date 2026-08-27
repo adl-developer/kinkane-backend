@@ -9,6 +9,18 @@ Recommendation explanations now speak to the reader directly:
 > Elisabeth, you wanted something meaningful, but not heavy. This moves
 > gently, but still challenges you.
 
+The app always speaks **to** the reader, never **about** them: the name is a
+form of address, not the subject of a sentence. "Elisabeth, you wanted
+something meaningful" is right; "Elisabeth will love this", "Perfect for
+Elisabeth, who enjoys slow-burn romance" and "Readers like Elisabeth tend to
+enjoy this" are all wrong. The prompt carries both the good and the bad
+patterns explicitly, and an explanation that comes back with no second-person
+pronoun in it is treated as a failed generation and sent through the retry
+rounds that already exist for chunks the model drops. If it still reads as
+third person after those rounds it is kept and logged rather than discarded —
+accurate copy in the wrong voice still beats a blank card, and a rising count
+in that log is the signal that the prompt has lost its grip.
+
 The name is the reader's **first name only** — "Elisabeth Mensah" is addressed
 as "Elisabeth", because the full name in a sentence reads like a form letter.
 Every explanation in the list is personalized, and the model is told to vary
@@ -56,11 +68,13 @@ something meaningful." The signed-in path passes `null` rather than its old
 **First names are capped at 40 characters.** `displayName` accepts up to 100,
 and all of them would land inside a 250-character explanation.
 
-**The cache hash carries a prompt version.** Explanations written by the old
-prompt have no token and would keep being served, name-free, for the rest of
-their 48-hour TTL. `EXPLANATION_PROMPT_VERSION` is part of the hash, so those
-entries retire on deploy and regenerate with the token. It should be bumped
-whenever a prompt change alters *what gets cached*, not merely its wording.
+**The cache hash carries a prompt version.** Explanations written by an older
+prompt would otherwise keep being served for the rest of their 48-hour TTL —
+first name-free, and later in the wrong voice. `EXPLANATION_PROMPT_VERSION` is
+part of the hash, so those entries retire on deploy and regenerate. It is at v3:
+v2 introduced the name token, v3 required second person. Expect a burst of
+regeneration on release, and bump it whenever a prompt change alters *what gets
+cached*, not merely its wording.
 
 ## Not in scope
 
@@ -69,9 +83,10 @@ The recommendation email composes its own copy and is untouched.
 ## Verification
 
 `npx tsc --noEmit` clean. New `src/__tests__/recommendation-personalization.test.ts`
-(14 tests) covers first-name extraction, substitution at any position in the
+(25 tests) covers first-name extraction, substitution at any position in the
 sentence, the two-readers-one-cached-entry case that motivated the design, the
-no-name strip, non-mutation of the cached array, and pass-through of both
-token-free and empty explanations. Full suite: 413 passing; the 3 failures in
+no-name strip, non-mutation of the cached array, pass-through of both
+token-free and empty explanations, token-safe truncation, and the
+second-person guard including near-misses like "youth" and "young". Full suite: 413 passing; the 3 failures in
 `subscription-pricing.test.ts` pre-date this work and are unrelated (Stripe not
 configured locally).
