@@ -8,6 +8,83 @@ const DISCOVERY = 'Discovery';
 const bookIdParam = param('id', 'path', { type: 'integer' },
   'Kinkané book id, as returned by any list or search endpoint. Not an ISBN.', { example: 48213 });
 
+// Everything both versions of the catalogue list accept apart from `q` and `type`, and the
+// response they both return. Shared rather than copied: the versions differ only in how `q`
+// is matched, and a filter documented on one but not the other would be a doc bug that
+// looks like a behaviour difference.
+const listFilterParams = [
+  param('genre', 'query', { type: 'string', maxLength: 300 },
+    'Genre name or slug. Comma-separate for several.', { example: 'literary-fiction' }),
+  param('availability', 'query', { type: 'string', minLength: 2, maxLength: 2 },
+    'ONIX availability code — `21` in stock, `31` out of stock.', { example: '21' }),
+  param('productForm', 'query', { type: 'string', maxLength: 10 },
+    'ONIX product form — `BC` paperback, `BB` hardback, `AJ` audio.', { example: 'BC' }),
+  param('publishingStatus', 'query', { type: 'string', minLength: 2, maxLength: 2 },
+    'ONIX publishing status — `04` is active.', { example: '04' }),
+  param('publisher', 'query', { type: 'string', maxLength: 200 },
+    'Publisher imprint name.', { example: 'Penguin' }),
+  param('isbn', 'query', { type: 'string', maxLength: 20 },
+    'ISBN-13, exact. Hyphens and spaces are stripped, so the number as printed on the book works.', { example: '9780241988138' }),
+  param('yearMin', 'query', { type: 'integer', minimum: 1450, maximum: 2200 },
+    'Earliest publication year, inclusive. Books with no publication date are excluded from a year-filtered result.'),
+  param('yearMax', 'query', { type: 'integer', minimum: 1450, maximum: 2200 },
+    'Latest publication year, inclusive.'),
+  param('priceMin', 'query', { type: 'number', minimum: 0 },
+    'Lowest price, inclusive, in major units of `currency` — `10` means $10, not 1000 cents. **Requires `shoppable=true`**; the price lives on the supplier row only that path consults, and sending it without the flag is a 400 rather than a silently unfiltered page. The boundary is approximate by up to a penny, because the displayed price is converted from GBP with a rounding buffer.'),
+  param('priceMax', 'query', { type: 'number', minimum: 0 },
+    'Highest price, inclusive, in major units of `currency`. Same rules as `priceMin`.'),
+  param('currency', 'query', { type: 'string', minLength: 3, maxLength: 3 },
+    'Which currency `priceMin`/`priceMax` are expressed in. Defaults to the currency this request would be quoted in, so a client filtering in the currency it displays can omit it.', { example: 'USD' }),
+  param('sortBy', 'query', { type: 'string', enum: ['title', 'newest'] },
+    'Field to order by. `newest` orders on publication date, undated books last. **Ignored whenever `q` is set** — relevance ranking wins, because a page *selected* by fuzzy relevance and then reordered by title is neither ranking. There is no `price` option: ordering on the supplier price means evaluating a correlated subquery for every candidate row before the limit applies, and that has not been measured against the full table yet.'),
+  param('sort', 'query', { type: 'string', enum: ['asc', 'desc'] },
+    'Direction for `sortBy`. On its own it still means title sort, the meaning it had before `sortBy` existed. Omit to rank by relevance, which is what you want whenever `q` is set.'),
+  param('limit', 'query', { type: 'integer', minimum: 1, maximum: 50, default: 20 },
+    'Items per page (1–50).'),
+  param('offset', 'query', { type: 'integer', minimum: 0, default: 0 },
+    'Items to skip. **Ignored when `dedupe=true`** — use `cursor` there instead.'),
+  param('dedupe', 'query', { type: 'string', enum: ['true', 'false'], default: 'false' },
+    'Collapse same-titled editions to one. Off by default so every edition stays visible.'),
+  param('shoppable', 'query', { type: 'string', enum: ['true', 'false'], default: 'false' },
+    '**Also adds `unitPriceMinor`, `compareAtMinor` and `currency` to every row** — the live sellable price, which is what the shop charges and what the price filter matches on. Ignore the `prices` array on a shop surface: it is ONIX edition metadata and disagrees with the supplier feed on part of the catalogue. Restrict to books the shop can list — an ISBN13, a live price, and no unsuppliable supplier report code. Out-of-stock titles are **kept**, each carrying `inStock` so you can badge them, because stock moves hourly and a book disappearing mid-browse reads as a bug. Not a guarantee of sellability: rights restrictions depend on a destination country this endpoint has none of, so they are enforced at add-to-cart instead.'),
+  param('cursor', 'query', { type: 'string', maxLength: 4096 },
+    'Opaque token from the previous response’s `nextCursor`. Only meaningful with `dedupe=true`; silently ignored otherwise.'),
+];
+
+const listResponses = {
+
+  200: json('A page of books.',
+    object({
+      books: arrayOf(ref('BookSummary')),
+      total: { type: 'integer', example: 137 },
+      totalIsApproximate: {
+        type: 'boolean',
+        description:
+          'True when `total` is a cap rather than a count — always the case for deduped requests, and for searches over the cap. Render "137+" rather than "137" when this is set.',
+        example: false,
+      },
+      hasMore: { type: 'boolean', example: true },
+      nextCursor: {
+        type: 'string',
+        nullable: true,
+        description: 'Deduped requests only. Pass back as `cursor`; `null` at the end of the results.',
+        example: null,
+      },
+      limit: { type: 'integer', example: 20 },
+      offset: { type: 'integer', example: 0 },
+    })),
+  400: resp('ValidationError'),
+  429: resp('RateLimited'),
+  500: resp('ServerError'),
+};
+
+const listPaginationNotes = [
+  '**Pagination has two modes, and they are not interchangeable:**',
+  '',
+  '- *Default (`dedupe=false`)* — ordinary `limit`/`offset`. `total` is exact when browsing, and capped for searches (watch `totalIsApproximate`). Paginate on `hasMore`.',
+  '- *Deduped (`dedupe=true`)* — collapses the six editions of one title down to the best one. **Use `cursor`, not `offset`.** Two raw editions of one book can straddle a page boundary, so naive offset pagination on this path can show the same title twice. Pass the response’s `nextCursor` back on the next request; `null` means you have reached the end. `totalIsApproximate` is always true here, because the row count no longer matches the item count.',
+];
+
 export const cataloguePaths = {
   '/api/v1/books': {
     get: {
@@ -17,14 +94,35 @@ export const cataloguePaths = {
       description: [
         'The main catalogue query. Every filter is optional; with none supplied it pages through the whole catalogue.',
         '',
-        '**Searching.** `q` matches one side of the catalogue, chosen by `type`: book titles (the default) or contributor names. The two are never blended into one page — each is a query against a different index with its own relevance ladder, and ranking a title match against a name match needs an ordering no index can supply. A UI that wants both runs two requests and presents two lists.',
+        '**Searching.** `q` matches book titles *and* author names in one pass. Title matches rank first — except when nothing matched a title properly, in which case an exact author match outranks the fuzzy title near-misses. That rule is why searching an author\u2019s name returns their books rather than a list of coincidental title matches.',
+        '',
+        '**This endpoint is frozen.** It does not take `type`, and sending one is a 400 rather than being ignored — see `GET /api/v2/books`, which does. Nothing about how `q` is matched here will change again; that is what v2 is for.',
+        '',
+        ...listPaginationNotes,
+      ].join('\n'),
+      parameters: [
+        param('q', 'query', { type: 'string', minLength: 1, maxLength: 200 },
+          'Free-text search across title and author name.', { example: 'evaristo' }),
+        ...listFilterParams,
+      ],
+      responses: listResponses,
+    },
+  },
+  '/api/v2/books': {
+    get: {
+      tags: [TAG],
+      ...publicEndpoint,
+      summary: 'Browse and search the catalogue (choose title or author)',
+      description: [
+        'Identical to `GET /api/v1/books` in every respect but one: `q` matches **one** side of the catalogue, chosen by `type`.',
+        '',
+        '**Searching.** `type` picks book titles (the default) or contributor names. The two are never blended into one page — each is a query against a different index with its own relevance ladder, and ranking a title match against a name match needs an ordering no index can supply. A UI that wants both runs two requests and presents two lists. There is no `type=all`: it is a 400, not a synonym for the v1 behaviour.',
         '',
         '`type=author` matches **any** contributor, with ONIX A01 authors ranked above editors, translators and illustrators — so searching an editor by name still finds the volume they edited, just below the books actually written by anyone of that name.',
         '',
-        '**Pagination has two modes, and they are not interchangeable:**',
+        '**Not a drop-in swap from v1.** A search box wired to `?q=` gets title matches only here, where v1 would have folded in that author\u2019s books. Moving one to v2 means deciding which side it searches, or issuing both requests.',
         '',
-        '- *Default (`dedupe=false`)* — ordinary `limit`/`offset`. `total` is exact when browsing, and capped for searches (watch `totalIsApproximate`). Paginate on `hasMore`.',
-        '- *Deduped (`dedupe=true`)* — collapses the six editions of one title down to the best one. **Use `cursor`, not `offset`.** Two raw editions of one book can straddle a page boundary, so naive offset pagination on this path can show the same title twice. Pass the response’s `nextCursor` back on the next request; `null` means you have reached the end. `totalIsApproximate` is always true here, because the row count no longer matches the item count.',
+        ...listPaginationNotes,
       ].join('\n'),
       parameters: [
         param('q', 'query', { type: 'string', minLength: 1, maxLength: 200 },
@@ -32,71 +130,11 @@ export const cataloguePaths = {
         param('type', 'query', { type: 'string', enum: ['title', 'author'], default: 'title' },
           'Which side of the catalogue `q` searches. `title` (default) matches book titles; `author` matches contributor names. There is no combined mode — run two requests if you want both. Ignored when `q` is absent.',
           { example: 'author' }),
-        param('genre', 'query', { type: 'string', maxLength: 300 },
-          'Genre name or slug. Comma-separate for several.', { example: 'literary-fiction' }),
-        param('availability', 'query', { type: 'string', minLength: 2, maxLength: 2 },
-          'ONIX availability code — `21` in stock, `31` out of stock.', { example: '21' }),
-        param('productForm', 'query', { type: 'string', maxLength: 10 },
-          'ONIX product form — `BC` paperback, `BB` hardback, `AJ` audio.', { example: 'BC' }),
-        param('publishingStatus', 'query', { type: 'string', minLength: 2, maxLength: 2 },
-          'ONIX publishing status — `04` is active.', { example: '04' }),
-        param('publisher', 'query', { type: 'string', maxLength: 200 },
-          'Publisher imprint name.', { example: 'Penguin' }),
-        param('isbn', 'query', { type: 'string', maxLength: 20 },
-          'ISBN-13, exact. Hyphens and spaces are stripped, so the number as printed on the book works.', { example: '9780241988138' }),
-        param('yearMin', 'query', { type: 'integer', minimum: 1450, maximum: 2200 },
-          'Earliest publication year, inclusive. Books with no publication date are excluded from a year-filtered result.'),
-        param('yearMax', 'query', { type: 'integer', minimum: 1450, maximum: 2200 },
-          'Latest publication year, inclusive.'),
-        param('priceMin', 'query', { type: 'number', minimum: 0 },
-          'Lowest price, inclusive, in major units of `currency` — `10` means $10, not 1000 cents. **Requires `shoppable=true`**; the price lives on the supplier row only that path consults, and sending it without the flag is a 400 rather than a silently unfiltered page. The boundary is approximate by up to a penny, because the displayed price is converted from GBP with a rounding buffer.'),
-        param('priceMax', 'query', { type: 'number', minimum: 0 },
-          'Highest price, inclusive, in major units of `currency`. Same rules as `priceMin`.'),
-        param('currency', 'query', { type: 'string', minLength: 3, maxLength: 3 },
-          'Which currency `priceMin`/`priceMax` are expressed in. Defaults to the currency this request would be quoted in, so a client filtering in the currency it displays can omit it.', { example: 'USD' }),
-        param('sortBy', 'query', { type: 'string', enum: ['title', 'newest'] },
-          'Field to order by. `newest` orders on publication date, undated books last. **Ignored whenever `q` is set** — relevance ranking wins, because a page *selected* by fuzzy relevance and then reordered by title is neither ranking. There is no `price` option: ordering on the supplier price means evaluating a correlated subquery for every candidate row before the limit applies, and that has not been measured against the full table yet.'),
-        param('sort', 'query', { type: 'string', enum: ['asc', 'desc'] },
-          'Direction for `sortBy`. On its own it still means title sort, the meaning it had before `sortBy` existed. Omit to rank by relevance, which is what you want whenever `q` is set.'),
-        param('limit', 'query', { type: 'integer', minimum: 1, maximum: 50, default: 20 },
-          'Items per page (1–50).'),
-        param('offset', 'query', { type: 'integer', minimum: 0, default: 0 },
-          'Items to skip. **Ignored when `dedupe=true`** — use `cursor` there instead.'),
-        param('dedupe', 'query', { type: 'string', enum: ['true', 'false'], default: 'false' },
-          'Collapse same-titled editions to one. Off by default so every edition stays visible.'),
-        param('shoppable', 'query', { type: 'string', enum: ['true', 'false'], default: 'false' },
-          '**Also adds `unitPriceMinor`, `compareAtMinor` and `currency` to every row** — the live sellable price, which is what the shop charges and what the price filter matches on. Ignore the `prices` array on a shop surface: it is ONIX edition metadata and disagrees with the supplier feed on part of the catalogue. Restrict to books the shop can list — an ISBN13, a live price, and no unsuppliable supplier report code. Out-of-stock titles are **kept**, each carrying `inStock` so you can badge them, because stock moves hourly and a book disappearing mid-browse reads as a bug. Not a guarantee of sellability: rights restrictions depend on a destination country this endpoint has none of, so they are enforced at add-to-cart instead.'),
-        param('cursor', 'query', { type: 'string', maxLength: 4096 },
-          'Opaque token from the previous response’s `nextCursor`. Only meaningful with `dedupe=true`; silently ignored otherwise.'),
+        ...listFilterParams,
       ],
-      responses: {
-        200: json('A page of books.',
-          object({
-            books: arrayOf(ref('BookSummary')),
-            total: { type: 'integer', example: 137 },
-            totalIsApproximate: {
-              type: 'boolean',
-              description:
-                'True when `total` is a cap rather than a count — always the case for deduped requests, and for searches over the cap. Render "137+" rather than "137" when this is set.',
-              example: false,
-            },
-            hasMore: { type: 'boolean', example: true },
-            nextCursor: {
-              type: 'string',
-              nullable: true,
-              description: 'Deduped requests only. Pass back as `cursor`; `null` at the end of the results.',
-              example: null,
-            },
-            limit: { type: 'integer', example: 20 },
-            offset: { type: 'integer', example: 0 },
-          })),
-        400: resp('ValidationError'),
-        429: resp('RateLimited'),
-        500: resp('ServerError'),
-      },
+      responses: listResponses,
     },
   },
-
   '/api/v1/books/search': {
     get: {
       tags: [TAG],

@@ -11,8 +11,13 @@ import { PgDialect } from 'drizzle-orm/pg-core';
  * single scan with the two conditions OR'd, Postgres could not estimate the author
  * subquery and fell back to a Seq Scan, and searches quietly went from milliseconds to 9.5
  * seconds each on a 2M-row catalogue. No test failed, because every answer was still
- * correct. That blended probe is gone now — `type` picks one side and only that side is
- * counted — but the OR guard below outlives it, because the shape is what was lethal.
+ * correct.
+ *
+ * That blended probe is still live on v1, in its split UNION form, and is the reason the
+ * OR guard below exists: the shape is what was lethal, and nothing about having two
+ * versions prevents someone reintroducing it. v2 does not run it at all — `type` picks one
+ * side and only that side is counted — which is most of what v2 buys, so both the presence
+ * of the probe on v1 and its absence on v2 are pinned here.
  *
  * These pin the cost properties instead: the shape of the SQL, which probes are allowed to
  * run at all, and what happens when one overruns.
@@ -143,7 +148,16 @@ function stageCachedPage(n: number, hasMore = true): void {
   cachedRows = JSON.stringify({ rows, hasMore, nextCursor: null });
 }
 
+// v2 by default: `searchType` present means one side, which is what most of these guards
+// are about. listV1 below omits it, which is how booksService.list selects the blended
+// path — see listV1's note.
 const list = (o: Record<string, unknown> = {}) =>
+  booksService.list({ q: 'hunt', searchType: 'title', limit: 20, offset: 0, dedupe: false, ...o } as never);
+
+// v1: no `searchType` at all. Spelled as a separate helper rather than `list({ searchType:
+// undefined })` because the two are not the same thing to JSON.stringify, and the cache
+// keys depend on that difference.
+const listV1 = (o: Record<string, unknown> = {}) =>
   booksService.list({ q: 'hunt', limit: 20, offset: 0, dedupe: false, ...o } as never);
 
 beforeEach(() => {
@@ -229,9 +243,9 @@ describe('which probes are allowed to run', () => {
     expect(issued).toHaveLength(1);
   });
 
-  it('never probes the author side for a title search', async () => {
-    // The whole point of `type`: a title search has no reason to count names, and used to
-    // pay for a blended union probe on every uncached search.
+  it('never probes the author side for a v2 title search', async () => {
+    // The whole point of `type`: a title search has no reason to count names, where v1
+    // pays for a blended union probe on every uncached search.
     stageCachedPage(20);
     cachedCount = null;
     counts = [3, 4];
@@ -291,6 +305,124 @@ describe('which probes are allowed to run', () => {
     const r = await list();
     expect(issued).toEqual([]);
     expect(r.total).toBe(398);
+  });
+});
+
+describe("v1's blended count probe", () => {
+  // v1 has to count books matched by *either* side, because that is what its page
+  // contains. A title-only probe would caption a search like "chimamanda" as zero results
+  // above a page full of them.
+  //
+  // This is the expensive probe, and the single clearest thing a client buys by moving to
+  // v2 — so it is pinned on both sides: present here, absent there.
+  //
+  // Identified by the bare UNION that joins its two bounded branches. `UNION ALL` is not
+  // it: buildAuthorMatchCondition uses one internally to stack its contributor tiers, so
+  // every author probe on either version contains one, and matching on "UNION" alone would
+  // make the v2 assertions below pass against nothing.
+  const blendedProbes = () =>
+    issued.filter((sql) => /COUNT\(\*\)/i.test(sql) && /\bUNION\b(?!\s+ALL)/i.test(sql));
+
+  it('counts both sides for a v1 search', async () => {
+    cachedRows = null;
+    cachedCount = null;
+    counts = [3, 4, 9];
+    await listV1();
+
+    expect(blendedProbes().length, 'a v1 search did not count the author side').toBeGreaterThan(0);
+  });
+
+  it('reports the union total, not the title-only one', async () => {
+    // The blended count dominates the title probes rather than being averaged or summed
+    // with them — a sum would double-count a book matching on both sides.
+    //
+    // Rows deliberately left uncached and empty: a staged page raises the reported total to
+    // a floor of its own length, which would mask the number under test.
+    cachedRows = null;
+    cachedCount = null;
+    counts = [3, 4, 9];
+    const r = await listV1();
+
+    expect(r.total).toBe(9);
+  });
+
+  it('does not OR the author membership test into a single scan', async () => {
+    // The 9.5s regression, which lives on v1 and only v1. Splitting the branches into a
+    // UNION is what made this affordable; the shape is what has to be guarded.
+    cachedRows = null;
+    cachedCount = null;
+    counts = [3, 4, 9];
+    await listV1();
+
+    expect(
+      issued.filter((sql) => /\bOR\s+"books"\."id"\s+IN\s*\(/i.test(sql)),
+      'the v1 blended probe OR-d the author membership test into a single scan',
+    ).toEqual([]);
+  });
+
+  it('skips it when rows must be fetched but the count is cached', async () => {
+    // The pagination case: 3.5s for "harry&offset=20" and 11.5s for "bookkeeping&offset=20"
+    // spent recomputing a number already in Redis. The title probes still run — they pick a
+    // row tier — but the blended one feeds nothing but the caption.
+    cachedRows = null;
+    cachedCount = '398';
+    counts = [3, 4];
+    const r = await listV1({ offset: 20 });
+
+    expect(
+      blendedProbes(),
+      'the blended probe ran despite the count already being cached',
+    ).toEqual([]);
+    expect(r.total).toBe(398);
+  });
+
+  it('is not run at all once rows and count are both cached', async () => {
+    stageCachedPage(20);
+    cachedCount = '398';
+    const r = await listV1();
+
+    expect(issued).toEqual([]);
+    expect(r.total).toBe(398);
+  });
+
+  it('is never issued by a v2 search of either side', async () => {
+    // Stated over both sides because "v2 does not pay for this" is the claim, not "a title
+    // search happens not to". An author search does count names — but with one plain
+    // bounded count, not a union of two branches.
+    stageCachedPage(20);
+    cachedCount = null;
+    counts = [3, 4];
+    await list();
+    const afterTitle = blendedProbes().length;
+
+    issued = [];
+    stageCachedPage(20);
+    cachedCount = null;
+    counts = [7];
+    await list({ searchType: 'author' });
+
+    expect(afterTitle, 'a v2 title search ran a blended probe').toBe(0);
+    expect(blendedProbes(), 'a v2 author search ran a blended probe').toEqual([]);
+  });
+
+  it('degrades to a lower-bound total rather than failing the search', async () => {
+    // Three rows, not six: the reported total is floored at the page's own length, and a
+    // page longer than the fallback count would hide the fallback.
+    stageCachedPage(3);
+    counts = [3, 4];
+    authorCountError = Object.assign(new Error('canceling statement due to statement timeout'), {
+      code: '57014',
+    });
+    const r = await listV1();
+
+    expect(r.totalIsApproximate).toBe(true);
+    expect(warn).toHaveBeenCalled();
+    expect(r.books).toHaveLength(3);
+    // Falls back to the title-only counts rather than zero: a caption that is too small is
+    // still better than a search that 500s on its caption.
+    expect(r.total).toBe(4);
+    // And a degraded count must not be pinned under COUNT_TTL.
+    expect(cacheWrites.filter(([k]) => k.startsWith('books:count:'))).toEqual([]);
   });
 });
 

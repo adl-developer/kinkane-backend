@@ -5,10 +5,12 @@
 
 ### Features
 
+* move the title/author search choice to v2 and restore v1 ([cb30d8b](https://adl.github.com/adl-developer/kinkane-backend/commit/cb30d8b726a5aeb447513def12e231040fc22d77)) — [details](changelog/2026-08-27-books-v2-search-type.md)
 * recommendations now speak to the reader by name ([c17a78c](https://adl.github.com/adl-developer/kinkane-backend/commit/c17a78c5ac1b338ed10f10d79143e65c1cd892bb)) — [details](changelog/2026-08-27-recommendation-reader-name.md)
 
 ### Bug Fixes
 
+* recommendations now speak to the reader, not about them ([b4a7d15](https://adl.github.com/adl-developer/kinkane-backend/commit/b4a7d15586d19578f4f7be4e070b5a51f43da066)) — [details](changelog/2026-08-27-recommendation-reader-name.md)
 * keep template text and "Unknown" authors off recommendation cards ([8a14feb](https://adl.github.com/adl-developer/kinkane-backend/commit/8a14feb555497ead2bdc4b6ad1283efcc0ab2b12)) — [details](changelog/2026-08-27-recommendation-author-exclusions.md)
 * stop recommending books with no author, and books the reader already told us about ([6133e45](https://adl.github.com/adl-developer/kinkane-backend/commit/6133e45d03220e8b390ad50c889fca68cd615f53)) — [details](changelog/2026-08-27-recommendation-author-exclusions.md)
 

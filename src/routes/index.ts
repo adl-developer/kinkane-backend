@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { apiLimiter } from '../middleware/rate-limit.middleware';
 import authRoutes from './auth.routes';
 import booksRoutes from './books.routes';
+import booksV2Routes from './books.v2.routes';
 import authorsRoutes from './authors.routes';
 import recommendationsRoutes from './recommendations.routes';
 import guestRoutes from './guest.routes';
@@ -75,5 +76,21 @@ v1.use('/contact', contactRoutes);
 v1.use('/settings', settingsRoutes);
 
 router.use('/v1', v1);
+
+// v2 — one endpoint, not a second copy of the API.
+//
+// Only GET /books differs between the versions (v2 takes `type`, v1 does not and rejects
+// it), so only that route is mounted here. Everything else stays on v1: duplicating routes
+// that behave identically would create pairs to keep in step, and the first divergence
+// would be an accident rather than a decision. See books.v2.routes.ts.
+//
+// The same apiLimiter *instance* is reused, deliberately: it keeps one counter per client
+// across both versions, so moving a search from v1 to v2 does not hand that client a second
+// budget. A fresh limiter here would have doubled every caller's allowance.
+const v2 = Router();
+v2.use(apiLimiter);
+v2.use('/books', booksV2Routes);
+
+router.use('/v2', v2);
 
 export default router;
