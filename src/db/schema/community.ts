@@ -38,7 +38,7 @@ export const posts = pgTable(
     userIdIdx: index('idx_posts_user_id').on(t.userId),
     bookIdIdx: index('idx_posts_book_id').on(t.bookId),
     userBookUniq: uniqueIndex('idx_posts_user_book').on(t.userId, t.bookId),
-    ratingCheck: check('posts_rating_check', sql`${t.rating} BETWEEN 1 AND 5`),
+    ratingCheck: check('posts_rating_check', sql`${t.rating} BETWEEN 0 AND 5`),
   }),
 );
 
