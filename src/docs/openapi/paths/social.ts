@@ -64,7 +64,7 @@ export const socialPaths = {
       description: `Creates a post about a book. \`body\` is optional — a rating on its own is a perfectly valid post — but \`rating\`, \`status\` and \`isPublic\` are all required.\n\n**Requires Kinkané Plus.** ${ASYMMETRY}`,
       requestBody: body(object({
         bookId: { type: 'integer', minimum: 1, example: 48213 },
-        rating: { type: 'integer', minimum: 1, maximum: 5, example: 5 },
+        rating: { type: 'integer', minimum: 0, maximum: 5, example: 5 },
         status: {
           type: 'string', enum: ['reading', 'read'],
           description: 'Where the author is in the book. `want_to_read` is not valid — there is nothing to review yet.',
@@ -144,7 +144,7 @@ export const socialPaths = {
       description: `Patch semantics — only the fields present change. At least one must be supplied. Only the author can edit; anyone else gets a 404.\n\nPass \`body: null\` to strip the review text back to a bare rating.\n\n**Requires Kinkané Plus.** ${ASYMMETRY}`,
       parameters: [postIdParam],
       requestBody: body(object({
-        rating: { type: 'integer', minimum: 1, maximum: 5, example: 4 },
+        rating: { type: 'integer', minimum: 0, maximum: 5, example: 4 },
         status: { type: 'string', enum: ['reading', 'read'], example: 'read' },
         body: { type: 'string', maxLength: 5000, nullable: true, example: 'Revisited it. Still extraordinary.' },
         isPublic: { type: 'boolean', example: true },

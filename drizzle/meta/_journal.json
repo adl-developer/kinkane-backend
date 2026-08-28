@@ -337,6 +337,13 @@
       "when": 1787581022805,
       "tag": "0047_supreme_nekra",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1787581023805,
+      "tag": "0048_post_rating_zero",
+      "breakpoints": true
     }
   ]
 }

@@ -331,7 +331,7 @@ const socialSchemas = {
       id: { type: 'integer', example: 3310 },
       author: { $ref: '#/components/schemas/UserSummary' },
       book: { $ref: '#/components/schemas/BookSummary' },
-      rating: { type: 'integer', minimum: 1, maximum: 5, example: 5 },
+      rating: { type: 'integer', minimum: 0, maximum: 5, example: 5 },
       status: {
         type: 'string',
         enum: ['reading', 'read'],

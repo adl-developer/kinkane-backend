@@ -7,14 +7,14 @@ import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 
 const createPostSchema = z.object({
   bookId: z.number().int().positive(),
-  rating: z.number().int().min(1).max(5),
+  rating: z.number().int().min(0).max(5),
   status: z.enum(['reading', 'read']),
   body: z.string().max(5000).optional(),
   isPublic: z.boolean(),
 });
 
 const updatePostSchema = z.object({
-  rating: z.number().int().min(1).max(5).optional(),
+  rating: z.number().int().min(0).max(5).optional(),
   status: z.enum(['reading', 'read']).optional(),
   body: z.string().max(5000).nullable().optional(),
   isPublic: z.boolean().optional(),

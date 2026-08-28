@@ -5,7 +5,7 @@
 
 ### Features
 
-* move the title/author search choice to v2 and restore v1 ([cb30d8b](https://adl.github.com/adl-developer/kinkane-backend/commit/cb30d8b726a5aeb447513def12e231040fc22d77)) — [details](changelog/2026-08-27-books-v2-search-type.md)
+* move the title/author search choice to v2 and restore v1 ([e4fc482](https://adl.github.com/adl-developer/kinkane-backend/commit/e4fc482ed8a4af7882238a793f6b0728bc937b53)) — [details](changelog/2026-08-27-books-v2-search-type.md)
 * recommendations now speak to the reader by name ([c17a78c](https://adl.github.com/adl-developer/kinkane-backend/commit/c17a78c5ac1b338ed10f10d79143e65c1cd892bb)) — [details](changelog/2026-08-27-recommendation-reader-name.md)
 
 ### Bug Fixes
