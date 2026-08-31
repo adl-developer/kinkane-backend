@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-08-31
+
+### Features
+
+* send the signup verification code a couple of minutes after the welcome email ([97a6d86](https://adl.github.com/adl-developer/kinkane-backend/commit/97a6d86aa205840a7d86e5ad22c893beff8c8061)) — [details](changelog/2026-08-31-referral-journey-map.md)
+
+
 ## 2026-08-28
 
 ### Bug Fixes

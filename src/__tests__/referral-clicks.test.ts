@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { isBotUserAgent } from '../lib/user-agent';
+import { clickSchema } from '../controllers/referrals.controller';
 
 // Referral links live in group chats, and every messaging app fetches a URL
 // server-side to build its preview card — sometimes once per recipient. Those
@@ -68,5 +69,35 @@ describe('isBotUserAgent', () => {
   it('is case-insensitive', () => {
     expect(isBotUserAgent('WHATSAPP/2.0')).toBe(true);
     expect(isBotUserAgent('whatsapp/2.0')).toBe(true);
+  });
+});
+
+describe('clickSchema — referralCode vs the deprecated code alias', () => {
+  // This endpoint is called by *installed* app builds, which cannot be updated
+  // retroactively. The alias is the only thing standing between a field rename
+  // and clicks silently dropping to zero from every app already in the wild —
+  // and since the endpoint answers 202 regardless, nothing would look broken.
+  it('accepts the canonical referralCode', () => {
+    const parsed = clickSchema.safeParse({ referralCode: 'K7M2QX4B9C', channel: 'app' });
+    expect(parsed.success && parsed.data.referralCode).toBe('K7M2QX4B9C');
+  });
+
+  it('still accepts a legacy code and normalises it to referralCode', () => {
+    const parsed = clickSchema.safeParse({ code: 'K7M2QX4B9C' });
+    expect(parsed.success && parsed.data.referralCode).toBe('K7M2QX4B9C');
+  });
+
+  it('prefers referralCode when a client sends both', () => {
+    const parsed = clickSchema.safeParse({ referralCode: 'NEWCODE123', code: 'OLDCODE456' });
+    expect(parsed.success && parsed.data.referralCode).toBe('NEWCODE123');
+  });
+
+  it('rejects a body carrying neither', () => {
+    expect(clickSchema.safeParse({ channel: 'app' }).success).toBe(false);
+  });
+
+  it('rejects a malformed code under either name', () => {
+    expect(clickSchema.safeParse({ referralCode: 'no!' }).success).toBe(false);
+    expect(clickSchema.safeParse({ code: 'no!' }).success).toBe(false);
   });
 });

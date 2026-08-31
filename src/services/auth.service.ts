@@ -17,7 +17,7 @@ import { subscriptionStateService } from './subscriptions/state.service';
 import { checkoutService } from './subscriptions/checkout.service';
 import { referralsService } from './referrals.service';
 import { referralScoringService } from './referral-scoring.service';
-import type { CountrySource } from './geo.service';
+import type { ResolvedCountry } from './geo.service';
 import type { SubscriptionTier, SubscriptionStatus, SubscriptionPlan } from '../db/schema';
 
 const BCRYPT_ROUNDS = 12;
@@ -351,7 +351,11 @@ async function issueEmailVerification(
  */
 export interface SignupContext {
   referralCode?: string;
-  country?: { code: string | null; source: CountrySource };
+  // The whole resolved location, not just the country, so the city that arrived
+  // with it can be stored in the same write. Restating the shape here instead
+  // of referencing ResolvedCountry is what let city silently go missing on both
+  // signup paths until the compiler was asked.
+  country?: ResolvedCountry;
   channel?: string;
   clickId?: number | null;
 }
@@ -378,20 +382,32 @@ async function resolveReferralCode(
 }
 
 /**
- * Circuit detection, run after the signup transaction has committed.
+ * Writes the points for a newly verified reader's referral, then looks for any
+ * circuit it just closed.
+ *
+ * Called on email verification rather than at signup — an unverified account is
+ * a disposable inbox until proven otherwise, and the competition should not pay
+ * for one. Signups that arrive already verified (Google OAuth) call this
+ * immediately after attribution, so nothing is delayed for them.
  *
  * Deliberately fire-and-forget: it reads and writes rows belonging to users far
- * outside the one signing up, and no scoring bug should ever be able to stop an
- * account being created. Attribution is the durable fact; circuits are derived
- * from it and can be recomputed at any time.
+ * outside the one verifying, and no scoring bug should ever be able to fail a
+ * verification or an account creation. Attribution is the durable fact; points
+ * are derived from it and can be recomputed at any time.
+ *
+ * Circuits run only after credit lands, and only when credit actually happened —
+ * re-verifying, or a referral already credited, must not re-walk the tree.
  */
-function detectCircuitsInBackground(referredUserId: number): void {
-  referralScoringService.detectCircuits(referredUserId).catch((err) => {
-    logger.error('Circuit detection failed after signup', {
-      referredUserId,
-      error: (err as Error).message,
+export function creditReferralInBackground(referredUserId: number): void {
+  void referralsService
+    .creditVerifiedSignup(referredUserId)
+    .then((credited) => (credited ? referralScoringService.detectCircuits(referredUserId) : null))
+    .catch((err) => {
+      logger.error('Referral crediting failed after verification', {
+        referredUserId,
+        error: (err as Error).message,
+      });
     });
-  });
 }
 
 // ── Auth service ──────────────────────────────────────────────────────────────
@@ -437,6 +453,10 @@ export const authService = {
           countryCode: context.country?.code ?? null,
           countrySource: context.country?.source ?? 'unknown',
           countryResolvedAt: new Date(),
+          city: context.country?.city ?? null,
+          cityLat: context.country?.lat ?? null,
+          cityLng: context.country?.lng ?? null,
+          citySource: context.country?.city ? context.country.source : null,
         })
         .returning({ id: users.id, name: users.name, email: users.email, emailVerified: users.emailVerified });
       const [sub] = await tx
@@ -457,6 +477,7 @@ export const authService = {
           referredUserId: u.id,
           code: referralCode,
           redeemerCountry: context.country?.code ?? null,
+          redeemerCity: context.country?.city ?? null,
           channel: context.channel,
           clickId: context.clickId,
         });
@@ -465,7 +486,8 @@ export const authService = {
       return u;
     });
 
-    if (referralCode) detectCircuitsInBackground(user.id);
+    // No crediting here. This account is unverified by definition — the points
+    // land when they enter the OTP, in verifyEmail below.
 
     const tokens = await issueTokenPair(user.id, user.email);
 
@@ -695,6 +717,12 @@ export const authService = {
         .delete(emailVerificationTokens)
         .where(eq(emailVerificationTokens.id, stored.id));
     });
+
+    // This is where referral points are actually earned. Outside the
+    // transaction and unawaited on purpose: it touches rows belonging to the
+    // referrer and their referrer, and a failure there must never turn a
+    // successful verification into an error the reader has to retry.
+    creditReferralInBackground(userId);
   },
 
   /**
@@ -1080,6 +1108,10 @@ export const authService = {
           countryCode: context.country?.code ?? null,
           countrySource: context.country?.source ?? 'unknown',
           countryResolvedAt: new Date(),
+          city: context.country?.city ?? null,
+          cityLat: context.country?.lat ?? null,
+          cityLng: context.country?.lng ?? null,
+          citySource: context.country?.city ? context.country.source : null,
         })
         .returning({ id: users.id, name: users.name, email: users.email, emailVerified: users.emailVerified });
       await tx.insert(userProviders).values({ userId: u.id, provider, providerUid });
@@ -1099,6 +1131,7 @@ export const authService = {
           referredUserId: u.id,
           code: referralCode,
           redeemerCountry: context.country?.code ?? null,
+          redeemerCity: context.country?.city ?? null,
           channel: context.channel,
           clickId: context.clickId,
         });
@@ -1107,7 +1140,11 @@ export const authService = {
       return u;
     });
 
-    if (referralCode) detectCircuitsInBackground(newUser.id);
+    // Credited straight away, unlike the email path: Google has already
+    // verified this address, so the gate that delays the email flow has
+    // nothing left to wait for. Skipping this would leave social signups
+    // permanently pending — the referral would exist and never pay.
+    if (referralCode) creditReferralInBackground(newUser.id);
 
     const tokens = await issueTokenPair(newUser.id, newUser.email);
 

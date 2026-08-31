@@ -4,6 +4,7 @@ import { db } from '../db';
 import {
   referralCodes,
   referralClicks,
+  referralInvites,
   referrals,
   users,
   userSubscriptions,
@@ -140,6 +141,73 @@ function hashIp(ip: string): string {
   return crypto.createHash('sha256').update(ip).digest('hex');
 }
 
+/**
+ * Hash of an invited email address.
+ *
+ * Lower-cased and trimmed first so "Ama@Example.com " and "ama@example.com"
+ * dedupe to the same invite — otherwise the same person re-invited with
+ * different capitalisation counts twice on the Sent figure.
+ *
+ * The address itself is never stored. The invitee is not a user and has agreed
+ * to nothing; a hash is enough to dedupe and to match a later signup back.
+ */
+function hashEmail(email: string): string {
+  return crypto.createHash('sha256').update(email.trim().toLowerCase()).digest('hex');
+}
+
+/** Channels a share can be reported on. Anything else is rejected at the route. */
+export const SHARE_CHANNELS = ['whatsapp', 'sms', 'copy', 'link'] as const;
+export type ShareChannel = (typeof SHARE_CHANNELS)[number];
+
+/**
+ * "Amara Sowande" → "Amara S." — how a referred reader is named on someone
+ * else's journey map.
+ *
+ * The people on this map did not sign up to be shown to whoever shared a link
+ * with them; they signed up to buy books. A first name and an initial is enough
+ * for a referrer to recognise the friend they actually invited, and not enough
+ * to identify a stranger three hops down. It is the same instinct the public
+ * leaderboard already follows in showing first names only.
+ *
+ * A single-word name gets no initial rather than a stray full stop, and a name
+ * that is empty or whitespace falls back to "A reader" — the map must not
+ * render a blank label.
+ */
+export function redactName(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return 'A reader';
+  if (parts.length === 1) return parts[0];
+  return `${parts[0]} ${parts[parts.length - 1][0].toUpperCase()}.`;
+}
+
+export interface NetworkNode {
+  id: number;
+  name: string;
+  city: string | null;
+  countryCode: string | null;
+  lat: number | null;
+  lng: number | null;
+  /** Who referred them — the caller's own id for a first-degree node. */
+  referrerId: number;
+  /** Hops from the caller. 1 = someone they personally invited. */
+  degree: number;
+  /** How many people this node has themselves referred, within this network. */
+  directReferrals: number;
+  signedUpAt: Date;
+  /** False while they have signed up but not yet verified their email. */
+  credited: boolean;
+}
+
+export interface NetworkSummary {
+  directReferrals: number;
+  networkTotal: number;
+  degreesOfInfluence: number;
+  citiesReached: number;
+  countriesReached: number;
+  byDegree: { degree: number; count: number }[];
+  longestChain: { links: number; hops: { name: string; city: string | null; countryCode: string | null }[] };
+}
+
 export const referralsService = {
   generateCode,
   slugifyName,
@@ -220,6 +288,33 @@ export const referralsService = {
     return row ?? null;
   },
 
+  /**
+   * Records that an invite email was queued to an address.
+   *
+   * Re-inviting an address already invited is a no-op rather than a second row:
+   * "Sent" counts people invited, not messages dispatched, and a user who
+   * re-sends to a friend who hasn't signed up yet has not reached anyone new.
+   */
+  async recordInvite(userId: number, email: string): Promise<void> {
+    await db
+      .insert(referralInvites)
+      .values({ userId, channel: 'email', recipientHash: hashEmail(email) })
+      .onConflictDoNothing();
+  },
+
+  /**
+   * Records a share the user initiated on a channel with no recipient we can
+   * see — a WhatsApp tap, a copied link.
+   *
+   * Always a new row, unlike an email invite: there is no recipient to dedupe
+   * on, and sharing the same link into three different group chats genuinely is
+   * three shares. This is the softer half of "Sent" — evidence of intent, not
+   * of delivery — and the naming throughout keeps that distinction visible.
+   */
+  async recordShare(userId: number, channel: ShareChannel): Promise<void> {
+    await db.insert(referralInvites).values({ userId, channel });
+  },
+
   /** Logs a click. Best-effort: a failure here must not break the redirect. */
   async logClick(params: {
     codeId: number;
@@ -262,6 +357,7 @@ export const referralsService = {
       referredUserId: number;
       code: string;
       redeemerCountry: string | null;
+      redeemerCity?: string | null;
       channel?: string;
       clickId?: number | null;
     },
@@ -306,7 +402,7 @@ export const referralsService = {
     const rootReferrerId = parent?.rootReferrerId ?? referrerUserId;
 
     const [referrerRow] = await tx
-      .select({ countryCode: users.countryCode, tier: userSubscriptions.tier })
+      .select({ countryCode: users.countryCode, city: users.city, tier: userSubscriptions.tier })
       .from(users)
       .leftJoin(userSubscriptions, eq(userSubscriptions.userId, users.id))
       .where(eq(users.id, referrerUserId))
@@ -342,26 +438,121 @@ export const referralsService = {
         ancestorPath,
         referrerCountry: referrerRow?.countryCode ?? null,
         redeemerCountry: params.redeemerCountry,
+        referrerCity: referrerRow?.city ?? null,
+        redeemerCity: params.redeemerCity ?? null,
         referrerTierAtReferral: referrerRow?.tier ?? null,
+        // Deliberately not credited here. Points are written when the referred
+        // reader verifies their email — see creditVerifiedSignup. The one
+        // exception is a signup that arrives already verified (Google OAuth),
+        // which the caller credits immediately after this returns.
       })
       .returning();
-
-    await referralScoringService.awardDirect(tx, {
-      referralId: referral.id,
-      referrerUserId,
-      referrerCountry: referrerRow?.countryCode ?? null,
-      redeemerCountry: params.redeemerCountry,
-      grandReferrerUserId,
-      grandReferrerCountry: grandReferrerRow?.countryCode ?? null,
-    });
 
     return referral;
   },
 
-  /** Click/signup funnel for one user's code. */
+  /**
+   * Writes the points for a referral whose referred reader has just verified.
+   *
+   * Split out of attributeSignup because credit now happens at verification
+   * rather than at signup: an unverified account is a disposable inbox until
+   * proven otherwise, and the competition should not pay for one.
+   *
+   * Idempotent on three independent levels, which matters because verification
+   * can be retried and OAuth signups call this milliseconds after attribution:
+   * the `credited_at is null` guard means only one caller wins the update, the
+   * (referral_id, kind) unique index makes a double award a no-op, and the
+   * circuit index does the same for circuits.
+   *
+   * Returns false when there was nothing to credit — no referral, already
+   * credited, or voided. Never throws for those: a verification must not fail
+   * because of anything in the competition.
+   */
+  async creditVerifiedSignup(referredUserId: number): Promise<boolean> {
+    const [referral] = await db
+      .select({
+        id: referrals.id,
+        referrerUserId: referrals.referrerUserId,
+        ancestorPath: referrals.ancestorPath,
+        referrerCountry: referrals.referrerCountry,
+        redeemerCountry: referrals.redeemerCountry,
+      })
+      .from(referrals)
+      .where(
+        and(
+          eq(referrals.referredUserId, referredUserId),
+          eq(referrals.status, 'active'),
+          sql`${referrals.creditedAt} is null`,
+        ),
+      )
+      .limit(1);
+
+    if (!referral) return false;
+
+    const grandReferrerUserId =
+      referral.ancestorPath.length >= 2 ? referral.ancestorPath[referral.ancestorPath.length - 2] : null;
+
+    const [grandReferrerRow] = grandReferrerUserId
+      ? await db
+          .select({ countryCode: users.countryCode })
+          .from(users)
+          .where(eq(users.id, grandReferrerUserId))
+          .limit(1)
+      : [undefined];
+
+    const credited = await db.transaction(async (tx) => {
+      // Claim the referral first. Two concurrent verifications (a retry racing
+      // the original) both reach here; only the one that flips a null
+      // credited_at goes on to write points.
+      // `status` is re-checked here as well as in the read above: an admin can
+      // void a referral in the window between the two, and without this the
+      // claim would happily credit a referral that was voided a moment ago.
+      const claimed = await tx
+        .update(referrals)
+        .set({ creditedAt: new Date() })
+        .where(
+          and(
+            eq(referrals.id, referral.id),
+            eq(referrals.status, 'active'),
+            sql`${referrals.creditedAt} is null`,
+          ),
+        )
+        .returning({ id: referrals.id });
+
+      if (claimed.length === 0) return false;
+
+      await referralScoringService.awardDirect(tx, {
+        referralId: referral.id,
+        referrerUserId: referral.referrerUserId,
+        referrerCountry: referral.referrerCountry,
+        redeemerCountry: referral.redeemerCountry,
+        grandReferrerUserId,
+        grandReferrerCountry: grandReferrerRow?.countryCode ?? null,
+      });
+
+      return true;
+    });
+
+    return credited;
+  },
+
+  /**
+   * The funnel for one user's code.
+   *
+   * Three of these figures are the Sent / Successful / Pending card, and they
+   * deliberately do *not* satisfy Sent = Successful + Pending. Sent counts
+   * invites and shares this user initiated; successful and pending count people
+   * who arrived, which includes everyone who found the link second-hand — a
+   * forwarded WhatsApp message, a link pasted into a group. Forcing the three
+   * to reconcile would mean either discarding those signups or inventing sends
+   * that never happened.
+   */
   async statsFor(userId: number): Promise<{
     clicks: number;
     signups: number;
+    sent: number;
+    successful: number;
+    pending: number;
     countriesReached: string[];
   }> {
     const [codeRow] = await db
@@ -394,13 +585,27 @@ export const referralsService = {
       : [{ n: 0 }];
 
     const direct = await db
-      .select({ redeemerCountry: referrals.redeemerCountry })
+      .select({ redeemerCountry: referrals.redeemerCountry, creditedAt: referrals.creditedAt })
       .from(referrals)
       .where(and(eq(referrals.referrerUserId, userId), eq(referrals.status, 'active')));
 
+    const [sentRow] = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(referralInvites)
+      .where(eq(referralInvites.userId, userId));
+
+    const successful = direct.filter((d) => d.creditedAt !== null).length;
+
     return {
       clicks: clickRow.n,
+      // Kept as the total headcount of people who signed up under this user,
+      // credited or not. `successful` is the narrower, points-bearing figure.
       signups: direct.length,
+      sent: sentRow.n,
+      successful,
+      pending: direct.length - successful,
+      // Countries counted from everyone who arrived, not only the credited —
+      // an unverified signup in a new country has still reached that country.
       countriesReached: [...new Set(direct.map((d) => d.redeemerCountry).filter((c): c is string => !!c))].sort(),
     };
   },
@@ -417,9 +622,13 @@ export const referralsService = {
       referredUserId: number;
       name: string;
       countryCode: string | null;
+      city: string | null;
+      cityLat: number | null;
+      cityLng: number | null;
       referrerUserId: number;
       depth: number;
       signedUpAt: Date;
+      creditedAt: Date | null;
     }[]
   > {
     const rootDepth = await db
@@ -438,9 +647,18 @@ export const referralsService = {
         referredUserId: referrals.referredUserId,
         name: users.name,
         countryCode: users.countryCode,
+        // City from the *user*, not the referral snapshot, deliberately. The
+        // snapshot on the referral row records where a hop happened; this map
+        // is a picture of where people are, and the user row is the one that
+        // an admin correction fixes. The snapshots exist so scoring history
+        // stays stable, and nothing here is scoring.
+        city: users.city,
+        cityLat: users.cityLat,
+        cityLng: users.cityLng,
         referrerUserId: referrals.referrerUserId,
         depth: referrals.depth,
         signedUpAt: referrals.signedUpAt,
+        creditedAt: referrals.creditedAt,
       })
       .from(referrals)
       .innerJoin(users, eq(users.id, referrals.referredUserId))
@@ -453,4 +671,104 @@ export const referralsService = {
       )
       .orderBy(referrals.depth, desc(referrals.signedUpAt));
   },
+
+  /**
+   * The caller's network, shaped for the journey map and the globe.
+   *
+   * One tree read, then everything the two screens need computed in memory
+   * rather than as five more round trips: the whole set is already loaded, and
+   * counting over it is cheaper than asking Postgres the same question again
+   * from four angles.
+   *
+   * Every name is redacted here rather than at the route, so there is exactly
+   * one place a full name could ever leak from — and it is not on this path.
+   */
+  async networkFor(userId: number): Promise<{ summary: NetworkSummary; nodes: NetworkNode[] }> {
+    const rows = await this.treeFor(userId);
+
+    // Depths in the table are absolute — distance from the root of whatever
+    // tree this user happens to sit in. The map is drawn from the caller
+    // outward, so everything is re-expressed relative to them.
+    const base = rows.length > 0 ? Math.min(...rows.map((r) => r.depth)) - 1 : 0;
+
+    const childCounts = new Map<number, number>();
+    for (const r of rows) childCounts.set(r.referrerUserId, (childCounts.get(r.referrerUserId) ?? 0) + 1);
+
+    const nodes: NetworkNode[] = rows.map((r) => ({
+      id: r.referredUserId,
+      name: redactName(r.name),
+      city: r.city,
+      countryCode: r.countryCode,
+      lat: r.cityLat,
+      lng: r.cityLng,
+      referrerId: r.referrerUserId,
+      degree: r.depth - base,
+      directReferrals: childCounts.get(r.referredUserId) ?? 0,
+      signedUpAt: r.signedUpAt,
+      credited: r.creditedAt !== null,
+    }));
+
+    const byDegreeMap = new Map<number, number>();
+    for (const n of nodes) byDegreeMap.set(n.degree, (byDegreeMap.get(n.degree) ?? 0) + 1);
+
+    // Contiguous from 1, so a client can render "1st / 2nd / 3rd / 4th" without
+    // discovering a hole. A gap is impossible anyway — a node at degree 3
+    // implies a parent at 2 — but relying on that in the client is a trap.
+    const maxDegree = nodes.reduce((m, n) => Math.max(m, n.degree), 0);
+    const byDegree = Array.from({ length: maxDegree }, (_, i) => ({
+      degree: i + 1,
+      count: byDegreeMap.get(i + 1) ?? 0,
+    }));
+
+    return {
+      summary: {
+        directReferrals: byDegreeMap.get(1) ?? 0,
+        networkTotal: nodes.length,
+        degreesOfInfluence: maxDegree,
+        citiesReached: new Set(nodes.map((n) => n.city).filter(Boolean)).size,
+        countriesReached: new Set(nodes.map((n) => n.countryCode).filter(Boolean)).size,
+        byDegree,
+        longestChain: buildLongestChain(userId, nodes),
+      },
+      nodes,
+    };
+  },
 };
+
+/**
+ * The deepest single path through the network, as the "Accra → Paris →
+ * Calcutta → Hong Kong → Singapore" strip on the journey map.
+ *
+ * Walks up from the deepest node rather than searching down from the caller:
+ * the deepest node *is* the end of a longest path, and every node stores its
+ * parent, so one walk up the chain reproduces the path in reverse. Searching
+ * downward would mean exploring every branch to find out which was longest.
+ *
+ * Ties are broken by taking the earliest-joined of the deepest nodes, so the
+ * chain a user sees is stable between refreshes rather than flipping between
+ * two equally deep branches.
+ *
+ * `links` counts hops, not people — five names are four links, which is what
+ * "4 links deep" on the design means.
+ */
+export function buildLongestChain(rootUserId: number, nodes: NetworkNode[]): NetworkSummary['longestChain'] {
+  if (nodes.length === 0) return { links: 0, hops: [] };
+
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const maxDegree = nodes.reduce((m, n) => Math.max(m, n.degree), 0);
+
+  const deepest = nodes
+    .filter((n) => n.degree === maxDegree)
+    .sort((a, b) => a.signedUpAt.getTime() - b.signedUpAt.getTime())[0];
+
+  const hops: NetworkSummary['longestChain']['hops'] = [];
+  let cursor: NetworkNode | undefined = deepest;
+  while (cursor) {
+    hops.unshift({ name: cursor.name, city: cursor.city, countryCode: cursor.countryCode });
+    // Stops at the caller, who is not in `nodes` — they are the root of this
+    // view, and the client renders them as "You".
+    cursor = cursor.referrerId === rootUserId ? undefined : byId.get(cursor.referrerId);
+  }
+
+  return { links: hops.length, hops };
+}

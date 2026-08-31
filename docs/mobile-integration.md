@@ -122,6 +122,13 @@ mobile-side checklist only.
 
 ## Referral Links & the "Around the World" Competition
 
+> **Changes since this section was written** — the invite funnel, the journey
+> map and globe endpoints, the public analytics endpoint, and the move of
+> referral crediting from signup to email verification are all covered in
+> [mobile-referral-api-changes.md](mobile-referral-api-changes.md). Read that
+> alongside this. The background below (deep links, carrying the code, why a
+> dropped code is expensive) is still accurate.
+
 Backend pieces already built: `referral_codes` / `referral_clicks` / `referrals`
 / `referral_points` tables, `GET /referrals/me`, `GET /referrals/me/stats`,
 `POST /referrals/me/rotate`, `POST /referrals/invite`,
@@ -172,7 +179,7 @@ So on launch from a referral link, call once:
 
 ```
 POST /api/v1/referrals/clicks
-{ "code": "K7M3QP9XVT", "channel": "whatsapp" }
+{ "referralCode": "K7M3QP9XVT", "channel": "whatsapp" }
 → 202 { "ok": true }
 ```
 
@@ -236,8 +243,11 @@ them rather than composing the message in the app, so wording stays identical
 across platforms and channels stay attributable. The `campaign` field says
 whether the launch or evergreen copy is in force, for matching campaign artwork.
 
-`GET /referrals/me/stats` returns `clicks`, `signups`, `countriesReached`,
-`points`, `pointsByKind`, `hasCircuit` and `country`. Note `country` is resolved
+`GET /referrals/me/stats` returns `clicks`, `signups`, `sent`, `successful`,
+`pending`, `countriesReached`, `points`, `pointsByKind`, `hasCircuit` and
+`country`. The three funnel fields are new and **do not sum** — see
+[mobile-referral-api-changes.md](mobile-referral-api-changes.md#these-three-do-not-add-up-do-not-fix-it).
+Note `country` is resolved
 once at signup and frozen; a user showing `null` there **scores nothing**, so a
 null is worth surfacing to support rather than hiding.
 
