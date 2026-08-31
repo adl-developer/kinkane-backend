@@ -97,6 +97,35 @@ longest path, and every node stores its parent. Ties break on earliest signup so
 the strip a user sees is stable between refreshes instead of flipping between
 two equally deep branches.
 
+## Fixed on review, before merge
+
+Three defects found reviewing this branch against itself:
+
+**Linking a Google account to an unverified one stranded the referral.** Both
+social branches returned `emailVerified: true` to the client without ever
+writing it, so the account stayed unverified in the database while the app
+believed otherwise — and never showed the OTP screen again. Harmless while
+points were awarded at signup; once they moved to verification it meant the
+referrer's points could never be written, silently and permanently. Both
+branches now persist the flag and credit, via `markVerifiedAndCreditReferral`.
+The check on the already-linked path is normally a no-op; it exists to catch
+accounts linked before this was true.
+
+**Voiding a direct referral promoted its grandchildren a generation.**
+`networkFor` inferred the caller's depth from the shallowest surviving
+descendant, which is correct only while no row between them has been voided.
+Void A→B with B→C surviving and C came back as a *direct* referral of A. The
+caller's depth is now read from their own referral row through a shared
+`depthOf`, which is where `treeFor` already got it. This also removed a
+`Math.min(...spread)` over the whole row set.
+
+**Weekly chart buckets could silently read zero.** `date_trunc('week', …)` on a
+`timestamptz` truncates in the session time zone, which nothing in the
+connection setup pins, while the JS side keyed on UTC Mondays. On a deployment
+whose Postgres defaults to a regional zone, every bucket lookup would miss and
+both charts would render eight zero bars beside healthy non-zero totals. The
+queries now pin the truncation with an explicit `at time zone 'UTC'`.
+
 ## Explicitly out of scope
 
 - **The referral link and code format are unchanged.** The design's
@@ -115,9 +144,9 @@ two equally deep branches.
 
 ## Verified
 
-`npx tsc --noEmit` clean. 468 tests pass, including 17 new ones covering
-`redactName`, `buildLongestChain` and `densify` — the three pure functions here
-that fail silently rather than throwing. The 3 failures in
+`npx tsc --noEmit` clean. 475 tests pass, including 19 covering `redactName`,
+`buildLongestChain`, `densify` and the degree arithmetic — the pure functions
+here that fail silently rather than throwing. The 3 failures in
 `subscription-pricing.test.ts` are pre-existing and unrelated (Stripe
 configuration).
 

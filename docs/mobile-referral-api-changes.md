@@ -110,7 +110,17 @@ the new user verifies their email address.
 | Signup path | When the referrer is credited |
 | --- | --- |
 | Email + password (`POST /auth/signup`) | When the user posts their OTP to `POST /auth/verify-email` |
-| Google / social (`POST /auth/social`) | Immediately — Google has already verified the address |
+| Google / social (`POST /auth/social`), new account | Immediately — Google has already verified the address |
+| Google / social, linking to an existing unverified account | Immediately, on the linking sign-in |
+
+That third row matters for a flow the app can produce easily: someone signs up
+with email and password, never enters the OTP, then later taps "Continue with
+Google" with the same address. Linking a Google account now **marks the account
+verified and credits the waiting referral**, because signing in through Google
+proves ownership of the same address the OTP existed to prove. The app does not
+need to do anything to trigger it, but it does mean a user can become verified
+without ever seeing an OTP screen — so don't assume `emailVerified` only ever
+flips via `POST /auth/verify-email`.
 
 Crediting happens server-side and asynchronously. The app calls nothing to
 trigger it, and re-verifying cannot double-pay.

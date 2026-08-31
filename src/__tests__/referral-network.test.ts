@@ -63,6 +63,32 @@ describe('redactName', () => {
   });
 });
 
+describe('degree numbering after a void', () => {
+  // networkFor now takes the caller's own depth from their referral row rather
+  // than inferring it from the shallowest surviving descendant. This exercises
+  // the arithmetic that depended on it, because the inference was wrong in
+  // exactly one case and that case is invisible until an admin voids something.
+  const degreesFor = (base: number, depths: number[]) => depths.map((d) => d - base);
+
+  it('keeps grandchildren at second degree when the parent is voided', () => {
+    // A (root, depth 0) -> B (depth 1) -> C (depth 2). A->B is voided, so only
+    // C survives the status filter and the shallowest remaining row is depth 2.
+    const survivingDepths = [2];
+
+    // The old inference: min(depth) - 1 = 1, making C look like a direct referral.
+    const inferred = degreesFor(Math.min(...survivingDepths) - 1, survivingDepths);
+    expect(inferred).toEqual([1]);
+
+    // The caller's real depth is 0, which keeps C where it belongs.
+    expect(degreesFor(0, survivingDepths)).toEqual([2]);
+  });
+
+  it('is unchanged for a caller partway down another tree', () => {
+    // A caller at depth 4 with children at 5 and grandchildren at 6.
+    expect(degreesFor(4, [5, 5, 6])).toEqual([1, 1, 2]);
+  });
+});
+
 describe('buildLongestChain', () => {
   const ROOT = 100;
 

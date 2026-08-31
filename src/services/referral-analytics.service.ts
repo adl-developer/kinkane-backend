@@ -22,8 +22,16 @@ export const CHART_WEEKS = 8;
 /** Monday 00:00 UTC of the week that starts the chart window. */
 export function windowStart(weeks = CHART_WEEKS): Date {
   const now = new Date();
-  // date_trunc('week') in Postgres is Monday-based, so the JS side has to match
-  // or the first bucket would be half-width and always read as a slump.
+  // Monday-based, to match Postgres's date_trunc('week') — otherwise the first
+  // bucket would be half-width and always read as a slump.
+  //
+  // The queries pin the truncation to UTC with an explicit AT TIME ZONE rather
+  // than relying on the session. date_trunc on a timestamptz truncates in the
+  // *session* time zone, which nothing in the connection setup pins, so on a
+  // deployment whose Postgres defaults to a regional zone the buckets would
+  // land on local Mondays while these keys stayed on UTC ones. Every lookup in
+  // densify would miss and both charts would render eight zero bars beside
+  // healthy non-zero totals — no error, just a flat line.
   const day = (now.getUTCDay() + 6) % 7;
   const monday = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - day);
   return new Date(monday - (weeks - 1) * 7 * 24 * 60 * 60 * 1000);
@@ -115,7 +123,7 @@ export const referralAnalyticsService = {
 
       db
         .select({
-          week: sql<string>`date_trunc('week', ${referralInvites.sentAt})::date::text`,
+          week: sql<string>`date_trunc('week', ${referralInvites.sentAt} at time zone 'UTC')::date::text`,
           n: sql<number>`count(*)::int`,
         })
         .from(referralInvites)
@@ -124,7 +132,7 @@ export const referralAnalyticsService = {
 
       db
         .select({
-          week: sql<string>`date_trunc('week', ${referrals.signedUpAt})::date::text`,
+          week: sql<string>`date_trunc('week', ${referrals.signedUpAt} at time zone 'UTC')::date::text`,
           n: sql<number>`count(*)::int`,
         })
         .from(referrals)

@@ -5,6 +5,7 @@
 
 ### Features
 
+* referral points now count only once a referred reader verifies their email ([051c8fb](https://adl.github.com/adl-developer/kinkane-backend/commit/051c8fb41525924e33b120e12e614c181cfa7f0e)) — [details](changelog/2026-08-31-referral-journey-map.md)
 * send the signup verification code a couple of minutes after the welcome email ([97a6d86](https://adl.github.com/adl-developer/kinkane-backend/commit/97a6d86aa205840a7d86e5ad22c893beff8c8061)) — [details](changelog/2026-08-31-referral-journey-map.md)
 
 

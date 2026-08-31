@@ -398,6 +398,30 @@ async function resolveReferralCode(
  * Circuits run only after credit lands, and only when credit actually happened —
  * re-verifying, or a referral already credited, must not re-walk the tree.
  */
+/**
+ * Marks a social sign-in's account verified, and credits whatever referral was
+ * waiting on that.
+ *
+ * Signing in through Google proves ownership of the address the OTP existed to
+ * prove, so the two are equivalent and the row should say so. Both social
+ * branches previously returned `emailVerified: true` to the client without ever
+ * writing it, which left the account unverified in the database, stopped the app
+ * ever showing the OTP screen again, and — once points moved to verification —
+ * stranded the referral with no way to ever pay it.
+ *
+ * A no-op when the account is already verified, so it is safe to call on every
+ * social sign-in.
+ */
+async function markVerifiedAndCreditReferral(userId: number, alreadyVerified: boolean): Promise<void> {
+  if (alreadyVerified) return;
+
+  await db.update(users).set({ emailVerified: true, updatedAt: new Date() }).where(eq(users.id, userId));
+
+  // Same fire-and-forget contract as the OTP path: a scoring failure must never
+  // be able to fail a sign-in. Itself a no-op when no referral is pending.
+  creditReferralInBackground(userId);
+}
+
 export function creditReferralInBackground(referredUserId: number): void {
   void referralsService
     .creditVerifiedSignup(referredUserId)
@@ -1058,9 +1082,15 @@ export const authService = {
       // and waves through "Continue with Google" is not a block.
       assertNotBlacklisted(user.blacklistedAt);
 
+      // Normally a no-op: anyone reaching this branch was verified when the
+      // provider was first linked. It catches the accounts linked *before* that
+      // became true, which would otherwise sign in through Google for ever while
+      // still flagged unverified, holding a referral that could never be paid.
+      await markVerifiedAndCreditReferral(user.id, user.emailVerified);
+
       const tokens = await issueTokenPair(user.id, user.email);
       const { blacklistedAt: _blacklistedAt, ...safeUser } = user;
-      return { user: safeUser, tokens, isNewUser: false };
+      return { user: { ...safeUser, emailVerified: true }, tokens, isNewUser: false };
     }
 
     // 2. Check if a user with the same email already exists (account linking)
@@ -1081,6 +1111,19 @@ export const authService = {
       if (!existingUser.photoUrl && photoUrl) {
         await db.update(users).set({ photoUrl }).where(eq(users.id, existingUser.id));
       }
+
+      // Linking a Google account to an unverified one *is* verification: the
+      // provider has proved ownership of the same address the OTP was going to
+      // prove. This response has always claimed emailVerified: true, but the row
+      // was never updated to match — so the account stayed unverified in the
+      // database while the client believed otherwise, and the user was never
+      // shown the OTP screen again to correct it.
+      //
+      // That was harmless while referral points were awarded at signup. Now that
+      // they are awarded at verification, it stranded the referral permanently:
+      // the referrer's points would never be written and nothing would report
+      // the loss. Persist the flag, then credit.
+      await markVerifiedAndCreditReferral(existingUser.id, existingUser.emailVerified);
 
       const tokens = await issueTokenPair(existingUser.id, existingUser.email);
       return {

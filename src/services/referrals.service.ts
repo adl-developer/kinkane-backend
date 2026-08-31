@@ -208,6 +208,31 @@ export interface NetworkSummary {
   longestChain: { links: number; hops: { name: string; city: string | null; countryCode: string | null }[] };
 }
 
+/**
+ * How deep this user sits in whatever tree they belong to.
+ *
+ * Depths stored on `referrals` are absolute — distance from the root of the
+ * tree, not from whoever is asking — so any view drawn from one user outward
+ * has to offset by where that user sits.
+ *
+ * It must be read from the user's *own* referral row and never inferred from
+ * their descendants. Inferring it (say, from the shallowest surviving
+ * descendant) breaks the moment a direct referral is voided: the grandchildren
+ * survive, the shallowest remaining row is a generation deeper than it was, and
+ * every degree in the response silently shifts one closer.
+ *
+ * 0 for a root, who has no row here at all.
+ */
+async function depthOf(userId: number): Promise<number> {
+  const [row] = await db
+    .select({ depth: referrals.depth })
+    .from(referrals)
+    .where(eq(referrals.referredUserId, userId))
+    .limit(1);
+
+  return row?.depth ?? 0;
+}
+
 export const referralsService = {
   generateCode,
   slugifyName,
@@ -631,16 +656,7 @@ export const referralsService = {
       creditedAt: Date | null;
     }[]
   > {
-    const rootDepth = await db
-      .select({ depth: referrals.depth })
-      .from(referrals)
-      .where(eq(referrals.referredUserId, userId))
-      .limit(1);
-
-    // Depths are absolute (distance from the tree's root), so a subtree query
-    // has to offset by where this user sits, or `maxDepth` would mean something
-    // different for a root than for someone six levels down.
-    const base = rootDepth[0]?.depth ?? 0;
+    const base = await depthOf(userId);
 
     return db
       .select({
@@ -684,12 +700,10 @@ export const referralsService = {
    * one place a full name could ever leak from — and it is not on this path.
    */
   async networkFor(userId: number): Promise<{ summary: NetworkSummary; nodes: NetworkNode[] }> {
-    const rows = await this.treeFor(userId);
-
-    // Depths in the table are absolute — distance from the root of whatever
-    // tree this user happens to sit in. The map is drawn from the caller
-    // outward, so everything is re-expressed relative to them.
-    const base = rows.length > 0 ? Math.min(...rows.map((r) => r.depth)) - 1 : 0;
+    // Both reads, not one: the caller's own depth is what every degree below is
+    // measured against, and it cannot be recovered from the rows themselves —
+    // see depthOf.
+    const [rows, base] = await Promise.all([this.treeFor(userId), depthOf(userId)]);
 
     const childCounts = new Map<number, number>();
     for (const r of rows) childCounts.set(r.referrerUserId, (childCounts.get(r.referrerUserId) ?? 0) + 1);
