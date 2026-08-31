@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-08-28
+
+### Bug Fixes
+
+* allow a rating of 0 on community posts ([ea0fd5c](https://adl.github.com/adl-developer/kinkane-backend/commit/ea0fd5c24affa83674f52fa5877f9e3553da623f))
+
+
 ## 2026-08-27
 
 ### Features

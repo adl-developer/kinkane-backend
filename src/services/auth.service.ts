@@ -287,6 +287,12 @@ const TRIAL_DAYS = 90; // 3 months
 
 const EMAIL_VERIFICATION_TTL_MS = 15 * 60 * 1000; // 15 minutes
 
+// The welcome email goes out the moment an account is created; the code lands a
+// couple of minutes later so the two don't arrive stacked on top of each other.
+// Only signup waits — a resend is a reader sitting on the OTP screen, so that
+// one still sends immediately.
+const SIGNUP_VERIFICATION_DELAY_MS = 2 * 60 * 1000; // 2 minutes
+
 function generateOtp(): string {
   // Cryptographically random 6-digit code, zero-padded
   return String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
@@ -297,12 +303,22 @@ function generateOtp(): string {
  * existing one) and enqueues the verification email. Errors enqueuing the
  * email are logged but not thrown — same fire-and-forget pattern as the
  * other post-signup side effects.
+ *
+ * `delayMs` holds the email back in the queue so it doesn't land in the same
+ * breath as another one (see SIGNUP_VERIFICATION_DELAY_MS). The token's expiry
+ * is pushed out by the same amount, so the 15 minutes the copy promises are
+ * counted from when the code actually arrives rather than from signup.
  */
-async function issueEmailVerification(userId: number, email: string, name: string): Promise<void> {
+async function issueEmailVerification(
+  userId: number,
+  email: string,
+  name: string,
+  delayMs = 0,
+): Promise<void> {
   await db.delete(emailVerificationTokens).where(eq(emailVerificationTokens.userId, userId));
 
   const otp = generateOtp();
-  const expiresAt = new Date(Date.now() + EMAIL_VERIFICATION_TTL_MS);
+  const expiresAt = new Date(Date.now() + delayMs + EMAIL_VERIFICATION_TTL_MS);
 
   await db.insert(emailVerificationTokens).values({
     userId,
@@ -315,7 +331,7 @@ async function issueEmailVerification(userId: number, email: string, name: strin
     name,
     otp,
     expiryMinutes: EMAIL_VERIFICATION_TTL_MS / 60_000,
-  }).catch((err) => {
+  }, { delayMs }).catch((err) => {
     logger.error('Failed to enqueue verification email', {
       userId,
       error: (err as Error).message,
@@ -477,7 +493,7 @@ export const authService = {
       userId: user.id,
     });
 
-    issueEmailVerification(user.id, user.email, user.name).catch((err) => {
+    issueEmailVerification(user.id, user.email, user.name, SIGNUP_VERIFICATION_DELAY_MS).catch((err) => {
       logger.error('Failed to issue email verification after signup', {
         userId: user.id,
         error: (err as Error).message,
