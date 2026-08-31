@@ -415,7 +415,20 @@ async function resolveReferralCode(
 async function markVerifiedAndCreditReferral(userId: number, alreadyVerified: boolean): Promise<void> {
   if (alreadyVerified) return;
 
-  await db.update(users).set({ emailVerified: true, updatedAt: new Date() }).where(eq(users.id, userId));
+  // Swallowed, not propagated. Signing in did not use to write anything on this
+  // path, and a database blip must not start turning a valid Google sign-in into
+  // a 500 over bookkeeping the person signing in has no stake in. The next
+  // sign-in retries it — the caller passes the flag straight off the user row,
+  // so a failure here simply means the account is still unverified next time.
+  try {
+    await db.update(users).set({ emailVerified: true, updatedAt: new Date() }).where(eq(users.id, userId));
+  } catch (err) {
+    logger.error('Could not mark a social sign-in verified', { userId, error: (err as Error).message });
+    // No credit either: crediting is what verification *earns*, so claiming it
+    // while the row still says unverified would pay points the record cannot
+    // justify.
+    return;
+  }
 
   // Same fire-and-forget contract as the OTP path: a scoring failure must never
   // be able to fail a sign-in. Itself a no-op when no referral is pending.

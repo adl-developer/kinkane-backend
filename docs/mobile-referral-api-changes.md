@@ -561,9 +561,15 @@ wrong.
 - **The share strings** from `GET /referrals/me`, including the launch/evergreen
   copy switch.
 - **The scoring rules** in §2.2. Only *when* points are awarded changed.
-- **`GET /referrals/me/stats` existing fields** — `clicks`, `signups`,
-  `countriesReached`, `points`, `pointsByKind`, `hasCircuit`, `country` all keep
-  their previous meaning.
+- **Most `GET /referrals/me/stats` fields** — `clicks`, `signups`, `points`,
+  `pointsByKind`, `hasCircuit` and `country` all keep their previous meaning and
+  their previous parsing.
+
+  The one exception is **`countriesReached`, which widened**: it used to count
+  only the countries of people the user personally referred, and now spans the
+  whole network at any depth (see §5.2). Same type, same field name, larger
+  numbers. Nothing needs to change in the app to read it, but a screen that
+  labels it "countries your friends are in" is now describing something broader.
 
 ---
 

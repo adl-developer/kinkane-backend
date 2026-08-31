@@ -167,6 +167,44 @@ backfills it for uncredited rows only — a credited referral has already been
 paid, and a pending one would otherwise credit with a null grandparent and
 silently skip the second-degree award.
 
+### Found reviewing the fixes themselves
+
+**The campaign click count was deduped without `code_id`.** Lifted verbatim from
+`statsFor`, where a `WHERE code_id = ?` makes `(ip_hash, user_agent)` mean
+"distinct people who followed this link". Campaign-wide and without `code_id` in
+the tuple, it silently became "distinct devices that clicked anything" — two
+hundred colleagues behind one office NAT, each following a different workmate's
+link, collapsing to a single click. As the new denominator of `conversionRate`
+that would have inflated the published rate by exactly that factor, reintroducing
+the >100% failure it had just been changed to fix.
+
+**`conversionRate` still is not strictly bounded, and the comment claimed it
+was.** A code typed into the "Have an invite code?" field credits a referral with
+no click behind it, so `successful` is not a subset of `clicks`. Clicks remains
+much the better denominator; the docstring now says plainly that this is an
+upper bound rather than a measurement until click reporting is live everywhere.
+
+**Widening the globe also widened who it exposes.** `cityPins` now covers every
+placeable reader rather than only referred ones, which meant a city holding one
+reader was published as `count: 1` on an endpoint needing no authentication —
+placeable against the equally public leaderboard's first name and country. Cities
+below `MIN_PIN_GROUP` (3) are now withheld in SQL. The cost is real: while the
+campaign is small the globe under-represents its spread. A sparse globe is a
+presentation problem; a locatable reader is not.
+
+**`statsFor` pulled every referral row back to count it**, then ran five queries
+in series. It now counts with `count(*) FILTER (…)` in Postgres and issues the
+four independent reads together. The give-away was a `redeemer_country` column
+still being selected and discarded after `countriesReached` moved to its own
+containment scan.
+
+**Marking a social sign-in verified could fail the sign-in.** That path
+previously performed no writes; a database blip on the new `UPDATE` would have
+turned a valid Google sign-in into a 500 over bookkeeping. It is now swallowed
+and logged, and crediting is skipped with it — claiming the credit while the row
+still says unverified would pay points the record cannot justify. The next
+sign-in retries.
+
 ## Explicitly out of scope
 
 - **The referral link and code format are unchanged.** The design's

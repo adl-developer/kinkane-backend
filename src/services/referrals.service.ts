@@ -589,66 +589,75 @@ export const referralsService = {
       .where(and(eq(referralCodes.userId, userId), eq(referralCodes.isActive, true)))
       .limit(1);
 
-    // Unique people, not raw hits.
-    //
-    // Deduped on (hashed IP, user agent) rather than IP alone: a household,
-    // office or mobile carrier behind one NAT would otherwise collapse to a
-    // single click no matter how many people actually followed the link, and
-    // shared egress IPs are the norm in a lot of the world. The pair is not a
-    // perfect identity — the same person on wifi then mobile data counts twice,
-    // and there is no cookie to do better on a redirect that must stay
-    // anonymous — but it is much closer than either extreme.
-    //
-    // The COALESCE on ip_hash keeps clicks with no recorded IP distinct: without
-    // it, every such row shares a NULL and the whole set collapses to one.
-    // Bots are excluded here rather than at insert, so preview traffic stays
-    // inspectable in the table.
-    const [clickRow] = codeRow
-      ? await db
-          .select({
-            n: sql<number>`count(distinct (coalesce(${referralClicks.ipHash}, ${referralClicks.id}::text), coalesce(${referralClicks.userAgent}, '')))::int`,
-          })
-          .from(referralClicks)
-          .where(and(eq(referralClicks.codeId, codeRow.id), eq(referralClicks.isBot, false)))
-      : [{ n: 0 }];
+    // Everything below is independent of everything else, so it goes out
+    // together. Only the click count needed the code id above, which is the one
+    // genuine dependency in this method.
+    const [[clickRow], [funnelRow], [sentRow], reached] = await Promise.all([
+      // Unique people, not raw hits.
+      //
+      // Deduped on (hashed IP, user agent) rather than IP alone: a household,
+      // office or mobile carrier behind one NAT would otherwise collapse to a
+      // single click no matter how many people actually followed the link, and
+      // shared egress IPs are the norm in a lot of the world. The pair is not a
+      // perfect identity — the same person on wifi then mobile data counts twice,
+      // and there is no cookie to do better on a redirect that must stay
+      // anonymous — but it is much closer than either extreme.
+      //
+      // The COALESCE on ip_hash keeps clicks with no recorded IP distinct:
+      // without it, every such row shares a NULL and the whole set collapses to
+      // one. Bots are excluded here rather than at insert, so preview traffic
+      // stays inspectable in the table.
+      codeRow
+        ? db
+            .select({
+              n: sql<number>`count(distinct (coalesce(${referralClicks.ipHash}, ${referralClicks.id}::text), coalesce(${referralClicks.userAgent}, '')))::int`,
+            })
+            .from(referralClicks)
+            .where(and(eq(referralClicks.codeId, codeRow.id), eq(referralClicks.isBot, false)))
+        : Promise.resolve([{ n: 0 }]),
 
-    const direct = await db
-      .select({ redeemerCountry: referrals.redeemerCountry, creditedAt: referrals.creditedAt })
-      .from(referrals)
-      .where(and(eq(referrals.referrerUserId, userId), eq(referrals.status, 'active')));
+      // Counted in Postgres rather than by pulling every referral row back to
+      // call .length on it — this is two integers, and a heavy referrer has
+      // thousands of rows that would otherwise cross the wire to produce them.
+      db
+        .select({
+          signups: sql<number>`count(*)::int`,
+          successful: sql<number>`count(*) filter (where ${referrals.creditedAt} is not null)::int`,
+        })
+        .from(referrals)
+        .where(and(eq(referrals.referrerUserId, userId), eq(referrals.status, 'active'))),
 
-    const [sentRow] = await db
-      .select({ n: sql<number>`count(*)::int` })
-      .from(referralInvites)
-      .where(eq(referralInvites.userId, userId));
+      db
+        .select({ n: sql<number>`count(*)::int` })
+        .from(referralInvites)
+        .where(eq(referralInvites.userId, userId)),
 
-    // Countries across the WHOLE network, not just direct referrals — the same
-    // question /me/network answers, so the two endpoints cannot disagree about
-    // a figure both screens label "Countries Reached".
-    //
-    // A separate containment scan rather than reading it off `direct`: a
-    // referrer whose friend-of-a-friend is the only person in Peru has still
-    // reached Peru, and their own direct rows say nothing about it.
-    const reached = await db
-      .selectDistinct({ country: referrals.redeemerCountry })
-      .from(referrals)
-      .where(
-        and(
-          sql`${referrals.ancestorPath} @> ARRAY[${userId}]::integer[]`,
-          eq(referrals.status, 'active'),
+      // Countries across the WHOLE network, not just direct referrals — the same
+      // question /me/network answers, so the two endpoints cannot disagree about
+      // a figure both screens label "Countries Reached".
+      //
+      // A separate containment scan rather than a read over the direct rows: a
+      // referrer whose friend-of-a-friend is the only person in Peru has still
+      // reached Peru, and their own direct rows say nothing about it.
+      db
+        .selectDistinct({ country: referrals.redeemerCountry })
+        .from(referrals)
+        .where(
+          and(
+            sql`${referrals.ancestorPath} @> ARRAY[${userId}]::integer[]`,
+            eq(referrals.status, 'active'),
+          ),
         ),
-      );
-
-    const successful = direct.filter((d) => d.creditedAt !== null).length;
+    ]);
 
     return {
       clicks: clickRow.n,
-      // Kept as the total headcount of people who signed up under this user,
-      // credited or not. `successful` is the narrower, points-bearing figure.
-      signups: direct.length,
+      // The total headcount of people who signed up under this user, credited
+      // or not. `successful` is the narrower, points-bearing figure.
+      signups: funnelRow.signups,
       sent: sentRow.n,
-      successful,
-      pending: direct.length - successful,
+      successful: funnelRow.successful,
+      pending: funnelRow.signups - funnelRow.successful,
       // Counted from everyone who arrived, not only the credited — an unverified
       // signup in a new country has still reached that country.
       countriesReached: reached

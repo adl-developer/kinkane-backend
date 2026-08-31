@@ -36,6 +36,23 @@ export const CHART_WEEKS = 8;
 const CACHE_TTL_SECONDS = 5 * 60;
 
 /**
+ * How many readers a city needs before it earns a pin on the public globe.
+ *
+ * /referrals/map needs no authentication, and a pin reading `count: 1` says
+ * "exactly one Kinkané reader is in this city". Put that beside
+ * /referrals/leaderboard — also public, also carrying a first name and a
+ * country — and a named person can be placed in a named city by anyone who
+ * cares to cross-reference the two.
+ *
+ * Three is the conventional floor for this kind of aggregate. The cost is real
+ * and worth stating: while the campaign is small the globe under-represents how
+ * far it has actually spread, because thinly-populated cities are withheld
+ * rather than drawn. That is the right way round — a sparse globe is a
+ * presentation problem, a locatable reader is not.
+ */
+const MIN_PIN_GROUP = 3;
+
+/**
  * Reads through Redis, falling back to the query on a miss *or a Redis
  * failure*.
  *
@@ -115,15 +132,24 @@ export interface CampaignAnalytics {
      * successful ÷ clicks, as a percentage rounded to one decimal.
      *
      * Against clicks, not `sent`. `sent` counts what referrers initiated and can
-     * be smaller than the signups it produced — a link forwarded around a group
-     * chat is one share and many arrivals — so dividing by it is not a rate at
-     * all and could exceed 100%. Every signup, however it was found, arrived
-     * through a click, so clicks is the only denominator that actually contains
-     * the numerator.
+     * be far smaller than the signups it produced — a link forwarded around a
+     * group chat is one share and many arrivals — so dividing by it is not a
+     * rate at all and routinely exceeds 100%.
      *
-     * This depends on clients reporting taps that open the app directly (see
-     * POST /referrals/clicks): where they don't, clicks under-counts and this
-     * figure reads high.
+     * Clicks is much the better denominator but **not a strict superset of the
+     * numerator**, so this can still print above 100 in two situations, both
+     * worth knowing before anyone treats it as a true funnel:
+     *
+     * 1. A code typed into the "Have an invite code?" field on signup credits a
+     *    referral with no click behind it. That field is the only recovery path
+     *    for people who tapped a link, went to the App Store, and installed —
+     *    so it is used, not hypothetical.
+     * 2. Taps that open an installed app directly never reach this server
+     *    unless the client reports them (see POST /referrals/clicks). Where a
+     *    client does not, clicks under-counts and this figure reads high.
+     *
+     * Both push in the same direction, so treat this as an upper bound rather
+     * than a measurement until click reporting is live on every client.
      */
     conversionRate: number;
     countries: number;
@@ -166,14 +192,26 @@ export const referralAnalyticsService = {
     ] = await Promise.all([
       db.select({ n: sql<number>`count(*)::int` }).from(referralInvites),
 
-      // Deduped the same way the per-user figure is, so the campaign total and
-      // the sum of everyone's own `clicks` describe the same thing. Bots are
-      // excluded — link-preview fetchers from WhatsApp and Slack hit the
-      // redirect exactly as a person does, and counting them would inflate the
-      // denominator and quietly depress the conversion rate.
+      // Deduped per (code, person), so the campaign total equals the sum of
+      // everyone's own `clicks` rather than something smaller.
+      //
+      // `code_id` is load-bearing and easy to drop. statsFor uses the same
+      // (ip_hash, user_agent) pair, but scoped by a WHERE to one code, where it
+      // means "distinct people who followed this link". Lifted to a campaign-wide
+      // scan without code_id in the tuple it silently becomes "distinct devices
+      // that clicked anything" — so two hundred colleagues behind one office NAT,
+      // each following a different workmate's link on the same browser build,
+      // would collapse to a single click. Shared egress is the norm across much
+      // of the world, so that is a systematic undercount, and since this is the
+      // denominator of conversionRate it would inflate the published rate by
+      // exactly that factor.
+      //
+      // Bots are excluded: link-preview fetchers from WhatsApp and Slack hit the
+      // redirect exactly as a person does, and counting them would pad the
+      // denominator and depress the rate instead.
       db
         .select({
-          n: sql<number>`count(distinct (coalesce(${referralClicks.ipHash}, ${referralClicks.id}::text), coalesce(${referralClicks.userAgent}, '')))::int`,
+          n: sql<number>`count(distinct (${referralClicks.codeId}, coalesce(${referralClicks.ipHash}, ${referralClicks.id}::text), coalesce(${referralClicks.userAgent}, '')))::int`,
         })
         .from(referralClicks)
         .where(eq(referralClicks.isBot, false)),
@@ -315,7 +353,9 @@ export const referralAnalyticsService = {
    * at exactly the moment it most needs to look alive.
    *
    * Cities with no coordinates are dropped rather than placed at (0, 0), which
-   * would drop a pin in the Gulf of Guinea for every unresolvable user.
+   * would drop a pin in the Gulf of Guinea for every unresolvable user. Cities
+   * with fewer than MIN_PIN_GROUP readers are withheld too — see that constant
+   * for why, and for what it costs.
    */
   async cityPins(): Promise<{ city: string; countryCode: string | null; lat: number; lng: number; count: number }[]> {
     return cached('referrals:map:v1', () => this.computeCityPins());
@@ -333,7 +373,11 @@ export const referralAnalyticsService = {
       })
       .from(users)
       .where(and(isNotNull(users.city), isNotNull(users.cityLat), isNotNull(users.cityLng)))
-      .groupBy(users.city, users.countryCode, users.cityLat, users.cityLng);
+      .groupBy(users.city, users.countryCode, users.cityLat, users.cityLng)
+      // Withheld in SQL rather than filtered in JS, so a city below the
+      // threshold never leaves the database and cannot be leaked by some later
+      // caller that forgets to filter.
+      .having(sql`count(*) >= ${MIN_PIN_GROUP}`);
 
     return rows.map((r) => ({
       city: r.city as string,
