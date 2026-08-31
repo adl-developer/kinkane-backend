@@ -7,6 +7,7 @@ import {
   boolean,
   timestamp,
   integer,
+  doublePrecision,
   index,
   uniqueIndex,
   pgEnum,
@@ -64,6 +65,29 @@ export const users = pgTable(
     // without guessing which path produced any given row.
     countrySource: varchar('country_source', { length: 20 }),
     countryResolvedAt: timestamp('country_resolved_at', { withTimezone: true }),
+    // City, and the coordinates the globe plots.
+    //
+    // Country decides points; city decides nothing at all. It exists so the
+    // journey reads as a journey — "Accra → Paris → Calcutta" rather than
+    // "GH → FR → IN" — and so the globe has somewhere to put a pin. Nothing in
+    // scoring may ever read these: they come from a coarser, more failure-prone
+    // lookup than the country does, and a competition that turned on them would
+    // be a competition decided by ISP routing.
+    //
+    // Unlike country_code, this one IS re-resolved on later logins, but only
+    // while it is null. Existing accounts have no city and none can be derived
+    // retroactively — the only IP we ever stored is a one-way hash — so
+    // backfilling on next sight is the sole way this field ever populates for
+    // them. Once set it is as immutable as country, for the same reason: a user
+    // who travels must not migrate across the map mid-campaign.
+    city: varchar('city', { length: 100 }),
+    // City-centroid coordinates from the same lookup, stored so the globe does
+    // not need a city→coordinates table of its own. Precision is deliberately
+    // whatever GeoLite2 returns for the city — this is never a person's
+    // location, it is the middle of a city they appeared to be near.
+    cityLat: doublePrecision('city_lat'),
+    cityLng: doublePrecision('city_lng'),
+    citySource: varchar('city_source', { length: 20 }),
     // ── Blacklist ──────────────────────────────────────────────────────────
     // Set from the admin console, from either the Customers list or a report.
     // Null means in good standing; a timestamp means blocked. Stored as a time

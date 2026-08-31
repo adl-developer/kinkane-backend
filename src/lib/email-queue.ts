@@ -92,6 +92,10 @@ export const emailQueue = new Queue('emails', {
 export async function enqueueEmail<K extends EmailJobName>(
   name: K,
   data: EmailJobMap[K],
+  opts?: { delayMs?: number },
 ): Promise<void> {
-  await emailQueue.add(name, data, { priority: EMAIL_PRIORITY[name] });
+  await emailQueue.add(name, data, {
+    priority: EMAIL_PRIORITY[name],
+    ...(opts?.delayMs ? { delay: opts.delayMs } : {}),
+  });
 }

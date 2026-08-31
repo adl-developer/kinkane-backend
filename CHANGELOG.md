@@ -1,6 +1,27 @@
 # Changelog
 
 
+## 2026-08-31
+
+### Features
+
+* referral points now count only once a referred reader verifies their email ([051c8fb](https://adl.github.com/adl-developer/kinkane-backend/commit/051c8fb41525924e33b120e12e614c181cfa7f0e)) — [details](changelog/2026-08-31-referral-journey-map.md)
+* send the signup verification code a couple of minutes after the welcome email ([97a6d86](https://adl.github.com/adl-developer/kinkane-backend/commit/97a6d86aa205840a7d86e5ad22c893beff8c8061)) — [details](changelog/2026-08-31-referral-journey-map.md)
+
+### Bug Fixes
+
+* measure the campaign conversion rate against link taps, and count reach across the whole network ([c8c646f](https://adl.github.com/adl-developer/kinkane-backend/commit/c8c646f6fe1e454257b2ae8700d88d4bcfa77698)) — [details](changelog/2026-08-31-referral-journey-map.md)
+* keep the campaign map and charts honest, and cheap to serve ([1ced39a](https://adl.github.com/adl-developer/kinkane-backend/commit/1ced39a6be28b1b642759ad866dcc52f8dbd6cf1)) — [details](changelog/2026-08-31-referral-journey-map.md)
+* stop referral points going missing when a reader signs in with Google instead of verifying ([7ead476](https://adl.github.com/adl-developer/kinkane-backend/commit/7ead47668042a5be64d0bf64fcc1fbbfc0a56b93)) — [details](changelog/2026-08-31-referral-journey-map.md)
+
+
+## 2026-08-28
+
+### Bug Fixes
+
+* allow a rating of 0 on community posts ([ea0fd5c](https://adl.github.com/adl-developer/kinkane-backend/commit/ea0fd5c24affa83674f52fa5877f9e3553da623f))
+
+
 ## 2026-08-27
 
 ### Features

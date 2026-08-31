@@ -147,6 +147,12 @@ export const authController = {
 
     try {
       const { user, tokens } = await authService.login(email, password);
+
+      // Only fires for accounts that predate city resolution, and only until it
+      // succeeds once — see geoService.backfillCityInBackground. Unawaited: a
+      // map pin is never worth delaying a sign-in for.
+      geoService.backfillCityInBackground(user.id, req);
+
       res.status(200).json({
         user,
         accessToken: tokens.accessToken,
@@ -368,6 +374,12 @@ export const authController = {
         parsed.data.guestSessionId,
         context,
       );
+
+      // Returning social users take the same backfill as returning email ones.
+      // New ones already had their city written at signup, and the null guard
+      // inside makes this a no-op for them.
+      if (!isNewUser) geoService.backfillCityInBackground(user.id, req);
+
       res.status(isNewUser ? 201 : 200).json({
         user,
         accessToken: tokens.accessToken,

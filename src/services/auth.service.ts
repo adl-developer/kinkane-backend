@@ -17,7 +17,7 @@ import { subscriptionStateService } from './subscriptions/state.service';
 import { checkoutService } from './subscriptions/checkout.service';
 import { referralsService } from './referrals.service';
 import { referralScoringService } from './referral-scoring.service';
-import type { CountrySource } from './geo.service';
+import type { ResolvedCountry } from './geo.service';
 import type { SubscriptionTier, SubscriptionStatus, SubscriptionPlan } from '../db/schema';
 
 const BCRYPT_ROUNDS = 12;
@@ -287,6 +287,12 @@ const TRIAL_DAYS = 90; // 3 months
 
 const EMAIL_VERIFICATION_TTL_MS = 15 * 60 * 1000; // 15 minutes
 
+// The welcome email goes out the moment an account is created; the code lands a
+// couple of minutes later so the two don't arrive stacked on top of each other.
+// Only signup waits — a resend is a reader sitting on the OTP screen, so that
+// one still sends immediately.
+const SIGNUP_VERIFICATION_DELAY_MS = 2 * 60 * 1000; // 2 minutes
+
 function generateOtp(): string {
   // Cryptographically random 6-digit code, zero-padded
   return String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
@@ -297,12 +303,22 @@ function generateOtp(): string {
  * existing one) and enqueues the verification email. Errors enqueuing the
  * email are logged but not thrown — same fire-and-forget pattern as the
  * other post-signup side effects.
+ *
+ * `delayMs` holds the email back in the queue so it doesn't land in the same
+ * breath as another one (see SIGNUP_VERIFICATION_DELAY_MS). The token's expiry
+ * is pushed out by the same amount, so the 15 minutes the copy promises are
+ * counted from when the code actually arrives rather than from signup.
  */
-async function issueEmailVerification(userId: number, email: string, name: string): Promise<void> {
+async function issueEmailVerification(
+  userId: number,
+  email: string,
+  name: string,
+  delayMs = 0,
+): Promise<void> {
   await db.delete(emailVerificationTokens).where(eq(emailVerificationTokens.userId, userId));
 
   const otp = generateOtp();
-  const expiresAt = new Date(Date.now() + EMAIL_VERIFICATION_TTL_MS);
+  const expiresAt = new Date(Date.now() + delayMs + EMAIL_VERIFICATION_TTL_MS);
 
   await db.insert(emailVerificationTokens).values({
     userId,
@@ -315,7 +331,7 @@ async function issueEmailVerification(userId: number, email: string, name: strin
     name,
     otp,
     expiryMinutes: EMAIL_VERIFICATION_TTL_MS / 60_000,
-  }).catch((err) => {
+  }, { delayMs }).catch((err) => {
     logger.error('Failed to enqueue verification email', {
       userId,
       error: (err as Error).message,
@@ -335,7 +351,11 @@ async function issueEmailVerification(userId: number, email: string, name: strin
  */
 export interface SignupContext {
   referralCode?: string;
-  country?: { code: string | null; source: CountrySource };
+  // The whole resolved location, not just the country, so the city that arrived
+  // with it can be stored in the same write. Restating the shape here instead
+  // of referencing ResolvedCountry is what let city silently go missing on both
+  // signup paths until the compiler was asked.
+  country?: ResolvedCountry;
   channel?: string;
   clickId?: number | null;
 }
@@ -362,20 +382,69 @@ async function resolveReferralCode(
 }
 
 /**
- * Circuit detection, run after the signup transaction has committed.
+ * Writes the points for a newly verified reader's referral, then looks for any
+ * circuit it just closed.
+ *
+ * Called on email verification rather than at signup — an unverified account is
+ * a disposable inbox until proven otherwise, and the competition should not pay
+ * for one. Signups that arrive already verified (Google OAuth) call this
+ * immediately after attribution, so nothing is delayed for them.
  *
  * Deliberately fire-and-forget: it reads and writes rows belonging to users far
- * outside the one signing up, and no scoring bug should ever be able to stop an
- * account being created. Attribution is the durable fact; circuits are derived
- * from it and can be recomputed at any time.
+ * outside the one verifying, and no scoring bug should ever be able to fail a
+ * verification or an account creation. Attribution is the durable fact; points
+ * are derived from it and can be recomputed at any time.
+ *
+ * Circuits run only after credit lands, and only when credit actually happened —
+ * re-verifying, or a referral already credited, must not re-walk the tree.
  */
-function detectCircuitsInBackground(referredUserId: number): void {
-  referralScoringService.detectCircuits(referredUserId).catch((err) => {
-    logger.error('Circuit detection failed after signup', {
-      referredUserId,
-      error: (err as Error).message,
+/**
+ * Marks a social sign-in's account verified, and credits whatever referral was
+ * waiting on that.
+ *
+ * Signing in through Google proves ownership of the address the OTP existed to
+ * prove, so the two are equivalent and the row should say so. Both social
+ * branches previously returned `emailVerified: true` to the client without ever
+ * writing it, which left the account unverified in the database, stopped the app
+ * ever showing the OTP screen again, and — once points moved to verification —
+ * stranded the referral with no way to ever pay it.
+ *
+ * A no-op when the account is already verified, so it is safe to call on every
+ * social sign-in.
+ */
+async function markVerifiedAndCreditReferral(userId: number, alreadyVerified: boolean): Promise<void> {
+  if (alreadyVerified) return;
+
+  // Swallowed, not propagated. Signing in did not use to write anything on this
+  // path, and a database blip must not start turning a valid Google sign-in into
+  // a 500 over bookkeeping the person signing in has no stake in. The next
+  // sign-in retries it — the caller passes the flag straight off the user row,
+  // so a failure here simply means the account is still unverified next time.
+  try {
+    await db.update(users).set({ emailVerified: true, updatedAt: new Date() }).where(eq(users.id, userId));
+  } catch (err) {
+    logger.error('Could not mark a social sign-in verified', { userId, error: (err as Error).message });
+    // No credit either: crediting is what verification *earns*, so claiming it
+    // while the row still says unverified would pay points the record cannot
+    // justify.
+    return;
+  }
+
+  // Same fire-and-forget contract as the OTP path: a scoring failure must never
+  // be able to fail a sign-in. Itself a no-op when no referral is pending.
+  creditReferralInBackground(userId);
+}
+
+export function creditReferralInBackground(referredUserId: number): void {
+  void referralsService
+    .creditVerifiedSignup(referredUserId)
+    .then((credited) => (credited ? referralScoringService.detectCircuits(referredUserId) : null))
+    .catch((err) => {
+      logger.error('Referral crediting failed after verification', {
+        referredUserId,
+        error: (err as Error).message,
+      });
     });
-  });
 }
 
 // ── Auth service ──────────────────────────────────────────────────────────────
@@ -421,6 +490,10 @@ export const authService = {
           countryCode: context.country?.code ?? null,
           countrySource: context.country?.source ?? 'unknown',
           countryResolvedAt: new Date(),
+          city: context.country?.city ?? null,
+          cityLat: context.country?.lat ?? null,
+          cityLng: context.country?.lng ?? null,
+          citySource: context.country?.city ? context.country.source : null,
         })
         .returning({ id: users.id, name: users.name, email: users.email, emailVerified: users.emailVerified });
       const [sub] = await tx
@@ -441,6 +514,7 @@ export const authService = {
           referredUserId: u.id,
           code: referralCode,
           redeemerCountry: context.country?.code ?? null,
+          redeemerCity: context.country?.city ?? null,
           channel: context.channel,
           clickId: context.clickId,
         });
@@ -449,7 +523,8 @@ export const authService = {
       return u;
     });
 
-    if (referralCode) detectCircuitsInBackground(user.id);
+    // No crediting here. This account is unverified by definition — the points
+    // land when they enter the OTP, in verifyEmail below.
 
     const tokens = await issueTokenPair(user.id, user.email);
 
@@ -477,7 +552,7 @@ export const authService = {
       userId: user.id,
     });
 
-    issueEmailVerification(user.id, user.email, user.name).catch((err) => {
+    issueEmailVerification(user.id, user.email, user.name, SIGNUP_VERIFICATION_DELAY_MS).catch((err) => {
       logger.error('Failed to issue email verification after signup', {
         userId: user.id,
         error: (err as Error).message,
@@ -679,6 +754,12 @@ export const authService = {
         .delete(emailVerificationTokens)
         .where(eq(emailVerificationTokens.id, stored.id));
     });
+
+    // This is where referral points are actually earned. Outside the
+    // transaction and unawaited on purpose: it touches rows belonging to the
+    // referrer and their referrer, and a failure there must never turn a
+    // successful verification into an error the reader has to retry.
+    creditReferralInBackground(userId);
   },
 
   /**
@@ -1014,9 +1095,15 @@ export const authService = {
       // and waves through "Continue with Google" is not a block.
       assertNotBlacklisted(user.blacklistedAt);
 
+      // Normally a no-op: anyone reaching this branch was verified when the
+      // provider was first linked. It catches the accounts linked *before* that
+      // became true, which would otherwise sign in through Google for ever while
+      // still flagged unverified, holding a referral that could never be paid.
+      await markVerifiedAndCreditReferral(user.id, user.emailVerified);
+
       const tokens = await issueTokenPair(user.id, user.email);
       const { blacklistedAt: _blacklistedAt, ...safeUser } = user;
-      return { user: safeUser, tokens, isNewUser: false };
+      return { user: { ...safeUser, emailVerified: true }, tokens, isNewUser: false };
     }
 
     // 2. Check if a user with the same email already exists (account linking)
@@ -1037,6 +1124,19 @@ export const authService = {
       if (!existingUser.photoUrl && photoUrl) {
         await db.update(users).set({ photoUrl }).where(eq(users.id, existingUser.id));
       }
+
+      // Linking a Google account to an unverified one *is* verification: the
+      // provider has proved ownership of the same address the OTP was going to
+      // prove. This response has always claimed emailVerified: true, but the row
+      // was never updated to match — so the account stayed unverified in the
+      // database while the client believed otherwise, and the user was never
+      // shown the OTP screen again to correct it.
+      //
+      // That was harmless while referral points were awarded at signup. Now that
+      // they are awarded at verification, it stranded the referral permanently:
+      // the referrer's points would never be written and nothing would report
+      // the loss. Persist the flag, then credit.
+      await markVerifiedAndCreditReferral(existingUser.id, existingUser.emailVerified);
 
       const tokens = await issueTokenPair(existingUser.id, existingUser.email);
       return {
@@ -1064,6 +1164,10 @@ export const authService = {
           countryCode: context.country?.code ?? null,
           countrySource: context.country?.source ?? 'unknown',
           countryResolvedAt: new Date(),
+          city: context.country?.city ?? null,
+          cityLat: context.country?.lat ?? null,
+          cityLng: context.country?.lng ?? null,
+          citySource: context.country?.city ? context.country.source : null,
         })
         .returning({ id: users.id, name: users.name, email: users.email, emailVerified: users.emailVerified });
       await tx.insert(userProviders).values({ userId: u.id, provider, providerUid });
@@ -1083,6 +1187,7 @@ export const authService = {
           referredUserId: u.id,
           code: referralCode,
           redeemerCountry: context.country?.code ?? null,
+          redeemerCity: context.country?.city ?? null,
           channel: context.channel,
           clickId: context.clickId,
         });
@@ -1091,7 +1196,11 @@ export const authService = {
       return u;
     });
 
-    if (referralCode) detectCircuitsInBackground(newUser.id);
+    // Credited straight away, unlike the email path: Google has already
+    // verified this address, so the gate that delays the email flow has
+    // nothing left to wait for. Skipping this would leave social signups
+    // permanently pending — the referral would exist and never pay.
+    if (referralCode) creditReferralInBackground(newUser.id);
 
     const tokens = await issueTokenPair(newUser.id, newUser.email);
 

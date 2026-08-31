@@ -78,13 +78,54 @@ export const referralClicks = pgTable(
   }),
 );
 
+// ── Referral invites ───────────────────────────────────────────────────────────
+// What "Sent" counts on the referral screen.
+//
+// Two kinds of row live here and they are not equally strong evidence. An
+// `email` row means this server actually queued a message to a named address.
+// Every other channel is a *share intent*: the user tapped WhatsApp or Copy and
+// we recorded that they meant to send something. We never learn whether they
+// pasted it. Both are kept because the alternative — counting only email — shows
+// `Sent 0` to a user who has shared their link twenty times on WhatsApp, which
+// reads as a broken screen rather than an honest one.
+//
+// The recipient address is stored as a SHA-256 hash and never in the clear. The
+// person being invited is not a user, has consented to nothing, and their
+// address is needed for exactly two things: not counting the same invite twice,
+// and matching a later signup back to the invite. A hash does both.
+
+export const referralInvites = pgTable(
+  'referral_invites',
+  {
+    id: serial('id').primaryKey(),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    channel: varchar('channel', { length: 20 }).notNull(),
+    // Null for every channel except email — a WhatsApp share has no recipient
+    // this server will ever see.
+    recipientHash: varchar('recipient_hash', { length: 64 }),
+    sentAt: timestamp('sent_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    userIdx: index('idx_referral_invites_user_id').on(t.userId, t.sentAt),
+    // Re-sending to an address already invited must not inflate "Sent". Partial,
+    // because share rows carry a null hash and NULLs are distinct under a plain
+    // unique index — without the WHERE, every share row would be unique anyway
+    // but the index would carry them for nothing.
+    recipientUniq: uniqueIndex('idx_referral_invites_recipient')
+      .on(t.userId, t.recipientHash)
+      .where(sql`${t.recipientHash} is not null`),
+  }),
+);
+
 // ── Referrals ──────────────────────────────────────────────────────────────────
 // The edge table, and the thing the whole competition is computed from.
 //
 // `voided` is the only non-active state. An earlier design had signed_up →
-// qualified gated on email verification, which was there to stop disposable
-// inboxes farming a prize; with no prizes, points count at signup and the
-// intermediate state had nothing left to represent.
+// qualified as a separate status; that collapsed into `credited_at` below, which
+// carries the same fact as a timestamp rather than an enum member every query
+// has to remember to filter on.
 
 export const referralStatusEnum = pgEnum('referral_status', ['active', 'voided']);
 
@@ -124,8 +165,36 @@ export const referrals = pgTable(
     // would silently restate the score of every past referral when they do.
     referrerCountry: char('referrer_country', { length: 2 }),
     redeemerCountry: char('redeemer_country', { length: 2 }),
+    // Cities snapshotted for the same reason the countries are: the journey map
+    // shows where each hop happened *at the time it happened*, and a live join
+    // would silently redraw a user's whole history the day an admin corrects
+    // one city. Null is ordinary and permanent for anyone who signed up before
+    // city resolution existed.
+    // The second-degree earner's country, snapshotted for exactly the same
+    // reason the other two are.
+    //
+    // Added late: crediting moved from signup to email verification, which
+    // opened a window — potentially days — between the referrer's country being
+    // frozen here and the grandparent's being read. Without this column the
+    // grandparent was looked up live at credit time, so one redemption could be
+    // scored against two different views of the world if an admin corrected a
+    // country in between.
+    grandReferrerCountry: char('grand_referrer_country', { length: 2 }),
+    referrerCity: varchar('referrer_city', { length: 100 }),
+    redeemerCity: varchar('redeemer_city', { length: 100 }),
     referrerTierAtReferral: subscriptionTierEnum('referrer_tier_at_referral'),
     signedUpAt: timestamp('signed_up_at', { withTimezone: true }).defaultNow().notNull(),
+    // When the points for this referral were actually written. Null means the
+    // referred reader has signed up but not yet verified their email — the
+    // "Pending" figure on the referral screen, and the one state a referrer can
+    // do something about.
+    //
+    // A nullable timestamp rather than a status enum member: it answers "is this
+    // credited" and "when" in one column, and leaves `status` meaning only what
+    // it meant before (active vs voided by an admin). Rows created before the
+    // verification gate landed are backfilled to signed_up_at, so existing
+    // scores keep standing — see the migration.
+    creditedAt: timestamp('credited_at', { withTimezone: true }),
     voidedAt: timestamp('voided_at', { withTimezone: true }),
     voidReason: varchar('void_reason', { length: 200 }),
   },
@@ -202,6 +271,7 @@ export const referralPoints = pgTable(
 
 export type ReferralCode = typeof referralCodes.$inferSelect;
 export type ReferralClick = typeof referralClicks.$inferSelect;
+export type ReferralInvite = typeof referralInvites.$inferSelect;
 export type Referral = typeof referrals.$inferSelect;
 export type NewReferral = typeof referrals.$inferInsert;
 export type ReferralPoint = typeof referralPoints.$inferSelect;
