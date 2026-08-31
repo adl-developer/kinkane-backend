@@ -299,7 +299,7 @@ working. **The card only needs `points`.**
   "sent": 18,                // NEW — invites + shares this user initiated
   "successful": 12,          // NEW — verified signups; the ones that scored
   "pending": 6,              // NEW — signed up, not yet verified
-  "countriesReached": ["GB", "GH", "NG", "US"],
+  "countriesReached": ["GB", "GH", "NG", "US"],   // whole network, any depth
   "points": 340,             // ← the card's "You have earned N points"
   "pointsByKind": {
     "sameCountry": 12, "sameContinent": 100, "crossContinent": 180,
@@ -318,6 +318,12 @@ including people who got the link second-hand from a forwarded message), and
 
 `pointsByKind` breaks the total down if the card ever wants to explain where
 points came from — the keys match the table in §2.2.
+
+`countriesReached` spans the **whole network** — every descendant at any depth —
+while `signups`, `successful` and `pending` count only people the user
+personally referred. The asymmetry is deliberate: the funnel is about who they
+brought in, whereas reach is the point of a competition called Around the World
+and would be meaningless if it stopped at one generation.
 
 `country` is resolved once at signup and then frozen. A user showing `null`
 **scores nothing**, so a null is worth surfacing to support rather than hiding.

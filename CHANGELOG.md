@@ -10,6 +10,7 @@
 
 ### Bug Fixes
 
+* keep the campaign map and charts honest, and cheap to serve ([1ced39a](https://adl.github.com/adl-developer/kinkane-backend/commit/1ced39a6be28b1b642759ad866dcc52f8dbd6cf1)) — [details](changelog/2026-08-31-referral-journey-map.md)
 * stop referral points going missing when a reader signs in with Google instead of verifying ([7ead476](https://adl.github.com/adl-developer/kinkane-backend/commit/7ead47668042a5be64d0bf64fcc1fbbfc0a56b93)) — [details](changelog/2026-08-31-referral-journey-map.md)
 
 

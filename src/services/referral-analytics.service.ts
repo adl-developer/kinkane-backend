@@ -1,6 +1,6 @@
 import { sql, eq, and, gte, isNotNull, desc } from 'drizzle-orm';
 import { db } from '../db';
-import { referrals, referralInvites, users, countries } from '../db/schema';
+import { referrals, referralInvites, referralClicks, users, countries } from '../db/schema';
 import { redis } from '../lib/redis';
 import { logger } from '../lib/logger';
 
@@ -106,10 +106,25 @@ export function densify(
 export interface CampaignAnalytics {
   totals: {
     sent: number;
+    /** Unique link taps across the campaign, bots excluded. */
+    clicks: number;
     signups: number;
     /** Signups whose email is verified — the ones that actually scored. */
     successful: number;
-    /** successful ÷ sent, as a percentage rounded to one decimal. */
+    /**
+     * successful ÷ clicks, as a percentage rounded to one decimal.
+     *
+     * Against clicks, not `sent`. `sent` counts what referrers initiated and can
+     * be smaller than the signups it produced — a link forwarded around a group
+     * chat is one share and many arrivals — so dividing by it is not a rate at
+     * all and could exceed 100%. Every signup, however it was found, arrived
+     * through a click, so clicks is the only denominator that actually contains
+     * the numerator.
+     *
+     * This depends on clients reporting taps that open the app directly (see
+     * POST /referrals/clicks): where they don't, clicks under-counts and this
+     * figure reads high.
+     */
     conversionRate: number;
     countries: number;
     continents: number;
@@ -142,6 +157,7 @@ export const referralAnalyticsService = {
 
     const [
       [sentRow],
+      [clickRow],
       [signupRow],
       [reachRow],
       weeklySent,
@@ -149,6 +165,18 @@ export const referralAnalyticsService = {
       topReferrers,
     ] = await Promise.all([
       db.select({ n: sql<number>`count(*)::int` }).from(referralInvites),
+
+      // Deduped the same way the per-user figure is, so the campaign total and
+      // the sum of everyone's own `clicks` describe the same thing. Bots are
+      // excluded — link-preview fetchers from WhatsApp and Slack hit the
+      // redirect exactly as a person does, and counting them would inflate the
+      // denominator and quietly depress the conversion rate.
+      db
+        .select({
+          n: sql<number>`count(distinct (coalesce(${referralClicks.ipHash}, ${referralClicks.id}::text), coalesce(${referralClicks.userAgent}, '')))::int`,
+        })
+        .from(referralClicks)
+        .where(eq(referralClicks.isBot, false)),
 
       db
         .select({
@@ -207,16 +235,18 @@ export const referralAnalyticsService = {
     });
 
     const sent = sentRow.n;
+    const clicks = clickRow.n;
     const successful = signupRow.successful;
 
     return {
       totals: {
         sent,
+        clicks,
         signups: signupRow.signups,
         successful,
-        // Guarded: a campaign with no sends yet would otherwise report NaN,
+        // Guarded: a campaign with no clicks yet would otherwise report NaN,
         // which serialises to null and breaks a percentage widget.
-        conversionRate: sent === 0 ? 0 : Math.round((successful / sent) * 1000) / 10,
+        conversionRate: clicks === 0 ? 0 : Math.round((successful / clicks) * 1000) / 10,
         countries: reachRow.countries,
         continents: reachRow.continents,
       },

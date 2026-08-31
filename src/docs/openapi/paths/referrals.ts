@@ -147,7 +147,7 @@ export const referralPaths = {
             pending: { type: 'integer', description: 'Signed up but not yet verified. The one state a referrer can act on.', example: 6 },
             countriesReached: {
               type: 'array', items: { type: 'string' },
-              description: 'ISO-3166 alpha-2 codes their referrals signed up from.',
+              description: 'ISO-3166 alpha-2 codes reached across the **whole network**, any depth — not just direct referrals. Matches what `/referrals/me/network` reports, so the two cannot disagree about a figure both screens label "Countries Reached".',
               example: ['GH', 'GB', 'US', 'NG'],
             },
             points: { type: 'integer', example: 340 },
@@ -246,9 +246,10 @@ export const referralPaths = {
           object({
             totals: object({
               sent: { type: 'integer', example: 1247 },
+              clicks: { type: 'integer', description: 'Unique link taps, deduped on hashed IP and user agent, bots excluded. The denominator of conversionRate.', example: 1247 },
               signups: { type: 'integer', description: 'Everyone who signed up, credited or not.', example: 412 },
               successful: { type: 'integer', description: 'Verified signups — the ones that scored.', example: 389 },
-              conversionRate: { type: 'number', description: 'successful ÷ sent, as a percentage to one decimal. 0 when nothing has been sent.', example: 31.2 },
+              conversionRate: { type: 'number', description: '`successful ÷ clicks`, as a percentage to one decimal. 0 when there are no clicks yet. Against clicks rather than `sent`, because a link forwarded around a group chat is one share and many arrivals — dividing by `sent` is not a rate and can exceed 100%. Reads high wherever clients are not reporting app-opened taps via `POST /referrals/clicks`.', example: 31.2 },
               countries: { type: 'integer', example: 14 },
               continents: { type: 'integer', description: 'Derived by joining to the country table, not by counting distinct country codes.', example: 3 },
             }),

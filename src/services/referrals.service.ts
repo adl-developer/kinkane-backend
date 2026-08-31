@@ -561,6 +561,12 @@ export const referralsService = {
   /**
    * The funnel for one user's code.
    *
+   * `countriesReached` spans the whole network — every descendant, any depth —
+   * while `signups`, `successful` and `pending` count only direct referrals.
+   * That asymmetry is deliberate: the funnel is about people this user
+   * personally brought in, whereas reach is the whole point of a competition
+   * called Around the World and is meaningless if it stops at one generation.
+   *
    * Three of these figures are the Sent / Successful / Pending card, and they
    * deliberately do *not* satisfy Sent = Successful + Pending. Sent counts
    * invites and shares this user initiated; successful and pending count people
@@ -616,6 +622,23 @@ export const referralsService = {
       .from(referralInvites)
       .where(eq(referralInvites.userId, userId));
 
+    // Countries across the WHOLE network, not just direct referrals — the same
+    // question /me/network answers, so the two endpoints cannot disagree about
+    // a figure both screens label "Countries Reached".
+    //
+    // A separate containment scan rather than reading it off `direct`: a
+    // referrer whose friend-of-a-friend is the only person in Peru has still
+    // reached Peru, and their own direct rows say nothing about it.
+    const reached = await db
+      .selectDistinct({ country: referrals.redeemerCountry })
+      .from(referrals)
+      .where(
+        and(
+          sql`${referrals.ancestorPath} @> ARRAY[${userId}]::integer[]`,
+          eq(referrals.status, 'active'),
+        ),
+      );
+
     const successful = direct.filter((d) => d.creditedAt !== null).length;
 
     return {
@@ -626,9 +649,12 @@ export const referralsService = {
       sent: sentRow.n,
       successful,
       pending: direct.length - successful,
-      // Countries counted from everyone who arrived, not only the credited —
-      // an unverified signup in a new country has still reached that country.
-      countriesReached: [...new Set(direct.map((d) => d.redeemerCountry).filter((c): c is string => !!c))].sort(),
+      // Counted from everyone who arrived, not only the credited — an unverified
+      // signup in a new country has still reached that country.
+      countriesReached: reached
+        .map((r) => r.country)
+        .filter((c): c is string => !!c)
+        .sort(),
     };
   },
 

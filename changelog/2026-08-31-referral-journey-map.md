@@ -142,6 +142,22 @@ referrals, and early in a campaign, when almost everyone is a root, the globe
 rendered nearly empty at exactly the moment it most needs to look alive. It now
 counts every placeable reader.
 
+**`conversionRate` divided by the wrong thing.** It was `successful ÷ sent`, but
+`sent` counts what referrers initiated and a link forwarded around a group chat
+is one share and many arrivals — so the ratio was not bounded by 1 and a public
+marketing page could have rendered "150%". It is now `successful ÷ clicks`, the
+only denominator that actually contains the numerator, with `clicks` returned
+alongside it. The figure reads high until clients report app-opened taps, which
+is noted in the field's own documentation.
+
+**`countriesReached` meant two different things.** Direct-only on `/me/stats`,
+whole-subtree on `/me/network`, with both screens labelling it "Countries
+Reached". `/me/stats` now spans the whole network too. The funnel figures beside
+it (`signups`, `successful`, `pending`) stay direct-only, which is a deliberate
+asymmetry: the funnel is about who a user personally brought in, whereas reach
+is the entire point of a competition called Around the World and is meaningless
+if it stops at one generation.
+
 **The grandparent's country was read live while the referrer's was
 snapshotted.** Fine when both were read in the signup transaction; not fine once
 crediting moved to verification, which can be days later. `referrals` gains
@@ -166,13 +182,8 @@ silently skip the second-degree award.
   change what a path means. Left alone deliberately.
 - **The points and leaderboard mechanic still has no screen** in any of the four
   designed frames. That is a design gap, not an API one.
-- **`conversionRate` can exceed 100%** — it divides credited signups by recorded
-  sends, and signups arrive from forwarded links with no send behind them.
-  Awaiting a decision on the denominator; a true click-through rate needs the
-  mobile client to be reporting clicks first.
-- **`countriesReached` means direct-only on `/me/stats` and whole-subtree on
-  `/me/network`.** Both are legitimate answers to different questions; renaming
-  one is pending a decision, and `/me/stats` is already in the mobile contract.
+- **The `/r/*` proxy on the client domain**, without which clicks arriving via
+  the web record nothing. Not a backend change; tracked separately.
 
 ## Verified
 
