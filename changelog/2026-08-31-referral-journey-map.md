@@ -126,6 +126,31 @@ whose Postgres defaults to a regional zone, every bucket lookup would miss and
 both charts would render eight zero bars beside healthy non-zero totals. The
 queries now pin the truncation with an explicit `at time zone 'UTC'`.
 
+### Three more from the same review
+
+**Both public campaign endpoints were unlimited and uncached.** `/analytics`
+and `/map` are unauthenticated and return identical bytes to every caller while
+running full aggregate scans. Both now read through Redis on a five-minute TTL —
+campaign totals, so nobody can tell the difference — and carry a rate limiter
+like every other public route here. Cache reads and writes are wrapped: Redis
+being down degrades to a slow page, never a broken one.
+
+**The globe excluded everyone who had never been referred.** `cityPins`
+inner-joined to `referrals` on `referred_user_id`, so every tree root was
+invisible — meaning the people doing the referring did not appear on the map of
+referrals, and early in a campaign, when almost everyone is a root, the globe
+rendered nearly empty at exactly the moment it most needs to look alive. It now
+counts every placeable reader.
+
+**The grandparent's country was read live while the referrer's was
+snapshotted.** Fine when both were read in the signup transaction; not fine once
+crediting moved to verification, which can be days later. `referrals` gains
+`grand_referrer_country`, snapshotted alongside the other two, so all three
+geographies scoring a redemption describe the same moment. The migration
+backfills it for uncredited rows only — a credited referral has already been
+paid, and a pending one would otherwise credit with a null grandparent and
+silently skip the second-degree award.
+
 ## Explicitly out of scope
 
 - **The referral link and code format are unchanged.** The design's
@@ -141,6 +166,13 @@ queries now pin the truncation with an explicit `at time zone 'UTC'`.
   change what a path means. Left alone deliberately.
 - **The points and leaderboard mechanic still has no screen** in any of the four
   designed frames. That is a design gap, not an API one.
+- **`conversionRate` can exceed 100%** — it divides credited signups by recorded
+  sends, and signups arrive from forwarded links with no send behind them.
+  Awaiting a decision on the denominator; a true click-through rate needs the
+  mobile client to be reporting clicks first.
+- **`countriesReached` means direct-only on `/me/stats` and whole-subtree on
+  `/me/network`.** Both are legitimate answers to different questions; renaming
+  one is pending a decision, and `/me/stats` is already in the mobile contract.
 
 ## Verified
 

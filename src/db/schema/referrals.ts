@@ -170,6 +170,16 @@ export const referrals = pgTable(
     // would silently redraw a user's whole history the day an admin corrects
     // one city. Null is ordinary and permanent for anyone who signed up before
     // city resolution existed.
+    // The second-degree earner's country, snapshotted for exactly the same
+    // reason the other two are.
+    //
+    // Added late: crediting moved from signup to email verification, which
+    // opened a window — potentially days — between the referrer's country being
+    // frozen here and the grandparent's being read. Without this column the
+    // grandparent was looked up live at credit time, so one redemption could be
+    // scored against two different views of the world if an admin corrected a
+    // country in between.
+    grandReferrerCountry: char('grand_referrer_country', { length: 2 }),
     referrerCity: varchar('referrer_city', { length: 100 }),
     redeemerCity: varchar('redeemer_city', { length: 100 }),
     referrerTierAtReferral: subscriptionTierEnum('referrer_tier_at_referral'),

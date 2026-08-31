@@ -46,6 +46,19 @@ const shareLimiter = rateLimit({
   store: new RedisStore({ prefix: 'rl:referral-share:', sendCommand }),
 });
 
+// The two public campaign endpoints. Cached for five minutes apiece, so this
+// budget is not about database load — it is about the bandwidth and the Redis
+// round trip, both of which are still free to anyone with a loop. Generous
+// enough that a page refreshing its charts will never see it.
+const campaignLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (_req, res) => res.status(429).json({ error: 'Too many requests — please try again later' }),
+  store: new RedisStore({ prefix: 'rl:referral-campaign:', sendCommand }),
+});
+
 const router = Router();
 
 /**
@@ -72,7 +85,7 @@ router.get('/leaderboard', wrap(referralsController.leaderboard));
  *   continents }, weekly: [{ weekStart, sent, converted, cumulative }],
  *   topReferrers: [{ rank, name, country, signups, points }] }
  */
-router.get('/analytics', wrap(referralsController.analytics));
+router.get('/analytics', campaignLimiter, wrap(referralsController.analytics));
 
 /**
  * GET /api/v1/referrals/map
@@ -83,7 +96,7 @@ router.get('/analytics', wrap(referralsController.analytics));
  *
  * Returns 200: { pins: [{ city, countryCode, lat, lng, count }] }
  */
-router.get('/map', wrap(referralsController.map));
+router.get('/map', campaignLimiter, wrap(referralsController.map));
 
 /**
  * POST /api/v1/referrals/clicks
@@ -98,7 +111,8 @@ router.get('/map', wrap(referralsController.map));
  * Unauthenticated: the tap happens before there is an account. Rate limited
  * because it is public and writes a row.
  *
- * Body: { code: string, channel?: 'whatsapp' | 'sms' | 'email' | 'copy' | 'link' | 'app' }
+ * Body: { referralCode: string, channel?: 'whatsapp' | 'sms' | 'email' | 'copy' | 'link' | 'app' }
+ *   `code` is still accepted as a deprecated alias for already-shipped app builds.
  * Returns 202: { ok: true } — always, whether or not the code exists, so this
  *   cannot be used to probe which codes are real.
  * Errors: 400 malformed code | 429 rate limited

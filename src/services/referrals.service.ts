@@ -463,6 +463,7 @@ export const referralsService = {
         ancestorPath,
         referrerCountry: referrerRow?.countryCode ?? null,
         redeemerCountry: params.redeemerCountry,
+        grandReferrerCountry: grandReferrerRow?.countryCode ?? null,
         referrerCity: referrerRow?.city ?? null,
         redeemerCity: params.redeemerCity ?? null,
         referrerTierAtReferral: referrerRow?.tier ?? null,
@@ -501,6 +502,7 @@ export const referralsService = {
         ancestorPath: referrals.ancestorPath,
         referrerCountry: referrals.referrerCountry,
         redeemerCountry: referrals.redeemerCountry,
+        grandReferrerCountry: referrals.grandReferrerCountry,
       })
       .from(referrals)
       .where(
@@ -516,14 +518,6 @@ export const referralsService = {
 
     const grandReferrerUserId =
       referral.ancestorPath.length >= 2 ? referral.ancestorPath[referral.ancestorPath.length - 2] : null;
-
-    const [grandReferrerRow] = grandReferrerUserId
-      ? await db
-          .select({ countryCode: users.countryCode })
-          .from(users)
-          .where(eq(users.id, grandReferrerUserId))
-          .limit(1)
-      : [undefined];
 
     const credited = await db.transaction(async (tx) => {
       // Claim the referral first. Two concurrent verifications (a retry racing
@@ -552,7 +546,10 @@ export const referralsService = {
         referrerCountry: referral.referrerCountry,
         redeemerCountry: referral.redeemerCountry,
         grandReferrerUserId,
-        grandReferrerCountry: grandReferrerRow?.countryCode ?? null,
+        // The snapshot, not a live lookup. All three geographies scoring this
+        // redemption now describe the same moment — the one the reader signed
+        // up in — however long the wait for verification turns out to be.
+        grandReferrerCountry: referral.grandReferrerCountry,
       });
 
       return true;

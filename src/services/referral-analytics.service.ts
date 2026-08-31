@@ -1,6 +1,8 @@
 import { sql, eq, and, gte, isNotNull, desc } from 'drizzle-orm';
 import { db } from '../db';
 import { referrals, referralInvites, users, countries } from '../db/schema';
+import { redis } from '../lib/redis';
+import { logger } from '../lib/logger';
 
 /**
  * Campaign-wide figures for the Analytics screen.
@@ -18,6 +20,49 @@ import { referrals, referralInvites, users, countries } from '../db/schema';
 
 /** How many weekly buckets the two charts show. */
 export const CHART_WEEKS = 8;
+
+/**
+ * How long a campaign-wide response is served from Redis.
+ *
+ * Both endpoints here are public, unauthenticated, and return the *same* bytes
+ * to every caller — while doing full aggregate scans of `referrals`,
+ * `referral_invites` and `users` to produce them. Uncached, that is a table
+ * scan per page view and an open invitation to anyone with a loop.
+ *
+ * Five minutes because these are campaign totals: nobody watching a counter
+ * climb can tell the difference, and a figure that lags by a few minutes is a
+ * far smaller problem than one that falls over under load.
+ */
+const CACHE_TTL_SECONDS = 5 * 60;
+
+/**
+ * Reads through Redis, falling back to the query on a miss *or a Redis
+ * failure*.
+ *
+ * A cache being unavailable must never turn a working page into an error, so
+ * every Redis call here is wrapped and a failure is logged and ignored. The
+ * result is cached even when it is empty — an early campaign with no data would
+ * otherwise re-run the whole aggregate on every request and find nothing,
+ * forever.
+ */
+async function cached<T>(key: string, compute: () => Promise<T>): Promise<T> {
+  try {
+    const hit = await redis.get(key);
+    if (hit) return JSON.parse(hit) as T;
+  } catch (err) {
+    logger.warn('Referral analytics cache read failed', { key, error: (err as Error).message });
+  }
+
+  const value = await compute();
+
+  try {
+    await redis.set(key, JSON.stringify(value), 'EX', CACHE_TTL_SECONDS);
+  } catch (err) {
+    logger.warn('Referral analytics cache write failed', { key, error: (err as Error).message });
+  }
+
+  return value;
+}
 
 /** Monday 00:00 UTC of the week that starts the chart window. */
 export function windowStart(weeks = CHART_WEEKS): Date {
@@ -88,6 +133,11 @@ export const referralAnalyticsService = {
    * separate table scans for one page view.
    */
   async campaign(): Promise<CampaignAnalytics> {
+    return cached('referrals:analytics:v1', () => this.computeCampaign());
+  },
+
+  /** The uncached aggregate. Split out so the cache wrapper stays readable. */
+  async computeCampaign(): Promise<CampaignAnalytics> {
     const since = windowStart();
 
     const [
@@ -227,10 +277,22 @@ export const referralAnalyticsService = {
    * activity to a logged-out visitor: the globe conveys that the campaign is
    * spreading without telling anyone who is doing the spreading.
    *
+   * Counts every placeable reader, not only those who arrived through someone
+   * else's link. An earlier version inner-joined to `referrals` on
+   * `referred_user_id`, which silently excluded every tree root — so the people
+   * doing the referring were invisible on the map of referrals, and early in a
+   * campaign, when almost everyone is a root, the globe rendered nearly empty
+   * at exactly the moment it most needs to look alive.
+   *
    * Cities with no coordinates are dropped rather than placed at (0, 0), which
    * would drop a pin in the Gulf of Guinea for every unresolvable user.
    */
   async cityPins(): Promise<{ city: string; countryCode: string | null; lat: number; lng: number; count: number }[]> {
+    return cached('referrals:map:v1', () => this.computeCityPins());
+  },
+
+  /** The uncached aggregate. */
+  async computeCityPins(): Promise<{ city: string; countryCode: string | null; lat: number; lng: number; count: number }[]> {
     const rows = await db
       .select({
         city: users.city,
@@ -240,16 +302,7 @@ export const referralAnalyticsService = {
         count: sql<number>`count(*)::int`,
       })
       .from(users)
-      .innerJoin(referrals, eq(referrals.referredUserId, users.id))
-      .where(
-        and(
-          eq(referrals.status, 'active'),
-          isNotNull(referrals.creditedAt),
-          isNotNull(users.city),
-          isNotNull(users.cityLat),
-          isNotNull(users.cityLng),
-        ),
-      )
+      .where(and(isNotNull(users.city), isNotNull(users.cityLat), isNotNull(users.cityLng)))
       .groupBy(users.city, users.countryCode, users.cityLat, users.cityLng);
 
     return rows.map((r) => ({
