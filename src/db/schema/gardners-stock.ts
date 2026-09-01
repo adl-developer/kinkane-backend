@@ -38,11 +38,19 @@ export const gardnersStock = pgTable(
     isbnUnique: uniqueIndex('uq_gardners_stock_isbn13').on(t.isbn13),
     bookIdIdx: index('idx_gardners_stock_book_id').on(t.bookId),
     stockUpdatedAtIdx: index('idx_gardners_stock_updated_at').on(t.stockUpdatedAt),
-    // Supports GET /books?shoppable=true — see buildShoppableCondition in
-    // books.service. That filter's correlated EXISTS probes this table once per
-    // candidate book, and a filter-only browse's count probes it across the
-    // whole catalogue, so the predicate lives in the index instead of being
-    // rechecked on the heap ~2M times.
+    // Supports the discovery feeds' shoppable filter and the shop listing's
+    // band predicates — see buildShoppableCondition / buildShopBandCondition in
+    // lib/shoppable. Those correlated EXISTS clauses probe this table once per
+    // candidate book, and a browse's band counts probe it across the whole
+    // catalogue, so the predicate lives in the index instead of being rechecked
+    // on the heap ~2M times.
+    //
+    // Its sibling idx_gardners_stock_shoppable_stock carries the same predicate
+    // with stock_qty INCLUDEd, which is what keeps the in-stock/to-order split
+    // index-only. It is created in migration 0052 rather than here because
+    // drizzle-kit cannot express INCLUDE; changing the predicate below without
+    // changing that migration leaves the two disagreeing, and the band query
+    // silently falls back to a heap fetch per row.
     //
     // upper()/btrim() are both IMMUTABLE, which is what makes them legal in an
     // index predicate. The code list is duplicated from

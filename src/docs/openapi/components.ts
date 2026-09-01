@@ -158,7 +158,13 @@ const bookSchemas = {
         type: 'boolean',
         example: true,
         description:
-          'Present only on `GET /books?shoppable=true`. Whether the supplier currently has stock. `false` means list it with an out-of-stock badge, not hide it. Absent on every other endpoint — do not treat a missing value as out of stock.',
+          'Present on `GET /books?shoppable=true` for rows with `shoppable: true`. Whether the supplier currently has stock. `false` means list it with an out-of-stock badge, not hide it. Absent on unsellable rows and on every other endpoint — do not treat a missing value as out of stock.',
+      },
+      shoppable: {
+        type: 'boolean',
+        example: true,
+        description:
+          'Present only on `GET /books?shoppable=true`. Whether the shop can sell this book at all — it has an ISBN13, a live supplier price, and no unsuppliable report code. It exists because `shoppable=true` ranks rather than filters: the unsellable books are still in the response, at the end. `false` means no Add button, ever, and the other shop fields (`inStock`, `unitPriceMinor`, `compareAtMinor`, `currency`) are omitted on those rows — an unsellable book can still have a supplier price and even stock behind it, but neither is an offer. Absent on every other endpoint.',
       },
     },
   },

@@ -29,7 +29,16 @@ import { redis } from '../lib/redis';
 import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-excerpts.service';
 import { TRENDING_SCORED_TYPES, trendingScoreSql } from './interactions.service';
 import { availabilityService } from './commerce/availability.service';
-import { buildShoppableCondition } from '../lib/shoppable';
+import {
+  buildShoppableCondition,
+  buildShopBandCondition,
+  buildPriceBoundsCondition,
+  planShopBands,
+  isSellableBand,
+  SHOP_BAND,
+  SHOP_BAND_ORDER,
+  type ShopBand,
+} from '../lib/shoppable';
 import { toPresentment } from './commerce/pricing';
 import { config } from '../config';
 
@@ -76,6 +85,15 @@ const DEDUPE_POOL_HEADROOM = 20;
 // distinguish via `totalIsApproximate`. Comfortably above the max page size (50) so
 // ordinary pagination never notices.
 const SEARCH_COUNT_CAP = 1000;
+
+// How far the shop's band ladder counts before it stops caring. The band sizes exist to
+// map a page offset onto the concatenated bands (see planShopBands), so they only have to
+// be exact over the range a shopper can actually reach; past this the boundary is
+// approximate and `hasMore` carries pagination, exactly as it does past SEARCH_COUNT_CAP.
+// Capped rather than exact because these are two counts over a 2M-row catalogue and they
+// are on the path of every shop page — the cap is what keeps a cold cache from paying for
+// a full scan twice.
+const SHOP_BAND_COUNT_CAP = 200_000;
 // Ceiling on how many author matches a search will pull from book_contributors before
 // ranking them — see buildAuthorMatchCondition. Sized well above any real author's
 // catalogue (the most prolific names in the catalogue are in the low hundreds of titles)
@@ -184,11 +202,30 @@ export interface ListBooksOptions {
   // newest publication date > has a price). See dedupeByTitle in lib/dedupe.ts.
   dedupe?: boolean;
   /**
-   * Opt-in: restricts results to books the shop can actually list — see
-   * buildShoppableCondition for exactly what that means and what it
-   * deliberately does not check.
+   * Opt-in: orders the results the way a shop has to — everything Gardners can
+   * supply and has on the shelf first, then what is orderable but unstocked,
+   * then everything unsellable. See SHOP_BAND for the bands and why there are
+   * three of them.
+   *
+   * This used to *exclude* the unsellable tail rather than sink it, which made
+   * `shoppable=true` and `shoppable=false` return different books; they now
+   * return the same books in a different order. Callers that relied on the
+   * filter should read `shoppable` on each row — the flag says which side of
+   * the line a result fell on, so a listing can stop at the boundary itself.
+   *
+   * `priceMin`/`priceMax` are unaffected and still filter, since a price range
+   * is a request for a shelf rather than an ordering. See
+   * buildPriceBoundsCondition.
    */
   shoppable?: boolean;
+  /**
+   * Internal. Set by list()'s band ladder to scope one query to one band; not a
+   * request parameter, and never set by a controller. It rides in `opts` rather
+   * than being threaded through every fetch signature because the branches that
+   * build their own filters — fetchAuthorBranch, rankBroadCandidates — call
+   * buildWhereClause(opts) themselves, and would otherwise silently ignore it.
+   */
+  shopBand?: ShopBand;
   /**
    * For dedupe=true only. When supplied it overrides `offset`: the server
    * resumes at the raw-row position the token encodes and also filters out any
@@ -255,6 +292,10 @@ const LIST_COLUMNS = {
 
 type ListBook = typeof LIST_COLUMNS extends Record<string, { _: { data: infer T } }> ? T : Record<string, unknown>;
 
+// One row as every list path selects it — LIST_COLUMNS resolved through the query builder,
+// taken from a function that actually runs the select so the two cannot drift.
+type ListRow = Awaited<ReturnType<typeof fetchTitleSearchPage>>[number];
+
 export interface BookListItem {
   id: number;
   isbn13: string | null;
@@ -285,6 +326,19 @@ export interface BookListItem {
    * than a title that is visibly, temporarily unavailable.
    */
   inStock?: boolean;
+  /**
+   * Whether this book is one the shop can actually sell — i.e. it has an
+   * ISBN13, a supplier price, and no unsuppliable report code. Present only on
+   * `shoppable=true` requests, alongside `inStock`.
+   *
+   * It exists because `shoppable=true` ranks rather than filters: the unsellable
+   * tail is still in the response, at the end, and without this a client would
+   * have to infer "unsellable" from a missing price and get it wrong for a book
+   * that is merely out of stock. `shoppable: true, inStock: false` is orderable
+   * with a longer lead time; `shoppable: false` is not orderable at all and must
+   * not be given an Add button.
+   */
+  shoppable?: boolean;
   /**
    * The live sellable price, in the currency this request resolved to. Present
    * only with `shoppable=true`, alongside `inStock`.
@@ -910,13 +964,21 @@ function buildWhereClause(opts: ListBooksOptions, searchCondition?: SQL): SQL | 
     conditions.push(sql`${books.publicationDate} <= ${`${opts.yearMax}-12-31`}`);
   }
 
+  // `shoppable` itself is no longer a condition — it orders, and list() walks
+  // the bands. What survives here is the half of it that was always a genuine
+  // filter: an explicit price range. It is applied on any `shoppable=true`
+  // request, band or no band, so every band's query agrees on which shelf it is
+  // paginating over.
   if (opts.shoppable) {
-    conditions.push(
-      buildShoppableCondition({
-        minGbpPence: opts.priceMinGbpPence,
-        maxGbpPence: opts.priceMaxGbpPence,
-      }),
-    );
+    const priceBounds = buildPriceBoundsCondition({
+      minGbpPence: opts.priceMinGbpPence,
+      maxGbpPence: opts.priceMaxGbpPence,
+    });
+    if (priceBounds) conditions.push(priceBounds);
+  }
+
+  if (opts.shopBand !== undefined) {
+    conditions.push(buildShopBandCondition(opts.shopBand));
   }
 
   return conditions.length > 0 ? and(...conditions) : undefined;
@@ -1442,6 +1504,10 @@ export const booksService = {
     // return. Bumping retires them instead of serving them until their TTL lapses.
     // v6: `q` no longer matches titles and author names together on every path — opts now
     // carries `searchType`, and a v5 entry for the same query holds the old blended page.
+    // v7: `shoppable=true` ranks instead of filtering. A v6 entry for a shoppable request
+    // holds a page with the unsellable books removed and no `shoppable` field on any row —
+    // both the wrong rows and the wrong shape, and a client reading the new field off a
+    // cached page would find it missing and treat every book as unsellable.
     //
     // Deliberately not bumped again for v1/v2 coexistence. The two versions share this
     // function and this key space, and they stay separated by the hash itself: v2 always
@@ -1453,7 +1519,7 @@ export const booksService = {
     // never sets `searchType`; v2 always defaults it to 'title'. If either ever passed
     // `searchType: undefined` explicitly it would still hash as absent, which is the
     // blended page — hence v2's controller defaulting rather than forwarding an optional.
-    const rowsCacheKey = `books:list:v6:${createHash('sha256').update(JSON.stringify(opts)).digest('hex')}`;
+    const rowsCacheKey = `books:list:v7:${createHash('sha256').update(JSON.stringify(opts)).digest('hex')}`;
     // Keyed only on the fields that affect the count (not limit/offset/sort) so every
     // page of the same filter — and every sort direction — shares one cached total.
     //
@@ -1476,7 +1542,11 @@ export const booksService = {
     // v5: see the v6 note on the rows key — a blended total is wrong for either single
     // side, and `searchType` rides in countFilters via the rest-destructure above, which
     // is also what keeps v1's and v2's totals in separate entries.
-    const countCacheKey = `books:count:v5:${createHash('sha256')
+    // v6: a shoppable total now counts the whole filtered catalogue rather than the
+    // sellable slice of it, because nothing is excluded any more. A v5 entry would report
+    // the old, smaller number against a listing that runs well past it — and the band
+    // ladder pages by offset, so a total that stops short strands the tail.
+    const countCacheKey = `books:count:v6:${createHash('sha256')
       .update(JSON.stringify(countFilters))
       .digest('hex')}`;
 
@@ -1650,16 +1720,45 @@ export const booksService = {
     // An author search's WHERE lives inside its own branch (the name match is a subquery
     // over book_contributors, not a predicate on books), so there is no title condition to
     // build for it — buildWhereClause with no extra condition is what its branch filters by.
-    const rowsWhere = opts.q && !isAuthorSearch
-      ? buildWhereClause(
-          opts,
-          rowsTier === 'fast'
-            ? buildFastTitlePrefixCondition(opts.q)
-            : rowsTier === 'cheap'
-              ? buildTitlePrefixCondition(opts.q)
-              : buildSearchCondition(opts.q),
-        )
-      : buildWhereClause(opts);
+    //
+    // Built from an `opts` the caller supplies rather than from the closure, because the
+    // shop's band ladder below re-runs it once per band — same tier, same ordering, one
+    // extra predicate. `buildRowsWhere(opts)` (no band) is the whole filtered set, which
+    // is what the count at the bottom must keep measuring.
+    const buildRowsWhere = (o: ListBooksOptions) =>
+      o.q && !isAuthorSearch
+        ? buildWhereClause(
+            o,
+            rowsTier === 'fast'
+              ? buildFastTitlePrefixCondition(o.q)
+              : rowsTier === 'cheap'
+                ? buildTitlePrefixCondition(o.q)
+                : buildSearchCondition(o.q),
+          )
+        : buildWhereClause(o);
+    const rowsWhere = buildRowsWhere(opts);
+
+    // How many rows are in one band, for the offset arithmetic in planShopBands.
+    //
+    // Cached like the total is, and for the same reason: it is a count over the whole
+    // filtered catalogue, it barely moves between requests, and every page of the same
+    // shop listing needs the same answer — a boundary that differed page to page would
+    // drop rows between pages or repeat them. The tier is part of the key because a
+    // search's band is measured against whichever match set the tier ladder settled on,
+    // and two tiers are two different sets.
+    const countShopBand = async (band: ShopBand): Promise<number> => {
+      const key = `books:shopband:v1:${band}:${rowsTier}:${createHash('sha256')
+        .update(JSON.stringify(countFilters))
+        .digest('hex')}`;
+      const cached = await redis.get(key);
+      if (cached != null) return parseInt(cached, 10);
+      const count = await countUpTo(
+        buildRowsWhere({ ...opts, shopBand: band }),
+        opts.q ? SEARCH_COUNT_CAP + 1 : SHOP_BAND_COUNT_CAP,
+      );
+      await redis.set(key, String(count), 'EX', COUNT_TTL);
+      return count;
+    };
     const rowsOrderBy = opts.q && !isAuthorSearch
       ? rowsTier === 'fast'
         ? buildFastTitlePrefixOrderBy()
@@ -1686,47 +1785,117 @@ export const booksService = {
           return parsed;
         })
       : (async () => {
-          const fetched = opts.q
-            ? isAuthorSearch
-              ? await fetchAuthorSearchPage(
-                  { ...opts, offset: effectiveOffset },
-                  opts.q,
-                  overfetchLimit,
-                )
-              : isBlendedSearch
-                ? await fetchBlendedSearchPage(
-                    { ...opts, offset: effectiveOffset },
-                    opts.q,
-                    rowsTier,
-                    rowsWhere,
-                    rowsOrderBy,
-                    overfetchLimit,
-                    // Compared against the same offset the tier ladder above uses, so the
-                    // two decisions cannot disagree about whether this page is inside the
-                    // band.
-                    exactBandCount > effectiveOffset,
-                  )
-                : await fetchTitleSearchPage(
-                    { ...opts, offset: effectiveOffset },
-                    opts.q,
-                    rowsTier,
-                    rowsWhere,
-                    rowsOrderBy,
-                    overfetchLimit,
-                  )
-            : await db
+          // One page's worth of rows from one slice of the catalogue. `want` is a row
+          // count, not a page size: every branch below is asked for exactly the number
+          // of rows still missing, which is what lets the band ladder top up from the
+          // next band when one runs dry mid-page.
+          const fetchRawRows = async (
+            fetchOpts: ListBooksOptions,
+            offset: number,
+            want: number,
+          ): Promise<ListRow[]> => {
+            const where = buildRowsWhere(fetchOpts);
+            // The search branches take a page size and fetch one row beyond it, so a
+            // request for `want` rows is a page size of want - 1.
+            const pageSize = Math.max(0, want - 1);
+            if (!fetchOpts.q) {
+              return db
                 .select(LIST_COLUMNS)
                 .from(books)
-                .where(rowsWhere)
+                .where(where)
                 .orderBy(...rowsOrderBy)
-                // One row beyond the (possibly overfetched) page, so `hasMore` is known
-                // without a second query — this is what callers should paginate on now
-                // that `total` may be capped or, with dedupe, approximate.
-                .limit(overfetchLimit + 1)
-                .offset(effectiveOffset);
+                .limit(want)
+                .offset(offset);
+            }
+            if (isAuthorSearch) {
+              return fetchAuthorSearchPage({ ...fetchOpts, offset }, fetchOpts.q, pageSize);
+            }
+            if (isBlendedSearch) {
+              return fetchBlendedSearchPage(
+                { ...fetchOpts, offset },
+                fetchOpts.q,
+                rowsTier,
+                where,
+                rowsOrderBy,
+                pageSize,
+                // Compared against the same offset the tier ladder above uses, so the
+                // two decisions cannot disagree about whether this page is inside the
+                // band.
+                exactBandCount > offset,
+              );
+            }
+            return fetchTitleSearchPage(
+              { ...fetchOpts, offset },
+              fetchOpts.q,
+              rowsTier,
+              where,
+              rowsOrderBy,
+              pageSize,
+            );
+          };
+
+          // One row beyond the (possibly overfetched) page, so `hasMore` is known
+          // without a second query — this is what callers should paginate on now
+          // that `total` may be capped or, with dedupe, approximate.
+          const want = overfetchLimit + 1;
+          // Which band each row came from, so the response can carry `shoppable` per row
+          // without a second lookup — the band the query selected already answers it.
+          const bandByRow = new Map<number, ShopBand>();
+
+          const fetched = !opts.shoppable
+            ? await fetchRawRows(opts, effectiveOffset, want)
+            : await (async () => {
+                // The shop's ordering: walk the bands in order, mapping this page's
+                // offset onto them. Each band's query is the ordinary one plus a
+                // predicate, so every path keeps the index-backed plan it had — see
+                // buildShopBandCondition for why the band cannot be an ORDER BY key.
+                const [inStock, toOrder] = await Promise.all([
+                  countShopBand(SHOP_BAND.IN_STOCK),
+                  countShopBand(SHOP_BAND.TO_ORDER),
+                ]);
+                const planned = new Map(
+                  planShopBands(effectiveOffset, want, { inStock, toOrder }).map(
+                    (segment) => [segment.band, segment.offset] as const,
+                  ),
+                );
+                // Bands ahead of the first planned one are entirely behind this offset.
+                // Bands past it are fetched from the top, whether or not the plan
+                // reached them: the counts are a snapshot of a table the hourly feed
+                // writes to, so a band can be shorter than its count claimed, and only
+                // the rows themselves are authoritative.
+                const firstBand = planned.size > 0
+                  ? Math.min(...planned.keys())
+                  : SHOP_BAND.UNSELLABLE;
+
+                const collected: ListRow[] = [];
+                for (const band of SHOP_BAND_ORDER) {
+                  if (band < firstBand) continue;
+                  if (collected.length >= want) break;
+                  const rows = await fetchRawRows(
+                    { ...opts, shopBand: band },
+                    planned.get(band) ?? 0,
+                    want - collected.length,
+                  );
+                  for (const row of rows) bandByRow.set(row.id, band);
+                  collected.push(...rows);
+                }
+                return collected;
+              })();
 
           const rawHasMore = fetched.length > overfetchLimit;
           const rawRows = rawHasMore ? fetched.slice(0, overfetchLimit) : fetched;
+
+          // The shop fields are looked up for the sellable bands only. An unsellable
+          // book can still have a supplier price and even stock behind it — an
+          // unsuppliable report code does not erase either — and reporting them
+          // would put a number on a shelf nobody can buy from and a stock badge on
+          // a row with no Add button. Neither is a fact the caller can act on, and
+          // both read as an offer.
+          const sellableIsbns = opts.shoppable
+            ? rawRows
+                .filter((r) => isSellableBand(bandByRow.get(r.id) ?? SHOP_BAND.UNSELLABLE))
+                .map((r) => r.isbn13)
+            : [];
 
           const [relations, excerptMap, descriptionById, stockByIsbn, priceByIsbn] = await Promise.all([
             attachRelationsToList(rawRows),
@@ -1746,14 +1915,14 @@ export const booksService = {
             // adding it there would put the stock table into every tier's plan,
             // including the fast title-prefix scan whose speed comes from touching
             // nothing but its own index.
-            opts.shoppable && rawRows.length > 0
-              ? availabilityService.inStockByIsbns(rawRows.map((r) => r.isbn13))
+            opts.shoppable && sellableIsbns.length > 0
+              ? availabilityService.inStockByIsbns(sellableIsbns)
               : Promise.resolve(new Map<string, boolean>()),
             // Same bargain as the stock badge: one batched query, and only when
             // the shop asked. Without it a client can filter on a price the
             // response never carries.
-            opts.shoppable && rawRows.length > 0
-              ? availabilityService.livePricesByIsbns(rawRows.map((r) => r.isbn13))
+            opts.shoppable && sellableIsbns.length > 0
+              ? availabilityService.livePricesByIsbns(sellableIsbns)
               : Promise.resolve(
                   new Map<string, { unitPriceGbpPence: number; compareAtGbpPence: number | null }>(),
                 ),
@@ -1762,14 +1931,23 @@ export const booksService = {
             ...r,
             ...relations.get(r.id)!,
             excerpt: pickExcerpt(r.isbn13, excerptMap),
-            // Absent entirely unless asked for. Every row here already cleared
-            // buildShoppableCondition, so a missing stock entry would mean the row
-            // vanished between the two queries — `false` is the safe reading.
+            // Absent entirely unless asked for. On a sellable row a missing stock
+            // entry would mean the row vanished between the two queries — `false`
+            // is the safe reading. On an unsellable one the shop fields are absent
+            // by design, which is why the price and stock lookups above were never
+            // asked about it.
             ...(opts.shoppable
-              ? {
-                  inStock: r.isbn13 ? (stockByIsbn.get(r.isbn13) ?? false) : false,
-                  ...priceFields(r.isbn13 ? priceByIsbn.get(r.isbn13) : undefined, opts.currency),
-                }
+              ? isSellableBand(bandByRow.get(r.id) ?? SHOP_BAND.UNSELLABLE)
+                ? {
+                    // The band the row was selected by, not a second opinion about
+                    // it: whichever query returned this row had the band as a
+                    // predicate, so this cannot disagree with the ordering the
+                    // client is looking at.
+                    shoppable: true,
+                    inStock: r.isbn13 ? (stockByIsbn.get(r.isbn13) ?? false) : false,
+                    ...priceFields(r.isbn13 ? priceByIsbn.get(r.isbn13) : undefined, opts.currency),
+                  }
+                : { shoppable: false }
               : {}),
           }));
 

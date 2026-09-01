@@ -365,6 +365,13 @@
       "when": 1788183487108,
       "tag": "0051_nappy_aaron_stack",
       "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1788269887108,
+      "tag": "0052_shop_band_stock_index",
+      "breakpoints": true
     }
   ]
 }

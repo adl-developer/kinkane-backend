@@ -252,7 +252,30 @@ basket appears to empty on login.
 | `currency` | Which currency the price bounds are in. Defaults to the currency this request would be quoted in. |
 | `sortBy` | `title` or `newest`. Pair with `sort=asc\|desc` for direction. |
 
-`shoppable=true` also puts the **live price** on every row — `unitPriceMinor`,
+### `shoppable=true` orders the page — it does not filter it
+
+Three bands, in this order:
+
+| Band | Rows | Fields |
+| --- | --- | --- |
+| In stock | `shoppable: true`, `inStock: true` | Full price fields. Buy now. |
+| Orderable, unstocked | `shoppable: true`, `inStock: false` | Full price fields. Out-of-stock treatment; the extended catalogue and print-on-demand titles live here and take longer to arrive. |
+| Unsellable | `shoppable: false` | **No price, no `inStock`.** No ISBN13, no live price, or a supplier code saying it cannot be supplied. Never give these an Add button. |
+
+Nothing is excluded, so `shoppable=true` and `shoppable=false` return the same
+books in a different order, and `total` is the whole filtered catalogue either
+way. **If the shop wants only sellable books, stop at the first
+`shoppable: false` rather than paginating to `total`.**
+
+It ranks rather than filters because a catalogue that changes size with a query
+parameter cannot be paged through consistently — and stock in particular moves
+hourly, so a book vanishing mid-browse reads as a bug.
+
+`priceMin`/`priceMax` are unaffected and still filter: a price range is a
+request for a shelf, not an ordering. Because an unsellable book has no price,
+a price-filtered page contains no unsellable rows at all.
+
+Sellable rows also carry the **live price** — `unitPriceMinor`,
 `compareAtMinor` (null when not on sale) and `currency`. Render those.
 
 **Ignore the `prices` array on a shop surface.** It is ONIX edition metadata,
@@ -343,7 +366,8 @@ Three places carry the signal, and they mean slightly different things:
 
 | Where | Field | Meaning |
 | --- | --- | --- |
-| `GET /books?shoppable=true` | `inStock: false` | Listed and priced, but not in stock right now. Show the card with the out-of-stock treatment; do not remove it. |
+| `GET /books?shoppable=true` | `inStock: false` | Listed and priced, but not in stock right now. Show the card with the out-of-stock treatment; do not remove it. Only ever present on rows with `shoppable: true`. |
+| `GET /books?shoppable=true` | `shoppable: false` | Cannot be sold at all, and sorted to the end of the listing. No price, no `inStock`, no Add button. |
 | `POST /cart/price` | `availableQuantity` < `quantity` | Partial stock. They asked for 3, we can ship 2. Say so rather than silently reducing the stepper. |
 | `POST /cart/price` | `unavailable: true` + `unavailableReason` | Cannot be bought at all right now. `out_of_stock` is temporary; `unsuppliable`, `no_price` and `market_restricted` are not. |
 | `GET /saved-books` | `inStock`, `unavailable` | Same treatment. A saved book that has become unbuyable is kept and flagged so it never silently disappears from someone's list. |
@@ -358,9 +382,11 @@ Two consequences worth designing for:
   is intentional; showing a total that includes unshippable copies sets up a
   surprise at checkout.
 
-`shoppable=true` never returns books that are permanently unsellable — no ISBN,
-no price, or a supplier code saying it cannot be supplied. Those are filtered
-out entirely. Only *temporary* unavailability surfaces as a flag.
+`shoppable=true` does return books that are permanently unsellable — it sinks
+them to the end of the listing rather than dropping them, and marks each one
+`shoppable: false` with no price and no `inStock`. That flag is the one to gate
+the Add button on; `inStock` is about *temporary* unavailability and only
+appears on rows that are sellable in the first place.
 
 ## Errors worth handling explicitly
 
