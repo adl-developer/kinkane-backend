@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-09-01
+
+### Bug Fixes
+
+* send the signup verification code first and let the welcome email trail it ([98011b2](https://adl.github.com/adl-developer/kinkane-backend/commit/98011b20b738a55ede1072e5f03af786f0a21fa4)) — [details](changelog/2026-09-01-signup-email-order.md)
+
+
 ## 2026-08-31
 
 ### Features

@@ -1,0 +1,15 @@
+-- `GET /books?shoppable=true` stopped filtering and started ranking: the shop
+-- now walks three bands (in stock / orderable but unstocked / unsellable) and
+-- pages across them, so `stock_qty` is read on the hot path of every shop page
+-- rather than never. See buildShopBandCondition in src/lib/shoppable.ts.
+--
+-- idx_gardners_stock_shoppable already answers "is this suppliable" as an
+-- index-only scan — the price and report-code tests live in its predicate. It
+-- cannot answer "and does it have stock" without a heap fetch per candidate
+-- row, which on a 2M-row catalogue is the whole cost of the page. INCLUDE keeps
+-- stock_qty in the index leaf so bands 0 and 1 stay index-only.
+--
+-- INCLUDE rather than a second key column: stock_qty is never ordered or ranged
+-- on here, only tested, and adding it to the key would widen every entry and
+-- break the index's use as a plain isbn13 probe.
+CREATE INDEX IF NOT EXISTS "idx_gardners_stock_shoppable_stock" ON "gardners_stock" USING btree ("isbn13") INCLUDE ("stock_qty") WHERE "gardners_stock"."rrp_gbp" > 0 AND ("gardners_stock"."report_code" IS NULL OR upper(btrim("gardners_stock"."report_code")) NOT IN ('NYP', 'OSI', 'O/P', 'OP', 'CNC', 'R/P', 'RP', 'POS', 'REF'));

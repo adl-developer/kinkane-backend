@@ -74,12 +74,21 @@ const listSchemaBase = z.object({
   // Opt-in: collapses same-titled editions down to the best one — see dedupeParam above.
   dedupe: dedupeParam,
   /**
-   * Opt-in: drops books the shop cannot list — no ISBN13, no price, or an
-   * unsuppliable Gardners report code. Off by default: discovery, search and
-   * reading lists browse the whole catalogue, and only the e-commerce section
-   * wants the narrowed view. Out-of-stock books are kept and carry `inStock`
-   * so the shop can badge them. See buildShoppableCondition in books.service
-   * for what this does and does not check.
+   * Opt-in: orders the results the way a shop has to, rather than narrowing
+   * them. Three bands, in this order — in stock, orderable but unstocked, then
+   * everything the shop cannot sell at all (no ISBN13, no price, or an
+   * unsuppliable Gardners report code). Each row carries `shoppable` and
+   * `inStock` so a listing can badge the tail or cut it off itself.
+   *
+   * It used to *drop* that last band. Turning the filter into a ranking means
+   * `shoppable=true` and `shoppable=false` now return the same books in a
+   * different order, so a client that was relying on the exclusion — an Add
+   * button on every row, say — has to read `shoppable` per row instead.
+   *
+   * Off by default: discovery, search and reading lists browse the whole
+   * catalogue in its natural order, and only the e-commerce section wants the
+   * shop's. See SHOP_BAND in lib/shoppable for the bands, and
+   * buildShopBandCondition for what the ranking does and does not consider.
    */
   shoppable: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
   /**
@@ -100,7 +109,10 @@ const listSchemaBase = z.object({
   })
   // The price lives on the Gardners stock row, which only the shoppable path
   // consults. Rejecting rather than ignoring: a filtered page that quietly came
-  // back unfiltered is a bug the client cannot see.
+  // back unfiltered is a bug the client cannot see. Still required now that
+  // `shoppable` ranks rather than filters — the bounds themselves remain a real
+  // filter (see buildPriceBoundsCondition), and they are only meaningful
+  // against the currency and live prices the shoppable path resolves.
   .refine((v) => (v.priceMin === undefined && v.priceMax === undefined) || v.shoppable, {
     message: 'priceMin/priceMax require shoppable=true — only shoppable books have a price',
     path: ['priceMin'],

@@ -391,6 +391,14 @@ Three rules:
   shown; never persist a price and re-display it later.
 - **Both fields are absent without `shoppable=true`**, along with `inStock`. A
   discovery screen that renders an Add button must pass the flag.
+- **On `GET /books`, they are also absent on unsellable rows.** That endpoint's
+  `shoppable=true` now *orders* by sellability instead of filtering by it: books
+  the shop cannot sell at all are sorted to the end of the listing and marked
+  `shoppable: false`, with no price and no `inStock` — an unsellable book can
+  still have a supplier price behind it, but showing it would read as an offer.
+  Gate the Add button on `shoppable`, and treat `inStock` as the temporary
+  signal it is. The discovery feeds are unchanged and still exclude those books
+  outright, since every tile in a carousel has an Add button.
 
 **The discovery feeds carry these too.** `GET /explore/trending`,
 `GET /explore/personalized`, `GET /books/:id/similar` and

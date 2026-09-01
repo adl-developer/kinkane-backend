@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { buildShoppableCondition } from '../lib/shoppable';
+import { buildPriceBoundsCondition } from '../lib/shoppable';
 
 /**
  * The shop's Filters modal. Each of these is a way to show a customer the wrong
@@ -16,8 +16,14 @@ import { buildShoppableCondition } from '../lib/shoppable';
  */
 
 const dialect = new PgDialect();
-const sqlFor = (...args: Parameters<typeof buildShoppableCondition>) =>
-  dialect.sqlToQuery(buildShoppableCondition(...args));
+// The price filter used to live inside the shoppable EXISTS, which is where
+// these assertions were originally aimed. It stands alone now that `shoppable`
+// only ranks — the bounds are still a filter, and the thing they must not do is
+// filter on anything *else*. An absent condition is the no-bounds answer.
+const sqlFor = (bounds: Parameters<typeof buildPriceBoundsCondition>[0] = {}) => {
+  const condition = buildPriceBoundsCondition(bounds);
+  return condition ? dialect.sqlToQuery(condition) : { sql: '', params: [] as unknown[] };
+};
 
 const BASE_ENV = { ...process.env };
 
@@ -27,12 +33,13 @@ async function loadPricing(overrides: Record<string, string> = {}) {
   return import('../services/commerce/pricing');
 }
 
-describe('price bounds in buildShoppableCondition', () => {
+describe('buildPriceBoundsCondition', () => {
   it('adds nothing when no bounds are given', () => {
-    // The unfiltered shape has to stay byte-identical: every existing shoppable
-    // request shares a cache key with it.
-    expect(sqlFor().sql).toBe(sqlFor({}).sql);
-    expect(sqlFor().sql).not.toContain('rrp_gbp * 100');
+    // Not merely "no comparison" but no predicate at all: a shop page with no
+    // price range must be ranked, never filtered, or the unsellable tail this
+    // endpoint now returns would silently disappear again.
+    expect(buildPriceBoundsCondition({})).toBeUndefined();
+    expect(sqlFor().sql).toBe('');
   });
 
   it('binds each bound as a parameter rather than inlining it', () => {
@@ -59,19 +66,20 @@ describe('price bounds in buildShoppableCondition', () => {
     expect(sqlFor({ minGbpPence: 0 }).sql).toContain('rrp_gbp * 100 >=');
   });
 
-  it('keeps the bounds inside the existing EXISTS rather than adding a second', () => {
-    // Two correlated subqueries would double the index probes per candidate row
-    // for a comparison on a row already fetched.
+  it('is a single correlated probe, not one per bound', () => {
     const { sql } = sqlFor({ minGbpPence: 500, maxGbpPence: 2000 });
     expect(sql.toLowerCase().split('exists').length - 1).toBe(1);
   });
 
-  it('still enforces everything shoppable meant before', () => {
+  it('prices from the supplier feed, and tests nothing but the price', () => {
     const { sql } = sqlFor({ minGbpPence: 500 });
     const lower = sql.toLowerCase();
     expect(lower).toContain('"books"."isbn13" is not null');
     expect(lower).toContain('gs.rrp_gbp > 0');
-    expect(lower).toContain('report_code');
+    // Supply is a ranking now. A price filter that also excluded unsuppliable
+    // codes would quietly restore the old filter on every price-filtered page.
+    expect(lower).not.toContain('report_code');
+    expect(lower).not.toContain('stock_qty');
   });
 });
 

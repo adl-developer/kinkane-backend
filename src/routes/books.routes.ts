@@ -79,13 +79,26 @@ router.get('/recommendations', optionalAuth, booksController.basketRecommendatio
  * present, where relevance ranking wins. There is no price ordering — see
  * buildSortOrderBy for why.
  *
- * `shoppable=true` narrows the results to what the e-commerce section can
- * list: an ISBN13, a live Gardners price, and no unsuppliable report code.
- * Out-of-stock titles are kept — each result carries `inStock` for the shop to
- * badge — because stock moves hourly and a book vanishing from the catalogue
- * mid-browse is worse than one shown as temporarily unavailable. It is not a
- * sellability guarantee: market restrictions need a destination country, which
- * this public endpoint does not have, so they stay enforced at add-to-cart.
+ * `shoppable=true` orders the results the way a shop has to, in three bands:
+ * what Gardners can supply and has in stock, then what is orderable but
+ * unstocked (the extended catalogue and print-on-demand titles, which never
+ * have a shelf), then everything unsellable — no ISBN13, no live price, or an
+ * unsuppliable report code. Every row carries `shoppable` and `inStock`, so a
+ * listing can badge the tail or stop at it.
+ *
+ * It ranks rather than filters, and both halves of that are deliberate. Nothing
+ * is excluded because a catalogue that changes size with a query parameter is a
+ * catalogue a client cannot page through consistently — and stock in particular
+ * moves hourly, so a book vanishing mid-browse is worse than one shown as
+ * temporarily unavailable. The ordering exists because a shop still has to lead
+ * with what a customer can buy today.
+ *
+ * `priceMin`/`priceMax` are unaffected and still filter: a price range is a
+ * request for a shelf, not an ordering.
+ *
+ * It is not a sellability guarantee either way: market restrictions need a
+ * destination country, which this public endpoint does not have, so they stay
+ * enforced at add-to-cart.
  *
  * Public — no auth required.
  */
