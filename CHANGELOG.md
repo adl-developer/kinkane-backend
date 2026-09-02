@@ -5,6 +5,7 @@
 
 ### Features
 
+* hold Gardners' real shipping costs as data ([84b2ff1](https://adl.github.com/adl-developer/kinkane-backend/commit/84b2ff1510ddf9f374405eaa954d189e2b620579)) — [details](changelog/2026-09-02-shipping-below-cost-stopgap.md)
 * count the referral charts' weeks from the start of the competition ([0abeda0](https://adl.github.com/adl-developer/kinkane-backend/commit/0abeda0bd2664a3509fae76d247cf4fe4a97a630)) — [details](changelog/2026-09-02-referral-analytics-campaign-weeks.md)
 
 ### Bug Fixes
