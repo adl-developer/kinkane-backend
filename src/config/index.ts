@@ -266,6 +266,54 @@ const envSchema = z.object({
         'GH:3399,NG:2399,KE:2699,ZA:2499,JM:3899,ROW:2499',
     ),
   SHIPPING_PER_ITEM_GBP_PENCE: z.coerce.number().int().min(0).default(0),
+
+  /**
+   * Whether to quote from the weight-banded rate table instead of the flat
+   * SHIPPING_RATES map above.
+   *
+   * A switch rather than a deletion so the two can be compared against real
+   * baskets in staging, and so a bad rate seed is one variable away from being
+   * backed out rather than a rollback.
+   */
+  // Note the string transform rather than z.coerce.boolean(): coercion follows
+  // JavaScript truthiness, under which the string "false" is true — which for
+  // this variable would mean switching the whole quote path on while the
+  // environment says it is off.
+  SHIPPING_USE_RATE_TABLE: z
+    .string()
+    .default('false')
+    .transform((v) => v === 'true'),
+
+  // ── What Gardners add on top of the postage itself ────────────────────────
+  // From the October 2025 Royal Mail sheet: "A service fee of £0.70 per one
+  // item parcel applies, plus £0.08 per item for subsequent 3 items, with no
+  // additional charge after 4 items per parcel."
+  SHIPPING_FULFILMENT_FIRST_ITEM_PENCE: z.coerce.number().int().min(0).default(70),
+  SHIPPING_FULFILMENT_EXTRA_ITEM_PENCE: z.coerce.number().int().min(0).default(8),
+  /** How many items past the first attract the extra fee. Four items, so three. */
+  SHIPPING_FULFILMENT_EXTRA_ITEM_LIMIT: z.coerce.number().int().min(0).default(3),
+
+  /**
+   * "A £3 surcharge on all B2C Shipments despatched from the UK to EU
+   * Destinations from 1st July to mitigate the new EU customs and import
+   * processes." Applies to the EU only, on top of the postage.
+   */
+  SHIPPING_EU_SURCHARGE_PENCE: z.coerce.number().int().min(0).default(300),
+
+  /**
+   * Royal Mail's peak season, as MM-DD. The window wraps the new year
+   * (17 November to 6 January), which is why it is two values and not a range.
+   * Only the UK large letter has a peak price at all.
+   */
+  SHIPPING_PEAK_START_MMDD: z.string().regex(/^\d{2}-\d{2}$/).default('11-17'),
+  SHIPPING_PEAK_END_MMDD: z.string().regex(/^\d{2}-\d{2}$/).default('01-06'),
+
+  /**
+   * Margin on top of cost, as a percentage. Zero means we charge exactly what
+   * Gardners charge us and make nothing on postage, which is the launch
+   * position: the books carry the margin.
+   */
+  SHIPPING_MARKUP_PERCENT: z.coerce.number().min(0).max(100).default(0),
   // Order subtotal (GBP pence) at or above which shipping is free. Unset = never.
   SHIPPING_FREE_THRESHOLD_GBP_PENCE: z.coerce.number().int().min(0).optional(),
   /**
@@ -545,6 +593,14 @@ export const config = {
       freeThresholdCountries: env.SHIPPING_FREE_THRESHOLD_COUNTRIES.split(',')
         .map((code) => code.trim().toUpperCase())
         .filter(Boolean),
+      useRateTable: env.SHIPPING_USE_RATE_TABLE,
+      fulfilmentFirstItemPence: env.SHIPPING_FULFILMENT_FIRST_ITEM_PENCE,
+      fulfilmentExtraItemPence: env.SHIPPING_FULFILMENT_EXTRA_ITEM_PENCE,
+      fulfilmentExtraItemLimit: env.SHIPPING_FULFILMENT_EXTRA_ITEM_LIMIT,
+      euSurchargePence: env.SHIPPING_EU_SURCHARGE_PENCE,
+      peakStartMmdd: env.SHIPPING_PEAK_START_MMDD,
+      peakEndMmdd: env.SHIPPING_PEAK_END_MMDD,
+      markupPercent: env.SHIPPING_MARKUP_PERCENT,
     },
     tax: {
       rates: parseMap(env.VAT_RATES, Number),
