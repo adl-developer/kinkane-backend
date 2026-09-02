@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { redactName, buildLongestChain, type NetworkNode } from '../services/referrals.service';
-import { densify, CHART_WEEKS } from '../services/referral-analytics.service';
+import { densify, weekBuckets } from '../services/referral-analytics.service';
 
 /**
  * The journey map's two derived facts — how a referred reader is named, and
@@ -157,30 +157,53 @@ describe('buildLongestChain', () => {
   });
 });
 
-describe('densify', () => {
-  it('emits every week in the window even when nothing happened', () => {
-    expect(densify([])).toHaveLength(CHART_WEEKS);
-    expect(densify([]).every((w) => w.count === 0)).toBe(true);
+describe('weekBuckets', () => {
+  // A Wednesday, so every case also exercises the snap back to Monday.
+  const start = new Date('2026-08-05T09:30:00Z');
+
+  it('numbers weeks from the campaign start, not from the chart', () => {
+    const weeks = weekBuckets(start, new Date('2026-09-02T00:00:00Z'));
+
+    expect(weeks.map((w) => w.weekNumber)).toEqual([1, 2, 3, 4, 5]);
+    expect(weeks[0].weekStart).toBe('2026-08-03');
+    expect(weeks[0].weekEnd).toBe('2026-08-09');
   });
 
-  it('returns weeks in chronological order', () => {
-    const weeks = densify([]).map((w) => w.weekStart);
-    expect([...weeks].sort()).toEqual(weeks);
+  it('grows by one bucket a week while keeping week 1 in place', () => {
+    const early = weekBuckets(start, new Date('2026-09-02T00:00:00Z'));
+    const later = weekBuckets(start, new Date('2026-11-04T00:00:00Z'));
+
+    expect(later.length).toBeGreaterThan(early.length);
+    expect(later[0]).toEqual(early[0]);
+  });
+
+  it('covers the week in progress rather than stopping at the last complete one', () => {
+    const weeks = weekBuckets(start, new Date('2026-08-06T00:00:00Z'));
+    expect(weeks).toHaveLength(1);
+  });
+
+  it('still emits a week when the campaign has not started yet', () => {
+    // Otherwise the charts would render with no axis at all.
+    const weeks = weekBuckets(new Date('2099-01-01T00:00:00Z'), new Date('2026-09-02T00:00:00Z'));
+    expect(weeks).toHaveLength(1);
+  });
+});
+
+describe('densify', () => {
+  const buckets = weekBuckets(new Date('2026-08-03T00:00:00Z'), new Date('2026-09-02T00:00:00Z'));
+
+  it('emits every week in the window even when nothing happened', () => {
+    expect(densify([], buckets)).toEqual([0, 0, 0, 0, 0]);
   });
 
   it('places a bucket on the week it belongs to', () => {
-    const weeks = densify([]);
-    const target = weeks[3].weekStart;
+    const filled = densify([{ week: buckets[3].weekStart, n: 42 }], buckets);
 
-    const filled = densify([{ week: target, n: 42 }]);
-
-    expect(filled[3]).toEqual({ weekStart: target, count: 42 });
     // And only that week — a misaligned bucket would smear the count.
-    expect(filled.filter((w) => w.count !== 0)).toHaveLength(1);
+    expect(filled).toEqual([0, 0, 0, 42, 0]);
   });
 
   it('ignores rows outside the window rather than shifting them into it', () => {
-    const filled = densify([{ week: '2020-01-06', n: 99 }]);
-    expect(filled.every((w) => w.count === 0)).toBe(true);
+    expect(densify([{ week: '2020-01-06', n: 99 }], buckets)).toEqual([0, 0, 0, 0, 0]);
   });
 });

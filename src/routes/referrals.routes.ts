@@ -75,15 +75,21 @@ router.get('/leaderboard', wrap(referralsController.leaderboard));
 /**
  * GET /api/v1/referrals/analytics
  *
- * Campaign-wide performance: totals, eight weekly buckets for the sent/converted
- * and cumulative charts, and the top referrers ranked by signups.
+ * Campaign-wide performance: totals, one weekly bucket per week of the campaign
+ * for the sent/converted and cumulative charts, and the top referrers ranked by
+ * signups.
  *
  * Unauthenticated, like the leaderboard — every figure is an aggregate, and the
  * only people named are top referrers at first-name-only redaction.
  *
- * Returns 200: { totals: { sent, signups, successful, conversionRate, countries,
- *   continents }, weekly: [{ weekStart, sent, converted, cumulative }],
- *   topReferrers: [{ rank, name, country, signups, points }] }
+ * `weekly` is anchored to REFERRAL_CAMPAIGN_STARTS_AT, not to today: it runs
+ * from week 1 of the competition through the week in progress, so it grows by
+ * an entry a week and a given weekNumber always means the same dates.
+ *
+ * Returns 200: { totals: { sent, clicks, signups, successful, conversionRate,
+ *   countries, continents }, weekly: [{ weekNumber, weekStart, weekEnd, sent,
+ *   converted, cumulative }], topReferrers: [{ rank, name, country, signups,
+ *   points }] }
  */
 router.get('/analytics', campaignLimiter, wrap(referralsController.analytics));
 
