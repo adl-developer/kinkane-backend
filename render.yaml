@@ -23,3 +23,15 @@ services:
         value: 900
       - key: REFRESH_TOKEN_TTL
         value: 2592000
+      # Country for the referral competition, read once at signup.
+      #
+      # Safe despite being a client-settable header name: Render fronts services
+      # with its own Cloudflare, which overwrites any cf-* header the client
+      # sends. Verified 2026-09-02 — a request carrying `cf-ipcountry: ZZ`
+      # reached the origin as the true `GH`, and a forged cf-connecting-ip is
+      # rejected by Cloudflare outright.
+      #
+      # This is Render's Cloudflare rather than ours, so it is undocumented and
+      # could go away; geo.service degrades to a null country if it does.
+      - key: GEO_COUNTRY_HEADER
+        value: cf-ipcountry

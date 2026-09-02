@@ -21,9 +21,20 @@ import docsRoutes from './routes/docs.routes';
 
 const app = express();
 
-// Trust one proxy hop (Render load balancer) so req.ip reflects the real client
-// IP rather than the balancer's IP — required for rate limiting to work correctly.
-app.set('trust proxy', 1);
+// Two proxy hops, not one: Render fronts every service with its own Cloudflare,
+// so an inbound request passes Cloudflare *and* Render's load balancer before it
+// reaches us, and x-forwarded-for arrives carrying both. Peeling only one hop
+// left req.ip holding Cloudflare's edge address rather than the client's —
+// verified live, where a request from 154.163.165.154 surfaced as 104.23.211.165.
+//
+// That is not cosmetic: the anonymous rate-limit key falls back to req.ip, so a
+// single edge address became one shared bucket for every unauthenticated user
+// routed through that PoP, and one noisy client could exhaust the signup and
+// login limits for everyone behind it.
+//
+// A count rather than cf-connecting-ip because this must stay correct if Render
+// ever drops Cloudflare; if the chain gains a hop, this number is what changes.
+app.set('trust proxy', 2);
 
 app.use(helmet());
 // In development, accept any origin so local clients (Expo, LAN devices,
