@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-09-02
+
+### Bug Fixes
+
+* fall back to trending on an empty bestseller chart, and honour shoppable ([346224c](https://adl.github.com/adl-developer/kinkane-backend/commit/346224cd041859a7a77d2550c247db821c3f9dd5)) — [details](changelog/2026-09-02-referral-analytics-campaign-weeks.md)
+
+
 ## 2026-09-01
 
 ### Features

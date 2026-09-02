@@ -146,6 +146,17 @@ const envSchema = z.object({
   // Mirrors how FOUNDING_OFFER_ENDS_AT gates launch pricing.
   REFERRAL_CAMPAIGN_ENDS_AT: z.coerce.date().optional(),
 
+  // Day one of the competition. The analytics charts number their weeks from
+  // the Monday on or before this, so "Wk 3" means the third week of the
+  // campaign rather than the third bar on a rolling window.
+  //
+  // Unset falls back to the earliest invite ever sent, which is the honest
+  // answer for an unconfigured deploy: the campaign effectively began when
+  // someone first shared a link. Setting it explicitly is still better, since
+  // it survives that first invite being deleted and lets the charts cover a
+  // launch window that started before anyone shared anything.
+  REFERRAL_CAMPAIGN_STARTS_AT: z.coerce.date().optional(),
+
   // Where a user's country comes from. Two independent sources, tried in order:
   //
   // 1. A trusted geo header set by the CDN/proxy in front of this server
@@ -449,6 +460,7 @@ export const config = {
   referrals: {
     videoUrl: env.REFERRAL_VIDEO_URL,
     campaignEndsAt: env.REFERRAL_CAMPAIGN_ENDS_AT,
+    campaignStartsAt: env.REFERRAL_CAMPAIGN_STARTS_AT,
     // Lower-cased once here so the header lookup never has to care about the
     // casing used in the env var — Node normalizes incoming header names, the
     // config value has to match.

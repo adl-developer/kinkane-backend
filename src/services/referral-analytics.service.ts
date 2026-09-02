@@ -3,6 +3,7 @@ import { db } from '../db';
 import { referrals, referralInvites, referralClicks, users, countries } from '../db/schema';
 import { redis } from '../lib/redis';
 import { logger } from '../lib/logger';
+import { config } from '../config';
 
 /**
  * Campaign-wide figures for the Analytics screen.
@@ -18,8 +19,7 @@ import { logger } from '../lib/logger';
  * queries in the feature that scan the whole table rather than one user's slice.
  */
 
-/** How many weekly buckets the two charts show. */
-export const CHART_WEEKS = 8;
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * How long a campaign-wide response is served from Redis.
@@ -81,22 +81,73 @@ async function cached<T>(key: string, compute: () => Promise<T>): Promise<T> {
   return value;
 }
 
-/** Monday 00:00 UTC of the week that starts the chart window. */
-export function windowStart(weeks = CHART_WEEKS): Date {
-  const now = new Date();
-  // Monday-based, to match Postgres's date_trunc('week') — otherwise the first
-  // bucket would be half-width and always read as a slump.
-  //
-  // The queries pin the truncation to UTC with an explicit AT TIME ZONE rather
-  // than relying on the session. date_trunc on a timestamptz truncates in the
-  // *session* time zone, which nothing in the connection setup pins, so on a
-  // deployment whose Postgres defaults to a regional zone the buckets would
-  // land on local Mondays while these keys stayed on UTC ones. Every lookup in
-  // densify would miss and both charts would render eight zero bars beside
-  // healthy non-zero totals — no error, just a flat line.
-  const day = (now.getUTCDay() + 6) % 7;
-  const monday = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - day);
-  return new Date(monday - (weeks - 1) * 7 * 24 * 60 * 60 * 1000);
+/**
+ * Monday 00:00 UTC on or before `d`.
+ *
+ * Monday-based, to match Postgres's date_trunc('week'). The queries pin that
+ * truncation to UTC with an explicit AT TIME ZONE rather than relying on the
+ * session. date_trunc on a timestamptz truncates in the *session* time zone,
+ * which nothing in the connection setup pins, so on a deployment whose Postgres
+ * defaults to a regional zone the buckets would land on local Mondays while
+ * these keys stayed on UTC ones. Every lookup in densify would miss and both
+ * charts would render zero bars beside healthy non-zero totals — no error, just
+ * a flat line.
+ */
+export function weekOf(d: Date): Date {
+  const day = (d.getUTCDay() + 6) % 7;
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - day));
+}
+
+/**
+ * Day one of the competition, from which every week is numbered.
+ *
+ * Configured, or else the earliest invite anyone ever sent — for an
+ * unconfigured deploy the campaign effectively began when someone first shared
+ * a link. With neither (nothing sent yet) the window is this week alone, which
+ * is the truthful answer rather than a fabricated history.
+ */
+export async function campaignStart(): Promise<Date> {
+  if (config.referrals.campaignStartsAt) return config.referrals.campaignStartsAt;
+
+  const [row] = await db
+    .select({ first: sql<string | null>`min(${referralInvites.sentAt})` })
+    .from(referralInvites);
+
+  return row?.first ? new Date(row.first) : new Date();
+}
+
+export interface WeekBucket {
+  /** 1-based week of the campaign — what a chart labels "Wk 3". */
+  weekNumber: number;
+  /** Monday, UTC. */
+  weekStart: string;
+  /** The Sunday that closes the bucket, inclusive. */
+  weekEnd: string;
+}
+
+/**
+ * Every week from the campaign's first through the one in progress.
+ *
+ * The window grows with the campaign rather than rolling: week 1 stays week 1
+ * forever, so a bar's position means the same thing in October as it did in
+ * August. A start mid-week snaps back to its Monday, which makes week 1 a
+ * partial week — it will read low, and that is the honest shape of a campaign
+ * that launched on a Wednesday.
+ */
+export function weekBuckets(start: Date, now = new Date()): WeekBucket[] {
+  const first = weekOf(start);
+  const span = Math.floor((weekOf(now).getTime() - first.getTime()) / WEEK_MS) + 1;
+
+  // A start date in the future would otherwise produce an empty window and a
+  // chart with no axis at all.
+  return Array.from({ length: Math.max(span, 1) }, (_, i) => {
+    const monday = new Date(first.getTime() + i * WEEK_MS);
+    return {
+      weekNumber: i + 1,
+      weekStart: monday.toISOString().slice(0, 10),
+      weekEnd: new Date(monday.getTime() + 6 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+    };
+  });
 }
 
 /**
@@ -104,20 +155,11 @@ export function windowStart(weeks = CHART_WEEKS): Date {
  *
  * A week with no activity produces no row, and a chart that silently omits it
  * draws a straight line across the gap — which reads as steady rather than as
- * quiet. Every bucket in the window is emitted, zero or not.
+ * quiet. Every bucket in the window gets a count, zero or not.
  */
-export function densify(
-  rows: { week: string; n: number }[],
-  weeks = CHART_WEEKS,
-): { weekStart: string; count: number }[] {
+export function densify(rows: { week: string; n: number }[], buckets: WeekBucket[]): number[] {
   const byWeek = new Map(rows.map((r) => [new Date(r.week).toISOString().slice(0, 10), r.n]));
-  const start = windowStart(weeks);
-
-  return Array.from({ length: weeks }, (_, i) => {
-    const d = new Date(start.getTime() + i * 7 * 24 * 60 * 60 * 1000);
-    const key = d.toISOString().slice(0, 10);
-    return { weekStart: key, count: byWeek.get(key) ?? 0 };
-  });
+  return buckets.map((b) => byWeek.get(b.weekStart) ?? 0);
 }
 
 export interface CampaignAnalytics {
@@ -155,13 +197,12 @@ export interface CampaignAnalytics {
     countries: number;
     continents: number;
   };
-  weekly: {
-    weekStart: string;
+  weekly: (WeekBucket & {
     sent: number;
     converted: number;
     /** Running total of converted, for the cumulative chart. */
     cumulative: number;
-  }[];
+  })[];
   topReferrers: { rank: number; name: string; country: string | null; signups: number; points: number }[];
 }
 
@@ -174,12 +215,13 @@ export const referralAnalyticsService = {
    * separate table scans for one page view.
    */
   async campaign(): Promise<CampaignAnalytics> {
-    return cached('referrals:analytics:v1', () => this.computeCampaign());
+    return cached('referrals:analytics:v2', () => this.computeCampaign());
   },
 
   /** The uncached aggregate. Split out so the cache wrapper stays readable. */
   async computeCampaign(): Promise<CampaignAnalytics> {
-    const since = windowStart();
+    const buckets = weekBuckets(await campaignStart());
+    const since = new Date(`${buckets[0].weekStart}T00:00:00Z`);
 
     const [
       [sentRow],
@@ -258,18 +300,13 @@ export const referralAnalyticsService = {
       this.topReferrers(5),
     ]);
 
-    const sentWeeks = densify(weeklySent);
-    const convWeeks = densify(weeklyConverted);
+    const sentWeeks = densify(weeklySent, buckets);
+    const convWeeks = densify(weeklyConverted, buckets);
 
     let running = 0;
-    const weekly = sentWeeks.map((s, i) => {
-      running += convWeeks[i].count;
-      return {
-        weekStart: s.weekStart,
-        sent: s.count,
-        converted: convWeeks[i].count,
-        cumulative: running,
-      };
+    const weekly = buckets.map((b, i) => {
+      running += convWeeks[i];
+      return { ...b, sent: sentWeeks[i], converted: convWeeks[i], cumulative: running };
     });
 
     const sent = sentRow.n;

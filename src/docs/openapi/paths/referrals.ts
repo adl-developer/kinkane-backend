@@ -233,13 +233,15 @@ export const referralPaths = {
       ...publicEndpoint,
       summary: 'Campaign-wide referral performance',
       description: [
-        'Totals, eight weekly buckets for the sent/converted and cumulative charts, and the top referrers.',
+        'Totals, one weekly bucket per week of the campaign for the sent/converted and cumulative charts, and the top referrers.',
         '',
         'Unauthenticated, like the leaderboard: every figure here is an aggregate over the whole campaign, and the only people named are top referrers at the same first-name-only redaction the leaderboard already uses.',
         '',
         '**`topReferrers` ranks by signups, not points** — a different ordering from `/referrals/leaderboard`. Someone with three cross-continent referrals outscores someone with fifteen domestic ones, so "top referrer" means two different people depending on which question is asked. Both figures are returned so a client can show either without a second call.',
         '',
         'Weeks are Monday-based UTC and **every bucket in the window is returned, zero or not** — a chart that silently omits a quiet week draws a straight line across it, which reads as steady rather than as quiet.',
+        '',
+        '**The window is anchored to the campaign, not to today.** `weekly` runs from week 1 of the competition through the week in progress, so the array grows by one entry a week and a given `weekNumber` always refers to the same dates. Label bars from `weekNumber` rather than from the array index. The anchor is `REFERRAL_CAMPAIGN_STARTS_AT`, snapped back to the Monday on or before it — where that is mid-week, week 1 is a partial week and will read low. Unconfigured, it falls back to the earliest invite ever sent.',
       ].join('\n'),
       responses: {
         200: json('Campaign performance.',
@@ -254,7 +256,9 @@ export const referralPaths = {
               continents: { type: 'integer', description: 'Derived by joining to the country table, not by counting distinct country codes.', example: 3 },
             }),
             weekly: arrayOf(object({
+              weekNumber: { type: 'integer', description: 'Week of the campaign, 1-based. What a chart labels "Wk 3".', example: 3 },
               weekStart: { type: 'string', format: 'date', description: 'Monday, UTC.', example: '2026-07-06' },
+              weekEnd: { type: 'string', format: 'date', description: 'The Sunday that closes the bucket, inclusive.', example: '2026-07-12' },
               sent: { type: 'integer', example: 190 },
               converted: { type: 'integer', example: 61 },
               cumulative: { type: 'integer', description: 'Running total of converted.', example: 284 },
