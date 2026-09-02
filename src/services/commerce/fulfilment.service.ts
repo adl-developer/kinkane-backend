@@ -187,7 +187,14 @@ export const fulfilmentService = {
 
     try {
       const address = buildRecipientAddress(order);
-      const serviceCode = serviceCodeFor(order.shippingCountryCode);
+      // What the buyer actually paid for, when the order recorded it. Falling
+      // back to the country rule covers orders placed before delivery options
+      // existed, and any order priced from the flat rate table.
+      //
+      // Never re-derived when a code is present: the buyer chose and paid for a
+      // specific service, and shipping them something different because a
+      // default changed is a promise broken after the money moved.
+      const serviceCode = order.shippingServiceCode ?? serviceCodeFor(order.shippingCountryCode);
 
       // Shipping is charged once per order but Gardners bills per line, so the
       // whole delivery amount rides on the first line and the rest carry zero.

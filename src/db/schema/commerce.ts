@@ -26,6 +26,7 @@ import {
   index,
   uniqueIndex,
   text,
+  boolean,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { users } from './users';
@@ -193,8 +194,29 @@ export const orders = pgTable(
     taxRatePercent: numeric('tax_rate_percent', { precision: 6, scale: 3 }).notNull().default('0'),
     // 'env' today; 'stripe_tax' if that ever replaces the config table.
     taxSource: varchar('tax_source', { length: 20 }).notNull().default('env'),
-    // Which SHIPPING_RATES key produced the figure, e.g. 'GB' | 'EU' | 'ROW'.
-    shippingRule: varchar('shipping_rule', { length: 20 }),
+    // How the shipping figure was arrived at. Under the flat table this is a
+    // SHIPPING_RATES key ('GB' | 'EU' | 'ROW'); under the weight-banded table it
+    // is service, destination and band — '011:GH:500g'. Widened for the latter.
+    shippingRule: varchar('shipping_rule', { length: 40 }),
+    /**
+     * The Gardners service this order was priced for and must be shipped by —
+     * '010' untracked airmail, '011' tracked, '001'/'002' UK.
+     *
+     * Snapshotted rather than re-derived at fulfilment: the buyer paid for a
+     * specific service, and a later change to how we pick a default must not
+     * silently ship an order differently from what was sold. Null on orders
+     * placed before this existed, and under the flat rate table, where
+     * fulfilment falls back to the country rule.
+     */
+    shippingServiceCode: varchar('shipping_service_code', { length: 3 }),
+    /** Despatch weight the band was chosen from, in grams. Null under the flat table. */
+    shippingWeightG: integer('shipping_weight_g'),
+    /**
+     * True when a book in this order had no recorded weight and one was
+     * assumed. The first thing to check when an invoice disagrees with what we
+     * charged.
+     */
+    shippingWeightEstimated: boolean('shipping_weight_estimated').notNull().default(false),
 
     stripeCheckoutSessionId: varchar('stripe_checkout_session_id', { length: 255 }).unique(),
     stripePaymentIntentId: varchar('stripe_payment_intent_id', { length: 255 }),

@@ -89,6 +89,18 @@ export interface ShippingOptionsResult {
   weightEstimated: boolean;
 }
 
+/**
+ * How a service is named on the Stripe checkout page and anywhere else an order
+ * shows what it was shipped by.
+ *
+ * Falls back to a generic label rather than throwing: an unrecognised code on
+ * an old order should read as "Delivery", not break the payment page.
+ */
+export function shippingDisplayName(serviceCode: string | null): string {
+  if (!serviceCode) return 'Delivery';
+  return PRESENTATION[serviceCode]?.label ?? 'Delivery';
+}
+
 export const shippingOptionsService = {
   /**
    * Every service that can carry this basket to this country, priced.

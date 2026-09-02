@@ -35,6 +35,7 @@ import {
 import { isDeliverableCountry } from './gardners-countries';
 import {
   shippingOptionsService,
+  shippingDisplayName,
   type ShippingOption,
 } from './shipping-options.service';
 import { shippingRatesService } from './shipping-rates.service';
@@ -609,6 +610,9 @@ export const commerceCheckoutService = {
             taxRatePercent: String(quote.taxRatePercent),
             taxSource: quote.taxSource,
             shippingRule: quote.shippingRule,
+            shippingServiceCode: quote.shippingServiceCode,
+            shippingWeightG: quote.shippingWeightG,
+            shippingWeightEstimated: quote.shippingWeightEstimated,
             shippingCountryCode: destinationCountry,
             contactEmail,
             contactEmailNormalized: normalizedEmail,
@@ -848,7 +852,11 @@ export const commerceCheckoutService = {
             shipping_rate_data: {
               type: 'fixed_amount' as const,
               fixed_amount: { amount: order.shippingMinor, currency },
-              display_name: 'Delivery',
+              // Name the service the buyer chose rather than a generic
+              // "Delivery" — someone who paid £32.52 for tracked postage should
+              // see that on the Stripe page, not a bare total they have to take
+              // on trust.
+              display_name: shippingDisplayName(order.shippingServiceCode),
             },
           },
         ],
