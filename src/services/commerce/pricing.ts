@@ -245,15 +245,14 @@ export function quoteShipping(options: {
   // so. An empty list means everywhere — the pre-existing behaviour, kept so
   // that emptying the variable is a way back rather than a silent change.
   const threshold = shipping.freeThresholdGbpPence;
-  const thresholdApplies =
-    shipping.freeThresholdCountries.length === 0 ||
-    shipping.freeThresholdCountries.includes(country);
-  if (threshold !== undefined && thresholdApplies && options.subtotalGbpPence >= threshold) {
-    return { gbpPence: 0, rule: 'FREE_THRESHOLD' };
-  }
+  const isFree =
+    threshold !== undefined &&
+    options.subtotalGbpPence >= threshold &&
+    (shipping.freeThresholdCountries.length === 0 ||
+      shipping.freeThresholdCountries.includes(country));
 
   if (shipping.useRateTable && options.rateCard && options.parcel && options.serviceCode) {
-    return quoteFromRateCard({
+    const quote = quoteFromRateCard({
       country,
       serviceCode: options.serviceCode,
       parcel: options.parcel,
@@ -261,6 +260,21 @@ export function quoteShipping(options: {
       itemCount: options.itemCount,
       at: options.at ?? new Date(),
     });
+
+    // Free postage still has to be *shipped by something*. Zeroing the price
+    // without keeping the service and weight loses the only record of what the
+    // buyer was sold, and fulfilment then falls back to the country default —
+    // which for every overseas destination is the tracked service. A free order
+    // to Ghana would collect nothing and be invoiced £32.52 for a service the
+    // buyer never chose.
+    return isFree
+      ? { ...quote, gbpPence: 0, rule: `${quote.rule}:free` }
+      : quote;
+  }
+
+  // The flat table has no service to preserve, so this stays exactly as it was.
+  if (isFree) {
+    return { gbpPence: 0, rule: 'FREE_THRESHOLD' };
   }
 
   const rule =

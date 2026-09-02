@@ -5,9 +5,10 @@
 
 ### Features
 
+* report whether postage is paying for itself ([0b8ff53](https://adl.github.com/adl-developer/kinkane-backend/commit/0b8ff5394c0552f0813d6d36ab337ca49819e293)) — [details](changelog/2026-09-02-free-shipping-keeps-its-service.md)
 * ship an order by the delivery the buyer paid for ([1dbf653](https://adl.github.com/adl-developer/kinkane-backend/commit/1dbf653251dbf81d3c8193ae84dc024cfc13b5d5)) — [details](changelog/2026-09-02-weight-banded-shipping-quotes.md)
 * let buyers choose between tracked and untracked delivery ([1a3f7e3](https://adl.github.com/adl-developer/kinkane-backend/commit/1a3f7e3bf51757063fe618385c07e4be0422de87)) — [details](changelog/2026-09-02-delivery-options-at-checkout.md)
-* price postage from the parcel's real weight ([0326fe9](https://adl.github.com/adl-developer/kinkane-backend/commit/0326fe922b2c4c6e666810497659504ae981b3e4)) — [details](changelog/2026-09-02-order-carries-its-service.md)
+* price postage from the parcel's real weight ([0326fe9](https://adl.github.com/adl-developer/kinkane-backend/commit/0326fe922b2c4c6e666810497659504ae981b3e4)) — [details](changelog/2026-09-02-free-shipping-keeps-its-service.md)
 * work out what a basket actually weighs ([66cb1e7](https://adl.github.com/adl-developer/kinkane-backend/commit/66cb1e7e530d8a4270cb5b6dcb529509bcc6133b)) — [details](changelog/2026-09-02-referral-analytics-campaign-weeks.md)
 * hold Gardners' real shipping costs as data ([84b2ff1](https://adl.github.com/adl-developer/kinkane-backend/commit/84b2ff1510ddf9f374405eaa954d189e2b620579)) — [details](changelog/2026-09-02-shipping-below-cost-stopgap.md)
 * count the referral charts' weeks from the start of the competition ([0abeda0](https://adl.github.com/adl-developer/kinkane-backend/commit/0abeda0bd2664a3509fae76d247cf4fe4a97a630)) — [details](changelog/2026-09-02-referral-analytics-campaign-weeks.md)

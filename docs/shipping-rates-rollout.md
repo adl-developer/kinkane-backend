@@ -42,6 +42,19 @@ SHIPPING_FREE_THRESHOLD_COUNTRIES=GB
 - `COUNTRY_NOT_SUPPORTED` 409s at checkout. With the rate table on, this now
   also catches destinations we can address but have no rate for.
 
+## One policy decision still open
+
+With the rate table on, an order over `SHIPPING_FREE_THRESHOLD_GBP_PENCE` gets
+**every** service free, including the tracked upgrade. The service the buyer
+chose is still recorded and still shipped, so nothing is mis-shipped — but a
+free order can be a tracked one, which on some destinations costs more than the
+books.
+
+The default `SHIPPING_FREE_THRESHOLD_COUNTRIES=GB` keeps the exposure to the
+gap between UK second class and next-day (£2.22 against £3.50). Widening that
+list without also restricting free shipping to the cheapest service would give
+away £32 parcels again. Decide before adding any country to it.
+
 ## Known gaps
 
 **Five countries have no published rate anywhere.** Ethiopia, Liberia, Rwanda,

@@ -24,7 +24,6 @@ dotenv.config();
 import { and, gte, isNotNull, sql } from 'drizzle-orm';
 import { db } from '../src/db';
 import { orders } from '../src/db/schema';
-import { measureParcel } from '../src/services/commerce/parcel';
 import { quoteShipping } from '../src/services/commerce/pricing';
 import { shippingRatesService } from '../src/services/commerce/shipping-rates.service';
 
@@ -92,6 +91,12 @@ async function main(): Promise<void> {
         // The recorded despatch weight, replayed. measureParcel is not called
         // here on purpose: the books in the order may have gained a weight
         // since, and the question is what *that* parcel cost.
+        //
+        // The order does not record whether it went as a large letter, so every
+        // parcel is costed at the dearer parcel rate. That only affects the UK,
+        // where it overstates cost by around 30p on an order that actually went
+        // as a large letter — erring towards flagging an order as underwater
+        // rather than missing one, which is the right direction for this report.
         parcel: { weightG: row.weightG, estimated: row.estimated, fitsLargeLetter: false },
         rateCard,
         at: row.paidAt ?? undefined,
@@ -128,6 +133,12 @@ async function main(): Promise<void> {
   console.log(`Cost:    ${pounds(totalCost)}`);
   console.log(
     `Margin:  ${pounds(margin)} (${((margin / totalCharged) * 100).toFixed(1)}% of what we charged)\n`,
+  );
+
+  console.log(
+    'UK orders are costed at the parcel rate, since the order does not record\n' +
+      'whether it went as a large letter — so UK cost is overstated by ~30p on\n' +
+      'any order that did.\n',
   );
 
   const underwater = losses.filter((entry) => entry.margin < 0);

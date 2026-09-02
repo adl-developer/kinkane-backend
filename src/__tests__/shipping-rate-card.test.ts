@@ -325,6 +325,56 @@ describe('quoteShipping from the rate table', () => {
   });
 });
 
+describe('the free-shipping threshold', () => {
+  const FREE = { SHIPPING_FREE_THRESHOLD_GBP_PENCE: '4000', SHIPPING_FREE_THRESHOLD_COUNTRIES: '' };
+
+  // Free postage still has to be shipped by something. Dropping the service
+  // means fulfilment falls back to the country default — tracked, everywhere
+  // overseas — so a free order to Ghana would collect nothing and be invoiced
+  // £32.52 for a service the buyer never chose.
+  it('keeps the service and weight it was quoted for', async () => {
+    const { quoteShipping, buildRateCard } = await load(FREE);
+    const rateCard = buildRateCard(ROWS);
+
+    const quote = quoteShipping({
+      countryCode: 'GH', serviceCode: '010', itemCount: 1, subtotalGbpPence: 4000,
+      parcel: parcel({ weightG: 400 }), rateCard,
+    });
+
+    expect(quote.gbpPence).toBe(0);
+    expect(quote.serviceCode).toBe('010');
+    expect(quote.weightG).toBe(400);
+    // The band it would have been charged at stays legible in the audit string.
+    expect(quote.rule).toBe('010:GH:500g:free');
+  });
+
+  it('still charges below the threshold', async () => {
+    const { quoteShipping, buildRateCard } = await load(FREE);
+    const rateCard = buildRateCard(ROWS);
+
+    const quote = quoteShipping({
+      countryCode: 'GH', serviceCode: '010', itemCount: 1, subtotalGbpPence: 3999,
+      parcel: parcel({ weightG: 400 }), rateCard,
+    });
+
+    expect(quote.gbpPence).toBe(845 + 70);
+  });
+
+  it('honours the country list under the rate table too', async () => {
+    const { quoteShipping, buildRateCard } = await load({
+      ...FREE, SHIPPING_FREE_THRESHOLD_COUNTRIES: 'GB',
+    });
+    const rateCard = buildRateCard(ROWS);
+
+    const quote = quoteShipping({
+      countryCode: 'GH', serviceCode: '010', itemCount: 1, subtotalGbpPence: 9999,
+      parcel: parcel({ weightG: 400 }), rateCard,
+    });
+
+    expect(quote.gbpPence).toBe(845 + 70);
+  });
+});
+
 describe('availableServiceCodes', () => {
   it('lists what a destination can actually be shipped by', async () => {
     const { availableServiceCodes, buildRateCard } = await load();
