@@ -34,6 +34,14 @@ router.get('/trending', optionalAuth, exploreController.getTrending);
  * external chart to read. `gardners_promotions` is deliberately not used —
  * promotional titles are publisher marketing spend, not sales performance.
  *
+ * When nothing sold in the window the response carries trending books instead,
+ * with `source: 'trending'`. Check that field before labelling the section:
+ * `'orders'` is a sales chart, `'trending'` is a discovery feed. Both paths
+ * return the same book shape, so one card component renders either.
+ *
+ * `shoppable=true` restricts to sellable books and attaches the live shop
+ * fields, on the fallback as well as the chart.
+ *
  * Returns an EMPTY `books` array when nothing has sold in the window. It never
  * substitutes another feed — a discovery list presented as a sales chart would
  * be indistinguishable from a real one, and untrue. Clients should hide the

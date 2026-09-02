@@ -3,6 +3,10 @@
 
 ## 2026-09-01
 
+### Features
+
+* shoppable=true now orders the catalogue by sellability instead of filtering it ([27fecf7](https://adl.github.com/adl-developer/kinkane-backend/commit/27fecf7b4dcf198ed2e391baf3df925e9b27fa54)) — [details](changelog/2026-09-01-shoppable-ranks.md)
+
 ### Bug Fixes
 
 * send the signup verification code first and let the welcome email trail it ([98011b2](https://adl.github.com/adl-developer/kinkane-backend/commit/98011b20b738a55ede1072e5f03af786f0a21fa4)) — [details](changelog/2026-09-01-signup-email-order.md)

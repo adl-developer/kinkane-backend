@@ -22,6 +22,7 @@ const limitSchema = z.object({
 const bestsellersSchema = z.object({
   limit: z.coerce.number().int().min(1).max(20).default(10),
   window: z.enum(BESTSELLER_WINDOWS).default('30d'),
+  shoppable: shoppableParam,
 });
 
 export const exploreController = {
@@ -29,8 +30,12 @@ export const exploreController = {
    * GET /api/v1/explore/bestsellers
    *
    * Ranked by copies actually sold, from our own orders — Gardners supplies no
-   * sales data of any kind. Returns an empty list when nothing has sold in the
-   * window, rather than substituting another feed.
+   * sales data of any kind. Falls back to trending when nothing sold in the
+   * window, flagged by `source: 'trending'` on the response.
+   *
+   * Takes `shoppable` like the other feeds. It was documented on this endpoint
+   * but never parsed here, so the shop fields the spec promises were silently
+   * absent and the chart could offer a book the cart would refuse.
    */
   async getBestsellers(req: Request, res: Response): Promise<void> {
     const parsed = bestsellersSchema.safeParse(req.query);
@@ -42,8 +47,15 @@ export const exploreController = {
     try {
       // No viewer-specific filtering: this is a factual sales ranking, the same
       // for everybody. Unlike trending, there is nothing to exclude per user —
-      // a book someone swiped away is still a book other people bought.
-      const result = await bestsellersService.list(parsed.data.window, parsed.data.limit);
+      // a book someone swiped away is still a book other people bought. The
+      // trending fallback inherits that and stays unpersonalised too, so one
+      // response can be described to every caller the same way.
+      const result = await bestsellersService.list(
+        parsed.data.window,
+        parsed.data.limit,
+        parsed.data.shoppable,
+        await shopCurrency(req, parsed.data.shoppable),
+      );
       res.status(200).json(result);
     } catch (err: unknown) {
       logger.error('Unexpected error fetching bestsellers', { error: (err as Error).message });

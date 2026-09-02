@@ -318,7 +318,7 @@ export const cataloguePaths = {
       description: [
         'Ranked by units genuinely sold through Kinkané in the window. Built from our own order history — the wholesaler supplies price, stock and availability but no sales rank of any kind, so there is no external chart being read here.',
         '',
-        '**Returns an empty `books` array when nothing sold in the window, and never substitutes another feed.** A discovery list presented as a sales chart would be indistinguishable from a real one and untrue. Hide the section when the array is empty rather than falling back to trending yourself.',
+        '**When nothing sold in the window, this returns trending books instead and sets `source` to `trending`.** Always read `source` before you write the section heading — a discovery list presented as a sales chart is untrue, and the field is the only thing distinguishing them. `books` can still be empty if there is neither sales nor interaction data.',
         '',
         'Identical for every caller — a factual ranking is not personalised, so nothing is filtered per viewer. Cached for an hour, cleared nightly.',
       ].join('\n'),
@@ -328,16 +328,16 @@ export const cataloguePaths = {
         param('limit', 'query', { type: 'integer', minimum: 1, maximum: 20, default: 10 },
           'How many books (1–20).'),
         param('shoppable', 'query', { type: 'string', enum: ['true', 'false'], default: 'false' },
-          'Restrict to books the shop can sell, **and add the live shop fields** — `unitPriceMinor`, `compareAtMinor`, `currency` and `inStock` — so a rail with an Add button needs no second request to price what it shows. Pass `true` from any surface with an Add button; otherwise this feed can offer a book the cart will refuse. Off by default so existing callers are unaffected.\n\n**The feed is cached; the price is not.** The cached pool holds books only and the price is attached on every request, so a supplier price change shows immediately while the ordering may be up to an hour old.'),
+          'Restrict to books the shop can sell, **and add the live shop fields** — `unitPriceMinor`, `compareAtMinor`, `currency` and `inStock` — so a rail with an Add button needs no second request to price what it shows. Pass `true` from any surface with an Add button; otherwise this feed can offer a book the cart will refuse. Off by default so existing callers are unaffected.\n\nApplies to the trending fallback too, so a shoppable request stays shoppable when nothing sold.\n\n**The feed is cached; the price is not.** The cached pool holds books only and the price is attached on every request, so a supplier price change shows immediately while the ordering may be up to an hour old.'),
       ],
       responses: {
-        200: json('Bestsellers, or an empty list if nothing sold in the window.',
+        200: json('Bestsellers, or trending books (`source: trending`) if nothing sold in the window. The book shape is the same either way.',
           object({
             window: { type: 'string', example: '30d' },
             source: {
               type: 'string',
-              enum: ['orders'],
-              description: 'Always `orders` — present so a future alternative source is distinguishable.',
+              enum: ['orders', 'trending'],
+              description: '`orders` — a genuine ranking by copies sold. `trending` — nothing sold in this window, so these are trending books ranked by interaction signal, not a sales chart. Label the section accordingly.',
               example: 'orders',
             },
             books: arrayOf(ref('BookSummary')),
