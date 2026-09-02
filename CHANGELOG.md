@@ -5,7 +5,7 @@
 
 ### Features
 
-* ship an order by the delivery the buyer paid for ([43ae0e6](https://adl.github.com/adl-developer/kinkane-backend/commit/43ae0e639489ddc5108da01a3046608b0a51b7ad)) — [details](changelog/2026-09-02-weight-banded-shipping-quotes.md)
+* ship an order by the delivery the buyer paid for ([1dbf653](https://adl.github.com/adl-developer/kinkane-backend/commit/1dbf653251dbf81d3c8193ae84dc024cfc13b5d5)) — [details](changelog/2026-09-02-weight-banded-shipping-quotes.md)
 * let buyers choose between tracked and untracked delivery ([1a3f7e3](https://adl.github.com/adl-developer/kinkane-backend/commit/1a3f7e3bf51757063fe618385c07e4be0422de87)) — [details](changelog/2026-09-02-delivery-options-at-checkout.md)
 * price postage from the parcel's real weight ([0326fe9](https://adl.github.com/adl-developer/kinkane-backend/commit/0326fe922b2c4c6e666810497659504ae981b3e4)) — [details](changelog/2026-09-02-order-carries-its-service.md)
 * work out what a basket actually weighs ([66cb1e7](https://adl.github.com/adl-developer/kinkane-backend/commit/66cb1e7e530d8a4270cb5b6dcb529509bcc6133b)) — [details](changelog/2026-09-02-referral-analytics-campaign-weeks.md)
