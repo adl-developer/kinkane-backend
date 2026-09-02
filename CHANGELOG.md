@@ -5,6 +5,7 @@
 
 ### Features
 
+* price postage from the parcel's real weight ([0326fe9](https://adl.github.com/adl-developer/kinkane-backend/commit/0326fe922b2c4c6e666810497659504ae981b3e4)) — [details](changelog/2026-09-02-shipping-below-cost-stopgap.md)
 * work out what a basket actually weighs ([66cb1e7](https://adl.github.com/adl-developer/kinkane-backend/commit/66cb1e7e530d8a4270cb5b6dcb529509bcc6133b)) — [details](changelog/2026-09-02-referral-analytics-campaign-weeks.md)
 * hold Gardners' real shipping costs as data ([84b2ff1](https://adl.github.com/adl-developer/kinkane-backend/commit/84b2ff1510ddf9f374405eaa954d189e2b620579)) — [details](changelog/2026-09-02-shipping-below-cost-stopgap.md)
 * count the referral charts' weeks from the start of the competition ([0abeda0](https://adl.github.com/adl-developer/kinkane-backend/commit/0abeda0bd2664a3509fae76d247cf4fe4a97a630)) — [details](changelog/2026-09-02-referral-analytics-campaign-weeks.md)
@@ -12,7 +13,7 @@
 ### Bug Fixes
 
 * stop charging less for overseas postage than it costs us ([c87c49d](https://adl.github.com/adl-developer/kinkane-backend/commit/c87c49db0b56bfe398ae0c65d8d2ca91e00a896c)) — [details](changelog/2026-09-02-shipping-below-cost-stopgap.md)
-* fall back to trending on an empty bestseller chart, and honour shoppable ([346224c](https://adl.github.com/adl-developer/kinkane-backend/commit/346224cd041859a7a77d2550c247db821c3f9dd5)) — [details](changelog/2026-09-02-referral-analytics-campaign-weeks.md)
+* fall back to trending on an empty bestseller chart, and honour shoppable ([346224c](https://adl.github.com/adl-developer/kinkane-backend/commit/346224cd041859a7a77d2550c247db821c3f9dd5)) — [details](changelog/2026-09-02-delivery-options-at-checkout.md)
 
 
 ## 2026-09-01

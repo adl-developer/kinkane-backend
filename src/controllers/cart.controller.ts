@@ -55,6 +55,20 @@ const priceSchema = z.object({
   currency: z.string().length(3).optional(),
 });
 
+/**
+ * A basket plus a destination, for pricing delivery options before checkout.
+ * The country is required — the whole point is asking about a specific place,
+ * and guessing from the request's IP would quote one country and charge for
+ * another.
+ */
+const shippingOptionsSchema = z.object({
+  countryCode: z.string().trim().length(2),
+  currency: z.string().length(3).optional(),
+  // Guests send their basket; a signed-in buyer's stored cart is used when this
+  // is omitted, matching how checkout already behaves.
+  lines: z.array(requestedLineSchema).max(config.commerce.cart.maxItems).optional(),
+});
+
 const checkoutSchema = z.object({
   // Still accepted for the older flow, where Stripe collects the address and
   // its collection is locked to this country. Optional now: when a full
@@ -71,6 +85,14 @@ const checkoutSchema = z.object({
   // not an identity, and someone shipping a present to a friend should be able
   // to give the recipient's number without editing their own profile.
   contactPhone: phoneSchema.optional(),
+  /**
+   * The delivery service the buyer picked, from POST /cart/shipping-options.
+   * Optional: a client that never showed a chooser gets the cheapest available
+   * service rather than being silently upgraded onto the expensive one.
+   *
+   * Only the code is accepted, never a price — the server re-prices it.
+   */
+  shippingServiceCode: z.string().trim().regex(/^\d{3}$/).optional(),
   // Guests only — a signed-in buyer's stored cart is authoritative.
   lines: z.array(requestedLineSchema).max(config.commerce.cart.maxItems).optional(),
 }).refine((v) => Boolean(v.shippingCountry || v.shippingAddress), {
@@ -215,6 +237,34 @@ export const cartController = {
       address: parsed.data.shippingAddress,
       contactEmail: parsed.data.contactEmail,
       contactPhone: parsed.data.contactPhone,
+      shippingServiceCode: parsed.data.shippingServiceCode,
+      lines: parsed.data.lines,
+    });
+
+    res.status(200).json(result);
+  },
+
+  /**
+   * POST /api/v1/cart/shipping-options
+   *
+   * What delivery this basket can have to this country, and what each costs.
+   *
+   * Prices nothing else and stores nothing. An empty `options` array is a real
+   * answer, not an error: some destinations Gardners will address have no
+   * published rate, and the cart needs to say so before someone reaches
+   * checkout and is refused.
+   */
+  async shippingOptions(req: Request, res: Response): Promise<void> {
+    const parsed = shippingOptionsSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+
+    const userId = (req as AuthenticatedRequest).user?.id ?? null;
+    const result = await commerceCheckoutService.shippingOptions(userId, {
+      countryCode: parsed.data.countryCode,
+      currency: parsed.data.currency,
       lines: parsed.data.lines,
     });
 
