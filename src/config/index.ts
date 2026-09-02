@@ -247,10 +247,37 @@ const envSchema = z.object({
   // Shipping, in GBP pence, resolved most-specific-first:
   // country code -> region (EU/ROW) -> ROW. Gardners bills us per line, so a
   // flat per-order rate on a large basket is a deliberate margin decision.
-  SHIPPING_RATES: z.string().default('GB:299,IE:599,EU:699,US:899,ROW:1199'),
+  //
+  // These defaults were re-derived from Gardners' own cost tables (the July
+  // 2026 international CDF sheet and the October 2025 Royal Mail sheet) after
+  // the previous set was found to be selling below cost on every non-European
+  // destination: Ghana cost £32.52 to ship tracked against £11.99 collected.
+  // Each figure here is the *tracked* cost at the 0.5kg band plus Gardners'
+  // £0.70 fulfilment fee, rounded up, with the EU carrying its £3 B2C customs
+  // surcharge as well.
+  //
+  // This is a stopgap. It is flat per order, assumes a 0.5kg parcel, and
+  // therefore still loses money on anything heavy. The real fix is the
+  // weight-banded per-country rate table — see services/commerce/shipping.
+  SHIPPING_RATES: z
+    .string()
+    .default(
+      'GB:349,IE:1099,EU:1499,US:1199,CA:1199,AU:1099,NZ:1199,' +
+        'GH:3399,NG:2399,KE:2699,ZA:2499,JM:3899,ROW:2499',
+    ),
   SHIPPING_PER_ITEM_GBP_PENCE: z.coerce.number().int().min(0).default(0),
   // Order subtotal (GBP pence) at or above which shipping is free. Unset = never.
   SHIPPING_FREE_THRESHOLD_GBP_PENCE: z.coerce.number().int().min(0).optional(),
+  /**
+   * Where the free-shipping threshold is honoured, as a comma-separated list of
+   * ISO codes. Empty means everywhere, which is what the code did before this
+   * existed and is why it now has to be set deliberately.
+   *
+   * Free shipping is affordable exactly where shipping is cheap. On a £40
+   * basket to Ghana the threshold gave away a £33 parcel — the promotion cost
+   * more than the margin on the books it was promoting.
+   */
+  SHIPPING_FREE_THRESHOLD_COUNTRIES: z.string().default('GB'),
 
   // VAT by destination country, as a percentage. Physical books are zero-rated
   // in the UK and Ireland, which is why the launch default is genuinely 0 and
@@ -515,6 +542,9 @@ export const config = {
       rates: parseMap(env.SHIPPING_RATES, Number),
       perItemGbpPence: env.SHIPPING_PER_ITEM_GBP_PENCE,
       freeThresholdGbpPence: env.SHIPPING_FREE_THRESHOLD_GBP_PENCE,
+      freeThresholdCountries: env.SHIPPING_FREE_THRESHOLD_COUNTRIES.split(',')
+        .map((code) => code.trim().toUpperCase())
+        .filter(Boolean),
     },
     tax: {
       rates: parseMap(env.VAT_RATES, Number),

@@ -171,8 +171,14 @@ export function quoteShipping(options: {
   const { shipping } = config.commerce;
   const country = normalizeCountry(options.countryCode) ?? REST_OF_WORLD;
 
+  // The threshold is honoured only where SHIPPING_FREE_THRESHOLD_COUNTRIES says
+  // so. An empty list means everywhere — the pre-existing behaviour, kept so
+  // that emptying the variable is a way back rather than a silent change.
   const threshold = shipping.freeThresholdGbpPence;
-  if (threshold !== undefined && options.subtotalGbpPence >= threshold) {
+  const thresholdApplies =
+    shipping.freeThresholdCountries.length === 0 ||
+    shipping.freeThresholdCountries.includes(country);
+  if (threshold !== undefined && thresholdApplies && options.subtotalGbpPence >= threshold) {
     return { gbpPence: 0, rule: 'FREE_THRESHOLD' };
   }
 

@@ -184,11 +184,44 @@ describe('quoteShipping', () => {
     const { quoteShipping } = await loadPricing({
       ...SHIPPING,
       SHIPPING_FREE_THRESHOLD_GBP_PENCE: '4000',
+      SHIPPING_FREE_THRESHOLD_COUNTRIES: '',
     });
     expect(quoteShipping({ countryCode: 'GH', itemCount: 5, subtotalGbpPence: 4000 })).toEqual({
       gbpPence: 0,
       rule: 'FREE_THRESHOLD',
     });
+  });
+
+  // A £40 basket to Ghana was giving away a parcel that costs £33 to send. The
+  // threshold is a promotion, and a promotion that costs more than the margin
+  // on what it is promoting is not one.
+  it('honours the free-shipping threshold only where it is configured', async () => {
+    const { quoteShipping } = await loadPricing({
+      ...SHIPPING,
+      SHIPPING_FREE_THRESHOLD_GBP_PENCE: '4000',
+      SHIPPING_FREE_THRESHOLD_COUNTRIES: 'GB',
+    });
+
+    expect(quoteShipping({ countryCode: 'GB', itemCount: 5, subtotalGbpPence: 4000 })).toEqual({
+      gbpPence: 0,
+      rule: 'FREE_THRESHOLD',
+    });
+    expect(quoteShipping({ countryCode: 'GH', itemCount: 5, subtotalGbpPence: 4000 })).toEqual({
+      gbpPence: 1199,
+      rule: 'ROW',
+    });
+  });
+
+  // An empty list is the way back to the old behaviour, so it must keep working.
+  it('treats an empty country list as "everywhere"', async () => {
+    const { quoteShipping } = await loadPricing({
+      ...SHIPPING,
+      SHIPPING_FREE_THRESHOLD_GBP_PENCE: '4000',
+      SHIPPING_FREE_THRESHOLD_COUNTRIES: '',
+    });
+    expect(
+      quoteShipping({ countryCode: 'AU', itemCount: 1, subtotalGbpPence: 9999 }).rule,
+    ).toBe('FREE_THRESHOLD');
   });
 
   // Shipping free by accident to an arbitrary country is worse than a 503 the
