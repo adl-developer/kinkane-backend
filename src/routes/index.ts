@@ -35,6 +35,19 @@ router.get('/health', (_req: Request, res: Response) => {
   res.status(200).json({ status: 'ok', service: 'kinkane-server' });
 });
 
+// TEMPORARY — delete once the geo header question is settled.
+// Reports which headers actually reach the origin, so we can see whether
+// Render's upstream Cloudflare supplies a country and whether a client can
+// forge it. Credentials are redacted so this cannot leak a session if it is
+// left up longer than intended.
+const REDACTED = new Set(['authorization', 'cookie', 'stripe-signature']);
+router.get('/debug/headers', (req: Request, res: Response) => {
+  const headers = Object.fromEntries(
+    Object.entries(req.headers).map(([k, v]) => [k, REDACTED.has(k) ? '[redacted]' : v]),
+  );
+  res.status(200).json({ ip: req.ip, headers });
+});
+
 // v1 — apply general rate limit to all v1 routes
 const v1 = Router();
 v1.use(apiLimiter);
