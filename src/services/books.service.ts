@@ -461,8 +461,14 @@ export interface BookDetail extends BookListItem {
  *    designs with a price and an Add button, so a feed that surfaces an
  *    unsellable book produces a button that cannot work. Off by default, so
  *    existing callers are unaffected.
+ *
+ * Exported because the bestseller chart is a feed too, and lives in
+ * commerce/bestsellers.service.ts — it ranks off `order_items` rather than off
+ * `books`, but it must answer `shoppable` with the same predicate as everything
+ * else. A second copy of this over there is exactly the drift this function
+ * exists to prevent.
  */
-function buildFeedCondition(shoppable?: boolean): SQL {
+export function buildFeedCondition(shoppable?: boolean): SQL {
   const removed = eq(books.isRemoved, false);
   return shoppable ? and(removed, buildShoppableCondition())! : removed;
 }
@@ -3022,7 +3028,15 @@ export const booksService = {
  * A book with no live stock row comes back without the fields rather than with
  * zeros: absent means "unknown", and a zero here reads as "free".
  */
-async function attachShopFields<T extends { isbn13: string | null }>(
+/**
+ * Adds the live shop fields to a feed's rows, after the cache and never inside
+ * it — a cached price is a wrong price, and two visitors on the same cached
+ * pool must not see each other's currency.
+ *
+ * Exported for the bestseller chart in commerce/, for the reason given on
+ * buildFeedCondition: one code path for every feed's shop fields.
+ */
+export async function attachShopFields<T extends { isbn13: string | null }>(
   items: T[],
   shoppable: boolean | undefined,
   currency: string | undefined,

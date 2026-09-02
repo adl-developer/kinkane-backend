@@ -13,20 +13,25 @@
  *
  *  1. **It counts copies, never money.** Summing revenue would rank a book
  *     differently depending on which currency its buyers happened to be in.
- *  2. **It is empty until books actually sell, and that is the correct answer.**
- *     It does not fall back to trending or to anything else. A discovery feed
- *     dressed up as a sales chart is a lie about the shop, and it would be
- *     indistinguishable to the client from a real chart. An empty list is
- *     honest and unambiguous: nothing has sold in this window yet.
+ *  2. **When nothing has sold in the window it falls back to trending.** This
+ *     was deliberately not done for a long time, and the objection was a real
+ *     one: a discovery feed rendered under a Bestsellers heading is a lie about
+ *     the shop. The fallback is therefore *labelled*, never silent — `source`
+ *     says `'trending'` whenever it fires, and a client that presents the two
+ *     identically is choosing to. Read `source` before you write the heading.
  */
 import { and, gte, inArray, sql } from 'drizzle-orm';
 import { db } from '../../db';
-import { orders, orderItems, SOLD_ORDER_STATUSES } from '../../db/schema';
+import { books, orders, orderItems, SOLD_ORDER_STATUSES } from '../../db/schema';
 import { redis } from '../../lib/redis';
-import { booksService } from '../books.service';
+import { attachShopFields, booksService, buildFeedCondition } from '../books.service';
+import type { BookListItem } from '../books.service';
 
 export const BESTSELLER_WINDOWS = ['7d', '30d', '90d', 'all_time'] as const;
 export type BestsellerWindow = (typeof BESTSELLER_WINDOWS)[number];
+
+/** Whether a given response is a real sales chart or the trending fallback. */
+export type BestsellerSource = 'orders' | 'trending';
 
 const WINDOW_DAYS: Record<BestsellerWindow, number | null> = {
   '7d': 7,
@@ -46,18 +51,31 @@ export interface BestsellerItem {
 export interface BestsellerResult {
   window: BestsellerWindow;
   /**
-   * Always `'orders'`. Retained because clients were told to key their section
-   * heading off it, and a field disappearing is a worse break than a constant
-   * one — but there is no longer any other value it can take.
+   * Where the list actually came from. `'orders'` is a genuine sales ranking;
+   * `'trending'` means nothing sold in this window and the books below are a
+   * discovery feed, ranked by interaction signal rather than by copies bought.
+   * Key the section heading off this — the two are not the same claim.
    */
-  source: 'orders';
-  books: unknown[];
+  source: BestsellerSource;
+  books: BookListItem[];
 }
 
-function cacheKey(window: BestsellerWindow, limit: number): string {
-  // v2: the cached payload is a bare id array now that there is no fallback to
-  // record. A v1 entry would deserialize into an object and break hydrate().
-  return `bestsellers:v2:${window}:${limit}`;
+function cacheKey(window: BestsellerWindow, limit: number, shoppable?: boolean): string {
+  // v3: `shoppable` is part of the key. The filtered and unfiltered charts are
+  // different lists — the shoppable one skips books the shop cannot sell — and
+  // sharing a key let whichever ran first serve the other for an hour. (v2 was
+  // a bare id array with no shoppable dimension; v1 an object that would
+  // deserialize into hydrate() and break it.)
+  //
+  // Ids only. The price is attached per request, so a supplier price change
+  // shows immediately while the ordering may be up to an hour old — which is
+  // what the endpoint documents.
+  //
+  // Only the orders ranking is cached here, and a cached empty array means
+  // "nothing sold in this window" — the trending fallback is resolved after the
+  // cache read, so it keeps its own freshness instead of being frozen for an
+  // hour behind a bestsellers key.
+  return `bestsellers:v3:${window}:${limit}:${shoppable ? 'shop' : 'all'}`;
 }
 
 export const bestsellersService = {
@@ -65,7 +83,11 @@ export const bestsellersService = {
    * Ranked book ids and copy counts for a window. Uncached — `list` is the
    * caller-facing entry point.
    */
-  async rank(window: BestsellerWindow, limit: number): Promise<BestsellerItem[]> {
+  async rank(
+    window: BestsellerWindow,
+    limit: number,
+    shoppable?: boolean,
+  ): Promise<BestsellerItem[]> {
     const days = WINDOW_DAYS[window];
 
     const conditions = [inArray(orders.status, SOLD_ORDER_STATUSES)];
@@ -75,6 +97,13 @@ export const bestsellersService = {
       conditions.push(gte(orders.createdAt, since));
     }
 
+    // Joined so the feed predicate can be applied in the ranking query itself.
+    // Filtering after the `limit` would be the bug feedPoolMultiplier exists to
+    // work around elsewhere — a top 10 arriving with three rows in it — and
+    // there is no need for a pool here: the condition is in the same statement,
+    // so `limit` shoppable books come back as `limit` shoppable books.
+    conditions.push(buildFeedCondition(shoppable));
+
     const rows = await db
       .select({
         bookId: orderItems.bookId,
@@ -82,6 +111,7 @@ export const bestsellersService = {
       })
       .from(orderItems)
       .innerJoin(orders, sql`${orders.id} = ${orderItems.orderId}`)
+      .innerJoin(books, sql`${books.id} = ${orderItems.bookId}`)
       .where(and(...conditions))
       .groupBy(orderItems.bookId)
       // Tie-break on book id so equal-selling books hold a stable order between
@@ -99,45 +129,102 @@ export const bestsellersService = {
   /**
    * The chart as the client should render it, cached for an hour.
    *
-   * Returns an empty list when nothing has sold in the window. That is the
-   * whole contract: no substitution, no padding, no "here is something else
-   * instead". A client showing a Bestsellers section should hide it when
-   * `books` is empty.
+   * When nothing has sold in the window this returns trending books with
+   * `source: 'trending'` rather than an empty list. The substitution is only
+   * defensible because it is declared: a caller that renders both under the
+   * same heading is presenting a discovery feed as a sales chart. Read
+   * `source`.
+   *
+   * `books` can still come back empty — a shop with neither sales nor
+   * interactions has nothing to show either way.
+   *
+   * `shoppable` restricts the chart to books the shop can actually sell and
+   * adds the live shop fields, exactly as it does on every other feed. Pass it
+   * from any surface with an Add button: a bestseller rail is precisely where
+   * an unsellable book produces a button that cannot work.
    */
-  async list(window: BestsellerWindow, limit: number): Promise<BestsellerResult> {
-    const key = cacheKey(window, limit);
+  async list(
+    window: BestsellerWindow,
+    limit: number,
+    shoppable?: boolean,
+    currency?: string,
+  ): Promise<BestsellerResult> {
+    const key = cacheKey(window, limit, shoppable);
     const cached = await redis.get(key);
 
+    let bookIds: number[];
     if (cached) {
-      return { window, source: 'orders', books: await this.hydrate(JSON.parse(cached) as number[]) };
+      bookIds = JSON.parse(cached) as number[];
+    } else {
+      bookIds = (await this.rank(window, limit, shoppable)).map((item) => item.bookId);
+
+      // Cached even when empty. A shop with no sales yet would otherwise run
+      // the aggregate on every request and get nothing, forever — and would
+      // reach the fallback by the slowest possible route.
+      await redis.set(key, JSON.stringify(bookIds), 'EX', CACHE_TTL_SECONDS);
     }
 
-    const ranked = await this.rank(window, limit);
-    const bookIds = ranked.map((item) => item.bookId);
+    if (bookIds.length > 0) {
+      // Prices go on here rather than in hydrate(), so the shop fields ride the
+      // same code path as every other feed's.
+      return {
+        window,
+        source: 'orders',
+        books: await attachShopFields(await this.hydrate(bookIds), shoppable, currency),
+      };
+    }
 
-    // Cached even when empty. A shop with no sales yet would otherwise run the
-    // aggregate on every request and get nothing, forever.
-    await redis.set(key, JSON.stringify(bookIds), 'EX', CACHE_TTL_SECONDS);
+    // shoppable carries into the fallback — a rail that asked for sellable
+    // books needs them just as much when the answer comes from trending. No
+    // userId, though: a bestseller response is the same for every caller, and
+    // the fallback keeps that property rather than quietly becoming
+    // personalised the moment the shop runs dry. booksService.trending holds
+    // its own cache, so this is not a second uncached aggregate.
+    const trending = await booksService.trending(limit, undefined, shoppable);
 
-    return { window, source: 'orders', books: await this.hydrate(bookIds) };
+    // Re-hydrated through the same path as the orders ranking rather than
+    // returned as-is. `trending` yields the narrower TrendingBookItem, and one
+    // endpoint that returns two different book shapes depending on whether the
+    // shop happened to sell anything is a trap: a client renders this rail with
+    // one card component, and it would lose publisher, imprint and the rest the
+    // moment the fallback engaged. Costs one lookup on a path that only runs
+    // when the chart is empty.
+    return {
+      window,
+      source: 'trending',
+      books: await attachShopFields(
+        await this.hydrate(trending.map((book) => book.id)),
+        shoppable,
+        currency,
+      ),
+    };
   },
 
   /**
    * Turns ranked ids into full book payloads, preserving rank order — the
    * `IN (...)` lookup returns rows in whatever order Postgres likes.
    */
-  async hydrate(bookIds: number[]): Promise<unknown[]> {
+  async hydrate(bookIds: number[]): Promise<BookListItem[]> {
     if (bookIds.length === 0) return [];
 
-    const books = await booksService.listByIds(bookIds);
-    const byId = new Map(books.map((book) => [book.id, book]));
+    const rows = await booksService.listByIds(bookIds);
+    const byId = new Map(rows.map((book) => [book.id, book]));
 
-    return bookIds.map((id) => byId.get(id)).filter(Boolean);
+    return bookIds
+      .map((id) => byId.get(id))
+      .filter((book): book is BookListItem => book !== undefined);
   },
 
-  /** Drops every cached window so the next request recomputes. */
+  /**
+   * Drops every cached window so the next request recomputes.
+   *
+   * Matches on the unversioned prefix deliberately: this scanned `v1` while
+   * cacheKey() wrote `v2`, so it silently cleared nothing and every window ran
+   * to its full hour regardless of the nightly job. Sweeping all versions also
+   * cleans up stragglers the next time the payload shape changes.
+   */
   async invalidate(): Promise<void> {
-    const keys = await redis.keys('bestsellers:v1:*');
+    const keys = await redis.keys('bestsellers:*');
     if (keys.length > 0) await redis.del(...keys);
   },
 };
