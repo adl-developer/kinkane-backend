@@ -372,6 +372,13 @@
       "when": 1788269887108,
       "tag": "0052_shop_band_stock_index",
       "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1788374279168,
+      "tag": "0053_legal_talon",
+      "breakpoints": true
     }
   ]
 }

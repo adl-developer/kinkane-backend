@@ -9,6 +9,7 @@
 
 ### Bug Fixes
 
+* stop charging less for overseas postage than it costs us ([c87c49d](https://adl.github.com/adl-developer/kinkane-backend/commit/c87c49db0b56bfe398ae0c65d8d2ca91e00a896c)) — [details](changelog/2026-09-02-shipping-below-cost-stopgap.md)
 * fall back to trending on an empty bestseller chart, and honour shoppable ([346224c](https://adl.github.com/adl-developer/kinkane-backend/commit/346224cd041859a7a77d2550c247db821c3f9dd5)) — [details](changelog/2026-09-02-referral-analytics-campaign-weeks.md)
 
 
