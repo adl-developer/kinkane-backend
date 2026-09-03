@@ -11,7 +11,7 @@
 
 ### Bug Fixes
 
-* never recommend a book the shop cannot sell ([262fc6f](https://adl.github.com/adl-developer/kinkane-backend/commit/262fc6fc5f907ae7658097448fc8343ce92680ec)) — [details](changelog/2026-09-03-heavy-basket-checkout.md)
+* never recommend a book the shop cannot sell ([094a1c9](https://adl.github.com/adl-developer/kinkane-backend/commit/094a1c9fac4e3ef249994acc4a2712adcb6ea2e0)) — [details](changelog/2026-09-03-heavy-basket-checkout.md)
 * tighten the dispatch poll so a mid-run failure cannot lose a shipment ([68c29e2](https://adl.github.com/adl-developer/kinkane-backend/commit/68c29e2c874f142b6793b9ce496e80ce504c01e2)) — [details](changelog/2026-09-03-hdd-dispatch-polling.md)
 * send buyers back to their cart after checkout and accept an empty status filter ([0fce732](https://adl.github.com/adl-developer/kinkane-backend/commit/0fce7324ed606b0a57261bbe1f640b5dce7d5239)) — [details](changelog/2026-09-03-heavy-basket-checkout.md)
 

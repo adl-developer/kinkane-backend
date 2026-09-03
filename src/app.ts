@@ -153,6 +153,34 @@ app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
     return;
   }
 
+  // An error a service deliberately tagged with a `statusCode` carries a
+  // client-safe message (the same convention the auth middleware honours).
+  // Surface it rather than masking every tagged failure as a generic 500 — that
+  // is what made an expected "parcel too heavy" 503 reach the client as an
+  // unexplained Internal Server Error. These are expected outcomes, not bugs, so
+  // they are logged at warn and NOT reported to Sentry.
+  const tagged = err as Error & {
+    statusCode?: number;
+    code?: string;
+    details?: Record<string, unknown>;
+  };
+  if (tagged.statusCode) {
+    if (tagged.statusCode >= 500) {
+      logger.warn('Service error surfaced by global handler', {
+        statusCode: tagged.statusCode,
+        code: tagged.code,
+        message: tagged.message,
+        requestId: req.requestId,
+      });
+    }
+    res.status(tagged.statusCode).json({
+      error: tagged.message,
+      ...(tagged.code && { code: tagged.code }),
+      ...(tagged.details ?? {}),
+    });
+    return;
+  }
+
   logger.error('Unhandled express error', { error: err.message, stack: err.stack });
   // Report the real Error (with its stack) to Sentry, tagged with the request
   // id so it lines up with the request log. logger.error above already forwards
