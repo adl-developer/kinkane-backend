@@ -13,12 +13,10 @@ const listSchema = z.object({
   // The "All" tab sends either no status at all, an empty one, or the literal
   // 'all'; each drops the filter rather than 400ing, so a cleared tab and an
   // absent parameter behave the same.
-  status: z
-    .preprocess(
-      (value) => (value === '' || value === 'all' ? undefined : value),
-      z.enum(['in_progress', 'delivered', 'closed']).optional(),
-    )
-    .optional(),
+  status: z.preprocess(
+    (value) => (value === '' || value === 'all' ? undefined : value),
+    z.enum(['in_progress', 'delivered', 'closed']).optional(),
+  ),
 });
 
 /**

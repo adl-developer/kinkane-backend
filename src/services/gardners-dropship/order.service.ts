@@ -423,27 +423,45 @@ async function pollDispatches(): Promise<PollDispatchesOutcome> {
     const ready = entries
       .filter((entry) => entry.type === '-' && /\.HDD$/i.test(entry.name))
       .filter((entry) => names.has(`${entry.name}.DONE`))
+      // Sort by the numeric prefix Gardners embeds in the name, with the
+      // filename as a tie-break. The spec warns numbering "may change without
+      // prior warning" — a jump from eight digits to nine sorts wrong
+      // lexically, and a 25-file cap would then starve the older files
+      // indefinitely.
+      .sort((a, b) => {
+        const na = Number((a.name.match(/^\d+/) ?? ['0'])[0]);
+        const nb = Number((b.name.match(/^\d+/) ?? ['0'])[0]);
+        return na - nb || a.name.localeCompare(b.name);
+      })
       .map((entry) => entry.name)
-      .sort()
       .slice(0, MAX_DISPATCH_FILES_PER_POLL);
 
+    // Read only. Deletion happens after DB writes complete for each file —
+    // deleting first would lose the dispatch permanently if any DB write
+    // failed, and Gardners' .DONE sentinel is dropped alongside, so a lost
+    // file cannot be recovered by a later poll.
     const collected: { name: string; raw: string }[] = [];
     for (const name of ready) {
       const remotePath = `${HOME_DELIVERY_DIRS.dispatch}/${name}`;
       const buffer = (await client.get(remotePath)) as Buffer;
       collected.push({ name, raw: buffer.toString('ascii') });
-      await client.delete(remotePath).catch(() => undefined);
-      await client.delete(`${remotePath}.DONE`).catch(() => undefined);
     }
     return collected;
   });
+
+  const filesFullyProcessed: string[] = [];
 
   for (const file of files) {
     outcome.filesProcessed += 1;
     const parsed = parseHddFile(file.raw);
     outcome.recordsRead += parsed.lines.length;
 
-    if (parsed.lines.length === 0) continue;
+    if (parsed.lines.length === 0) {
+      // Nothing to write for an empty file, but Gardners will keep re-serving
+      // it on every poll unless we clean up.
+      filesFullyProcessed.push(file.name);
+      continue;
+    }
 
     // One lookup per file rather than per record: a dispatch file can hold
     // hundreds of DETAIL lines, and they are all keyed on a column we can
@@ -453,6 +471,7 @@ async function pollDispatches(): Promise<PollDispatchesOutcome> {
     );
     if (lineIds.length === 0) {
       outcome.unmatched += parsed.lines.length;
+      filesFullyProcessed.push(file.name);
       continue;
     }
 
@@ -461,6 +480,8 @@ async function pollDispatches(): Promise<PollDispatchesOutcome> {
       .from(gardnersDropshipOrderLines)
       .where(inArray(gardnersDropshipOrderLines.id, lineIds));
     const orderIdByLine = new Map(known.map((row) => [row.id, row.orderId]));
+
+    let fileWritesOk = true;
 
     for (const record of parsed.lines) {
       const lineId = Number(record.uniqueReference);
@@ -480,20 +501,48 @@ async function pollDispatches(): Promise<PollDispatchesOutcome> {
         continue;
       }
 
-      const applied = await recordDispatch(lineId, record, file.name);
-      if (!applied) continue;
+      try {
+        const applied = await recordDispatch(lineId, record, file.name);
+        if (!applied) continue;
 
-      outcome.recordsApplied += 1;
-      outcome.dispatched.push({
-        orderLineId: lineId,
-        dropshipOrderId,
-        dispatchNo: record.dispatchNo,
-        carrier: record.carrier,
-        trackingNumber: record.trackingNumber,
-        trackingUrl: record.trackingUrl,
-        dispatchedOn: record.dispatchedOn,
-      });
+        outcome.recordsApplied += 1;
+        outcome.dispatched.push({
+          orderLineId: lineId,
+          dropshipOrderId,
+          dispatchNo: record.dispatchNo,
+          carrier: record.carrier,
+          trackingNumber: record.trackingNumber,
+          trackingUrl: record.trackingUrl,
+          dispatchedOn: record.dispatchedOn,
+        });
+      } catch (err) {
+        // Any DB failure on a single record blocks deletion of the whole
+        // file. The unique index makes re-processing on the next poll a
+        // no-op for records that did land, so a retry is cheap.
+        fileWritesOk = false;
+        logger.error('Failed to record dispatch', {
+          file: file.name,
+          uniqueReference: record.uniqueReference,
+          error: (err as Error).message,
+        });
+      }
     }
+
+    if (fileWritesOk) filesFullyProcessed.push(file.name);
+  }
+
+  if (filesFullyProcessed.length > 0) {
+    // Clean-up pass, per the spec's "it is your responsibility to remove
+    // these files". A delete that itself fails is not worth aborting for —
+    // the next poll will find the file still present, re-read it, and the
+    // unique index will keep the inserts a no-op.
+    await withDropshipSftp(async (client) => {
+      for (const name of filesFullyProcessed) {
+        const remotePath = `${HOME_DELIVERY_DIRS.dispatch}/${name}`;
+        await client.delete(remotePath).catch(() => undefined);
+        await client.delete(`${remotePath}.DONE`).catch(() => undefined);
+      }
+    });
   }
 
   if (outcome.filesProcessed > 0) {
@@ -521,45 +570,51 @@ async function recordDispatch(
   record: HddDispatchLine,
   sourceFile: string,
 ): Promise<boolean> {
-  const inserted = await db
-    .insert(gardnersDropshipDispatches)
-    .values({
-      orderLineId,
-      dispatchNo: record.dispatchNo,
-      isbn13: record.isbn13,
-      quantity: record.quantity,
-      dispatchedOn: record.dispatchedOn,
-      pricePence: record.pricePence,
-      deliveryPence: record.deliveryPence,
-      discountBasisPoints: record.discountBasisPoints,
-      carrier: record.carrier,
-      trackingNumber: record.trackingNumber,
-      trackingUrl: record.trackingUrl,
-      rawDetail: record.descriptionLines.join('\n') || null,
-      sourceFile,
-    })
-    .onConflictDoNothing({
-      target: [gardnersDropshipDispatches.dispatchNo, gardnersDropshipDispatches.orderLineId],
-    })
-    .returning({ id: gardnersDropshipDispatches.id });
+  // The insert and the line-status advance must land together. Without the
+  // transaction, a connection drop between them leaves the dispatch row in
+  // place with the line still marked `pending`; the unique index then makes
+  // every subsequent poll a no-op, so nothing ever fixes it.
+  return db.transaction(async (tx) => {
+    const inserted = await tx
+      .insert(gardnersDropshipDispatches)
+      .values({
+        orderLineId,
+        dispatchNo: record.dispatchNo,
+        isbn13: record.isbn13,
+        quantity: record.quantity,
+        dispatchedOn: record.dispatchedOn,
+        pricePence: record.pricePence,
+        deliveryPence: record.deliveryPence,
+        discountBasisPoints: record.discountBasisPoints,
+        carrier: record.carrier,
+        trackingNumber: record.trackingNumber,
+        trackingUrl: record.trackingUrl,
+        rawDetail: record.descriptionLines.join('\n') || null,
+        sourceFile,
+      })
+      .onConflictDoNothing({
+        target: [gardnersDropshipDispatches.dispatchNo, gardnersDropshipDispatches.orderLineId],
+      })
+      .returning({ id: gardnersDropshipDispatches.id });
 
-  if (inserted.length === 0) return false;
+    if (inserted.length === 0) return false;
 
-  // A dispatched line is fulfilled by definition — the books physically left
-  // the warehouse. Only ever an upgrade: a line already marked `rejected`
-  // keeps that, because a rejection followed by a dispatch is a contradiction
-  // an operator should see rather than one this should quietly resolve.
-  await db
-    .update(gardnersDropshipOrderLines)
-    .set({ status: 'fulfilled', updatedAt: new Date() })
-    .where(
-      and(
-        eq(gardnersDropshipOrderLines.id, orderLineId),
-        inArray(gardnersDropshipOrderLines.status, ['pending', 'partial', 'backordered']),
-      ),
-    );
+    // A dispatched line is fulfilled by definition — the books physically left
+    // the warehouse. Only ever an upgrade: a line already marked `rejected`
+    // keeps that, because a rejection followed by a dispatch is a contradiction
+    // an operator should see rather than one this should quietly resolve.
+    await tx
+      .update(gardnersDropshipOrderLines)
+      .set({ status: 'fulfilled', updatedAt: new Date() })
+      .where(
+        and(
+          eq(gardnersDropshipOrderLines.id, orderLineId),
+          inArray(gardnersDropshipOrderLines.status, ['pending', 'partial', 'backordered']),
+        ),
+      );
 
-  return true;
+    return true;
+  });
 }
 
 /** Creates the order rows, then immediately submits it. Convenience wrapper for the common case. */

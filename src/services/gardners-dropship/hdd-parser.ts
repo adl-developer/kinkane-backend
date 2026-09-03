@@ -112,9 +112,12 @@ export function extractCarrier(descriptionLines: string[]): string | null {
  * actually carries the meaning.
  */
 export function extractTrackingNumber(descriptionLines: string[]): string | null {
+  // Deliberately no bare 'reference' — Gardners' prose is riddled with "Our
+  // reference:" and "Order reference:" that name nothing a carrier could
+  // track. The labels here all specifically name a shipment.
   for (const line of descriptionLines) {
     const match =
-      /(?:tracking|consignment|parcel|reference|recorded\s+delivery)\s*(?:number|no\.?|ref\.?)?\s*[:#]\s*(\S+)/i.exec(
+      /(?:tracking|consignment|parcel|recorded\s+delivery)\s*(?:number|no\.?|ref\.?|reference)?\s*[:#]\s*(\S+)/i.exec(
         line,
       );
     if (match) {
@@ -135,6 +138,13 @@ export function extractTrackingNumber(descriptionLines: string[]): string | null
  * `javascript:` payload arriving in supplier prose must not survive the trip.
  */
 export function extractTrackingUrl(descriptionLines: string[]): string | null {
+  // Anchored on tracking-intent, not on the first URL shape found. Gardners'
+  // prose regularly mentions help/contact URLs alongside the real one, and a
+  // shape-only match happily returns `www.gardners.com/help` in preference to
+  // the Royal Mail link that ships next to it. A URL wins only when its own
+  // line names tracking, or the URL's path itself names it — the same
+  // label-anchored discipline extractTrackingNumber uses.
+  const trackingKeyword = /track|consignment|parcel|recorded\s+delivery|shipment/i;
   for (const line of descriptionLines) {
     const match = /(https?:\/\/\S+|www\.\S+)/i.exec(line);
     if (!match) continue;
@@ -146,6 +156,7 @@ export function extractTrackingUrl(descriptionLines: string[]): string | null {
       const parsed = new URL(url);
       if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') continue;
       if (!parsed.hostname.includes('.')) continue;
+      if (!trackingKeyword.test(line) && !trackingKeyword.test(parsed.pathname)) continue;
       return parsed.toString();
     } catch {
       continue;
@@ -170,6 +181,15 @@ function toDispatchLine(tokens: string[]): HddDispatchLine | null {
   // the whole record to avoid.
   if (!uniqueReference) return null;
 
+  // Without a real quantity the record cannot honestly say what shipped. A
+  // silent fallback to 0 would still drive a customer-facing "dispatched" and
+  // then disagree with the supplier invoice when reconciliation lands. Drop
+  // the same way the missing-uniqueRef path does.
+  const quantity = toIntOrNull(tokens[7]);
+  if (quantity === null) return null;
+
+  const gardnersRefRaw = (tokens[5] ?? '').trim();
+
   const descriptionLines = tokens
     .slice(12, 16)
     .map((line) => (line ?? '').trim())
@@ -180,9 +200,11 @@ function toDispatchLine(tokens: string[]): HddDispatchLine | null {
     uniqueReference,
     additionalReference: (tokens[3] ?? '').trim() || null,
     batchRef: (tokens[4] ?? '').trim() || null,
-    gardnersRef: (tokens[5] ?? '').trim() && tokens[5] !== '0' ? tokens[5].trim() : null,
+    // Trim first, then compare — Gardners occasionally pads with whitespace,
+    // and `' 0 '` is still the "no reference yet" sentinel.
+    gardnersRef: gardnersRefRaw && gardnersRefRaw !== '0' ? gardnersRefRaw : null,
     isbn13,
-    quantity: toIntOrNull(tokens[7]) ?? 0,
+    quantity,
     dispatchedOn: toIsoDate(tokens[8]),
     pricePence: toIntOrNull(tokens[9]),
     deliveryPence: toIntOrNull(tokens[10]),

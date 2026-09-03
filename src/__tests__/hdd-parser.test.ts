@@ -92,6 +92,15 @@ describe('extractTrackingNumber', () => {
     );
   });
 
+  it('does not follow a bare "Our reference:" label', () => {
+    // Gardners' prose regularly names its own reference. That is not a
+    // carrier tracking number, and sending the customer to a stranger's
+    // parcel on the carrier's site is the failure mode the whole extractor
+    // is built to avoid.
+    expect(extractTrackingNumber(['Our reference: 12345 — tracking to follow'])).toBeNull();
+    expect(extractTrackingNumber(['Order reference: KK-77'])).toBeNull();
+  });
+
   it('does not mistake a phone number for a tracking number', () => {
     // The single most dangerous false positive available: "Contact ... On:"
     // sits next to the tracking line in every real dispatch file, and a
@@ -132,6 +141,21 @@ describe('extractTrackingUrl', () => {
 
   it('returns null when there is no URL', () => {
     expect(extractTrackingUrl(['Tracking Number: NU815785655GB'])).toBeNull();
+  });
+
+  it('prefers the tracking URL over an unrelated one that appears earlier', () => {
+    // A shape-only match would return the help URL — the exact anti-pattern
+    // the extractor is designed to avoid.
+    expect(
+      extractTrackingUrl([
+        'Dispatched via Royal Mail — see www.gardners.com/help for questions',
+        'www.royalmail.com/track-your-item',
+      ]),
+    ).toBe('https://www.royalmail.com/track-your-item');
+  });
+
+  it('rejects a URL whose line and path have no tracking intent', () => {
+    expect(extractTrackingUrl(['See www.gardners.com/help for questions'])).toBeNull();
   });
 });
 
@@ -210,5 +234,25 @@ describe('parseHddFile — real-world robustness', () => {
     const result = parseHddFile('');
     expect(result.lines).toEqual([]);
     expect(result.accountCode).toBeNull();
+  });
+
+  it('drops a DETAIL whose quantity is unparseable rather than recording 0', () => {
+    // A silent 0 would still drive a customer-facing "dispatched" and then
+    // disagree with the eventual supplier invoice. Better to drop the record.
+    const raw =
+      '"HEADER","ACC123","02/02/2026"\r\n' +
+      '"DETAIL",900,000011,"","",1,"9780000000001","","02/02/2026",100,0,0,"Dispatched DPD","","",""\r\n' +
+      '"TRAILER",000001\r\n';
+    expect(parseHddFile(raw).lines).toEqual([]);
+  });
+
+  it('treats a padded "0" gardnersRef the same as a bare "0"', () => {
+    // Gardners occasionally pads with whitespace, and " 0 " is still the "no
+    // reference yet" sentinel.
+    const raw =
+      '"HEADER","ACC123","02/02/2026"\r\n' +
+      '"DETAIL",900,000011,"","", 0 ,"9780000000001",1,"02/02/2026",100,0,0,"Dispatched DPD","","",""\r\n' +
+      '"TRAILER",000001\r\n';
+    expect(parseHddFile(raw).lines[0].gardnersRef).toBeNull();
   });
 });

@@ -350,9 +350,11 @@ export const fulfilmentService = {
     const withTracking = lines.find((line) => line.trackingNumber) ?? lines[0];
 
     // Earliest dispatch date across this batch — when the order started
-    // shipping, not when the last box did.
+    // shipping, not when the last box did. Null when no line carried a
+    // parseable date; better to leave the field empty than to stamp "shipped
+    // just now" on a parcel that actually left days ago.
     const dates = lines.map((l) => l.dispatchedOn).filter((d): d is string => d !== null).sort();
-    const dispatchedAt = dates.length > 0 ? new Date(`${dates[0]}T00:00:00.000Z`) : new Date();
+    const dispatchedAt = dates.length > 0 ? new Date(`${dates[0]}T00:00:00.000Z`) : null;
 
     const result = await db
       .update(orders)
@@ -367,15 +369,20 @@ export const fulfilmentService = {
               trackingNumber: withTracking.trackingNumber,
               trackingUrl: withTracking.trackingUrl,
             }),
-        dispatchedAt,
+        ...(dispatchedAt ? { dispatchedAt } : {}),
         updatedAt: new Date(),
       })
       .where(
         and(
           eq(orders.id, order.id),
-          // Forward-only. `paid` is included because a dispatch can plausibly
-          // land before the ack poll has caught up.
-          inArray(orders.status, ['paid', 'submitted_to_supplier', 'acknowledged', 'dispatched']),
+          // Forward-only, from the states that follow supplier submission.
+          // `paid` is deliberately absent: a dispatch arriving while the order
+          // is still `paid` means the ack poll never marked us submitted, and
+          // jumping straight to `dispatched` would starve reconciliation
+          // (`pollAcknowledgements` filters on `submitted_to_supplier`) — the
+          // ack would then never land on the lines. Better to leave it visible
+          // to an operator than to silently paper over the state gap.
+          inArray(orders.status, ['submitted_to_supplier', 'acknowledged', 'dispatched']),
         ),
       )
       .returning({ id: orders.id });

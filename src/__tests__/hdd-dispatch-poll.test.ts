@@ -32,43 +32,90 @@ vi.mock('../services/gardners-dropship/connection.service', () => ({
 
 // ── Database double ──────────────────────────────────────────────────────────
 // Order lines that exist, keyed by id, and the writes the poll performs.
+// The select mock actually reads the `inArray` predicate it is handed — a
+// mock that returns every existing line regardless of filter would let a
+// broken IN clause slip through the test suite.
 let existingLines: { id: number; orderId: number }[] = [];
 let insertConflicts = false;
+let insertShouldThrow = false;
 const insertedDispatches: Record<string, unknown>[] = [];
 const lineStatusUpdates: unknown[] = [];
 
+vi.mock('drizzle-orm', async () => {
+  const actual = await vi.importActual<Record<string, unknown>>('drizzle-orm');
+  return {
+    ...actual,
+    // Tag each predicate so the mock can read what the code actually asked
+    // for, rather than swallowing every filter as a no-op.
+    inArray: (column: unknown, values: unknown[]) => ({ __op: 'inArray', column, values }),
+    and: (...clauses: unknown[]) => ({ __op: 'and', clauses }),
+    eq: (column: unknown, value: unknown) => ({ __op: 'eq', column, value }),
+  };
+});
+
 vi.mock('../db', () => {
+  type Predicate = { __op: string; values?: unknown[]; clauses?: Predicate[] };
+
+  const idsFromPredicate = (pred: Predicate | undefined): number[] | null => {
+    if (!pred) return null;
+    if (pred.__op === 'inArray' && Array.isArray(pred.values)) return pred.values as number[];
+    if (pred.__op === 'and' && pred.clauses) {
+      for (const c of pred.clauses) {
+        const found = idsFromPredicate(c);
+        if (found) return found;
+      }
+    }
+    return null;
+  };
+
   const selectChain = () => {
+    let filter: Predicate | undefined;
     const chain = {
       from: () => chain,
-      where: () => chain,
-      limit: async () => existingLines,
-      then: (resolve: (v: unknown) => unknown) => Promise.resolve(existingLines).then(resolve),
+      where: (pred: Predicate) => {
+        filter = pred;
+        return chain;
+      },
+      limit: async () => resolve(),
+      then: (r: (v: unknown) => unknown) => Promise.resolve(resolve()).then(r),
+    };
+    const resolve = () => {
+      const ids = idsFromPredicate(filter);
+      if (ids === null) return existingLines;
+      const set = new Set(ids);
+      return existingLines.filter((line) => set.has(line.id));
     };
     return chain;
+  };
+
+  const txDouble = {
+    insert: () => ({
+      values: (values: Record<string, unknown>) => ({
+        onConflictDoNothing: () => ({
+          returning: async () => {
+            if (insertShouldThrow) throw new Error('insert failed');
+            if (insertConflicts) return [];
+            insertedDispatches.push(values);
+            return [{ id: insertedDispatches.length }];
+          },
+        }),
+      }),
+    }),
+    update: () => ({
+      set: (values: unknown) => ({
+        where: async () => {
+          lineStatusUpdates.push(values);
+        },
+      }),
+    }),
   };
 
   return {
     db: {
       select: () => selectChain(),
-      insert: () => ({
-        values: (values: Record<string, unknown>) => ({
-          onConflictDoNothing: () => ({
-            returning: async () => {
-              if (insertConflicts) return [];
-              insertedDispatches.push(values);
-              return [{ id: insertedDispatches.length }];
-            },
-          }),
-        }),
-      }),
-      update: () => ({
-        set: (values: unknown) => ({
-          where: async () => {
-            lineStatusUpdates.push(values);
-          },
-        }),
-      }),
+      insert: txDouble.insert,
+      update: txDouble.update,
+      transaction: async (fn: (tx: typeof txDouble) => Promise<unknown>) => fn(txDouble),
     },
   };
 });
@@ -89,6 +136,7 @@ beforeEach(() => {
   deleted.length = 0;
   existingLines = [];
   insertConflicts = false;
+  insertShouldThrow = false;
   insertedDispatches.length = 0;
   lineStatusUpdates.length = 0;
 });
@@ -228,5 +276,47 @@ describe('pollDispatches', () => {
     ];
     const outcome = await gardnersDropshipOrderService.pollDispatches();
     expect(outcome.filesProcessed).toBe(0);
+  });
+
+  it('leaves the file on the SFTP when a DB write for one of its records fails', async () => {
+    // Deleting up front, then discovering the DB is down, would lose the
+    // dispatch permanently: Gardners removes its own .DONE when we delete and
+    // no re-poll can recover it. The file must survive so the next run can
+    // re-read and finish the writes.
+    insertShouldThrow = true;
+    remoteFiles['00000001.HDD'] = file(detail(11, 900, 'AAA111'));
+    listing = [
+      { name: '00000001.HDD', type: '-' },
+      { name: '00000001.HDD.DONE', type: '-' },
+    ];
+    existingLines = [{ id: 11, orderId: 5 }];
+
+    const outcome = await gardnersDropshipOrderService.pollDispatches();
+
+    expect(outcome.filesProcessed).toBe(1);
+    expect(outcome.recordsApplied).toBe(0);
+    expect(deleted).toEqual([]);
+  });
+
+  it('processes files in numeric, not lexical, order when widths change', async () => {
+    // The spec warns Gardners may change filename numbering "without prior
+    // warning". A lexical sort with a per-run cap would then starve older
+    // eight-digit files behind newer nine-digit ones.
+    remoteFiles['999999998.HDD'] = file(detail(11, 900, 'AAA111'));
+    remoteFiles['1000000001.HDD'] = file(detail(12, 901, 'BBB222'));
+    listing = [
+      { name: '1000000001.HDD', type: '-' },
+      { name: '1000000001.HDD.DONE', type: '-' },
+      { name: '999999998.HDD', type: '-' },
+      { name: '999999998.HDD.DONE', type: '-' },
+    ];
+    existingLines = [
+      { id: 11, orderId: 5 },
+      { id: 12, orderId: 6 },
+    ];
+
+    const outcome = await gardnersDropshipOrderService.pollDispatches();
+
+    expect(outcome.dispatched.map((d) => d.orderLineId)).toEqual([11, 12]);
   });
 });
