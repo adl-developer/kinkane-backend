@@ -9,20 +9,20 @@ import {
 import { logger } from '../lib/logger';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 
-// Off by default so existing callers are unaffected. Every surface these feeds
-// appear on carries a price and an Add button, so a shop client should pass
-// true — otherwise the feed can offer a book the cart will refuse.
-const shoppableParam = z.enum(['true', 'false']).default('false').transform((v) => v === 'true');
-
+// There is no `shoppable` parameter on these feeds any more. Every surface they
+// appear on has an Add button, so they only ever return books the shop can sell
+// and every row always carries the live price and stock. It was a flag a client
+// had to know to send, and forgetting it produced exactly the feed nobody
+// wanted: books that cannot be bought, with no price on them. A stray
+// `?shoppable=` is ignored rather than rejected, so an older client keeps
+// working and gets what it was asking for anyway.
 const limitSchema = z.object({
   limit: z.coerce.number().int().min(1).max(20).default(10),
-  shoppable: shoppableParam,
 });
 
 const bestsellersSchema = z.object({
   limit: z.coerce.number().int().min(1).max(20).default(10),
   window: z.enum(BESTSELLER_WINDOWS).default('30d'),
-  shoppable: shoppableParam,
 });
 
 export const exploreController = {
@@ -33,9 +33,11 @@ export const exploreController = {
    * sales data of any kind. Falls back to trending when nothing sold in the
    * window, flagged by `source: 'trending'` on the response.
    *
-   * Takes `shoppable` like the other feeds. It was documented on this endpoint
-   * but never parsed here, so the shop fields the spec promises were silently
-   * absent and the chart could offer a book the cart would refuse.
+   * Books the shop cannot sell never appear, and every row carries the live
+   * price and stock — on the trending fallback as well as the chart. This
+   * endpoint once documented a `shoppable` flag it never actually parsed, so
+   * the shop fields the spec promised were silently absent; there is no flag to
+   * get wrong now.
    */
   async getBestsellers(req: Request, res: Response): Promise<void> {
     const parsed = bestsellersSchema.safeParse(req.query);
@@ -53,8 +55,7 @@ export const exploreController = {
       const result = await bestsellersService.list(
         parsed.data.window,
         parsed.data.limit,
-        parsed.data.shoppable,
-        await shopCurrency(req, parsed.data.shoppable),
+        await shopCurrency(req),
       );
       res.status(200).json(result);
     } catch (err: unknown) {
@@ -77,8 +78,7 @@ export const exploreController = {
       const books = await booksService.trending(
         parsed.data.limit,
         userId,
-        parsed.data.shoppable,
-        await shopCurrency(req, parsed.data.shoppable),
+        await shopCurrency(req),
       );
       res.status(200).json({ books });
     } catch (err: unknown) {
@@ -100,8 +100,7 @@ export const exploreController = {
       const books = await booksService.personalized(
         user.id,
         parsed.data.limit,
-        parsed.data.shoppable,
-        await shopCurrency(req, parsed.data.shoppable),
+        await shopCurrency(req),
       );
       res.status(200).json({ books });
     } catch (err: unknown) {

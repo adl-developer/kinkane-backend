@@ -479,40 +479,9 @@ export const commerceCheckoutService = {
     let parcel: ReturnType<typeof measureParcel> | undefined;
 
     if (config.commerce.shipping.useRateTable) {
-      const requested = options.shippingServiceCode?.trim();
-
-      if (requested) {
-        // A code the client made up, or one that does not serve this country,
-        // is a 400 rather than a silent downgrade: the buyer is looking at a
-        // price for a service, and quietly charging them for a different one is
-        // the worst available outcome.
-        if (!(await shippingOptionsService.isAvailable(destinationCountry, requested))) {
-          throw httpError(
-            'That delivery option is not available for this destination',
-            400,
-            'SHIPPING_SERVICE_UNAVAILABLE',
-          );
-        }
-        shippingServiceCode = requested;
-      } else {
-        shippingServiceCode = await shippingOptionsService.defaultServiceCode(destinationCountry);
-      }
-
-      if (!shippingServiceCode) {
-        // Deliverable by name, but nothing in the rate table can carry it —
-        // the five countries Gardners publish no price for. Refused here, before
-        // a Stripe session exists.
-        logger.warn('Refused checkout to a country with no shipping rate', {
-          userId,
-          destinationCountry,
-        });
-        throw httpError(
-          'We cannot ship to that country yet',
-          409,
-          'COUNTRY_NOT_SUPPORTED',
-        );
-      }
-
+      // The parcel is weighed first: which service can be used depends on
+      // whether it can carry this weight, so the default choice below needs the
+      // weight in hand before it picks.
       rateCard = await shippingRatesService.load();
       parcel = measureParcel(
         items.flatMap((item) => {
@@ -529,6 +498,80 @@ export const commerceCheckoutService = {
             : [];
         }),
       );
+
+      // Pre-discount subtotal, matching how quoteOrder quotes shipping — the
+      // free-shipping threshold looks at the goods total, so the fit check has
+      // to price each service the same way the real quote will.
+      const itemCount = items.reduce((sum, item) => sum + item.quantity, 0);
+      const subtotalGbpPence = items.reduce((sum, item) => {
+        const live = buyable.get(item.bookId);
+        return live ? sum + live.unitPriceGbpPence * item.quantity : sum;
+      }, 0);
+
+      const requested = options.shippingServiceCode?.trim();
+
+      if (requested) {
+        // A code the client made up, or one that does not serve this country,
+        // is a 400 rather than a silent downgrade: the buyer is looking at a
+        // price for a service, and quietly charging them for a different one is
+        // the worst available outcome.
+        if (!(await shippingOptionsService.isAvailable(destinationCountry, requested))) {
+          throw httpError(
+            'That delivery option is not available for this destination',
+            400,
+            'SHIPPING_SERVICE_UNAVAILABLE',
+          );
+        }
+        shippingServiceCode = requested;
+      } else {
+        // No chooser was shown, so pick the cheapest service that can actually
+        // carry this parcel — the same filter the options list applies. Passing
+        // the parcel is the whole fix: choosing on country coverage alone could
+        // land on untracked airmail (2kg ceiling) for a heavier basket and then
+        // fail pricing with a 500.
+        shippingServiceCode = await shippingOptionsService.defaultServiceCode(destinationCountry, {
+          itemCount,
+          subtotalGbpPence,
+          parcel,
+          rateCard,
+        });
+      }
+
+      if (!shippingServiceCode) {
+        // Two ways to land here: the country has no published rate at all, or it
+        // has one but nothing in the table can carry a parcel this heavy. They
+        // want different messages — telling someone with a heavy basket that we
+        // "don't ship there" sends them away from an order they could complete
+        // by dropping an item.
+        const countryHasAnyService =
+          (await shippingOptionsService.defaultServiceCode(destinationCountry)) !== null;
+
+        if (countryHasAnyService) {
+          logger.warn('Refused checkout: basket too heavy for every service to destination', {
+            userId,
+            destinationCountry,
+            parcelWeightG: parcel.weightG,
+          });
+          throw httpError(
+            'This basket is too heavy to ship to your country. Remove an item and try again.',
+            409,
+            'PARCEL_TOO_HEAVY',
+          );
+        }
+
+        // Deliverable by name, but nothing in the rate table can carry it —
+        // the five countries Gardners publish no price for. Refused here, before
+        // a Stripe session exists.
+        logger.warn('Refused checkout to a country with no shipping rate', {
+          userId,
+          destinationCountry,
+        });
+        throw httpError(
+          'We cannot ship to that country yet',
+          409,
+          'COUNTRY_NOT_SUPPORTED',
+        );
+      }
     }
 
     /**

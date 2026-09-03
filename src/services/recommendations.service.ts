@@ -16,6 +16,7 @@ import {
 import { recommendationCache, type RecommendationItem } from '../db/schema/recommendations';
 import type { Dislikes } from '../db/schema/onboarding';
 import { dedupeByTitle } from '../lib/dedupe';
+import { buildFeedCondition } from './books.service';
 import {
   buildHasAuthorCondition,
   buildWorkExclusionCondition,
@@ -271,6 +272,13 @@ function buildBaseConditions(
   ]);
 
   return [
+    // Withdrawn and unsellable titles never reach a recommendation list. The
+    // quiz is the first thing a new reader sees and every card on it is a book
+    // we are inviting them to buy, so a title the shop cannot sell is worse
+    // here than anywhere else — there is no "further down the page" for it to
+    // sink to. Same predicate as every discovery feed, imported rather than
+    // restated so the two cannot drift apart on what sellable means.
+    buildFeedCondition(),
     ...buildDislikeConditions(input.dislikes),
     ...(formatCondition ? [formatCondition] : []),
     buildHasAuthorCondition(),

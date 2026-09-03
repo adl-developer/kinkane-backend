@@ -35,6 +35,11 @@ router.get('/search', booksController.suggestions);
  * client and there is no cart to read. Books already in the basket are never
  * returned. Empty list when nothing in the basket has an embedding yet.
  *
+ * Never returns a book the shop cannot sell — no ISBN13, no supplier price, or
+ * reported unsuppliable — and every row arrives with its live price and stock.
+ * Neither is a flag: every card here carries an Add button, so a suggestion that
+ * cannot be added is a dead end, and one with no price on it is not much better.
+ *
  * Public — no auth required. A token additionally filters out books the caller
  * has already rejected.
  */
@@ -117,8 +122,8 @@ router.get('/:id', optionalAuth, booksController.getById);
 /**
  * GET /books/:id/similar?limit=10
  * Returns books ranked by cosine similarity to the given book's embedding
- * ("You May Also Like"). Excludes the book itself. Empty list if the book
- * has no embedding yet.
+ * ("You May Also Like"). Excludes the book itself, and anything the shop
+ * cannot sell. Empty list if the book has no embedding yet.
  *
  * Public — no auth required, because the product page it appears on is public
  * and a shop cannot ask someone to sign in before it will recommend anything.

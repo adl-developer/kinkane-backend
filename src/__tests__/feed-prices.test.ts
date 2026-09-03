@@ -58,8 +58,13 @@ describe('discovery feeds', () => {
     expect(controller).toContain('resolveRequestCountry(req)');
   });
 
-  it('omits the fields entirely when the caller did not ask to shop', () => {
+  it('puts the fields on every feed row, with no flag gating them', () => {
+    // These fields used to be gated on the caller passing `shoppable`, and a
+    // client that did not know to pass it got a carousel of cards it had no
+    // price for. Every one of these feeds is a shop surface, so the only early
+    // return left is the empty list.
     const helper = source.slice(source.indexOf('async function attachShopFields'));
-    expect(helper).toContain('if (!shoppable || items.length === 0) return items;');
+    expect(helper).toContain('if (items.length === 0) return items;');
+    expect(helper).not.toContain('shoppable');
   });
 });

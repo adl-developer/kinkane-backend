@@ -5,6 +5,8 @@ import { createBullBoard } from '@bull-board/api';
 import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
 import { ExpressAdapter } from '@bull-board/express';
 import { logger } from './lib/logger';
+import { captureError } from './lib/sentry';
+import { requestLogger } from './middleware/request-logger.middleware';
 import { emailQueue } from './lib/email-queue';
 import { pushQueue } from './lib/push-queue';
 import { fulfilmentQueue } from './lib/fulfilment-queue';
@@ -55,6 +57,13 @@ app.use('/api/v1/user/subscription/webhook', stripeWebhookRouter);
 
 app.use(express.json({ limit: '50kb' }));
 app.use(express.urlencoded({ extended: false, limit: '50kb' }));
+
+// One line per request (method, path, status, duration) plus a per-request id
+// threaded into every downstream log line. Mounted here — after body parsing,
+// before any route — so it wraps the whole request lifecycle. Note the Stripe
+// webhook above is intentionally left out: it runs before this and keeps its
+// own raw-body handling.
+app.use(requestLogger);
 
 // ── Bull Board ────────────────────────────────────────────────────────────────
 // Visual dashboard for monitoring email/push job queues — view pending, active,
@@ -135,7 +144,7 @@ app.use((_req: Request, res: Response) => {
 });
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
   // body-parser throws a SyntaxError with a `body` property when the request
   // body is not valid JSON — this is a client mistake, not a server fault.
   if (err instanceof SyntaxError && 'body' in err) {
@@ -144,7 +153,39 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
     return;
   }
 
+  // An error a service deliberately tagged with a `statusCode` carries a
+  // client-safe message (the same convention the auth middleware honours).
+  // Surface it rather than masking every tagged failure as a generic 500 — that
+  // is what made an expected "parcel too heavy" 503 reach the client as an
+  // unexplained Internal Server Error. These are expected outcomes, not bugs, so
+  // they are logged at warn and NOT reported to Sentry.
+  const tagged = err as Error & {
+    statusCode?: number;
+    code?: string;
+    details?: Record<string, unknown>;
+  };
+  if (tagged.statusCode) {
+    if (tagged.statusCode >= 500) {
+      logger.warn('Service error surfaced by global handler', {
+        statusCode: tagged.statusCode,
+        code: tagged.code,
+        message: tagged.message,
+        requestId: req.requestId,
+      });
+    }
+    res.status(tagged.statusCode).json({
+      error: tagged.message,
+      ...(tagged.code && { code: tagged.code }),
+      ...(tagged.details ?? {}),
+    });
+    return;
+  }
+
   logger.error('Unhandled express error', { error: err.message, stack: err.stack });
+  // Report the real Error (with its stack) to Sentry, tagged with the request
+  // id so it lines up with the request log. logger.error above already forwards
+  // a message-level copy; this adds the stack trace and grouping.
+  captureError(err, { requestId: req.requestId });
   res.status(500).json({ error: 'Internal server error' });
 });
 

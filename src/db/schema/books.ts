@@ -108,6 +108,13 @@ export const books = pgTable(
     // Supports trending()'s fallback ORDER BY publication_date DESC LIMIT — without
     // this, that query was a full parallel sequential scan + sort of the whole table.
     publicationDateIdx: index('idx_books_publication_date').on(t.publicationDate),
+    // idx_books_title is still what a plain title lookup uses, but it no longer
+    // orders GET /books?sortBy=title: that page sorts on a placeholder-title
+    // rank before the title (see buildSortOrderBy in services/books.service.ts),
+    // which only idx_books_title_sortable / _desc can satisfy. Both are created
+    // in migration 0056 rather than here because drizzle-kit cannot express an
+    // expression index; the CASE in that migration and the one in the service
+    // have to stay character-identical or the planner matches neither.
   }),
 );
 

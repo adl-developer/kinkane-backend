@@ -5,6 +5,13 @@ import {
 const TAG = 'Catalogue';
 const DISCOVERY = 'Discovery';
 
+/**
+ * The one paragraph every recommendation feed needs, and the reason none of them
+ * takes a `shoppable` parameter any more.
+ */
+const SELLABLE_NOTE =
+  '**Every book here can be bought, and arrives priced.** Titles the shop cannot sell — no ISBN13, no supplier price, or a supplier report code saying they cannot be supplied — are never recommended, and every row carries `unitPriceMinor`, `compareAtMinor`, `currency` and `inStock`. There is no `shoppable` parameter to send: this used to be opt-in, and a client that did not know to ask got cards with a dead Add button and no price on them. (Withdrawn titles are excluded too. Out-of-stock ones are *not* — print-on-demand and extended-catalogue titles never have a shelf but are genuinely orderable, so read `inStock` rather than assuming.)\n\n**The feed is cached; the price is not.** The cached pool holds books only and the price is attached on every request, so a supplier price change is visible immediately while the ordering may be up to an hour old. A stale ordering is invisible to a shopper; a stale price is one number on the shelf and another in the basket.';
+
 const bookIdParam = param('id', 'path', { type: 'integer' },
   'Kinkané book id, as returned by any list or search endpoint. Not an ISBN.', { example: 48213 });
 
@@ -190,13 +197,11 @@ export const cataloguePaths = {
       ...publicEndpoint,
       summary: 'Books similar to this one ("You may also like")',
       description:
-        'Ranks the catalogue by cosine similarity to this book’s embedding, excluding the book itself.\n\n**Public** — the product page this appears on does not require an account. Sending a valid token improves it rather than enabling it: books the caller has already swiped away are filtered out.\n\nReturns an **empty list, not an error**, when the book has no embedding yet — newly ingested titles are embedded asynchronously. Treat empty as "hide the section".',
+        'Ranks the catalogue by cosine similarity to this book’s embedding, excluding the book itself.\n\n**Public** — the product page this appears on does not require an account. Sending a valid token improves it rather than enabling it: books the caller has already swiped away are filtered out.\n\nReturns an **empty list, not an error**, when the book has no embedding yet — newly ingested titles are embedded asynchronously. Treat empty as "hide the section".\n\n' + SELLABLE_NOTE,
       parameters: [
         bookIdParam,
         param('limit', 'query', { type: 'integer', minimum: 1, maximum: 20, default: 10 },
           'How many to return (1–20).'),
-        param('shoppable', 'query', { type: 'string', enum: ['true', 'false'], default: 'false' },
-          'Restrict to books the shop can sell, **and add the live shop fields** — `unitPriceMinor`, `compareAtMinor`, `currency` and `inStock` — so a carousel with an Add button needs no second request to price what it shows. Pass `true` from any surface with an Add button; otherwise this feed can offer a book the cart will refuse. Off by default so existing callers are unaffected.\n\n**The feed is cached; the price is not.** The cached pool holds books only and the price is attached on every request, so a supplier price change is visible immediately while the ordering may be up to an hour old. A stale ordering is invisible to a shopper; a stale price is one number on the shelf and another in the basket.'),
       ],
       responses: {
         200: json('Similar books, most similar first. May be empty.',
@@ -222,13 +227,13 @@ export const cataloguePaths = {
         'Returns an **empty list, not an error**, when nothing in the basket has an embedding yet. Treat empty as "hide the section".',
         '',
         'Public. A token additionally filters out books the caller has already swiped away.',
+        '',
+        SELLABLE_NOTE,
       ].join('\n'),
       parameters: [
         param('bookIds', 'query', { type: 'string' },
           'Comma-separated book ids — the basket. Duplicates are ignored.', { example: '48213,50127' }),
         param('limit', 'query', { type: 'integer', minimum: 1, maximum: 20, default: 8 }, 'How many to return.'),
-        param('shoppable', 'query', { type: 'string', enum: ['true', 'false'], default: 'false' },
-          'Restrict to books the shop can sell, **and add the live shop fields** — `unitPriceMinor`, `compareAtMinor`, `currency` and `inStock` — so a rail with an Add button needs no second request to price what it shows. Pass `true` from any surface with an Add button; otherwise this feed can offer a book the cart will refuse. Off by default so existing callers are unaffected.\n\n**The feed is cached; the price is not.** The cached pool holds books only and the price is attached on every request, so a supplier price change shows immediately while the ordering may be up to an hour old.'),
       ],
       responses: {
         200: json('Recommendations, most relevant first. May be empty.',
@@ -294,12 +299,12 @@ export const cataloguePaths = {
         'The ranking is **global** — everyone sees the same list — with one exception: send an access token and books the caller has swiped away (and other editions of them) are filtered out. Worth doing; a "trending" rail containing a book the user explicitly rejected reads as broken.',
         '',
         'Cached for 1 hour.',
+        '',
+        SELLABLE_NOTE,
       ].join('\n'),
       parameters: [
         param('limit', 'query', { type: 'integer', minimum: 1, maximum: 20, default: 10 },
           'How many books (1–20).'),
-        param('shoppable', 'query', { type: 'string', enum: ['true', 'false'], default: 'false' },
-          'Restrict to books the shop can sell, **and add the live shop fields** — `unitPriceMinor`, `compareAtMinor`, `currency` and `inStock` — so a rail with an Add button needs no second request to price what it shows. Pass `true` from any surface with an Add button; otherwise this feed can offer a book the cart will refuse. Off by default so existing callers are unaffected.\n\n**The feed is cached; the price is not.** The cached pool holds books only and the price is attached on every request, so a supplier price change shows immediately while the ordering may be up to an hour old.'),
       ],
       responses: {
         200: json('Trending books.', object({ books: arrayOf(ref('BookSummary')) })),
@@ -321,14 +326,14 @@ export const cataloguePaths = {
         '**When nothing sold in the window, this returns trending books instead and sets `source` to `trending`.** Always read `source` before you write the section heading — a discovery list presented as a sales chart is untrue, and the field is the only thing distinguishing them. `books` can still be empty if there is neither sales nor interaction data.',
         '',
         'Identical for every caller — a factual ranking is not personalised, so nothing is filtered per viewer. Cached for an hour, cleared nightly.',
+        '',
+        SELLABLE_NOTE,
       ].join('\n'),
       parameters: [
         param('window', 'query', { type: 'string', enum: ['7d', '30d', '90d', 'all_time'], default: '30d' },
           'The sales window to rank over.'),
         param('limit', 'query', { type: 'integer', minimum: 1, maximum: 20, default: 10 },
           'How many books (1–20).'),
-        param('shoppable', 'query', { type: 'string', enum: ['true', 'false'], default: 'false' },
-          'Restrict to books the shop can sell, **and add the live shop fields** — `unitPriceMinor`, `compareAtMinor`, `currency` and `inStock` — so a rail with an Add button needs no second request to price what it shows. Pass `true` from any surface with an Add button; otherwise this feed can offer a book the cart will refuse. Off by default so existing callers are unaffected.\n\nApplies to the trending fallback too, so a shoppable request stays shoppable when nothing sold.\n\n**The feed is cached; the price is not.** The cached pool holds books only and the price is attached on every request, so a supplier price change shows immediately while the ordering may be up to an hour old.'),
       ],
       responses: {
         200: json('Bestsellers, or trending books (`source: trending`) if nothing sold in the window. The book shape is the same either way.',
@@ -359,12 +364,12 @@ export const cataloguePaths = {
         'Returns an **empty list** — not an error — when the embedding is not ready yet. That is the normal state for the first moments after signup, and also right after `PATCH /recommendations/refresh`, which regenerates the embedding in the background.',
         '',
         'Cached for 1 hour per user. **Requires Kinkané Plus.**',
+        '',
+        SELLABLE_NOTE,
       ].join('\n'),
       parameters: [
         param('limit', 'query', { type: 'integer', minimum: 1, maximum: 20, default: 10 },
           'How many books (1–20).'),
-        param('shoppable', 'query', { type: 'string', enum: ['true', 'false'], default: 'false' },
-          'Restrict to books the shop can sell, **and add the live shop fields** — `unitPriceMinor`, `compareAtMinor`, `currency` and `inStock` — so a rail with an Add button needs no second request to price what it shows. Pass `true` from any surface with an Add button; otherwise this feed can offer a book the cart will refuse. Off by default so existing callers are unaffected.\n\n**The feed is cached; the price is not.** The cached pool holds books only and the price is attached on every request, so a supplier price change shows immediately while the ordering may be up to an hour old.'),
       ],
       responses: {
         200: json('Personalised books. Empty while the embedding is still being built.',

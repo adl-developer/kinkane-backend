@@ -5,12 +5,17 @@
 
 ### Features
 
+* log every API request and report errors to Sentry ([a655648](https://adl.github.com/adl-developer/kinkane-backend/commit/a65564879ac39ce3d88c2254616f9d89de62123d)) — [details](changelog/2026-09-03-request-logging-sentry.md)
 * show customers real tracking details once their order ships ([091d825](https://adl.github.com/adl-developer/kinkane-backend/commit/091d825cb689d8fca48f3ea0fa6e2e160f4274ea))
 * show postage margin in the admin console ([462832c](https://adl.github.com/adl-developer/kinkane-backend/commit/462832c0788e196b9ff605036a9fb225404f6010)) — [details](changelog/2026-09-03-hdd-dispatch-polling.md)
 
 ### Bug Fixes
 
-* send buyers back to their cart after checkout and accept an empty status filter ([0fce732](https://adl.github.com/adl-developer/kinkane-backend/commit/0fce7324ed606b0a57261bbe1f640b5dce7d5239))
+* stop heavy baskets failing checkout with a server error ([3276e51](https://adl.github.com/adl-developer/kinkane-backend/commit/3276e5159f2e1d113af10f6acf58e2bc2db7e851)) — [details](changelog/2026-09-03-heavy-basket-checkout.md)
+* surface the real reason when a checkout or payment can't proceed ([237e49d](https://adl.github.com/adl-developer/kinkane-backend/commit/237e49d82d8bc4d7eb65ef4dfd84ae05e99ccb6e)) — [details](changelog/2026-09-03-heavy-basket-checkout.md)
+* never recommend a book the shop cannot sell ([094a1c9](https://adl.github.com/adl-developer/kinkane-backend/commit/094a1c9fac4e3ef249994acc4a2712adcb6ea2e0)) — [details](changelog/2026-09-03-heavy-basket-checkout.md)
+* tighten the dispatch poll so a mid-run failure cannot lose a shipment ([68c29e2](https://adl.github.com/adl-developer/kinkane-backend/commit/68c29e2c874f142b6793b9ce496e80ce504c01e2)) — [details](changelog/2026-09-03-hdd-dispatch-polling.md)
+* send buyers back to their cart after checkout and accept an empty status filter ([0fce732](https://adl.github.com/adl-developer/kinkane-backend/commit/0fce7324ed606b0a57261bbe1f640b5dce7d5239)) — [details](changelog/2026-09-03-heavy-basket-checkout.md)
 
 
 ## 2026-09-02

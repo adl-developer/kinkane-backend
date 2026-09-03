@@ -60,10 +60,12 @@ export interface BestsellerResult {
   books: BookListItem[];
 }
 
-function cacheKey(window: BestsellerWindow, limit: number, shoppable?: boolean): string {
-  // v3: `shoppable` is part of the key. The filtered and unfiltered charts are
-  // different lists — the shoppable one skips books the shop cannot sell — and
-  // sharing a key let whichever ran first serve the other for an hour. (v2 was
+function cacheKey(window: BestsellerWindow, limit: number): string {
+  // v4: the chart now skips books the shop cannot sell whether or not the
+  // caller passed `shoppable` (see buildFeedCondition), so both callers want
+  // the same list — `shoppable` is out of the key again, and the bump drops
+  // the pre-fix `:all` entries that still hold unsellable ids. (v3 keyed on
+  // shoppable, because the two charts really were different lists then; v2 was
   // a bare id array with no shoppable dimension; v1 an object that would
   // deserialize into hydrate() and break it.)
   //
@@ -75,7 +77,7 @@ function cacheKey(window: BestsellerWindow, limit: number, shoppable?: boolean):
   // "nothing sold in this window" — the trending fallback is resolved after the
   // cache read, so it keeps its own freshness instead of being frozen for an
   // hour behind a bestsellers key.
-  return `bestsellers:v3:${window}:${limit}:${shoppable ? 'shop' : 'all'}`;
+  return `bestsellers:v4:${window}:${limit}`;
 }
 
 export const bestsellersService = {
@@ -83,11 +85,7 @@ export const bestsellersService = {
    * Ranked book ids and copy counts for a window. Uncached — `list` is the
    * caller-facing entry point.
    */
-  async rank(
-    window: BestsellerWindow,
-    limit: number,
-    shoppable?: boolean,
-  ): Promise<BestsellerItem[]> {
+  async rank(window: BestsellerWindow, limit: number): Promise<BestsellerItem[]> {
     const days = WINDOW_DAYS[window];
 
     const conditions = [inArray(orders.status, SOLD_ORDER_STATUSES)];
@@ -101,8 +99,8 @@ export const bestsellersService = {
     // Filtering after the `limit` would be the bug feedPoolMultiplier exists to
     // work around elsewhere — a top 10 arriving with three rows in it — and
     // there is no need for a pool here: the condition is in the same statement,
-    // so `limit` shoppable books come back as `limit` shoppable books.
-    conditions.push(buildFeedCondition(shoppable));
+    // so `limit` sellable books come back as `limit` sellable books.
+    conditions.push(buildFeedCondition());
 
     const rows = await db
       .select({
@@ -138,25 +136,24 @@ export const bestsellersService = {
    * `books` can still come back empty — a shop with neither sales nor
    * interactions has nothing to show either way.
    *
-   * `shoppable` restricts the chart to books the shop can actually sell and
-   * adds the live shop fields, exactly as it does on every other feed. Pass it
-   * from any surface with an Add button: a bestseller rail is precisely where
-   * an unsellable book produces a button that cannot work.
+   * Books the shop cannot sell never appear — a bestseller rail is precisely
+   * where an unsellable book produces an Add button that cannot work — and every
+   * row carries the live price and stock. Neither is a flag the caller passes;
+   * see buildFeedCondition.
    */
   async list(
     window: BestsellerWindow,
     limit: number,
-    shoppable?: boolean,
     currency?: string,
   ): Promise<BestsellerResult> {
-    const key = cacheKey(window, limit, shoppable);
+    const key = cacheKey(window, limit);
     const cached = await redis.get(key);
 
     let bookIds: number[];
     if (cached) {
       bookIds = JSON.parse(cached) as number[];
     } else {
-      bookIds = (await this.rank(window, limit, shoppable)).map((item) => item.bookId);
+      bookIds = (await this.rank(window, limit)).map((item) => item.bookId);
 
       // Cached even when empty. A shop with no sales yet would otherwise run
       // the aggregate on every request and get nothing, forever — and would
@@ -170,17 +167,17 @@ export const bestsellersService = {
       return {
         window,
         source: 'orders',
-        books: await attachShopFields(await this.hydrate(bookIds), shoppable, currency),
+        books: await attachShopFields(await this.hydrate(bookIds), currency),
       };
     }
 
-    // shoppable carries into the fallback — a rail that asked for sellable
-    // books needs them just as much when the answer comes from trending. No
-    // userId, though: a bestseller response is the same for every caller, and
-    // the fallback keeps that property rather than quietly becoming
-    // personalised the moment the shop runs dry. booksService.trending holds
-    // its own cache, so this is not a second uncached aggregate.
-    const trending = await booksService.trending(limit, undefined, shoppable);
+    // No userId: a bestseller response is the same for every caller, and the
+    // fallback keeps that property rather than quietly becoming personalised the
+    // moment the shop runs dry. booksService.trending holds its own cache, so
+    // this is not a second uncached aggregate. No currency either — these rows
+    // are re-hydrated and priced below, so pricing them here would be wasted
+    // work thrown away by the hydrate.
+    const trending = await booksService.trending(limit, undefined);
 
     // Re-hydrated through the same path as the orders ranking rather than
     // returned as-is. `trending` yields the narrower TrendingBookItem, and one
@@ -194,7 +191,6 @@ export const bestsellersService = {
       source: 'trending',
       books: await attachShopFields(
         await this.hydrate(trending.map((book) => book.id)),
-        shoppable,
         currency,
       ),
     };

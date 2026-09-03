@@ -1,5 +1,6 @@
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 import type { Response, NextFunction, RequestHandler, Request } from 'express';
+import { logger } from './logger';
 
 export function parseId(raw: string, label: string): number {
   const id = Number(raw);
@@ -31,17 +32,32 @@ export interface HttpError extends Error {
  * a `statusCode` attached, and until now every controller re-implemented the
  * same try/catch to translate it. This does it once.
  *
- * Anything without a `statusCode`, or with a 5xx one, is passed to the global
- * handler untouched: an unexpected failure must keep its stack trace and its
- * generic client-facing message rather than leaking an internal error string.
+ * That includes expected *5xx* — a 503 when Stripe is unconfigured, an exchange
+ * rate is missing, or a parcel is too heavy for any service. Those carry a
+ * curated, client-safe message and a `code`, so they are surfaced verbatim
+ * rather than flattened into "Internal server error": a buyer told "this basket
+ * is too heavy" can act on it, where a bare 500 looks like a site fault. A
+ * surfaced 5xx is still logged here (at warn) so operators see it.
+ *
+ * Only an error with **no** `statusCode` is treated as unexpected and passed to
+ * the global handler untouched, so it keeps its stack trace and returns a
+ * generic message rather than leaking an internal error string to the client.
  */
 export const wrapHttp =
   (fn: (req: AuthenticatedRequest, res: Response) => Promise<void>): RequestHandler =>
   (req: Request, res: Response, next: NextFunction) =>
     fn(req as AuthenticatedRequest, res).catch((err: HttpError) => {
-      if (!err.statusCode || err.statusCode >= 500) {
+      if (!err.statusCode) {
         next(err);
         return;
+      }
+
+      if (err.statusCode >= 500) {
+        logger.warn('Service returned an expected 5xx', {
+          statusCode: err.statusCode,
+          code: err.code,
+          message: err.message,
+        });
       }
 
       res.status(err.statusCode).json({

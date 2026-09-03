@@ -12,9 +12,9 @@
  */
 import { config } from '../../config';
 import { logger } from '../../lib/logger';
-import { measureParcel, type ParcelItem } from './parcel';
+import { measureParcel, type Parcel, type ParcelItem } from './parcel';
 import { availableServiceCodes, quoteShipping, toPresentment, normalizeCountry } from './pricing';
-import { shippingRatesService } from './shipping-rates.service';
+import { shippingRatesService, type RateCard } from './shipping-rates.service';
 import { GARDNERS_SERVICE_CODES, serviceCodeFor } from './gardners-countries';
 
 /** How each service is described to a customer. */
@@ -240,14 +240,32 @@ export const shippingOptionsService = {
    * estimate — a buyer who never saw a chooser should not be quietly upgraded
    * onto the expensive service. Falls back to the legacy country rule when the
    * rate table is off or has nothing for this destination.
+   *
+   * When a `fit` is supplied, the chosen service must be able to *carry* the
+   * parcel, not merely serve the country. This matters: untracked overseas
+   * airmail stops at 2kg while tracked runs to 30kg, so a heavy basket for which
+   * the chooser already dropped untracked must not have it silently reselected
+   * here — doing so priced the order against a band that does not exist and
+   * failed checkout with a 500 the buyer could do nothing about. The filter is
+   * the same one `list()` uses (price it, skip it if it throws), so the default
+   * and the offered options can never disagree about what fits.
    */
-  async defaultServiceCode(countryCode: string): Promise<string | null> {
+  async defaultServiceCode(
+    countryCode: string,
+    fit?: {
+      itemCount: number;
+      subtotalGbpPence: number;
+      parcel: Parcel;
+      rateCard: RateCard;
+      at?: Date;
+    },
+  ): Promise<string | null> {
     if (!config.commerce.shipping.useRateTable) return null;
 
     const country = normalizeCountry(countryCode);
     if (!country) return null;
 
-    const rateCard = await shippingRatesService.load();
+    const rateCard = fit?.rateCard ?? (await shippingRatesService.load());
     const available = new Set(availableServiceCodes(rateCard, country));
 
     // Explicit rather than relying on the codes sorting into this order, which
@@ -260,6 +278,36 @@ export const shippingOptionsService = {
       GARDNERS_SERVICE_CODES.ukPremium,
     ];
 
-    return PREFERENCE.find((code) => available.has(code)) ?? null;
+    const candidates = PREFERENCE.filter(
+      (code) => available.has(code) && !NOT_SELECTABLE.has(code),
+    );
+
+    // No parcel in hand: pick on country coverage alone, as before.
+    if (!fit) return candidates[0] ?? null;
+
+    // With a parcel, keep only services that can actually carry it and take the
+    // cheapest — mirroring the options list, which skips a service whose pricing
+    // throws (most often "too heavy").
+    let best: { code: string; priceGbpPence: number } | null = null;
+    for (const code of candidates) {
+      let quote;
+      try {
+        quote = quoteShipping({
+          countryCode: country,
+          serviceCode: code,
+          itemCount: fit.itemCount,
+          subtotalGbpPence: fit.subtotalGbpPence,
+          parcel: fit.parcel,
+          rateCard,
+          at: fit.at,
+        });
+      } catch {
+        continue;
+      }
+      if (best === null || quote.gbpPence < best.priceGbpPence) {
+        best = { code, priceGbpPence: quote.gbpPence };
+      }
+    }
+    return best?.code ?? null;
   },
 };

@@ -167,25 +167,28 @@ describe('rank', () => {
   });
 });
 
-describe('rank with shoppable', () => {
-  it('applies the shoppable predicate inside the ranking query', async () => {
+describe('rank sellability', () => {
+  it('applies the sellable predicate inside the ranking query', async () => {
     // The point of it being *inside* the query: filtering after the LIMIT is how
     // a top 10 comes back holding three.
-    await bestsellersService.rank('30d', 10, true);
+    await bestsellersService.rank('30d', 10);
 
     expect(lastWhere).toContain('gardners_stock');
     expect(lastLimit).toBe(10);
   });
 
-  it('leaves the chart unfiltered when the caller did not ask to shop', async () => {
+  it('filters the chart even though the caller never asked to shop', async () => {
+    // `shoppable` used to gate this, which put books the shop cannot sell on a
+    // rail whose whole purpose is buying them. It now only governs whether live
+    // prices are attached — never which books come back.
     await bestsellersService.rank('30d', 10);
-    expect(lastWhere).not.toContain('gardners_stock');
+    expect(lastWhere).toContain('gardners_stock');
   });
 
   it('needs no over-fetch pool, because the predicate and the limit are one statement', async () => {
     // Every other feed widens its pool to survive post-filtering. This one must
-    // not have to: `limit` shoppable books come back as `limit` shoppable books.
-    await bestsellersService.rank('30d', 20, true);
+    // not have to: `limit` sellable books come back as `limit` sellable books.
+    await bestsellersService.rank('30d', 20);
     expect(lastLimit).toBe(20);
   });
 });
@@ -277,18 +280,19 @@ describe('list falling back to trending', () => {
     const [limit, userId] = trending.mock.calls[0];
     expect(limit).toBe(10);
     expect(userId).toBeUndefined();
-    expect(trending.mock.calls[0]).toHaveLength(3);
+    expect(trending.mock.calls[0]).toHaveLength(2);
   });
 
-  it('carries shoppable into the fallback', async () => {
-    // A rail that asked for sellable books needs them just as much when the
-    // answer comes from trending — it has the same Add button either way.
+  it('prices the fallback the same way it prices the chart', async () => {
+    // A rail that fell back to trending has the same Add button on it, so its
+    // rows need the same live price. They get it from the re-hydrate below
+    // rather than from trending itself, which is why no currency goes in here.
     rankRows = [];
     const trending = vi.spyOn(booksService, 'trending').mockResolvedValue([]);
 
-    await bestsellersService.list('30d', 10, true, 'NGN');
+    await bestsellersService.list('30d', 10, 'NGN');
 
-    expect(trending).toHaveBeenCalledWith(10, undefined, true);
+    expect(trending).toHaveBeenCalledWith(10, undefined);
   });
 
   it('still returns an empty list when there is no interaction data either', async () => {
@@ -324,14 +328,17 @@ describe('caching', () => {
     expect(lastWhere).toBe('');
   });
 
-  it('keeps the shoppable and unfiltered charts in separate keys', async () => {
-    // They are different lists. Sharing a key let whichever ran first serve the
-    // other for an hour — a shoppable rail rendering unsellable books.
+  it('keys on the chart alone, not on how the caller wanted it priced', async () => {
+    // There is one chart now — the same sellable books for everybody — and the
+    // currency only decides how the cached ids are priced on the way out. Keying
+    // on it would cache identical id lists once per currency. (v3 of the key had
+    // a shoppable dimension, correctly: the two charts really were different
+    // lists while the sellable filter was opt-in.)
     rankRows = [{ bookId: 1, copiesSold: 1 }];
-    await bestsellersService.list('30d', 10);
-    await bestsellersService.list('30d', 10, true);
+    await bestsellersService.list('30d', 10, 'GBP');
+    await bestsellersService.list('30d', 10, 'NGN');
 
-    expect(store.size).toBe(2);
+    expect(store.size).toBe(1);
   });
 
   it('keys each window and limit separately', async () => {
@@ -347,7 +354,7 @@ describe('caching', () => {
     // A cached price is a wrong price: supplier prices move hourly and the shop
     // rests on a displayed price being the one the basket honours.
     rankRows = [{ bookId: 1, copiesSold: 1 }];
-    await bestsellersService.list('30d', 10, true, 'GBP');
+    await bestsellersService.list('30d', 10, 'GBP');
 
     for (const value of store.values()) {
       expect(JSON.parse(value)).toEqual([1]);
@@ -362,7 +369,7 @@ describe('invalidate', () => {
     // nightly job logged "Bestseller cache invalidated" over a full cache.
     rankRows = [{ bookId: 1, copiesSold: 1 }];
     await bestsellersService.list('30d', 10);
-    await bestsellersService.list('7d', 10, true);
+    await bestsellersService.list('7d', 10);
     expect(store.size).toBeGreaterThan(0);
 
     await bestsellersService.invalidate();
@@ -373,11 +380,11 @@ describe('invalidate', () => {
   it('leaves other services\' caches alone', async () => {
     rankRows = [{ bookId: 1, copiesSold: 1 }];
     await bestsellersService.list('30d', 10);
-    store.set('trending:v4:10:all', '[]');
+    store.set('trending:v5:10', '[]');
 
     await bestsellersService.invalidate();
 
-    expect([...store.keys()]).toEqual(['trending:v4:10:all']);
+    expect([...store.keys()]).toEqual(['trending:v5:10']);
   });
 
   it('recomputes on the next request rather than serving the dropped entry', async () => {
