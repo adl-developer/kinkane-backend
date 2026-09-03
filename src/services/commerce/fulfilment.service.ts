@@ -16,7 +16,7 @@
  * `refunded` order status exists so that manual action can at least be
  * recorded against the order.
  */
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { db } from '../../db';
 import { orders, orderItems, type Order } from '../../db/schema';
 import { config } from '../../config';
@@ -261,6 +261,140 @@ export const fulfilmentService = {
       logger.error('Failed to submit order to Gardners', { orderId, error: message });
       throw err;
     }
+  },
+
+  /**
+   * Collects Gardners' dispatch files and puts tracking on the customer's order.
+   *
+   * This is the step that makes `carrier`, `trackingNumber`, `trackingUrl` and
+   * `dispatchedAt` non-null — until it runs, an order sits at `acknowledged`
+   * with an empty tracking block however long ago it actually shipped.
+   *
+   * Driven by a cron, like the ack poll, because Gardners writes dispatch files
+   * on its own schedule: "at present once daily, usually around late evening",
+   * with the spec explicitly reserving the right to change both frequency and
+   * timing.
+   */
+  async pollDispatches(): Promise<{ files: number; lines: number; ordersDispatched: number }> {
+    // Same absolute as the ack poll: nothing reaches Gardners in development.
+    if (isDropshipSftpBlocked()) {
+      return { files: 0, lines: 0, ordersDispatched: 0 };
+    }
+
+    const outcome = await gardnersDropshipOrderService.pollDispatches();
+    if (outcome.dispatched.length === 0) {
+      return { files: outcome.filesProcessed, lines: 0, ordersDispatched: 0 };
+    }
+
+    // One dispatch file can carry lines from several of our orders, and one
+    // order's lines can arrive across several files. Group by dropship order so
+    // each customer order is touched once per run.
+    const byDropshipOrder = new Map<number, typeof outcome.dispatched>();
+    for (const line of outcome.dispatched) {
+      const list = byDropshipOrder.get(line.dropshipOrderId) ?? [];
+      list.push(line);
+      byDropshipOrder.set(line.dropshipOrderId, list);
+    }
+
+    let ordersDispatched = 0;
+
+    for (const [dropshipOrderId, lines] of byDropshipOrder) {
+      try {
+        const applied = await this.applyDispatchToOrder(dropshipOrderId, lines);
+        if (applied) ordersDispatched += 1;
+      } catch (err) {
+        // One order failing to update must not lose the dispatch rows already
+        // written for the others — those are the durable record, and the next
+        // poll will not re-read a deleted file.
+        logger.error('Failed to apply dispatch to order', {
+          dropshipOrderId,
+          error: (err as Error).message,
+        });
+      }
+    }
+
+    return { files: outcome.filesProcessed, lines: outcome.dispatched.length, ordersDispatched };
+  },
+
+  /**
+   * Puts one dropship order's dispatch details onto the customer order.
+   *
+   * **Which tracking wins, when a parcel splits.** An order can ship as several
+   * parcels with different tracking numbers, and `orders` has room for exactly
+   * one. This takes the first dispatch that actually carries a tracking number,
+   * on the reasoning that the customer's "track my parcel" link should be
+   * stable — a link that changes each time another box ships is worse than one
+   * that points at the first. Every parcel is recorded in full on
+   * `gardners_dropship_dispatches`, so nothing is lost, and a future
+   * multi-parcel UI reads from there.
+   *
+   * Only ever moves an order *forward*: an order already `delivered` or
+   * `refunded` is left alone, so a late-arriving dispatch file cannot walk a
+   * finished order backwards into `dispatched`.
+   */
+  async applyDispatchToOrder(
+    dropshipOrderId: number,
+    lines: { carrier: string | null; trackingNumber: string | null; trackingUrl: string | null; dispatchedOn: string | null }[],
+  ): Promise<boolean> {
+    const [order] = await db
+      .select({ id: orders.id, trackingNumber: orders.trackingNumber })
+      .from(orders)
+      .where(eq(orders.gardnersDropshipOrderId, dropshipOrderId))
+      .limit(1);
+
+    if (!order) {
+      logger.warn('Dispatch for a dropship order with no customer order', { dropshipOrderId });
+      return false;
+    }
+
+    const withTracking = lines.find((line) => line.trackingNumber) ?? lines[0];
+
+    // Earliest dispatch date across this batch — when the order started
+    // shipping, not when the last box did. Null when no line carried a
+    // parseable date; better to leave the field empty than to stamp "shipped
+    // just now" on a parcel that actually left days ago.
+    const dates = lines.map((l) => l.dispatchedOn).filter((d): d is string => d !== null).sort();
+    const dispatchedAt = dates.length > 0 ? new Date(`${dates[0]}T00:00:00.000Z`) : null;
+
+    const result = await db
+      .update(orders)
+      .set({
+        status: 'dispatched',
+        // Never overwrite tracking already on the order — the first parcel's
+        // link stays the customer's link.
+        ...(order.trackingNumber
+          ? {}
+          : {
+              carrier: withTracking.carrier,
+              trackingNumber: withTracking.trackingNumber,
+              trackingUrl: withTracking.trackingUrl,
+            }),
+        ...(dispatchedAt ? { dispatchedAt } : {}),
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(orders.id, order.id),
+          // Forward-only, from the states that follow supplier submission.
+          // `paid` is deliberately absent: a dispatch arriving while the order
+          // is still `paid` means the ack poll never marked us submitted, and
+          // jumping straight to `dispatched` would starve reconciliation
+          // (`pollAcknowledgements` filters on `submitted_to_supplier`) — the
+          // ack would then never land on the lines. Better to leave it visible
+          // to an operator than to silently paper over the state gap.
+          inArray(orders.status, ['submitted_to_supplier', 'acknowledged', 'dispatched']),
+        ),
+      )
+      .returning({ id: orders.id });
+
+    if (result.length === 0) return false;
+
+    logger.info('Order dispatched', {
+      orderId: order.id,
+      carrier: withTracking.carrier,
+      hasTracking: Boolean(withTracking.trackingNumber),
+    });
+    return true;
   },
 
   /**

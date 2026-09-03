@@ -5,7 +5,12 @@
 
 ### Features
 
-* show postage margin in the admin console ([462832c](https://adl.github.com/adl-developer/kinkane-backend/commit/462832c0788e196b9ff605036a9fb225404f6010)) — [details](changelog/2026-09-03-delivery-options-client-brief.md)
+* show customers real tracking details once their order ships ([091d825](https://adl.github.com/adl-developer/kinkane-backend/commit/091d825cb689d8fca48f3ea0fa6e2e160f4274ea))
+* show postage margin in the admin console ([462832c](https://adl.github.com/adl-developer/kinkane-backend/commit/462832c0788e196b9ff605036a9fb225404f6010)) — [details](changelog/2026-09-03-hdd-dispatch-polling.md)
+
+### Bug Fixes
+
+* send buyers back to their cart after checkout and accept an empty status filter ([0fce732](https://adl.github.com/adl-developer/kinkane-backend/commit/0fce7324ed606b0a57261bbe1f640b5dce7d5239))
 
 
 ## 2026-09-02

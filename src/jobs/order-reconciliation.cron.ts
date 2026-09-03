@@ -16,17 +16,23 @@ import { logger } from '../lib/logger';
 const ABANDONED_CHECKOUT_HOURS = 25;
 
 /**
- * Runs every 30 minutes: polls Gardners for order acknowledgements.
+ * Runs every 30 minutes: polls Gardners for order acknowledgements, then for
+ * dispatches.
  *
- * Frequent because this is the customer-visible half of fulfilment — "we've
- * sent your order to our supplier" turning into "confirmed" is the last status
- * change most buyers will actually watch for. Gardners writes the .ACK on its
- * own schedule, so there is nothing to wait on synchronously.
+ * Frequent because this is the customer-visible half of fulfilment — an order
+ * turning into "confirmed" and then into "on its way, here is your tracking
+ * number" covers the two status changes buyers actually watch for.
  *
- * NOTE: in a multi-process cluster this runs in every worker at once. Polling
- * is read-mostly and the status write is idempotent, so duplicate runs are
- * harmless — but each one opens its own SFTP session, which is why the ack poll
- * is not scheduled more aggressively than this.
+ * The two polls share a tick but not a fate: dispatches are collected even when
+ * the ack poll throws, because they are independent files and an SFTP hiccup on
+ * one directory says nothing about the other. Dispatch runs second only because
+ * an order normally reaches `acknowledged` before it ships.
+ *
+ * NOTE: in a multi-process cluster this runs in every worker at once. Both
+ * polls are idempotent — the ack status write is, and dispatch inserts are
+ * arbitrated by `uq_gardners_dropship_dispatch_line` — so duplicate runs are
+ * harmless. Each one opens its own SFTP session, which is why neither is
+ * scheduled more aggressively than this.
  */
 export function startOrderReconciliationCron(): ScheduledTask {
   const task = cron.schedule('*/30 * * * *', async () => {
@@ -37,6 +43,17 @@ export function startOrderReconciliationCron(): ScheduledTask {
       }
     } catch (err) {
       logger.error('Order acknowledgement poll failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    try {
+      const { files, lines, ordersDispatched } = await fulfilmentService.pollDispatches();
+      if (ordersDispatched > 0) {
+        logger.info('Order dispatch poll complete', { files, lines, ordersDispatched });
+      }
+    } catch (err) {
+      logger.error('Order dispatch poll failed', {
         error: err instanceof Error ? err.message : String(err),
       });
     }

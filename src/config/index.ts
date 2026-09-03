@@ -617,7 +617,7 @@ export const config = {
       maxItems: env.CART_MAX_ITEMS,
       guestTtlDays: env.GUEST_CART_TTL_DAYS,
     },
-    orderSuccessUrl: env.STRIPE_ORDER_SUCCESS_URL ?? `${env.APP_URL}/orders?checkout=success`,
+    orderSuccessUrl: env.STRIPE_ORDER_SUCCESS_URL ?? `${env.APP_URL}/cart?checkout=success`,
     orderCancelUrl: env.STRIPE_ORDER_CANCEL_URL ?? `${env.APP_URL}/cart?checkout=cancelled`,
   },
 } as const;
