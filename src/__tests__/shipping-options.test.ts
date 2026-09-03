@@ -218,6 +218,53 @@ describe('shippingOptionsService.list', () => {
   });
 });
 
+// Before the rate table is switched on, one flat price covers a destination no
+// matter which service carries it. Offering two options at an identical price
+// would tell the buyer the tracked upgrade is free.
+describe('shippingOptionsService.list with the rate table off', () => {
+  const OFF = { SHIPPING_USE_RATE_TABLE: 'false', SHIPPING_RATES: 'GB:349,ROW:2499' };
+
+  it('offers exactly one option, at the flat price', async () => {
+    const { shippingOptionsService } = await load(OFF);
+
+    const { options } = await shippingOptionsService.list({
+      countryCode: 'GH', items: [book()], subtotalGbpPence: 1500, currency: 'GBP',
+    });
+
+    expect(options).toHaveLength(1);
+    expect(options[0].priceGbpPence).toBe(2499);
+    expect(options[0].recommended).toBe(true);
+  });
+
+  it('offers the service the order would actually ship by', async () => {
+    const { shippingOptionsService } = await load(OFF);
+
+    const ghana = await shippingOptionsService.list({
+      countryCode: 'GH', items: [book()], subtotalGbpPence: 1500, currency: 'GBP',
+    });
+    const uk = await shippingOptionsService.list({
+      countryCode: 'GB', items: [book()], subtotalGbpPence: 1500, currency: 'GBP',
+    });
+
+    // The legacy country rule: tracked airmail overseas, second class at home.
+    expect(ghana.options[0].serviceCode).toBe('011');
+    expect(uk.options[0].serviceCode).toBe('001');
+    expect(uk.options[0].priceGbpPence).toBe(349);
+  });
+
+  it('offers nothing when the flat table cannot price the destination', async () => {
+    const { shippingOptionsService } = await load({
+      ...OFF, SHIPPING_RATES: 'GB:349',
+    });
+
+    const { options } = await shippingOptionsService.list({
+      countryCode: 'GH', items: [book()], subtotalGbpPence: 1500, currency: 'GBP',
+    });
+
+    expect(options).toEqual([]);
+  });
+});
+
 describe('shippingOptionsService.isAvailable', () => {
   it('accepts a service the destination supports', async () => {
     const { shippingOptionsService } = await load();

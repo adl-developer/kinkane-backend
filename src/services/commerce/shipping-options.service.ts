@@ -15,7 +15,7 @@ import { logger } from '../../lib/logger';
 import { measureParcel, type ParcelItem } from './parcel';
 import { availableServiceCodes, quoteShipping, toPresentment, normalizeCountry } from './pricing';
 import { shippingRatesService } from './shipping-rates.service';
-import { GARDNERS_SERVICE_CODES } from './gardners-countries';
+import { GARDNERS_SERVICE_CODES, serviceCodeFor } from './gardners-countries';
 
 /** How each service is described to a customer. */
 interface ServicePresentation {
@@ -123,6 +123,46 @@ export const shippingOptionsService = {
 
     const parcel = measureParcel(options.items);
     const itemCount = options.items.reduce((sum, item) => sum + item.quantity, 0);
+
+    // With the rate table off, one flat price covers the destination no matter
+    // which service carries it — so offering a choice would show two options at
+    // an identical price and imply the tracked upgrade is free. Offer the one
+    // service that would actually be used instead. This keeps the endpoint
+    // truthful and integrable before the rate table is switched on.
+    if (!config.commerce.shipping.useRateTable) {
+      const serviceCode = serviceCodeFor(country);
+      const presentation = PRESENTATION[serviceCode];
+      if (!presentation) return { options: [], weightEstimated: parcel.estimated };
+
+      let quote;
+      try {
+        quote = quoteShipping({
+          countryCode: country,
+          itemCount,
+          subtotalGbpPence: options.subtotalGbpPence,
+        });
+      } catch {
+        return { options: [], weightEstimated: parcel.estimated };
+      }
+
+      const inEu = EU_COUNTRIES.has(country);
+      return {
+        options: [{
+          serviceCode,
+          label: presentation.label,
+          tracked: presentation.tracked,
+          estimatedDaysMin:
+            inEu && presentation.euDaysMin !== undefined ? presentation.euDaysMin : presentation.daysMin,
+          estimatedDaysMax:
+            inEu && presentation.euDaysMax !== undefined ? presentation.euDaysMax : presentation.daysMax,
+          priceMinor: toPresentment(quote.gbpPence, options.currency),
+          priceGbpPence: quote.gbpPence,
+          recommended: true,
+        }],
+        weightEstimated: parcel.estimated,
+      };
+    }
+
     const rateCard = await shippingRatesService.load();
 
     const priced: ShippingOption[] = [];

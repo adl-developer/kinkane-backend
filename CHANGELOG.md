@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-09-03
+
+### Features
+
+* show postage margin in the admin console ([462832c](https://adl.github.com/adl-developer/kinkane-backend/commit/462832c0788e196b9ff605036a9fb225404f6010)) — [details](changelog/2026-09-03-delivery-options-client-brief.md)
+
+
 ## 2026-09-02
 
 ### Features
