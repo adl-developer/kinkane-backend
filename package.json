@@ -8,7 +8,7 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "tsx src/db/install-extensions.ts && drizzle-kit migrate",
+    "db:migrate": "tsx src/db/install-extensions.ts && tsx src/db/build-concurrent-indexes.ts && drizzle-kit migrate",
     "db:init": "npm run db:migrate && tsx src/db/setup.ts",
     "db:reset": "tsx src/db/reset.ts",
     "gardners:dropship-test": "tsx scripts/gardners-dropship-test.ts",

@@ -11,6 +11,7 @@
 
 ### Bug Fixes
 
+* stop heavy baskets failing checkout with a server error ([3276e51](https://adl.github.com/adl-developer/kinkane-backend/commit/3276e5159f2e1d113af10f6acf58e2bc2db7e851)) — [details](changelog/2026-09-03-heavy-basket-checkout.md)
 * surface the real reason when a checkout or payment can't proceed ([237e49d](https://adl.github.com/adl-developer/kinkane-backend/commit/237e49d82d8bc4d7eb65ef4dfd84ae05e99ccb6e)) — [details](changelog/2026-09-03-heavy-basket-checkout.md)
 * never recommend a book the shop cannot sell ([094a1c9](https://adl.github.com/adl-developer/kinkane-backend/commit/094a1c9fac4e3ef249994acc4a2712adcb6ea2e0)) — [details](changelog/2026-09-03-heavy-basket-checkout.md)
 * tighten the dispatch poll so a mid-run failure cannot lose a shipment ([68c29e2](https://adl.github.com/adl-developer/kinkane-backend/commit/68c29e2c874f142b6793b9ce496e80ce504c01e2)) — [details](changelog/2026-09-03-hdd-dispatch-polling.md)

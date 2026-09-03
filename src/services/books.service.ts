@@ -900,18 +900,42 @@ function priceFields(
   };
 }
 
-function buildSortOrderBy(opts: ListBooksOptions): (SQL | PgColumn)[] {
-  const direction = opts.sort === 'desc' ? desc : asc;
+/**
+ * Sinks placeholder titles to the bottom of a title-ordered page.
+ *
+ * The catalogue carries rows whose title is punctuation and nothing else — `?`,
+ * `.`, `...`, `-`, the odd empty string — which sort ahead of every real book in
+ * ASCII order and so occupied the first page of `sortBy=title&sort=asc`. This is
+ * the rank they sort on first: 0 for a real title, 1 for one with no letter or
+ * digit anywhere in it.
+ *
+ * "No alphanumeric character *anywhere*" rather than the simpler "first
+ * character isn't alphanumeric", which would bury real books: quoted titles
+ * (`"The Nose"`) are common enough to appear four times in a 1000-row sample of
+ * the live catalogue, and `#Girlboss`-style titles are the same shape.
+ *
+ * NULL titles rank 1 too — `NULL ~ '...'` is NULL, so the CASE falls through to
+ * its ELSE — which is the intended answer, and saves a separate NULLS LAST.
+ */
+const TITLE_JUNK_RANK = sql`(CASE WHEN ${books.title} ~ '[[:alnum:]]' THEN 0 ELSE 1 END)`;
+
+export function buildSortOrderBy(opts: ListBooksOptions): (SQL | PgColumn)[] {
+  // The rank is always ASC, including when the title is DESC: "at the bottom"
+  // is a statement about the page, not about the sort direction, so reversing
+  // the title must not float the placeholders to the top. That asymmetry is
+  // also why it takes two indexes rather than one read backwards — see
+  // 0056_books_title_sortable_index.sql.
+  const byTitle = (): SQL[] => [TITLE_JUNK_RANK, sql`${books.title} ${opts.sort === 'desc' ? sql`DESC` : sql`ASC`}`];
 
   switch (opts.sortBy) {
     case 'title':
-      return [direction(books.title)];
+      return byTitle();
     case 'newest':
       return [
         sql`${books.publicationDate} ${opts.sort === 'asc' ? sql`ASC` : sql`DESC`} NULLS LAST`,
       ];
     default:
-      return opts.sort ? [direction(books.title)] : [books.updatedAt];
+      return opts.sort ? byTitle() : [books.updatedAt];
   }
 }
 

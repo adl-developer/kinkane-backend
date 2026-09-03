@@ -1,0 +1,27 @@
+-- `GET /books?sortBy=title` now sinks placeholder titles — the rows whose title
+-- is punctuation and nothing else (`?`, `.`, `...`) — below every real book, by
+-- ordering on a rank expression before the title itself. See buildSortOrderBy in
+-- src/services/books.service.ts.
+--
+-- Ordering on an expression makes idx_books_title unusable for the page: its
+-- order no longer satisfies the ORDER BY, so Postgres falls back to sorting the
+-- whole filtered set before LIMIT can apply — on a 2M-row catalogue that is the
+-- entire cost of a browse page, and the same regression shape documented on
+-- buildFastTitlePrefixOrderBy. These indexes carry the expression as their
+-- leading key so the ordered scan survives.
+--
+-- Two of them, because the rank does NOT reverse with the title: placeholders
+-- stay last in both directions, so `sort=desc` means (rank ASC, title DESC),
+-- which is not a backwards read of the ASC index (a backwards scan reverses
+-- every key at once). The CASE text must stay character-identical to the one
+-- in buildSortOrderBy or the planner will not match it to either index.
+--
+-- Building these during preDeploy takes a write lock on a ~2M-row table, which
+-- stalls the ingester for the length of the build. Both statements are IF NOT
+-- EXISTS because src/db/build-concurrent-indexes.ts has normally built them
+-- CONCURRENTLY by the time this runs, making it a no-op; the locking build here
+-- is the fallback for when that step failed. The CASE text is duplicated there
+-- and must match this one character for character — see
+-- docs/title-sort-index-rollout.md.
+CREATE INDEX IF NOT EXISTS "idx_books_title_sortable" ON "books" USING btree ((CASE WHEN "title" ~ '[[:alnum:]]' THEN 0 ELSE 1 END), "title");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "idx_books_title_sortable_desc" ON "books" USING btree ((CASE WHEN "title" ~ '[[:alnum:]]' THEN 0 ELSE 1 END), "title" DESC);
