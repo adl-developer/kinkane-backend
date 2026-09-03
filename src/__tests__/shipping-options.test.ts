@@ -313,6 +313,51 @@ describe('shippingOptionsService.defaultServiceCode', () => {
     expect(await shippingOptionsService.defaultServiceCode('ZZ')).toBeNull();
   });
 
+  // The bug this guards against: untracked airmail (010) stops at 2kg, so a
+  // parcel over that must not have 010 reselected here after the chooser already
+  // dropped it — that priced the order against a band that does not exist and
+  // failed checkout with a 500. With the parcel in hand, the default steps up to
+  // the tracked service that can actually carry it.
+  it('skips a service the parcel is too heavy for and steps up to one that fits', async () => {
+    const { shippingOptionsService } = await load();
+    const { buildRateCard } = await import('../services/commerce/shipping-rates.service');
+    const { measureParcel } = await import('../services/commerce/parcel');
+    const rateCard = buildRateCard(ROWS);
+
+    // Under 2kg: the cheap untracked service still wins.
+    const light = measureParcel([book({ weightGr: 300 })]);
+    expect(
+      await shippingOptionsService.defaultServiceCode('GH', {
+        itemCount: 1, subtotalGbpPence: 1500, parcel: light, rateCard,
+      }),
+    ).toBe('010');
+
+    // Over 2kg (the aircraft-book case): 010 cannot carry it, so the tracked 011
+    // is chosen instead of failing.
+    const heavy = measureParcel([book({ weightGr: 2500 })]);
+    expect(
+      await shippingOptionsService.defaultServiceCode('GH', {
+        itemCount: 1, subtotalGbpPence: 1500, parcel: heavy, rateCard,
+      }),
+    ).toBe('011');
+  });
+
+  it('is null when no service can carry the parcel at all', async () => {
+    const { shippingOptionsService } = await load();
+    const { buildRateCard } = await import('../services/commerce/shipping-rates.service');
+    const { measureParcel } = await import('../services/commerce/parcel');
+    const rateCard = buildRateCard(ROWS);
+
+    // Heavier than even the tracked ceiling (30kg): nothing fits, so checkout
+    // gets the null it turns into a clear "too heavy" refusal.
+    const enormous = measureParcel([book({ weightGr: 31000 })]);
+    expect(
+      await shippingOptionsService.defaultServiceCode('GH', {
+        itemCount: 1, subtotalGbpPence: 1500, parcel: enormous, rateCard,
+      }),
+    ).toBeNull();
+  });
+
   // With the flag off, the legacy country rule still decides, so this must not
   // quietly start returning a code.
   it('is null when the rate table is switched off', async () => {
