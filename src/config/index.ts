@@ -7,6 +7,16 @@ const envSchema = z.object({
   PORT: z.coerce.number().default(3000),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
 
+  // Minimum log level that gets written. Left unset, the logger keeps debug in
+  // development and starts at info everywhere else (see lib/logger).
+  LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).optional(),
+
+  // Error reporting. Unset disables Sentry entirely — local and test runs need
+  // no account. Tracing is off by default (errors only); raise the sample rate
+  // to turn on performance monitoring where a deployment wants it.
+  SENTRY_DSN: z.string().url().optional(),
+  SENTRY_TRACES_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(0),
+
   DATABASE_URL: z.string().url(),
   REDIS_URL: z.string().url(),
 
@@ -499,6 +509,11 @@ const firebaseCredentials = resolveFirebaseCredentials();
 export const config = {
   port: env.PORT,
   nodeEnv: env.NODE_ENV,
+  logLevel: env.LOG_LEVEL,
+  sentry: {
+    dsn: env.SENTRY_DSN,
+    tracesSampleRate: env.SENTRY_TRACES_SAMPLE_RATE,
+  },
   database: {
     url: env.DATABASE_URL,
   },

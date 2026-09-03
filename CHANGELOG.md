@@ -10,6 +10,7 @@
 
 ### Bug Fixes
 
+* tighten the dispatch poll so a mid-run failure cannot lose a shipment ([68c29e2](https://adl.github.com/adl-developer/kinkane-backend/commit/68c29e2c874f142b6793b9ce496e80ce504c01e2)) — [details](changelog/2026-09-03-hdd-dispatch-polling.md)
 * send buyers back to their cart after checkout and accept an empty status filter ([0fce732](https://adl.github.com/adl-developer/kinkane-backend/commit/0fce7324ed606b0a57261bbe1f640b5dce7d5239))
 
 

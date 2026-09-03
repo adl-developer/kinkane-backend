@@ -1,3 +1,5 @@
+// Must be first: initialises Sentry before the app's module graph loads.
+import './instrument';
 import app from './app';
 import { bootstrapFirstAdmin } from './services/admin/bootstrap.service';
 import { config } from './config';
