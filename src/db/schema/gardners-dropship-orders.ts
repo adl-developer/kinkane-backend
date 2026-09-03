@@ -11,7 +11,7 @@
  * increasing for the lifetime of the table, exactly what the spec requires,
  * with no separate counter to maintain.
  */
-import { pgTable, pgEnum, serial, integer, varchar, text, boolean, date, timestamp, index } from 'drizzle-orm/pg-core';
+import { pgTable, pgEnum, serial, integer, varchar, text, boolean, date, timestamp, index, uniqueIndex } from 'drizzle-orm/pg-core';
 
 export const gardnersDropshipOrderStatusEnum = pgEnum('gardners_dropship_order_status', [
   'pending_submission',
@@ -139,3 +139,72 @@ export type GardnersDropshipOrder = typeof gardnersDropshipOrders.$inferSelect;
 export type NewGardnersDropshipOrder = typeof gardnersDropshipOrders.$inferInsert;
 export type GardnersDropshipOrderLine = typeof gardnersDropshipOrderLines.$inferSelect;
 export type NewGardnersDropshipOrderLine = typeof gardnersDropshipOrderLines.$inferInsert;
+
+/**
+ * One row per DETAIL record in a `.HDD` dispatch file — that is, one row per
+ * *item actually shipped*, not per order.
+ *
+ * A separate table rather than columns on the order line, because the I12
+ * specification makes clear that dispatch is many-to-one with an order line:
+ * "where multiple copies are ordered and the Wait Time specified when ordering
+ * has been exceeded ... the one title may be shipped on multiple dispatches."
+ * Folding the newest dispatch onto the line would silently discard the earlier
+ * shipment, tracking number and all.
+ *
+ * `rawDetail` keeps the DETAIL1-4 prose verbatim. Carrier, tracking number and
+ * tracking URL are all recovered from that free text by hdd-parser, so when the
+ * extraction misses a phrasing an operator needs to see what was actually sent
+ * rather than the parser's opinion of it.
+ */
+export const gardnersDropshipDispatches = pgTable(
+  'gardners_dropship_dispatches',
+  {
+    id: serial('id').primaryKey(),
+    orderLineId: integer('order_line_id')
+      .notNull()
+      .references(() => gardnersDropshipOrderLines.id, { onDelete: 'cascade' }),
+
+    // Gardners' own dispatch number. Everything shipped in one parcel shares
+    // it, so it is what groups these rows into physical shipments.
+    dispatchNo: varchar('dispatch_no', { length: 20 }).notNull(),
+
+    // The ISBN Gardners actually supplied, which may differ from the one
+    // ordered — an out-of-print title can be slipped to a new edition. Stored
+    // so a substitution is visible instead of inferred.
+    isbn13: varchar('isbn13', { length: 13 }).notNull(),
+    quantity: integer('quantity').notNull(),
+    dispatchedOn: date('dispatched_on'),
+
+    // What Gardners charged *us*. Not what the customer paid — that is on the
+    // order — but needed to reconcile the supplier invoice.
+    pricePence: integer('price_pence'),
+    deliveryPence: integer('delivery_pence'),
+    discountBasisPoints: integer('discount_basis_points'),
+
+    carrier: varchar('carrier', { length: 100 }),
+    trackingNumber: varchar('tracking_number', { length: 100 }),
+    trackingUrl: varchar('tracking_url', { length: 500 }),
+
+    /** DETAIL1-4 verbatim, newline-joined. The audit trail behind the three fields above. */
+    rawDetail: text('raw_detail'),
+    /** The `.HDD` file this came from, for tracing a bad row back to its source. */
+    sourceFile: varchar('source_file', { length: 100 }),
+
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    orderLineIdIdx: index('idx_gardners_dropship_dispatches_line').on(t.orderLineId),
+    // **The idempotency guarantee.** HDD files are account-wide and numbered by
+    // Gardners, so a redelivered or re-collected file is a normal event, not a
+    // fault. This makes reprocessing one a no-op instead of a duplicate
+    // shipment — which matters because the customer-facing status and tracking
+    // are derived from these rows.
+    uniqueDispatchLine: uniqueIndex('uq_gardners_dropship_dispatch_line').on(
+      t.dispatchNo,
+      t.orderLineId,
+    ),
+  }),
+);
+
+export type GardnersDropshipDispatch = typeof gardnersDropshipDispatches.$inferSelect;
+export type NewGardnersDropshipDispatch = typeof gardnersDropshipDispatches.$inferInsert;

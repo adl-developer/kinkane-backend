@@ -5,17 +5,19 @@
  * same convention onix_ingester's feed fetcher uses) and reconcile it back
  * onto the DB rows.
  *
- * Deliberately out of scope for this first cut: dispatch (.HDD) polling,
- * backorder (BACKORD.TXT) reconciliation, cancellation (.CRF/.CRA), and ASN
- * invoice ingestion. Those are separate, later pieces of the same I12 cycle
- * (see the spec) — this covers order submission through acknowledgement,
- * which is the part needed to prove the purchase flow end to end.
+ * Dispatch (.HDD) polling is now included — see `pollDispatches` — which is
+ * what turns an acknowledged order into a tracked one.
+ *
+ * Still out of scope: backorder (BACKORD.TXT) reconciliation, cancellation
+ * (.CRF/.CRA), and ASN invoice ingestion. Those are separate, later pieces of
+ * the same I12 cycle (see the spec).
  */
-import { eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '../../db';
 import {
   gardnersDropshipOrders,
   gardnersDropshipOrderLines,
+  gardnersDropshipDispatches,
   type GardnersDropshipOrder,
   type GardnersDropshipOrderLine,
 } from '../../db/schema';
@@ -24,6 +26,7 @@ import { logger } from '../../lib/logger';
 import { withDropshipSftp, HOME_DELIVERY_DIRS } from './connection.service';
 import { buildOrderFile, type RecipientAddress } from './order-builder';
 import { parseAckFile } from './ack-parser';
+import { parseHddFile, type HddDispatchLine } from './hdd-parser';
 
 export interface CreateOrderLineInput {
   isbn13: string;
@@ -343,6 +346,222 @@ async function pollAck(orderId: number): Promise<PollAckOutcome> {
   return { status: 'acknowledged', fulfilled, backordered, rejected };
 }
 
+export interface DispatchedLineResult {
+  orderLineId: number;
+  dropshipOrderId: number;
+  dispatchNo: string;
+  carrier: string | null;
+  trackingNumber: string | null;
+  trackingUrl: string | null;
+  dispatchedOn: string | null;
+}
+
+export interface PollDispatchesOutcome {
+  /** `.HDD` files collected and processed this run. */
+  filesProcessed: number;
+  /** DETAIL records read across those files. */
+  recordsRead: number;
+  /** Records that were new to us — the rest were already recorded. */
+  recordsApplied: number;
+  /** Records naming a unique reference we have no order line for. */
+  unmatched: number;
+  dispatched: DispatchedLineResult[];
+}
+
+/**
+ * How many `.HDD` files one poll will collect.
+ *
+ * Unlike the ack poll, this is not scoped to a single order: HDD files are
+ * account-wide, and if polling has been down for a while the directory can
+ * hold a backlog. A cap keeps one run bounded — the rest are collected on the
+ * next pass a few minutes later, which is soon enough for a dispatch
+ * notification and much better than one run holding an SFTP session open for
+ * an unbounded stretch.
+ */
+const MAX_DISPATCH_FILES_PER_POLL = 25;
+
+/**
+ * Collects dispatch files from HOMEDISP and records what shipped.
+ *
+ * **Structurally different from `pollAck`, and the difference matters.** An ack
+ * is per-order: we know its filename because we chose it. A dispatch file is
+ * per-*account* — Gardners numbers them itself, "usually from 00000001.HDD and
+ * upwards, although this may change without prior warning" — and one file
+ * carries dispatches for many different orders. So this lists the directory
+ * rather than fetching a known name, and fans each DETAIL record out to
+ * whichever order line it names.
+ *
+ * The link is the UNIQUE REFERENCE we sent in the .ORD, which is the order
+ * line's own id. Note that the ISBN in the dispatch record is deliberately
+ * *not* used to match: the spec allows a title to be slipped to a different
+ * edition, so the ISBN can legitimately differ from the one ordered.
+ *
+ * Every file is gated on Gardners' `.DONE` sentinel, exactly as the acks are,
+ * and deleted once read — per the spec's "it is your responsibility to remove
+ * these files", with the added warning that a directory left to grow makes
+ * every future listing slower.
+ *
+ * Safe to call repeatedly. Re-reading a file that was already processed inserts
+ * nothing, because `uq_gardners_dropship_dispatch_line` makes a repeat a no-op
+ * rather than a second shipment.
+ */
+async function pollDispatches(): Promise<PollDispatchesOutcome> {
+  const outcome: PollDispatchesOutcome = {
+    filesProcessed: 0,
+    recordsRead: 0,
+    recordsApplied: 0,
+    unmatched: 0,
+    dispatched: [],
+  };
+
+  const files = await withDropshipSftp(async (client) => {
+    const entries = await client.list(HOME_DELIVERY_DIRS.dispatch);
+    const names = new Set(entries.map((entry) => entry.name));
+
+    // Only files whose .DONE sentinel is present — anything else may still be
+    // being written on Gardners' side.
+    const ready = entries
+      .filter((entry) => entry.type === '-' && /\.HDD$/i.test(entry.name))
+      .filter((entry) => names.has(`${entry.name}.DONE`))
+      .map((entry) => entry.name)
+      .sort()
+      .slice(0, MAX_DISPATCH_FILES_PER_POLL);
+
+    const collected: { name: string; raw: string }[] = [];
+    for (const name of ready) {
+      const remotePath = `${HOME_DELIVERY_DIRS.dispatch}/${name}`;
+      const buffer = (await client.get(remotePath)) as Buffer;
+      collected.push({ name, raw: buffer.toString('ascii') });
+      await client.delete(remotePath).catch(() => undefined);
+      await client.delete(`${remotePath}.DONE`).catch(() => undefined);
+    }
+    return collected;
+  });
+
+  for (const file of files) {
+    outcome.filesProcessed += 1;
+    const parsed = parseHddFile(file.raw);
+    outcome.recordsRead += parsed.lines.length;
+
+    if (parsed.lines.length === 0) continue;
+
+    // One lookup per file rather than per record: a dispatch file can hold
+    // hundreds of DETAIL lines, and they are all keyed on a column we can
+    // fetch in a single IN.
+    const lineIds = [...new Set(parsed.lines.map((l) => Number(l.uniqueReference)))].filter(
+      (id) => Number.isInteger(id) && id > 0,
+    );
+    if (lineIds.length === 0) {
+      outcome.unmatched += parsed.lines.length;
+      continue;
+    }
+
+    const known = await db
+      .select({ id: gardnersDropshipOrderLines.id, orderId: gardnersDropshipOrderLines.orderId })
+      .from(gardnersDropshipOrderLines)
+      .where(inArray(gardnersDropshipOrderLines.id, lineIds));
+    const orderIdByLine = new Map(known.map((row) => [row.id, row.orderId]));
+
+    for (const record of parsed.lines) {
+      const lineId = Number(record.uniqueReference);
+      const dropshipOrderId = orderIdByLine.get(lineId);
+
+      if (dropshipOrderId === undefined) {
+        // A dispatch for a line we have no record of. Logged, not thrown: the
+        // spec says Gardners keeps files for 30 days, so an old file collected
+        // after a database restore is a plausible cause — and one stray record
+        // must not cost us the rest of the file.
+        outcome.unmatched += 1;
+        logger.warn('Dispatch record for an unknown order line', {
+          file: file.name,
+          uniqueReference: record.uniqueReference,
+          dispatchNo: record.dispatchNo,
+        });
+        continue;
+      }
+
+      const applied = await recordDispatch(lineId, record, file.name);
+      if (!applied) continue;
+
+      outcome.recordsApplied += 1;
+      outcome.dispatched.push({
+        orderLineId: lineId,
+        dropshipOrderId,
+        dispatchNo: record.dispatchNo,
+        carrier: record.carrier,
+        trackingNumber: record.trackingNumber,
+        trackingUrl: record.trackingUrl,
+        dispatchedOn: record.dispatchedOn,
+      });
+    }
+  }
+
+  if (outcome.filesProcessed > 0) {
+    logger.info('Gardners dispatch files processed', {
+      files: outcome.filesProcessed,
+      read: outcome.recordsRead,
+      applied: outcome.recordsApplied,
+      unmatched: outcome.unmatched,
+    });
+  }
+
+  return outcome;
+}
+
+/**
+ * Writes one dispatch row and advances the line's status.
+ *
+ * Returns false when the row already existed, which is the ordinary outcome of
+ * re-reading a file. `onConflictDoNothing` rather than a select-then-insert:
+ * two workers can poll at once (the cron runs in every process), and only the
+ * unique index can actually arbitrate that.
+ */
+async function recordDispatch(
+  orderLineId: number,
+  record: HddDispatchLine,
+  sourceFile: string,
+): Promise<boolean> {
+  const inserted = await db
+    .insert(gardnersDropshipDispatches)
+    .values({
+      orderLineId,
+      dispatchNo: record.dispatchNo,
+      isbn13: record.isbn13,
+      quantity: record.quantity,
+      dispatchedOn: record.dispatchedOn,
+      pricePence: record.pricePence,
+      deliveryPence: record.deliveryPence,
+      discountBasisPoints: record.discountBasisPoints,
+      carrier: record.carrier,
+      trackingNumber: record.trackingNumber,
+      trackingUrl: record.trackingUrl,
+      rawDetail: record.descriptionLines.join('\n') || null,
+      sourceFile,
+    })
+    .onConflictDoNothing({
+      target: [gardnersDropshipDispatches.dispatchNo, gardnersDropshipDispatches.orderLineId],
+    })
+    .returning({ id: gardnersDropshipDispatches.id });
+
+  if (inserted.length === 0) return false;
+
+  // A dispatched line is fulfilled by definition — the books physically left
+  // the warehouse. Only ever an upgrade: a line already marked `rejected`
+  // keeps that, because a rejection followed by a dispatch is a contradiction
+  // an operator should see rather than one this should quietly resolve.
+  await db
+    .update(gardnersDropshipOrderLines)
+    .set({ status: 'fulfilled', updatedAt: new Date() })
+    .where(
+      and(
+        eq(gardnersDropshipOrderLines.id, orderLineId),
+        inArray(gardnersDropshipOrderLines.status, ['pending', 'partial', 'backordered']),
+      ),
+    );
+
+  return true;
+}
+
 /** Creates the order rows, then immediately submits it. Convenience wrapper for the common case. */
 async function createAndSubmit(input: CreateOrderInput): Promise<OrderWithLines> {
   const created = await createOrder(input);
@@ -354,6 +573,7 @@ export const gardnersDropshipOrderService = {
   createOrder,
   submitOrder,
   pollAck,
+  pollDispatches,
   createAndSubmit,
   getOrder,
 };
