@@ -5,7 +5,7 @@
 
 ### Features
 
-* show customers real tracking details once their order ships ([20eb507](https://adl.github.com/adl-developer/kinkane-backend/commit/20eb5070a7779f1793abd181d4a99bb572895f1a))
+* show customers real tracking details once their order ships ([091d825](https://adl.github.com/adl-developer/kinkane-backend/commit/091d825cb689d8fca48f3ea0fa6e2e160f4274ea))
 * show postage margin in the admin console ([462832c](https://adl.github.com/adl-developer/kinkane-backend/commit/462832c0788e196b9ff605036a9fb225404f6010)) — [details](changelog/2026-09-03-hdd-dispatch-polling.md)
 
 

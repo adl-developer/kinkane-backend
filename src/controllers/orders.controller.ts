@@ -9,7 +9,16 @@ const listSchema = z.object({
   offset: z.coerce.number().int().min(0).default(0),
   // The order UI's filter tabs. 'pending' and 'closed' are accepted but cannot
   // widen the result set — see list() in orders.service.
-  status: z.enum(['in_progress', 'delivered', 'closed']).optional(),
+  //
+  // The "All" tab sends either no status at all, an empty one, or the literal
+  // 'all'; each drops the filter rather than 400ing, so a cleared tab and an
+  // absent parameter behave the same.
+  status: z
+    .preprocess(
+      (value) => (value === '' || value === 'all' ? undefined : value),
+      z.enum(['in_progress', 'delivered', 'closed']).optional(),
+    )
+    .optional(),
 });
 
 /**
