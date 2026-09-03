@@ -303,6 +303,15 @@ export async function bustUserExclusions(userId: number): Promise<void> {
 }
 
 /**
+ * The version prefix booksService.personalized writes under. It lives here as a
+ * named constant because this file has to delete exactly what that file wrote,
+ * and the two drifted once already: this deleted `personalized:v1:` for the
+ * whole life of the v2 key, so it matched nothing and a user's rejected books
+ * stayed in their feed for the full hour. Bump both together.
+ */
+const PERSONALIZED_CACHE_PREFIX = 'personalized:v3:';
+
+/**
  * Busts the personalized feed cache for all limit variants. `limit` is bounded
  * to 1-20 by explore.controller's limitSchema, so we delete the exact bounded
  * key set directly rather than scanning the keyspace with KEYS — KEYS is an
@@ -312,7 +321,7 @@ export async function bustUserExclusions(userId: number): Promise<void> {
 export async function bustPersonalizedFeedCache(userId: number): Promise<void> {
   const keys = Array.from(
     { length: PERSONALIZED_CACHE_MAX_LIMIT },
-    (_, i) => `personalized:v1:${userId}:${i + 1}`,
+    (_, i) => `${PERSONALIZED_CACHE_PREFIX}${userId}:${i + 1}`,
   );
   await redis.del(...keys);
 }

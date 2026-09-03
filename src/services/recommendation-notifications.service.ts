@@ -15,6 +15,7 @@ import {
   buildWorkExclusionCondition,
   getUserExclusions,
 } from '../lib/exclusions';
+import { buildFeedCondition } from './books.service';
 import { enqueueEmail } from '../lib/email-queue';
 import { enqueuePush } from '../lib/push-queue';
 import { config } from '../config';
@@ -84,6 +85,12 @@ export async function pickUnsentRecommendation(userId: number): Promise<UnsentRe
         isNull(recommendationEmailLog.bookId),
         isNull(userDislikedBooks.bookId),
         workExclusion,
+        // Withdrawn and unsellable titles are never emailed out. Same argument
+        // as the author check below, only stronger: this pick is unprompted, and
+        // an email recommending a book that turns out to be unbuyable spends the
+        // reader's trust on a dead end. Shared with every feed's predicate so
+        // the two cannot disagree about what sellable means.
+        buildFeedCondition(),
         // An email whose subject line names a book with no author is worse
         // than no email at all — this is the one surface where the pick is
         // unprompted, so a broken-looking record has nowhere to hide.

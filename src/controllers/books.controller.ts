@@ -26,11 +26,14 @@ const suggestionsSchema = z.object({
   dedupe: dedupeParam,
 });
 
+// No `shoppable` here, unlike the catalogue listing. A recommendation is an
+// invitation to buy: every "you may also like" card carries an Add button, so
+// the books are always sellable ones and the live price and stock are always on
+// the row. There is nothing for a client to ask for, and nothing it can forget.
+// A stray `?shoppable=` is ignored rather than rejected, so clients written
+// against the old flag keep working and get what they were asking for anyway.
 const similarSchema = z.object({
   limit: z.coerce.number().int().min(1).max(20).default(10),
-  // See the note on shoppable in listSchema — a PDP's "you may also like"
-  // carries Add buttons, so the shop should pass true.
-  shoppable: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
 });
 
 // Everything both versions of GET /books accept. `type` is the only difference between
@@ -169,22 +172,20 @@ const basketRecsSchema = z.object({
     return [...new Set(ids)];
   }),
   limit: z.coerce.number().int().min(1).max(20).default(8),
-  shoppable: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
 });
 
 /**
- * The currency a shop surface should quote in, or undefined when the caller did
- * not ask to shop.
+ * The currency this request's recommendations should be quoted in.
  *
  * Resolved per request rather than baked into a cached feed, for the same
  * reason the price itself is attached after the cache: a visitor in Lagos and
  * one in Berlin hit the same cached pool and must not see each other's money.
+ *
+ * It used to return undefined for a caller that had not passed `shoppable`,
+ * which is what a feed with no prices on it looked like. Recommendations are
+ * always priced now, so there is always a currency to resolve.
  */
-export async function shopCurrency(
-  req: Request,
-  shoppable: boolean | undefined,
-): Promise<string | undefined> {
-  if (!shoppable) return undefined;
+export async function shopCurrency(req: Request): Promise<string> {
   return resolveCurrency({ countryCode: await resolveRequestCountry(req) });
 }
 
@@ -290,8 +291,7 @@ export const booksController = {
       parsed.data.bookIds,
       parsed.data.limit,
       userId,
-      parsed.data.shoppable,
-      await shopCurrency(req, parsed.data.shoppable),
+      await shopCurrency(req),
     );
 
     res.status(200).json({ books });
@@ -441,8 +441,7 @@ export const booksController = {
         id,
         parsed.data.limit,
         userId,
-        parsed.data.shoppable,
-        await shopCurrency(req, parsed.data.shoppable),
+        await shopCurrency(req),
       );
       res.status(200).json({ books: results });
     } catch (err: unknown) {

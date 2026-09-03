@@ -39,8 +39,9 @@ router.get('/trending', optionalAuth, exploreController.getTrending);
  * `'orders'` is a sales chart, `'trending'` is a discovery feed. Both paths
  * return the same book shape, so one card component renders either.
  *
- * `shoppable=true` restricts to sellable books and attaches the live shop
- * fields, on the fallback as well as the chart.
+ * Books the shop cannot sell never appear on either path, and every row carries
+ * the live price and stock — on the fallback as well as the chart. Neither is a
+ * flag the caller passes.
  *
  * Returns an EMPTY `books` array when nothing has sold in the window. It never
  * substitutes another feed — a discovery list presented as a sales chart would
