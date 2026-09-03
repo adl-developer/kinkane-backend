@@ -62,6 +62,65 @@ export const commercePaths = {
     },
   },
 
+  '/api/v1/cart/shipping-options': {
+    post: {
+      tags: [TAG],
+      ...publicEndpoint,
+      summary: 'Delivery options for a basket, priced',
+      description: [
+        'What delivery this basket can have to this country, and what each costs. Prices nothing else and stores nothing.',
+        '',
+        '### Why this screen matters',
+        'The gap between the two overseas services is not cosmetic. The same 400g parcel to Ghana is **£8.45 untracked and £32.52 tracked** — often more than the books. This is where the buyer decides whether to pay for tracking, rather than having it decided for them.',
+        '',
+        '### Reading the response',
+        'Only services the destination actually supports come back, read from our supplier’s published rates. Coverage is genuinely uneven: some countries are tracked-only, some untracked-only, and a few we can address have no published rate at all.',
+        '',
+        'An **empty `options` array is a real answer, not an error.** `unavailableReason` says which: `country_not_supported` (we cannot address a parcel there) or `no_service` (we can, but nothing can carry this basket — usually a basket too heavy for the only service available). Show it in the cart rather than letting the buyer reach checkout and be refused.',
+        '',
+        '`recommended` marks the option to preselect — the **cheapest**, not the fastest, and the same figure the cart shows as its estimate.',
+        '',
+        '`weightEstimated` is true when a book in the basket had no weight recorded and one was assumed. The price is still binding; the flag is for support, not the buyer.',
+        '',
+        'Pass the chosen `serviceCode` to `POST /cart/checkout`. Prices are re-derived there from the code alone — a price sent by a client is never trusted.',
+      ].join('\n'),
+      requestBody: body(object({
+        countryCode: {
+          type: 'string', minLength: 2, maxLength: 2,
+          description: 'ISO-3166 alpha-2 destination. Required — this is not guessed from the caller’s IP, because quoting one country and charging for another is the failure this endpoint exists to prevent.',
+          example: 'GH',
+        },
+        lines: arrayOf(requestedLine, 'The basket. Signed-in callers may omit this to price their stored cart.'),
+        currency: {
+          type: 'string', minLength: 3, maxLength: 3,
+          description: 'ISO-4217 override. Ignored if unsupported — read `currency` off the response.',
+          example: 'GBP',
+        },
+      }, ['countryCode'])),
+      responses: {
+        200: json('The delivery options available.', object({
+          currency: { type: 'string', example: 'GBP' },
+          options: arrayOf(object({
+            serviceCode: { type: 'string', example: '010', description: 'Pass this to checkout.' },
+            label: { type: 'string', example: 'Standard international' },
+            tracked: { type: 'boolean', example: false },
+            estimatedDaysMin: { type: 'integer', example: 7 },
+            estimatedDaysMax: { type: 'integer', example: 10 },
+            priceMinor: { type: 'integer', example: 915, description: 'Minor units of `currency`.' },
+            priceGbpPence: { type: 'integer', example: 915 },
+            recommended: { type: 'boolean', example: true },
+          }), 'Cheapest first.'),
+          weightEstimated: { type: 'boolean', example: false },
+          unavailableReason: {
+            type: 'string', nullable: true, enum: ['country_not_supported', 'no_service'],
+            example: null,
+          },
+        })),
+        400: resp('ValidationError'),
+      },
+    },
+  },
+
   '/api/v1/cart': {
     get: {
       tags: [TAG],
@@ -216,6 +275,11 @@ export const commercePaths = {
             example: 'GH',
           },
         }, ['name', 'line1', 'city', 'postcode', 'countryCode']),
+        shippingServiceCode: {
+          type: 'string', pattern: '^\\d{3}$',
+          description: 'The delivery service the buyer chose, from `POST /cart/shipping-options`. Optional: omitting it gets the **cheapest** available service, so a client that never showed a chooser does not silently upgrade the buyer onto the expensive one. A code that does not serve the destination is a `400 SHIPPING_SERVICE_UNAVAILABLE` rather than a quiet downgrade.',
+          example: '010',
+        },
         shippingCountry: {
           type: 'string', minLength: 2, maxLength: 2,
           description: 'Only when you are *not* sending `shippingAddress`. One of the two is required.',

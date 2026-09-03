@@ -20,6 +20,8 @@ import { carts, cartItems, type Cart } from '../../db/schema';
 import { config } from '../../config';
 import { availabilityService, unbuyableResponse, type BuyableBook } from './availability.service';
 import { quoteShipping, resolveCurrency, toPresentment } from './pricing';
+import { shippingOptionsService } from './shipping-options.service';
+import type { ParcelItem } from './parcel';
 
 export interface CartLineView {
   bookId: number;
@@ -114,6 +116,61 @@ export interface PricedBasket {
   hasIssues: boolean;
 }
 
+/**
+ * Indicative shipping for a basket, in the customer's currency.
+ *
+ * Null when we cannot quote — an unknown country, an empty basket, or a
+ * destination we have no rate for. A number pulled from thin air is worse than
+ * admitting we cannot give one yet, and the cart UI has a "calculated at
+ * checkout" state for exactly this.
+ *
+ * Under the rate table this is the *cheapest* option, which is what the buyer
+ * will see preselected at checkout. Quoting the dearest here and the cheapest
+ * there would read as a price rise on the way to paying.
+ */
+async function estimateShippingMinor(options: {
+  countryCode?: string | null;
+  currency: string;
+  itemCount: number;
+  subtotalGbpPence: number;
+  parcelItems: (ParcelItem & { quantity: number })[];
+}): Promise<number | null> {
+  if (!options.countryCode || options.itemCount === 0) return null;
+
+  try {
+    if (config.commerce.shipping.useRateTable) {
+      const { options: available } = await shippingOptionsService.list({
+        countryCode: options.countryCode,
+        items: options.parcelItems,
+        subtotalGbpPence: options.subtotalGbpPence,
+        currency: options.currency,
+      });
+      return available[0]?.priceMinor ?? null;
+    }
+
+    const shipping = quoteShipping({
+      countryCode: options.countryCode,
+      itemCount: options.itemCount,
+      subtotalGbpPence: options.subtotalGbpPence,
+    });
+    return toPresentment(shipping.gbpPence, options.currency);
+  } catch {
+    return null;
+  }
+}
+
+/** The measurements a cart line contributes to the parcel. */
+function parcelItemFor(live: BuyableBook, quantity: number): ParcelItem & { quantity: number } {
+  return {
+    quantity,
+    weightGr: live.weightGr,
+    heightMm: live.heightMm,
+    widthMm: live.widthMm,
+    thicknessMm: live.thicknessMm,
+    productForm: live.productForm,
+  };
+}
+
 export const cartService = {
   /**
    * Prices a basket the client is holding, storing nothing.
@@ -203,19 +260,17 @@ export const cartService = {
       return sum + live.unitPriceGbpPence * Math.min(quantity, live.orderableQuantity);
     }, 0);
 
-    let estimatedShippingMinor: number | null = null;
-    if (options.countryCode && itemCount > 0) {
-      try {
-        const shipping = quoteShipping({
-          countryCode: options.countryCode,
-          itemCount,
-          subtotalGbpPence,
-        });
-        estimatedShippingMinor = toPresentment(shipping.gbpPence, currency);
-      } catch {
-        estimatedShippingMinor = null;
-      }
-    }
+    const estimatedShippingMinor = await estimateShippingMinor({
+      countryCode: options.countryCode,
+      currency,
+      itemCount,
+      subtotalGbpPence,
+      parcelItems: [...merged.entries()].flatMap(([bookId, quantity]) => {
+        const live = buyable.get(bookId);
+        if (!live) return [];
+        return [parcelItemFor(live, Math.min(quantity, live.orderableQuantity))];
+      }),
+    });
 
     return {
       currency,
@@ -340,19 +395,16 @@ export const cartService = {
     // Indicative shipping, quoted against the viewer's apparent country. Null
     // when we have no idea where they are: an estimate pulled from thin air is
     // worse than admitting we cannot give one yet.
-    let estimatedShippingMinor: number | null = null;
-    if (options.countryCode && itemCount > 0) {
-      try {
-        const shipping = quoteShipping({
-          countryCode: options.countryCode,
-          itemCount,
-          subtotalGbpPence,
-        });
-        estimatedShippingMinor = toPresentment(shipping.gbpPence, currency);
-      } catch {
-        estimatedShippingMinor = null;
-      }
-    }
+    const estimatedShippingMinor = await estimateShippingMinor({
+      countryCode: options.countryCode,
+      currency,
+      itemCount,
+      subtotalGbpPence,
+      parcelItems: sellable.flatMap((line) => {
+        const live = buyable.get(line.bookId);
+        return live ? [parcelItemFor(live, line.quantity)] : [];
+      }),
+    });
 
     return {
       cartId: cart.id,

@@ -17,6 +17,8 @@ import { config } from '../../config';
 import { geoService } from '../geo.service';
 import { convertFromGbpPence, percentOf, toGbpPenceFromMinor, toStripeAmount } from '../../lib/money';
 import { normalizeCountryCode } from '../../lib/country';
+import type { Parcel } from './parcel';
+import type { RateBand, RateCard } from './shipping-rates.service';
 
 /**
  * EU member states, used only to resolve the `EU` shipping/VAT bucket when a
@@ -148,8 +150,65 @@ export function fromPresentment(minor: number, currency: string): number {
 
 export interface ShippingQuote {
   gbpPence: number;
-  /** Which SHIPPING_RATES key produced it — stored on the order for audit. */
+  /**
+   * How this figure was arrived at, stored on the order so that "why was this
+   * charged?" is answerable from the row alone months later.
+   *
+   * Under the flat table it is the SHIPPING_RATES key ('GB', 'EU', 'ROW'). Under
+   * the rate table it is service, destination and band — '011:GH:500g'.
+   */
   rule: string;
+  /** The Gardners service this was priced for, when one was chosen. */
+  serviceCode?: string;
+  /** Despatch weight the band was picked from. */
+  weightG?: number;
+  /** True when a book's weight had to be guessed — see parcel.ts. */
+  estimatedWeight?: boolean;
+}
+
+/** Why a destination cannot be quoted, for a caller that wants to say so. */
+export class ShippingUnavailableError extends Error {
+  readonly statusCode = 503;
+  constructor(message: string, readonly reason: 'no_rate' | 'too_heavy') {
+    super(message);
+    this.name = 'ShippingUnavailableError';
+  }
+}
+
+/**
+ * Whether a date falls inside Royal Mail's peak season.
+ *
+ * The window wraps the new year (17 November to 6 January), so "start <= today
+ * <= end" is wrong for half of it. When the start is later in the year than the
+ * end, the window is the union of its two halves rather than their overlap.
+ */
+export function isPeakSeason(at: Date): boolean {
+  const { peakStartMmdd, peakEndMmdd } = config.commerce.shipping;
+  // UTC rather than local time: the parcel is despatched from Eastbourne, and
+  // which side of a date boundary that falls on must not depend on the timezone
+  // the server happens to be running in.
+  const mmdd = `${String(at.getUTCMonth() + 1).padStart(2, '0')}-${String(at.getUTCDate()).padStart(2, '0')}`;
+
+  return peakStartMmdd <= peakEndMmdd
+    ? mmdd >= peakStartMmdd && mmdd <= peakEndMmdd
+    : mmdd >= peakStartMmdd || mmdd <= peakEndMmdd;
+}
+
+/**
+ * Gardners' handling fee for a parcel: a flat charge for the first item, a
+ * smaller one for the next few, and nothing after that.
+ *
+ * "A service fee of £0.70 per one item parcel applies, plus £0.08 per item for
+ * subsequent 3 items, with no additional charge after 4 items per parcel."
+ */
+export function fulfilmentFeePence(itemCount: number): number {
+  const { fulfilmentFirstItemPence, fulfilmentExtraItemPence, fulfilmentExtraItemLimit } =
+    config.commerce.shipping;
+
+  if (itemCount <= 0) return 0;
+
+  const extras = Math.min(Math.max(itemCount - 1, 0), fulfilmentExtraItemLimit);
+  return fulfilmentFirstItemPence + extras * fulfilmentExtraItemPence;
 }
 
 /**
@@ -167,12 +226,54 @@ export function quoteShipping(options: {
   countryCode: string;
   itemCount: number;
   subtotalGbpPence: number;
+  /**
+   * The weight-banded path. All three arrive together or none do: without a
+   * rate card there is nothing to look a band up in, and without a parcel there
+   * is no weight to look up. When they are absent — or SHIPPING_USE_RATE_TABLE
+   * is off — this falls back to the flat table below.
+   */
+  serviceCode?: string;
+  parcel?: Parcel;
+  rateCard?: RateCard;
+  /** When the parcel is despatched, for peak season. Defaults to now. */
+  at?: Date;
 }): ShippingQuote {
   const { shipping } = config.commerce;
   const country = normalizeCountry(options.countryCode) ?? REST_OF_WORLD;
 
+  // The threshold is honoured only where SHIPPING_FREE_THRESHOLD_COUNTRIES says
+  // so. An empty list means everywhere — the pre-existing behaviour, kept so
+  // that emptying the variable is a way back rather than a silent change.
   const threshold = shipping.freeThresholdGbpPence;
-  if (threshold !== undefined && options.subtotalGbpPence >= threshold) {
+  const isFree =
+    threshold !== undefined &&
+    options.subtotalGbpPence >= threshold &&
+    (shipping.freeThresholdCountries.length === 0 ||
+      shipping.freeThresholdCountries.includes(country));
+
+  if (shipping.useRateTable && options.rateCard && options.parcel && options.serviceCode) {
+    const quote = quoteFromRateCard({
+      country,
+      serviceCode: options.serviceCode,
+      parcel: options.parcel,
+      rateCard: options.rateCard,
+      itemCount: options.itemCount,
+      at: options.at ?? new Date(),
+    });
+
+    // Free postage still has to be *shipped by something*. Zeroing the price
+    // without keeping the service and weight loses the only record of what the
+    // buyer was sold, and fulfilment then falls back to the country default —
+    // which for every overseas destination is the tracked service. A free order
+    // to Ghana would collect nothing and be invoiced £32.52 for a service the
+    // buyer never chose.
+    return isFree
+      ? { ...quote, gbpPence: 0, rule: `${quote.rule}:free` }
+      : quote;
+  }
+
+  // The flat table has no service to preserve, so this stays exactly as it was.
+  if (isFree) {
     return { gbpPence: 0, rule: 'FREE_THRESHOLD' };
   }
 
@@ -198,6 +299,134 @@ export function quoteShipping(options: {
     gbpPence: base + shipping.perItemGbpPence * options.itemCount,
     rule,
   };
+}
+
+/**
+ * Prices a parcel from the rate table.
+ *
+ * The figure is built up rather than looked up: postage for the band, plus
+ * Gardners' fulfilment fee, plus the EU customs surcharge where it applies,
+ * plus whatever margin is configured. Each part is a cost we are passed on and
+ * can point at on an invoice.
+ *
+ * Exported as `quoteShippingCost` below, for auditing: unlike `quoteShipping`
+ * it ignores both SHIPPING_USE_RATE_TABLE and the free-shipping threshold,
+ * because what a parcel *costs* does not depend on what we chose to charge for
+ * it. Anything customer-facing must go through `quoteShipping` instead.
+ */
+function quoteFromRateCard(options: {
+  country: string;
+  serviceCode: string;
+  parcel: Parcel;
+  rateCard: RateCard;
+  itemCount: number;
+  at: Date;
+}): ShippingQuote {
+  const { country, serviceCode, parcel, at } = options;
+  const shipping = config.commerce.shipping;
+
+  const bands = bandsFor(options.rateCard, country, serviceCode, parcel.fitsLargeLetter);
+  if (!bands || bands.length === 0) {
+    throw new ShippingUnavailableError(
+      `No ${serviceCode} shipping rate for ${country}`,
+      'no_rate',
+    );
+  }
+
+  // The cheapest band the parcel fits inside. Bands are sorted on the way in,
+  // so the first match is the cheapest one.
+  const band = bands.find((candidate) => parcel.weightG <= candidate.maxWeightG);
+  if (!band) {
+    // Heavier than anything the carrier will take to this destination. A
+    // refusal, not a fallback: quoting the top band for a parcel above it means
+    // undercharging by an unbounded amount.
+    throw new ShippingUnavailableError(
+      `Parcel of ${parcel.weightG}g is too heavy for ${serviceCode} to ${country}`,
+      'too_heavy',
+    );
+  }
+
+  const peak = isPeakSeason(at) && band.peakPricePence !== null;
+  const postage = peak ? band.peakPricePence! : band.pricePence;
+
+  const surcharge = EU_COUNTRIES.has(country) ? shipping.euSurchargePence : 0;
+  const cost = postage + fulfilmentFeePence(options.itemCount) + surcharge;
+  const gbpPence = cost + percentOf(cost, shipping.markupPercent);
+
+  return {
+    gbpPence,
+    // Enough to reconstruct the quote: which service, where to, and which band.
+    rule: `${serviceCode}:${country}:${band.maxWeightG}g${peak ? ':peak' : ''}`,
+    serviceCode,
+    weightG: parcel.weightG,
+    estimatedWeight: parcel.estimated,
+  };
+}
+
+/**
+ * What a parcel cost us, whatever we charged for it.
+ *
+ * The audit counterpart of `quoteShipping`. That one answers "what does this
+ * customer pay", which is gated behind the feature flag and can be zero under
+ * the free-shipping threshold; this one answers "what does this parcel cost",
+ * which is neither. Reporting has to use this one — comparing what we charged
+ * against the flat retail table would be comparing a price to another price.
+ */
+export function quoteShippingCost(options: {
+  countryCode: string;
+  serviceCode: string;
+  parcel: Parcel;
+  rateCard: RateCard;
+  itemCount: number;
+  at?: Date;
+}): ShippingQuote {
+  return quoteFromRateCard({
+    country: normalizeCountry(options.countryCode) ?? REST_OF_WORLD,
+    serviceCode: options.serviceCode,
+    parcel: options.parcel,
+    rateCard: options.rateCard,
+    itemCount: options.itemCount,
+    at: options.at ?? new Date(),
+  });
+}
+
+/**
+ * The bands for a destination and service, preferring the large-letter prices
+ * when the parcel fits one.
+ *
+ * Falls back to parcel prices when there is no large-letter table, which is
+ * every destination except the UK — the distinction only exists in Royal Mail's
+ * domestic pricing.
+ */
+function bandsFor(
+  rateCard: RateCard,
+  country: string,
+  serviceCode: string,
+  fitsLargeLetter: boolean,
+): RateBand[] | undefined {
+  const byKind = rateCard.get(country)?.get(serviceCode);
+  if (!byKind) return undefined;
+
+  if (fitsLargeLetter) {
+    const largeLetter = byKind.get('large_letter');
+    if (largeLetter?.length) return largeLetter;
+  }
+
+  return byKind.get('parcel');
+}
+
+/**
+ * Which Gardners services can actually deliver to a destination.
+ *
+ * Read from the rate card rather than assumed, because the coverage is genuinely
+ * uneven: Uganda is tracked-only, Tanzania untracked-only, and five countries we
+ * are willing to address have no published rate at all. Offering a service we
+ * cannot price is an order we take and then cannot ship.
+ */
+export function availableServiceCodes(rateCard: RateCard, countryCode: string): string[] {
+  const country = normalizeCountry(countryCode);
+  if (!country) return [];
+  return [...(rateCard.get(country)?.keys() ?? [])].sort();
 }
 
 // ── Tax ───────────────────────────────────────────────────────────────────────
@@ -280,6 +509,12 @@ export interface OrderQuote {
   /** Why a discount was applied, e.g. `first_order`. Null when there was none. */
   discountReason: string | null;
   shippingRule: string;
+  /** The Gardners service the order was priced for, when one was chosen. */
+  shippingServiceCode: string | null;
+  /** Despatch weight the band came from, in grams. Null under the flat table. */
+  shippingWeightG: number | null;
+  /** True when a line's weight had to be guessed to reach that figure. */
+  shippingWeightEstimated: boolean;
   taxRatePercent: number;
   taxSource: 'env';
 }
@@ -306,6 +541,14 @@ export function quoteOrder(options: {
   discountPercent?: number;
   /** Recorded on the order when a discount applies. */
   discountReason?: string | null;
+  /**
+   * The weight-banded shipping inputs, passed straight through to
+   * quoteShipping. Absent means the flat table prices this order — see there.
+   */
+  serviceCode?: string;
+  parcel?: Parcel;
+  rateCard?: RateCard;
+  at?: Date;
 }): OrderQuote {
   const currency = options.currency.toUpperCase();
   const fxRate = fxRateFor(currency);
@@ -337,6 +580,10 @@ export function quoteOrder(options: {
     countryCode: options.destinationCountry,
     itemCount,
     subtotalGbpPence,
+    serviceCode: options.serviceCode,
+    parcel: options.parcel,
+    rateCard: options.rateCard,
+    at: options.at,
   });
 
   // Shipping is taxed alongside the goods in most regimes that tax books at
@@ -381,6 +628,9 @@ export function quoteOrder(options: {
     totalMinor,
     discountReason: discountGbpPence > 0 ? (options.discountReason ?? null) : null,
     shippingRule: shipping.rule,
+    shippingServiceCode: shipping.serviceCode ?? null,
+    shippingWeightG: shipping.weightG ?? null,
+    shippingWeightEstimated: shipping.estimatedWeight ?? false,
     taxRatePercent: tax.ratePercent,
     taxSource: tax.source,
   };

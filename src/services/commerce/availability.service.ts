@@ -71,6 +71,21 @@ export interface BuyableBook {
    * at the per-line maximum instead of at zero.
    */
   orderableQuantity: number;
+  /**
+   * What this book weighs and measures, for working out which shipping band the
+   * order falls into. Carried here rather than fetched separately because every
+   * caller that prices a basket has already loaded the book.
+   *
+   * All nullable: weight is missing for about one stocked title in fifty, and
+   * thickness for rather more. See services/commerce/parcel for what happens
+   * then — the short version is that an unknown is treated as the expensive
+   * case, never the cheap one.
+   */
+  weightGr: number | null;
+  heightMm: number | null;
+  widthMm: number | null;
+  thicknessMm: number | null;
+  productForm: string | null;
 }
 
 export interface AvailabilityResult {
@@ -181,6 +196,11 @@ export const availabilityService = {
         isbn13: books.isbn13,
         coverUrl: books.coverUrl,
         isRemoved: books.isRemoved,
+        weightGr: books.weightGr,
+        heightMm: books.heightMm,
+        widthMm: books.widthMm,
+        thicknessMm: books.thicknessMm,
+        productForm: books.productForm,
         contributor: primaryContributor.name,
         rrpGbp: gardnersStock.rrpGbp,
         stockQty: gardnersStock.stockQty,
@@ -285,6 +305,14 @@ export const availabilityService = {
         stockQty,
         supplyToOrder,
         orderableQuantity: supplyToOrder ? config.commerce.cart.maxQuantityPerLine : stockQty,
+        // Drizzle returns `numeric` as a string to avoid float precision loss.
+        // These are millimetres and grams, where a float is fine, so they are
+        // converted once here rather than at each use.
+        weightGr: numericOrNull(row.weightGr),
+        heightMm: numericOrNull(row.heightMm),
+        widthMm: numericOrNull(row.widthMm),
+        thicknessMm: numericOrNull(row.thicknessMm),
+        productForm: row.productForm ?? null,
       });
     }
 
@@ -384,6 +412,19 @@ export const availabilityService = {
 };
 
 /** Maps an unbuyable reason to the HTTP status and message the API returns. */
+/**
+ * A `numeric` column as a number, or null when it is absent or unusable.
+ *
+ * Rejects zero and negatives as well as nulls: a book recorded as weighing 0g
+ * is a data error, not a free postage opportunity, and letting it through would
+ * quote the lightest band for a real parcel.
+ */
+function numericOrNull(value: string | number | null): number | null {
+  if (value === null) return null;
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
 export function unbuyableResponse(reason: UnbuyableReason): {
   statusCode: number;
   code: string;

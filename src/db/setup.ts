@@ -10,6 +10,7 @@ dotenv.config();
 import postgres from 'postgres';
 import { resolveSslMode } from './ssl';
 import { COUNTRY_SEED } from './seeds/countries';
+import { seedShippingRates } from './seeds/shipping-rates-rows';
 import { NORMALISED_PERSON_NAME } from '../lib/contributor-name';
 
 const sql = postgres(process.env.DATABASE_URL!, {
@@ -145,6 +146,12 @@ async function main() {
       SET name = EXCLUDED.name, continent = EXCLUDED.continent
   `;
   console.log(`Seeded ${COUNTRY_SEED.length} countries.`);
+
+  // ── Shipping rates ────────────────────────────────────────────────────────
+  // Same reasoning as countries: reference data that has to stay correctable
+  // without a migration, because Gardners reissue the price sheets a couple of
+  // times a year and a wrong figure is money rather than cosmetics.
+  console.log(`Seeded ${await seedShippingRates(sql)} shipping rates.`);
 
   console.log('Setup complete.');
   await sql.end();

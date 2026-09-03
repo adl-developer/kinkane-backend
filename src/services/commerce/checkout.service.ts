@@ -34,6 +34,13 @@ import {
 } from '../../lib/order-identity';
 import { isDeliverableCountry } from './gardners-countries';
 import {
+  shippingOptionsService,
+  shippingDisplayName,
+  type ShippingOption,
+} from './shipping-options.service';
+import { shippingRatesService } from './shipping-rates.service';
+import { measureParcel } from './parcel';
+import {
   quoteOrder, resolveCurrency, normalizeCountry, toPresentment, type OrderQuote,
 } from './pricing';
 
@@ -150,7 +157,145 @@ function isUniqueViolation(err: unknown): boolean {
   return (err as { code?: string })?.code === '23505';
 }
 
+/**
+ * The basket being checked out, from whichever of the two places it lives in.
+ *
+ * A signed-in buyer checks out the cart we store; a guest checks out the basket
+ * their client has been holding. From here down the flow is identical, and in
+ * both cases every price is read from our own data rather than from anything
+ * the caller sent.
+ */
+async function loadBasket(
+  userId: number | null,
+  lines: RequestedLine[] | null | undefined,
+): Promise<{
+  cartId: number | null;
+  items: { bookId: number; quantity: number; unitPriceGbpPence: number }[];
+}> {
+  let cartId: number | null = null;
+  let items: { bookId: number; quantity: number; unitPriceGbpPence: number }[];
+
+  if (userId !== null) {
+    const [cart] = await db
+      .select()
+      .from(carts)
+      .where(and(eq(carts.userId, userId), eq(carts.status, 'active')))
+      .limit(1);
+
+    if (!cart) throw httpError('Your cart is empty', 400, 'CART_EMPTY');
+
+    cartId = cart.id;
+    items = await db.select().from(cartItems).where(eq(cartItems.cartId, cart.id));
+  } else {
+    // Merge duplicates before the caps apply, so two lines of 8 cannot smuggle
+    // 16 past a per-line limit of 10.
+    const merged = new Map<number, number>();
+    for (const line of lines ?? []) {
+      const total = (merged.get(line.bookId) ?? 0) + line.quantity;
+      merged.set(line.bookId, Math.min(total, config.commerce.cart.maxQuantityPerLine));
+    }
+
+    if (merged.size > config.commerce.cart.maxItems) {
+      throw httpError(
+        `A basket can hold at most ${config.commerce.cart.maxItems} different titles`,
+        400,
+        'CART_TOO_LARGE',
+      );
+    }
+
+    items = [...merged.entries()].map(([bookId, quantity]) => ({
+      bookId,
+      quantity,
+      // No captured price exists for a basket we never stored, so there is
+      // nothing to have "changed". Seeding this with the live price would be a
+      // lie; using the live price as its own baseline simply means a guest is
+      // never told a price moved, which is correct — they were never quoted one
+      // by us.
+      unitPriceGbpPence: -1,
+    }));
+  }
+
+  if (items.length === 0) {
+    throw httpError('Your cart is empty', 400, 'CART_EMPTY');
+  }
+
+  return { cartId, items };
+}
+
 export const commerceCheckoutService = {
+  /**
+   * Delivery options for a basket to a country, priced.
+   *
+   * Reads live prices and stock the same way checkout does, so the options are
+   * quoted against the basket that would actually ship rather than whatever the
+   * client believes it is holding. Stores nothing.
+   */
+  async shippingOptions(
+    userId: number | null,
+    options: { countryCode: string; currency?: string | null; lines?: RequestedLine[] | null },
+  ): Promise<{
+    currency: string;
+    options: ShippingOption[];
+    weightEstimated: boolean;
+    /** Null when we can ship there; a reason code when we cannot. */
+    unavailableReason: 'country_not_supported' | 'no_service' | null;
+  }> {
+    const destinationCountry = normalizeCountry(options.countryCode);
+    if (!destinationCountry) {
+      throw httpError('A valid destination country is required', 400, 'INVALID_COUNTRY');
+    }
+
+    const currency = resolveCurrency({
+      requested: options.currency,
+      countryCode: destinationCountry,
+    });
+
+    if (!isDeliverableCountry(destinationCountry)) {
+      return { currency, options: [], weightEstimated: false, unavailableReason: 'country_not_supported' };
+    }
+
+    const { items } = await loadBasket(userId, options.lines);
+    const { buyable } = await availabilityService.check(
+      items.map((item) => item.bookId),
+      destinationCountry,
+    );
+
+    // Only what can actually be bought contributes to the parcel. Weighing an
+    // out-of-stock line into the total would quote a heavier band than ships.
+    const sellable = items.flatMap((item) => {
+      const live = buyable.get(item.bookId);
+      if (!live) return [];
+      const quantity = Math.min(item.quantity, live.orderableQuantity);
+      return quantity > 0 ? [{ live, quantity }] : [];
+    });
+
+    const subtotalGbpPence = sellable.reduce(
+      (sum, { live, quantity }) => sum + live.unitPriceGbpPence * quantity,
+      0,
+    );
+
+    const { options: available, weightEstimated } = await shippingOptionsService.list({
+      countryCode: destinationCountry,
+      currency,
+      subtotalGbpPence,
+      items: sellable.map(({ live, quantity }) => ({
+        quantity,
+        weightGr: live.weightGr,
+        heightMm: live.heightMm,
+        widthMm: live.widthMm,
+        thicknessMm: live.thicknessMm,
+        productForm: live.productForm,
+      })),
+    });
+
+    return {
+      currency,
+      options: available,
+      weightEstimated,
+      unavailableReason: available.length === 0 ? 'no_service' : null,
+    };
+  },
+
   /**
    * Validates, prices, persists and hands back a Stripe Checkout URL.
    *
@@ -193,6 +338,13 @@ export const commerceCheckoutService = {
        * Only book ids and quantities are read. Every price is computed here.
        */
       lines?: RequestedLine[] | null;
+      /**
+       * The delivery service the buyer chose, from `shippingOptions` below.
+       * Validated against the destination before anything is charged; absent
+       * means the cheapest available service, so a client that never showed a
+       * chooser does not silently upgrade the buyer onto the dear one.
+       */
+      shippingServiceCode?: string | null;
     },
   ): Promise<CheckoutResult> {
     assertStripeConfigured();
@@ -223,56 +375,7 @@ export const commerceCheckoutService = {
       );
     }
 
-    // Two sources, one shape. A signed-in buyer checks out the cart we store;
-    // a guest checks out the basket their client has been holding. From here
-    // down the flow is identical, and in both cases every price below is read
-    // from our own data rather than from anything the caller sent.
-    let cartId: number | null = null;
-    let items: { bookId: number; quantity: number; unitPriceGbpPence: number }[];
-
-    if (userId !== null) {
-      const [cart] = await db
-        .select()
-        .from(carts)
-        .where(and(eq(carts.userId, userId), eq(carts.status, 'active')))
-        .limit(1);
-
-      if (!cart) throw httpError('Your cart is empty', 400, 'CART_EMPTY');
-
-      cartId = cart.id;
-      items = await db.select().from(cartItems).where(eq(cartItems.cartId, cart.id));
-    } else {
-      // Merge duplicates before the caps apply, so two lines of 8 cannot
-      // smuggle 16 past a per-line limit of 10.
-      const merged = new Map<number, number>();
-      for (const line of options.lines ?? []) {
-        const total = (merged.get(line.bookId) ?? 0) + line.quantity;
-        merged.set(line.bookId, Math.min(total, config.commerce.cart.maxQuantityPerLine));
-      }
-
-      if (merged.size > config.commerce.cart.maxItems) {
-        throw httpError(
-          `A basket can hold at most ${config.commerce.cart.maxItems} different titles`,
-          400,
-          'CART_TOO_LARGE',
-        );
-      }
-
-      items = [...merged.entries()].map(([bookId, quantity]) => ({
-        bookId,
-        quantity,
-        // No captured price exists for a basket we never stored, so there is
-        // nothing to have "changed". Seeding this with the live price below
-        // would be a lie; using the live price as its own baseline simply means
-        // a guest is never told a price moved, which is correct — they were
-        // never quoted one by us.
-        unitPriceGbpPence: -1,
-      }));
-    }
-
-    if (items.length === 0) {
-      throw httpError('Your cart is empty', 400, 'CART_EMPTY');
-    }
+    const { cartId, items } = await loadBasket(userId, options.lines);
 
     const currency = resolveCurrency({
       requested: options.currency,
@@ -367,6 +470,67 @@ export const commerceCheckoutService = {
     const normalizedEmail = normalizeEmailForPromotions(contactEmail);
     const firstOrderPercent = config.commerce.discount.firstOrderPercent;
 
+    // ── Delivery service ──────────────────────────────────────────────────────
+    // Resolved before pricing, because it is an input to the price. Under the
+    // flat table this is all inert: shippingServiceCode stays null and
+    // quoteOrder ignores the parcel it is handed.
+    let shippingServiceCode: string | null = null;
+    let rateCard: Awaited<ReturnType<typeof shippingRatesService.load>> | undefined;
+    let parcel: ReturnType<typeof measureParcel> | undefined;
+
+    if (config.commerce.shipping.useRateTable) {
+      const requested = options.shippingServiceCode?.trim();
+
+      if (requested) {
+        // A code the client made up, or one that does not serve this country,
+        // is a 400 rather than a silent downgrade: the buyer is looking at a
+        // price for a service, and quietly charging them for a different one is
+        // the worst available outcome.
+        if (!(await shippingOptionsService.isAvailable(destinationCountry, requested))) {
+          throw httpError(
+            'That delivery option is not available for this destination',
+            400,
+            'SHIPPING_SERVICE_UNAVAILABLE',
+          );
+        }
+        shippingServiceCode = requested;
+      } else {
+        shippingServiceCode = await shippingOptionsService.defaultServiceCode(destinationCountry);
+      }
+
+      if (!shippingServiceCode) {
+        // Deliverable by name, but nothing in the rate table can carry it —
+        // the five countries Gardners publish no price for. Refused here, before
+        // a Stripe session exists.
+        logger.warn('Refused checkout to a country with no shipping rate', {
+          userId,
+          destinationCountry,
+        });
+        throw httpError(
+          'We cannot ship to that country yet',
+          409,
+          'COUNTRY_NOT_SUPPORTED',
+        );
+      }
+
+      rateCard = await shippingRatesService.load();
+      parcel = measureParcel(
+        items.flatMap((item) => {
+          const live = buyable.get(item.bookId);
+          return live
+            ? [{
+                quantity: item.quantity,
+                weightGr: live.weightGr,
+                heightMm: live.heightMm,
+                widthMm: live.widthMm,
+                thicknessMm: live.thicknessMm,
+                productForm: live.productForm,
+              }]
+            : [];
+        }),
+      );
+    }
+
     /**
      * Prices the basket, with or without the promotion.
      *
@@ -389,6 +553,9 @@ export const commerceCheckoutService = {
         currency,
         discountPercent,
         discountReason: 'first_order',
+        serviceCode: shippingServiceCode ?? undefined,
+        parcel,
+        rateCard,
       });
 
     // Handed back to the caller in the clear exactly once; only its hash is
@@ -443,6 +610,9 @@ export const commerceCheckoutService = {
             taxRatePercent: String(quote.taxRatePercent),
             taxSource: quote.taxSource,
             shippingRule: quote.shippingRule,
+            shippingServiceCode: quote.shippingServiceCode,
+            shippingWeightG: quote.shippingWeightG,
+            shippingWeightEstimated: quote.shippingWeightEstimated,
             shippingCountryCode: destinationCountry,
             contactEmail,
             contactEmailNormalized: normalizedEmail,
@@ -682,7 +852,11 @@ export const commerceCheckoutService = {
             shipping_rate_data: {
               type: 'fixed_amount' as const,
               fixed_amount: { amount: order.shippingMinor, currency },
-              display_name: 'Delivery',
+              // Name the service the buyer chose rather than a generic
+              // "Delivery" — someone who paid £32.52 for tracked postage should
+              // see that on the Stripe page, not a bare total they have to take
+              // on trust.
+              display_name: shippingDisplayName(order.shippingServiceCode),
             },
           },
         ],

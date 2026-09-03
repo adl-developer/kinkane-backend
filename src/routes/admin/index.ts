@@ -47,6 +47,10 @@ router.get('/badges', wrapHttp(adminController.badges));
 router.get('/orders', wrapHttp(adminController.orders));
 router.get('/orders/export', wrapHttp(adminController.ordersExport));
 
+// Postage charged against postage paid. Read-only, and the numbers are
+// recomputed on the fly rather than stored, so it is safe to refresh.
+router.get('/shipping-margin', wrapHttp(adminController.shippingMargin));
+
 // ── Customers ─────────────────────────────────────────────────────────────────
 router.get('/customers', wrapHttp(adminController.customers));
 router.get('/customers/export', wrapHttp(adminController.customersExport));

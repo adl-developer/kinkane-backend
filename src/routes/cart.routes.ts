@@ -26,6 +26,31 @@ const router = Router();
  */
 router.post('/price', optionalAuth, wrapHttp(cartController.price));
 
+/**
+ * POST /api/v1/cart/shipping-options   { countryCode, lines?, currency? }
+ *
+ * What delivery this basket can have to this country, and what each costs.
+ *
+ * The difference is not cosmetic: a 400g parcel to Ghana is £8.45 untracked and
+ * £32.52 tracked, so this is the screen where the buyer chooses whether to pay
+ * for tracking rather than having it chosen for them.
+ *
+ * Only services the destination actually supports come back, read from the rate
+ * table. An empty `options` array with `unavailableReason` set is a real
+ * answer — some countries Gardners will address have no published rate, and the
+ * cart should say so before someone reaches checkout and is refused.
+ *
+ * Public, like /price. Signed-in callers may omit `lines` to price their stored
+ * cart.
+ *
+ * Returns 200: { currency, options: [{ serviceCode, label, tracked,
+ *                estimatedDaysMin, estimatedDaysMax, priceMinor,
+ *                priceGbpPence, recommended }], weightEstimated,
+ *                unavailableReason }
+ * Errors: 400 validation | 400 CART_EMPTY
+ */
+router.post('/shipping-options', optionalAuth, wrapHttp(cartController.shippingOptions));
+
 // Buying is NOT gated behind Kinkané Plus — every authenticated user can fill a
 // cart and check out. Gate the bookshelf, not the till.
 
