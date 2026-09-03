@@ -308,6 +308,11 @@ export function quoteShipping(options: {
  * Gardners' fulfilment fee, plus the EU customs surcharge where it applies,
  * plus whatever margin is configured. Each part is a cost we are passed on and
  * can point at on an invoice.
+ *
+ * Exported as `quoteShippingCost` below, for auditing: unlike `quoteShipping`
+ * it ignores both SHIPPING_USE_RATE_TABLE and the free-shipping threshold,
+ * because what a parcel *costs* does not depend on what we chose to charge for
+ * it. Anything customer-facing must go through `quoteShipping` instead.
  */
 function quoteFromRateCard(options: {
   country: string;
@@ -356,6 +361,33 @@ function quoteFromRateCard(options: {
     weightG: parcel.weightG,
     estimatedWeight: parcel.estimated,
   };
+}
+
+/**
+ * What a parcel cost us, whatever we charged for it.
+ *
+ * The audit counterpart of `quoteShipping`. That one answers "what does this
+ * customer pay", which is gated behind the feature flag and can be zero under
+ * the free-shipping threshold; this one answers "what does this parcel cost",
+ * which is neither. Reporting has to use this one — comparing what we charged
+ * against the flat retail table would be comparing a price to another price.
+ */
+export function quoteShippingCost(options: {
+  countryCode: string;
+  serviceCode: string;
+  parcel: Parcel;
+  rateCard: RateCard;
+  itemCount: number;
+  at?: Date;
+}): ShippingQuote {
+  return quoteFromRateCard({
+    country: normalizeCountry(options.countryCode) ?? REST_OF_WORLD,
+    serviceCode: options.serviceCode,
+    parcel: options.parcel,
+    rateCard: options.rateCard,
+    itemCount: options.itemCount,
+    at: options.at ?? new Date(),
+  });
 }
 
 /**

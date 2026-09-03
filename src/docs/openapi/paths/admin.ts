@@ -236,6 +236,67 @@ export const adminPaths = {
     },
   },
 
+  '/admin/console/shipping-margin': {
+    get: {
+      tags: [TAG],
+      summary: 'Postage charged against postage paid',
+      description: [
+        'What we collected for delivery against what it cost us, for paid orders in a window.',
+        '',
+        '### Why this screen exists',
+        'Nothing else joins those two numbers. What we charge is decided at checkout and stored on the order; what we pay arrives weeks later on a separate supplier invoice. That gap is how postage to Ghana ran roughly **£21 below cost per order** without anything erroring — the books had margin, payments settled, and the loss existed only between two documents nobody was comparing.',
+        '',
+        'Worth checking after switching shipping rates on, and after any rate change — the supplier reissues their price sheets a couple of times a year.',
+        '',
+        '### Reading it',
+        'Amounts are **GBP pence**, and this is the supplier-facing side of the money, so nothing here is converted into a customer currency.',
+        '',
+        '`comparableOrders` plus `skippedOrders` is every paid order in the window. Skipped ones were priced before delivery options existed, or their destination has since lost its rate — they carry no service code or weight, so there is nothing to recompute from. They are counted rather than guessed at.',
+        '',
+        '`underwater` is orders shipping below cost, worst first, capped by `limit`; `underwaterCount` is how many there are in total.',
+        '',
+        '`caveats` is a list of plain-English notes to show alongside the figures. **Render them.** Cost is recomputed from our own rate table rather than a real invoice, and UK orders are costed at the parcel rate because the order does not record whether it went as a large letter — an operator reading the numbers without those two facts will over-read them.',
+      ].join('\n'),
+      parameters: [
+        param('days', 'query', { type: 'integer', minimum: 1, maximum: 3650, default: 90 },
+          'How far back to look. The default roughly matches how often rates change.'),
+        param('limit', 'query', { type: 'integer', minimum: 1, maximum: 200, default: 20 },
+          'How many below-cost orders to list. `underwaterCount` is unaffected.'),
+      ],
+      responses: {
+        200: json('The margin report.', object({
+          days: { type: 'integer', example: 90 },
+          totalOrders: { type: 'integer', example: 214 },
+          comparableOrders: { type: 'integer', example: 198 },
+          skippedOrders: { type: 'integer', example: 16 },
+          totalChargedGbpPence: { type: 'integer', example: 184230 },
+          totalCostGbpPence: { type: 'integer', example: 255108 },
+          totalMarginGbpPence: { type: 'integer', example: -70878, description: 'Negative means we paid to ship.' },
+          marginPercent: { type: 'number', nullable: true, example: -38.5 },
+          underwaterCount: { type: 'integer', example: 23 },
+          underwater: arrayOf(object({
+            reference: { type: 'string', example: 'KK-2026-0481' },
+            countryCode: { type: 'string', example: 'GH' },
+            serviceCode: { type: 'string', example: '011' },
+            weightG: { type: 'integer', example: 480 },
+            weightEstimated: { type: 'boolean', example: false },
+            chargedGbpPence: { type: 'integer', example: 1199 },
+            costGbpPence: { type: 'integer', example: 3322 },
+            marginGbpPence: { type: 'integer', example: -2123 },
+            paidAt: { type: 'string', format: 'date-time', nullable: true },
+          }), 'Worst first.'),
+          estimatedWeightCount: {
+            type: 'integer', example: 7,
+            description: 'Orders priced from an assumed book weight — the first thing to check when an invoice disagrees.',
+          },
+          caveats: arrayOf({ type: 'string' }, 'Show these alongside the figures.'),
+        })),
+        400: json('Validation failed.', ref('ValidationError')),
+        ...adminErrors,
+      },
+    },
+  },
+
   '/admin/console/customers': {
     get: {
       tags: [TAG],

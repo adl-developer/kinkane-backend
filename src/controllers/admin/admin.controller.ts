@@ -8,6 +8,7 @@ import { adminCustomersService } from '../../services/admin/customers.service';
 import { adminReportsService } from '../../services/admin/reports.service';
 import { adminSettingsService, BANNER_SLOTS } from '../../services/admin/settings.service';
 import { adminNotificationsService } from '../../services/admin/notifications.service';
+import { adminShippingMarginService } from '../../services/admin/shipping-margin.service';
 import { csvDocument } from '../../lib/csv';
 import { formatMinor } from '../../lib/money';
 
@@ -34,6 +35,15 @@ const ordersQuerySchema = pageSchema.extend({
   // The design expands a row in place, so the client can pull the lines for the
   // whole page up front and expand without a round trip.
   withItems: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
+});
+
+/**
+ * A window and a cap. 90 days matches how often Gardners reissue rates, so the
+ * default view is roughly "since the last price change".
+ */
+const shippingMarginQuerySchema = z.object({
+  days: z.coerce.number().int().min(1).max(3650).default(90),
+  limit: z.coerce.number().int().min(1).max(200).default(20),
 });
 
 const customersQuerySchema = pageSchema.extend({
@@ -157,6 +167,21 @@ export const adminController = {
     }
 
     res.status(200).json(result);
+  },
+
+  /**
+   * GET /admin/shipping-margin
+   *
+   * What we charged for postage against what it cost us. The one screen that
+   * would have caught the original problem — postage sold below cost on every
+   * destination outside Europe — without anyone cross-referencing a
+   * spreadsheet.
+   */
+  async shippingMargin(req: Request, res: Response): Promise<void> {
+    const parsed = shippingMarginQuerySchema.safeParse(req.query);
+    if (!parsed.success) return badRequest(res, parsed.error);
+
+    res.status(200).json(await adminShippingMarginService.report(parsed.data));
   },
 
   /** GET /admin/orders/export */
