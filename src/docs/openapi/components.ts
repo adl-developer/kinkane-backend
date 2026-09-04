@@ -190,6 +190,30 @@ const bookSchemas = {
             description: 'ONIX product form — `BC` paperback, `BB` hardback, `AJ` audio.',
             example: 'BC',
           },
+          productFormLabel: {
+            type: 'string',
+            nullable: true,
+            description: 'Human-readable label for productForm (ONIX List 150).',
+            example: 'Paperback or softback book',
+          },
+          otherEditions: {
+            type: 'array',
+            description:
+              'Other formats of this same title (matched on exact title + publisher and a shared ' +
+              'contributor — a heuristic, since the supplier feed carries no explicit link between ' +
+              "editions). Empty when none are found, not just when this book has no siblings.",
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'integer', example: 5821 },
+                isbn13: { type: 'string', nullable: true, example: '9780241988275' },
+                productForm: { type: 'string', nullable: true, example: 'BB' },
+                productFormLabel: { type: 'string', nullable: true, example: 'Hardback or cased book' },
+                coverUrl: { type: 'string', nullable: true, format: 'uri' },
+                publicationDate: { type: 'string', nullable: true, format: 'date', example: '2019-08-15' },
+              },
+            },
+          },
           publishingStatus: {
             type: 'string',
             nullable: true,
