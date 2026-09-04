@@ -94,6 +94,20 @@ const SEARCH_COUNT_CAP = 1000;
 // are on the path of every shop page — the cap is what keeps a cold cache from paying for
 // a full scan twice.
 const SHOP_BAND_COUNT_CAP = 200_000;
+
+// Above this many *estimated* rows, a filter-only browse reports the planner's estimate
+// instead of counting. Sized so the exact count it still runs is an index scan measured in
+// tens of milliseconds: below the threshold the filter is selective and the real number is
+// nearly free, above it the query is the whole-catalogue aggregate that made a cold shop
+// page take 5.5s on production. Not a cap in the SEARCH_COUNT_CAP sense — the number
+// reported is the planner's own estimate of the full result, not a truncation of it, so it
+// does not stop short of a paginating client the way a floor would.
+const EXACT_COUNT_MAX_ROWS = 50_000;
+// Backstop for when the planner was wrong about that. Generous against the tens of
+// milliseconds the threshold is meant to buy, so it only ever fires on a genuine
+// misestimate — the 9.5s Seq Scan in search-count-probes.test.ts is the precedent for the
+// planner being confidently wrong about a catalogue-sized scan.
+const COUNT_STATEMENT_TIMEOUT_MS = 3000;
 // Ceiling on how many author matches a search will pull from book_contributors before
 // ranking them — see buildAuthorMatchCondition. Sized well above any real author's
 // catalogue (the most prolific names in the catalogue are in the low hundreds of titles)
@@ -1110,6 +1124,52 @@ function isStatementTimeout(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: string }).code === '57014';
 }
 
+/**
+ * Splits a cached total into the number and whether it was estimated rather than counted.
+ *
+ * Estimates are stored with a leading `~`, because the distinction has to survive the
+ * cache. Without it the one request that computed an estimate would report
+ * `totalIsApproximate` honestly and every request served from its entry for the rest of
+ * COUNT_TTL would report the same number as exact.
+ */
+function parseCachedCount(raw: string | null): { total: number; isEstimate: boolean } {
+  if (raw == null) return { total: 0, isEstimate: false };
+  const isEstimate = raw.startsWith('~');
+  const parsed = parseInt(isEstimate ? raw.slice(1) : raw, 10);
+  return { total: Number.isNaN(parsed) ? 0 : parsed, isEstimate };
+}
+
+/**
+ * What the planner expects a filtered catalogue scan to return, without running it.
+ *
+ * `EXPLAIN` without `ANALYZE` executes nothing: Postgres plans the query and reports the
+ * row estimate it chose the plan on, in about a millisecond regardless of how large that
+ * estimate is. That makes it usable as the *decision* about whether an exact count is
+ * affordable, rather than as a consolation prize after one has already run long.
+ *
+ * Returns null when the plan cannot be read — a shape change in the EXPLAIN output, or a
+ * predicate Postgres refuses to plan. A caption is not worth failing a browse over, so the
+ * caller reads null as "no opinion" and counts for real.
+ */
+async function estimateFilteredRows(where: SQL | undefined): Promise<number | null> {
+  try {
+    const rows = await db.execute(
+      sql`EXPLAIN (FORMAT JSON) SELECT 1 FROM ${books} WHERE ${where ?? sql`TRUE`}`,
+    );
+    const plan = (rows as unknown as Record<string, unknown>[])[0]?.['QUERY PLAN'];
+    const parsed = typeof plan === 'string' ? (JSON.parse(plan) as unknown) : plan;
+    const estimate = (parsed as [{ Plan?: { 'Plan Rows'?: number } }] | undefined)?.[0]?.Plan?.[
+      'Plan Rows'
+    ];
+    return typeof estimate === 'number' && Number.isFinite(estimate) ? estimate : null;
+  } catch (err) {
+    logger.warn('Count estimate failed — falling back to an exact count', {
+      error: (err as Error).message,
+    });
+    return null;
+  }
+}
+
 // SET LOCAL scopes the timeout to the wrapped statement inside a transaction — a bare SET
 // would stick to the pooled connection and silently apply to unrelated queries that reuse
 // it afterwards. Same rationale as withWordSimilarityThreshold above.
@@ -1566,6 +1626,16 @@ export const booksService = {
     // the whole catalogue's total. Rest-destructuring means a new filter is counted
     // correctly the moment it exists, and only a genuinely page-shaped field has to be
     // added to this list.
+    //
+    // `currency` is the one member of this list that is not page-shaped, and it is
+    // removed for a different reason: it is presentation-only. It never reaches a WHERE
+    // clause — the price bounds arrive from the controller already converted to GBP
+    // pence (priceMinGbpPence/priceMaxGbpPence, which do stay in), so `currency` decides
+    // nothing but the units the response quotes prices in. Leaving it in gave every
+    // currency its own count entry for three identical numbers, and since the controller
+    // resolves it from the *visitor's country*, each new country paid a fresh cold count
+    // — a pair of correlated-EXISTS scans over a 2M-row catalogue, measured at 42s. It
+    // has to stay in the rows key above, where the quoted prices genuinely differ.
     const {
       sort: _sort,
       sortBy: _sortBy,
@@ -1573,6 +1643,7 @@ export const booksService = {
       offset: _offset,
       dedupe: _dedupe,
       cursor: _cursor,
+      currency: _currency,
       ...countFilters
     } = opts;
     // v5: see the v6 note on the rows key — a blended total is wrong for either single
@@ -1713,7 +1784,7 @@ export const booksService = {
     // different ways on two pages.
     const exactBandCount = Math.max(
       searchMatchCount,
-      cachedCount != null ? parseInt(cachedCount, 10) : 0,
+      parseCachedCount(cachedCount).total,
     );
 
     type SearchTier = 'fast' | 'cheap' | 'broad';
@@ -1885,23 +1956,48 @@ export const booksService = {
                 // offset onto them. Each band's query is the ordinary one plus a
                 // predicate, so every path keeps the index-backed plan it had — see
                 // buildShopBandCondition for why the band cannot be an ORDER BY key.
-                const [inStock, toOrder] = await Promise.all([
-                  countShopBand(SHOP_BAND.IN_STOCK),
-                  countShopBand(SHOP_BAND.TO_ORDER),
-                ]);
-                const planned = new Map(
-                  planShopBands(effectiveOffset, want, { inStock, toOrder }).map(
-                    (segment) => [segment.band, segment.offset] as const,
-                  ),
-                );
-                // Bands ahead of the first planned one are entirely behind this offset.
-                // Bands past it are fetched from the top, whether or not the plan
-                // reached them: the counts are a snapshot of a table the hourly feed
-                // writes to, so a band can be shorter than its count claimed, and only
+                // The band sizes exist for exactly one purpose: mapping a *deep* page
+                // offset onto the concatenated bands, so a page that starts past the
+                // end of band 0 can skip it. At offset 0 there is nothing to skip —
+                // the plan is always "first band, from the top", whatever the sizes
+                // turn out to be — so the counts are bought and then not used.
+                //
+                // That is worth avoiding rather than tidying, because they are not
+                // cheap: each is a correlated EXISTS over `gardners_stock` for every
+                // candidate row, and countShopBand's LIMIT only short-circuits once a
+                // band has SHOP_BAND_COUNT_CAP members — a band smaller than the cap
+                // scans the whole 2M-row catalogue to discover it. Cold, the pair
+                // measured at 42s and they run on the request path, so the first
+                // shopper after each COUNT_TTL lapse paid for both. Offset 0 is the
+                // page nearly every shopper lands on.
+                //
+                // The loop below is what makes skipping them safe: it already walks
+                // the bands in order from `firstBand` and tops up from the next band
+                // whenever one returns short, so it reaches the same rows without
+                // being told where the boundaries are. That top-up is not a
+                // concession to this shortcut — it is required anyway, because the
+                // counts are a snapshot of a table the hourly feed writes to and only
                 // the rows themselves are authoritative.
-                const firstBand = planned.size > 0
-                  ? Math.min(...planned.keys())
-                  : SHOP_BAND.UNSELLABLE;
+                const planned = new Map<ShopBand, number>();
+                // Bands ahead of the first planned one are entirely behind this
+                // offset; bands past it are fetched from the top, whether or not the
+                // plan reached them.
+                let firstBand: number = SHOP_BAND.IN_STOCK;
+                if (effectiveOffset > 0) {
+                  const [inStock, toOrder] = await Promise.all([
+                    countShopBand(SHOP_BAND.IN_STOCK),
+                    countShopBand(SHOP_BAND.TO_ORDER),
+                  ]);
+                  for (const segment of planShopBands(effectiveOffset, want, {
+                    inStock,
+                    toOrder,
+                  })) {
+                    planned.set(segment.band, segment.offset);
+                  }
+                  firstBand = planned.size > 0
+                    ? Math.min(...planned.keys())
+                    : SHOP_BAND.UNSELLABLE;
+                }
 
                 const collected: ListRow[] = [];
                 for (const band of SHOP_BAND_ORDER) {
@@ -2037,9 +2133,22 @@ export const booksService = {
     // the rows and under the filter-only key above, instead of being recomputed on every
     // LIST_TTL expiry (which previously happened on every distinct limit/offset/sort combo
     // too).
+    // True when the reported total is the planner's estimate rather than a real count —
+    // set either by this request computing one, or by it being served an entry that a
+    // previous request stored as an estimate. Read after the await below, alongside
+    // countProbeIncomplete, to decide `totalIsApproximate`.
+    let totalIsEstimate = parseCachedCount(cachedCount).isEstimate;
     const totalPromise: Promise<number> = cachedCount != null
-      ? Promise.resolve(parseInt(cachedCount, 10))
+      ? Promise.resolve(parseCachedCount(cachedCount).total)
       : (async () => {
+          // Stores a total that was estimated rather than counted, marked so it stays
+          // approximate for everyone the entry goes on to serve.
+          const cacheEstimate = async (rows: number): Promise<number> => {
+            const rounded = Math.round(rows);
+            totalIsEstimate = true;
+            await redis.set(countCacheKey, `~${rounded}`, 'EX', COUNT_TTL);
+            return rounded;
+          };
           // Searches never run a count query of their own — they reuse the capped tier
           // probes computed above, so a search's count can never be the slow part again.
           if (opts.q) {
@@ -2051,15 +2160,53 @@ export const booksService = {
             }
             return total;
           }
-          // Filter-only browse (no q) keeps an exact count: it's already cached for
-          // COUNT_TTL under a page-independent key, it wasn't implicated in the timeouts,
-          // and capping it would make whole-catalogue pagination meaningless.
+          // Filter-only browse (no q). An exact count is the right answer whenever it is
+          // affordable, and for a selective filter it is: counting a few thousand rows off
+          // an index costs nothing, and a filtered listing's pagination is exactly where a
+          // real number earns its keep. The unfiltered catalogue is the other case — a 2M
+          // row aggregate, measured at 5.5s cold on production, with nothing bounding it.
+          //
+          // A statement timeout alone is the wrong instrument for that. At 5.5s the query
+          // sits right on any budget worth setting, so the timeout would fire on roughly
+          // half of cold browses and only *after* having already spent the budget: the
+          // slow path made slower, and the total made approximate anyway.
+          //
+          // So ask the planner instead of racing it. EXPLAIN without ANALYZE runs nothing
+          // and answers in about a millisecond, and it yields both halves of the decision
+          // — whether to count, and the number to report if not. `totalIsApproximate`
+          // already exists for capped searches, and callers already paginate on `hasMore`,
+          // so an estimated total is a shape clients handle rather than a new contract.
+          const estimate = await estimateFilteredRows(rowsWhere);
+          if (estimate != null && estimate > EXACT_COUNT_MAX_ROWS) {
+            return cacheEstimate(estimate);
+          }
+
           const countQuery = (conn: Pick<typeof db, 'select'>) =>
             conn.select({ count: sql<number>`COUNT(*)::int` }).from(books).where(rowsWhere);
-          const [countRow] = await countQuery(db);
-          const total = countRow?.count ?? 0;
-          await redis.set(countCacheKey, String(total), 'EX', COUNT_TTL);
-          return total;
+          try {
+            // Bounded only when there is an estimate to fall back to. If EXPLAIN itself
+            // could not be read there is no second number available, and an unbounded
+            // count is a better failure than a browse that 500s over its caption — so
+            // that case deliberately keeps the old, unbounded behaviour.
+            const [countRow] =
+              estimate == null
+                ? await countQuery(db)
+                : await withStatementTimeout(COUNT_STATEMENT_TIMEOUT_MS, async (conn) =>
+                    countQuery(conn),
+                  );
+            const total = countRow?.count ?? 0;
+            await redis.set(countCacheKey, String(total), 'EX', COUNT_TTL);
+            return total;
+          } catch (err: unknown) {
+            if (!isStatementTimeout(err) || estimate == null) throw err;
+            // The planner called this scan small and it was not. Its estimate is the only
+            // number left, and it is the one the plan was chosen on — reporting it beats
+            // both failing and paying an unbounded scan to disagree.
+            logger.warn('Catalogue count overran its budget — reporting the planner estimate', {
+              estimate,
+            });
+            return cacheEstimate(estimate);
+          }
         })();
 
     const [page, probedTotal] = await Promise.all([pagePromise, totalPromise]);
@@ -2085,6 +2232,8 @@ export const booksService = {
       (!!opts.q && total >= SEARCH_COUNT_CAP) ||
       !!opts.dedupe ||
       countProbeIncomplete ||
+      // The total was the planner's estimate rather than a count — see EXACT_COUNT_MAX_ROWS.
+      totalIsEstimate ||
       // The floor only raises the total when the probes undercounted, which makes what we
       // report a lower bound by construction.
       total > probedTotal;
