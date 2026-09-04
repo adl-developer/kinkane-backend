@@ -5,6 +5,7 @@
 
 ### Features
 
+* sink placeholder titles to the bottom of a title-sorted book list ([89c27a1](https://adl.github.com/adl-developer/kinkane-backend/commit/89c27a1e18c5400b2bb1c8bee705b8870b8fbe62)) — [details](changelog/2026-09-03-title-sort-placeholders.md)
 * log every API request and report errors to Sentry ([a655648](https://adl.github.com/adl-developer/kinkane-backend/commit/a65564879ac39ce3d88c2254616f9d89de62123d)) — [details](changelog/2026-09-03-request-logging-sentry.md)
 * show customers real tracking details once their order ships ([091d825](https://adl.github.com/adl-developer/kinkane-backend/commit/091d825cb689d8fca48f3ea0fa6e2e160f4274ea))
 * show postage margin in the admin console ([462832c](https://adl.github.com/adl-developer/kinkane-backend/commit/462832c0788e196b9ff605036a9fb225404f6010)) — [details](changelog/2026-09-03-hdd-dispatch-polling.md)

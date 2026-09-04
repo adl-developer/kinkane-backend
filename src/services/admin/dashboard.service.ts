@@ -45,7 +45,12 @@ function statusList(tab: keyof typeof ADMIN_ORDER_TABS): SQL {
   return sql`(${sql.join(ADMIN_ORDER_TABS[tab].map((s) => sql`${s}`), sql`, `)})`;
 }
 
-/** "Active" for the customer counts: has paid for something in the last year. */
+/**
+ * "Active" for the customer counts: signed in — or was simply seen on an
+ * authenticated request — within the last year. Engagement rather than spend,
+ * and shared with the Customers list so the card and the table cannot drift
+ * apart on the meaning of the same word.
+ */
 export const ACTIVE_CUSTOMER_WINDOW_DAYS = 365;
 
 function windowStart(days: number): Date {
@@ -91,9 +96,9 @@ export const adminDashboardService = {
         .from(orders),
       db.select({ total: sql<number>`count(*)` }).from(users),
       db
-        .select({ active: sql<number>`count(distinct ${orders.userId})` })
-        .from(orders)
-        .where(and(isNotNull(orders.paidAt), gte(orders.paidAt, windowStart(ACTIVE_CUSTOMER_WINDOW_DAYS)))),
+        .select({ active: sql<number>`count(*)` })
+        .from(users)
+        .where(gte(users.lastSignInAt, windowStart(ACTIVE_CUSTOMER_WINDOW_DAYS))),
       db
         .select({
           id: orders.id,

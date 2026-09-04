@@ -47,6 +47,7 @@ export const adminCustomersService = {
           orders: orderCount,
           totalSpentMinor: totalSpent,
           lastOrderAt,
+          lastSignInAt: users.lastSignInAt,
         })
         .from(users)
         .where(where)
@@ -66,9 +67,9 @@ export const adminCustomersService = {
 
     const [[active], [spend]] = await Promise.all([
       db
-        .select({ n: sql<number>`count(distinct ${orders.userId})` })
-        .from(orders)
-        .where(and(isNotNull(orders.paidAt), gte(orders.paidAt, activeSince), isNotNull(orders.userId))),
+        .select({ n: sql<number>`count(*)` })
+        .from(users)
+        .where(gte(users.lastSignInAt, activeSince)),
       db
         .select({ minor: sql<number>`coalesce(sum(${orders.totalMinor}), 0)` })
         .from(orders)
@@ -83,10 +84,12 @@ export const adminCustomersService = {
         ...r,
         orders: Number(r.orders),
         totalSpentMinor: Number(r.totalSpentMinor),
-        // "Active" is: paid for something in the last 12 months. A customer who
-        // has never ordered is inactive, not new — the operator wants to know
-        // who is buying.
-        active: r.lastOrderAt !== null && new Date(r.lastOrderAt) >= activeSince,
+        // "Active" is: seen in the last 12 months. Engagement, not spend — a
+        // reader who signs in every week and has never bought a book is a live
+        // account, and the previous rule (paid in the last 12 months) filed them
+        // with the abandoned ones. Purchase history is still right there in
+        // `orders`/`totalSpentMinor` for anyone asking the revenue question.
+        active: new Date(r.lastSignInAt) >= activeSince,
         blacklisted: r.blacklistedAt !== null,
       })),
       total: Number(total.n),

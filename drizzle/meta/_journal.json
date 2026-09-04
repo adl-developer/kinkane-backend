@@ -400,6 +400,13 @@
       "when": 1788455613755,
       "tag": "0056_books_title_sortable_index",
       "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1788491920733,
+      "tag": "0057_user_last_sign_in",
+      "breakpoints": true
     }
   ]
 }

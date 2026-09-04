@@ -1,6 +1,7 @@
 import jwt from 'jsonwebtoken';
 import { Request, Response, NextFunction } from 'express';
 import { authService, signAccessToken } from '../services/auth.service';
+import { touchLastSignIn } from '../services/user-activity.service';
 import { config } from '../config';
 
 export interface AuthenticatedRequest extends Request {
@@ -25,6 +26,10 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
   try {
     const payload = authService.verifyAccessToken(token);
     (req as AuthenticatedRequest).user = { id: payload.sub, email: payload.email };
+
+    // Feeds the admin console's active/inactive split. Throttled to one write
+    // per user per day internally, and never awaited — see user-activity.service.
+    touchLastSignIn(payload.sub);
 
     // Piggyback a fresh access token if the current one is close to expiry.
     // jwt.decode is safe here — we already verified the token above.
@@ -62,6 +67,8 @@ export function optionalAuth(req: Request, _res: Response, next: NextFunction): 
   try {
     const payload = authService.verifyAccessToken(header.slice(7));
     (req as AuthenticatedRequest).user = { id: payload.sub, email: payload.email };
+    // A valid token here is just as much a sighting as on a required-auth route.
+    touchLastSignIn(payload.sub);
   } catch {
     // Invalid/expired token on an optional-auth route — proceed anonymously
     // rather than failing the request.

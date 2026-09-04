@@ -8,6 +8,7 @@ import { config } from '../config';
 import { admin } from '../lib/firebase';
 import { adminNotificationsService } from './admin/notifications.service';
 import { logger } from '../lib/logger';
+import { recordSignIn } from './user-activity.service';
 import { enqueueEmail } from '../lib/email-queue';
 import { generateEmbedding } from '../lib/gemini';
 import { buildPreferenceText } from './recommendations.service';
@@ -106,11 +107,18 @@ async function issueTokenPair(userId: number, email: string): Promise<TokenPair>
   const rawRefresh = generateRefreshToken();
   const expiresAt = new Date(Date.now() + config.jwt.refreshTtl * 1000);
 
-  await db.insert(refreshTokens).values({
-    userId,
-    tokenHash: hashToken(rawRefresh),
-    expiresAt,
-  });
+  // Every path that issues a session funnels through here — password, social,
+  // signup and refresh rotation alike — which makes it the one place that has
+  // to record the sign-in. Run alongside the insert rather than after it: it is
+  // an activity timestamp, and nothing about the session depends on it.
+  await Promise.all([
+    db.insert(refreshTokens).values({
+      userId,
+      tokenHash: hashToken(rawRefresh),
+      expiresAt,
+    }),
+    recordSignIn(userId),
+  ]);
 
   return { accessToken, refreshToken: rawRefresh };
 }

@@ -103,6 +103,22 @@ export const users = pgTable(
     // the staff one. The id is enough to resolve a name when the console asks.
     blacklistedBy: integer('blacklisted_by'),
     blacklistReason: text('blacklist_reason'),
+    // ── Activity ───────────────────────────────────────────────────────────
+    // Last time this account was *seen*, not last time it typed a password.
+    // Written on any authenticated request (throttled to once a day — see
+    // touchLastSignIn in services/user-activity.service.ts) and directly on
+    // sign-in, so it keeps meaning something for a mobile client that silently
+    // rotates tokens for months and never re-authenticates.
+    //
+    // Backfilled to created_at for every account that existed before the column
+    // did. That is a deliberate fiction — we never recorded sign-ins before, and
+    // the alternative was a year of every customer reading "inactive" because
+    // the field was null rather than because anybody was dormant. It decays out
+    // of the data on its own as real activity overwrites it.
+    //
+    // Not null: the backfill covers the old rows and the default covers new
+    // ones, so "we have never seen this user" is not a state that exists.
+    lastSignInAt: timestamp('last_sign_in_at', { withTimezone: true }).defaultNow().notNull(),
     searchVector: tsvector('search_vector'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -110,6 +126,9 @@ export const users = pgTable(
   (t) => ({
     emailIdx: index('idx_users_email').on(t.email),
     searchVectorIdx: index('idx_users_search_vector').on(t.searchVector),
+    // The admin console counts and filters on this on every Customers and
+    // Overview load; without an index both become a seq scan over all users.
+    lastSignInAtIdx: index('idx_users_last_sign_in_at').on(t.lastSignInAt),
   }),
 );
 
