@@ -30,6 +30,7 @@ import type { RequestedLine } from './cart.service';
 import {
   generateAccessToken,
   generateOrderReference,
+  generateTrackingCode,
   hashToken,
 } from '../../lib/order-identity';
 import { isDeliverableCountry } from './gardners-countries';
@@ -155,6 +156,18 @@ type DbHandle = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 /** Postgres unique-violation. */
 function isUniqueViolation(err: unknown): boolean {
   return (err as { code?: string })?.code === '23505';
+}
+
+/**
+ * Which unique index rejected the write.
+ *
+ * Two different constraints can fire on the same insert and they want opposite
+ * handling: the first-order discount index means "re-price and write again",
+ * a tracking code collision means "roll the dice again and write the same
+ * order". Without the constraint name the first handler swallows the second.
+ */
+function violatedConstraint(err: unknown): string | undefined {
+  return (err as { constraint?: string })?.constraint;
 }
 
 /**
@@ -634,6 +647,7 @@ export const commerceCheckoutService = {
             userId,
             cartId,
             reference: generateOrderReference(),
+            trackingCode: generateTrackingCode(),
             guestAccessTokenHash: hashToken(accessToken),
             status: 'pending_payment',
             subtotalGbpPence: quote.subtotalGbpPence,
@@ -704,21 +718,47 @@ export const commerceCheckoutService = {
       return priceBasket(eligible ? firstOrderPercent : 0);
     });
 
-    let order: Order;
-    try {
-      order = await writeOrder(quote);
-    } catch (err) {
-      if (!isUniqueViolation(err) || quote.discountGbpPence === 0) throw err;
+    /**
+     * Writes the order, absorbing the two unique violations that are expected
+     * here rather than exceptional.
+     *
+     * A tracking code collision is retried in place — the order is fine, only
+     * its code was unlucky, and writeOrder generates a fresh one on every call
+     * so going round again is the whole fix. At ~1.1e12 codes this is a lottery
+     * win rather than a hot path, but the alternative is failing a checkout on
+     * a coin flip.
+     */
+    let written: Order | undefined;
 
-      // Another checkout for this mailbox already holds the first-order
-      // discount. Re-price without it and write again, rather than failing a
-      // checkout over a promotion the buyer was never owed twice.
-      logger.info('First-order discount already claimed for this buyer — pricing without it', {
-        normalizedEmail,
-      });
-      quote = priceBasket(0);
-      order = await writeOrder(quote);
+    for (let attempt = 0; !written; attempt++) {
+      try {
+        written = await writeOrder(quote);
+      } catch (err) {
+        if (!isUniqueViolation(err)) throw err;
+
+        if (violatedConstraint(err) === 'orders_tracking_code_unique') {
+          if (attempt >= 4) throw err;
+          logger.warn('Tracking code collision — regenerating', { attempt });
+          continue;
+        }
+
+        if (quote.discountGbpPence === 0) throw err;
+
+        // Another checkout for this mailbox already holds the first-order
+        // discount. Re-price without it and write again, rather than failing a
+        // checkout over a promotion the buyer was never owed twice.
+        logger.info('First-order discount already claimed for this buyer — pricing without it', {
+          normalizedEmail,
+        });
+        quote = priceBasket(0);
+      }
     }
+
+    // Re-bound as a const before anything closes over it. The loop above cannot
+    // exit with it unset, but narrowing a `let` across a closure boundary only
+    // survives on TypeScript 5.4+ — and the transaction callback below captures
+    // it. A const is narrowed the same way on every version.
+    const order: Order = written;
 
     const session = await this.createSession(userId, order, quote.lines.map((line) => ({
       name: buyable.get(line.bookId)!.title,

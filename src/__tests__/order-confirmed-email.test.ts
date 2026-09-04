@@ -24,7 +24,8 @@ const BASE = {
     { title: 'The River is Waiting', contributor: 'Wally Lamb', quantity: 2, lineTotalMinor: 4549 },
   ],
   shippingLines: ['Ama Boateng', '19 H P Nyemitei St', 'Accra', 'GH'],
-  trackingCode: null as string | null,
+  trackingCode: '7K2M9QX4',
+  accessToken: null as string | null,
 };
 
 beforeEach(() => {
@@ -73,28 +74,44 @@ describe('order confirmation email', () => {
     expect(sent[0].html).toContain('Free');
   });
 
-  describe('the guest tracking code', () => {
+  describe('the short tracking code', () => {
+    it('is printed for everyone, guest or not, in both html and text', async () => {
+      await sendOrderConfirmedEmail('a@kinkane.app', 'Ama', { ...BASE, accessToken: null });
+      expect(sent[0].html).toContain('7K2M9QX4');
+      expect(sent[0].text).toContain('7K2M9QX4');
+    });
+
+    it('tells the reader the email address is the other half', async () => {
+      // A code with no second factor named reads like a password, and someone
+      // will treat it like one. The pairing has to be stated where it is shown.
+      await sendOrderConfirmedEmail('a@kinkane.app', 'Ama', BASE);
+      expect(sent[0].html).toContain('email address you ordered with');
+      expect(sent[0].text).toContain('email address you ordered with');
+    });
+  });
+
+  describe('the guest access token', () => {
     it('is printed for a guest, in both html and text', async () => {
-      const code = 'v4Xk9aB2cD3eF4gH5iJ6kL7mN8oP9qR0sT1uV2wX';
-      await sendOrderConfirmedEmail('a@kinkane.app', null, { ...BASE, trackingCode: code });
-      expect(sent[0].html).toContain(code);
-      expect(sent[0].text).toContain(code);
+      const token = 'v4Xk9aB2cD3eF4gH5iJ6kL7mN8oP9qR0sT1uV2wX';
+      await sendOrderConfirmedEmail('a@kinkane.app', null, { ...BASE, accessToken: token });
+      expect(sent[0].html).toContain(token);
+      expect(sent[0].text).toContain(token);
     });
 
     it('never appears inside a URL', async () => {
       // checkout.service is explicit: never put this in a URL. A token in a link
       // leaks through Referer headers, browser history and page analytics.
-      const code = 'v4Xk9aB2cD3eF4gH5iJ6kL7mN8oP9qR0sT1uV2wX';
-      await sendOrderConfirmedEmail('a@kinkane.app', null, { ...BASE, trackingCode: code });
+      const token = 'v4Xk9aB2cD3eF4gH5iJ6kL7mN8oP9qR0sT1uV2wX';
+      await sendOrderConfirmedEmail('a@kinkane.app', null, { ...BASE, accessToken: token });
       const urls = sent[0].html.match(/https?:\/\/[^\s"'<>]+/g) ?? [];
-      for (const url of urls) expect(url).not.toContain(code);
-      expect(sent[0].text).not.toMatch(new RegExp(`https?://[^\\s]*${code}`));
+      for (const url of urls) expect(url).not.toContain(token);
+      expect(sent[0].text).not.toMatch(new RegExp(`https?://[^\\s]*${token}`));
     });
 
     it('is absent for a signed-in buyer, who has order history instead', async () => {
-      await sendOrderConfirmedEmail('a@kinkane.app', 'Ama', { ...BASE, trackingCode: null });
+      await sendOrderConfirmedEmail('a@kinkane.app', 'Ama', { ...BASE, accessToken: null });
       expect(sent[0].html).toContain('My Account');
-      expect(sent[0].html).not.toContain('only way to find this order');
+      expect(sent[0].html).not.toContain('attaches the order to an account');
     });
   });
 

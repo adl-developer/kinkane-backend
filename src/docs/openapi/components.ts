@@ -685,6 +685,12 @@ const commerceSchemas = {
           'The customer-facing order identity — this is what to print on receipts and quote in support. Random, not sequential. **It is an identifier, not a credential**: reading a guest order also requires the access token from checkout.',
         example: 'ORD-7K2M9QX4',
       },
+      trackingCode: {
+        type: 'string',
+        description:
+          'The short code for `POST /orders/track`, paired with the order\u2019s contact email. **Ours, not the carrier\u2019s** \u2014 it exists from the moment the order is placed, so it tracks an order that has not shipped yet. For the carrier\u2019s number see `trackingNumber`.',
+        example: '7K2M9QX4',
+      },
       status: {
         type: 'string',
         enum: [

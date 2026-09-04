@@ -138,6 +138,22 @@ export const orders = pgTable(
     reference: varchar('reference', { length: 32 }).notNull().unique(),
 
     /**
+     * The short code a customer types into "Track My Order", e.g. `7K2M9QX4`.
+     *
+     * Exists because the guest lookup credential — a 43-character base64url
+     * token — is fine in a link and hopeless to a customer who has lost the
+     * email and is standing at a counter reading a code off their phone. This
+     * is eight Crockford base32 characters, paired with the order's contact
+     * email as the second factor.
+     *
+     * **Not** `tracking_number` below: that is the carrier's, arrives from a
+     * Gardners dispatch file, and does not exist until the parcel ships. This
+     * one is ours, exists from the moment the order is written, and is what a
+     * customer uses to watch an order *before* it is dispatched.
+     */
+    trackingCode: varchar('tracking_code', { length: 16 }).notNull().unique(),
+
+    /**
      * Null for a guest order, set once an account claims it (or from the start
      * for a signed-in buyer). Nullable is what makes guest checkout possible at
      * all; `contactEmail` below is notNull and is the identity that always

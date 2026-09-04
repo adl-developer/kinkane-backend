@@ -20,15 +20,27 @@ export interface OrderConfirmedPayload {
   items: OrderConfirmedItem[];
   shippingLines: string[];
   /**
-   * The guest's tracking code, or null for a signed-in buyer who has order
+   * The short "Track My Order" code, e.g. `7K2M9QX4`. Always present.
+   *
+   * Safe to print for signed-in buyers too, because it is an identifier rather
+   * than a credential — reading the order needs this *and* the contact email.
+   */
+  trackingCode: string;
+
+  /**
+   * The guest's long access token, or null for a signed-in buyer who has order
    * history instead.
    *
    * Printed as a code to copy, never as a link. A token in a URL leaks through
    * Referer headers, browser history and any analytics on the landing page —
    * which is why checkout.service says never to put it in one. In an inbox it
    * is as durable as a link and leaks nowhere.
+   *
+   * Distinct from `trackingCode` above and doing a different job: this one is a
+   * credential, it is what claiming the order into a new account requires, and
+   * it is why the guest block below is still guest-only.
    */
-  trackingCode: string | null;
+  accessToken: string | null;
 }
 
 /** Right-aligned money row for the totals block. */
@@ -96,26 +108,36 @@ export async function sendOrderConfirmedEmail(
     ? p(`<strong>Delivering to</strong><br />${payload.shippingLines.map(escapeHtml).join('<br />')}`)
     : '';
 
+  // Everyone gets the short code: it is the thing a customer will actually go
+  // looking for, and it is an identifier rather than a credential, so there is
+  // nothing to leak by printing it for a signed-in buyer too.
+  const trackingBlock = [
+    p('<strong>Track your order</strong> with this code and the email address you ordered with:'),
+    `<div style="margin:16px 0;padding:16px;background:#f6f4ef;border-radius:8px;text-align:center;
+         font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:24px;letter-spacing:3px;
+         color:#1a1a1a;">${escapeHtml(payload.trackingCode)}</div>`,
+  ].join('\n');
+
   // Guests only. A signed-in buyer finds this under their account, and printing
   // a credential they do not need is a credential that can leak for no reason.
-  const tracking = payload.trackingCode
+  const guestBlock = payload.accessToken
     ? [
         p(
-          '<strong>Keep this to track your order.</strong> You checked out as a guest, so this code is the only way to find this order again — or to attach it to an account later.',
+          'You checked out as a guest. This longer code is what attaches the order to an account if you make one later:',
         ),
         `<div style="margin:16px 0;padding:16px;background:#f6f4ef;border-radius:8px;
              font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:14px;
-             color:#1a1a1a;word-break:break-all;">${escapeHtml(payload.trackingCode)}</div>`,
-        p(`Enter it with your order number <strong>${escapeHtml(payload.reference)}</strong> on the Track My Order page.`),
+             color:#1a1a1a;word-break:break-all;">${escapeHtml(payload.accessToken)}</div>`,
       ].join('\n')
-    : p('You can see this order any time under <strong>My Account</strong>.');
+    : p('You can also see this order any time under <strong>My Account</strong>.');
 
   const body = [
     greeting(name ? escapeHtml(name) : 'there'),
     p(`Thank you — your order <strong>${escapeHtml(payload.reference)}</strong> is confirmed and we are getting it ready.`),
     orderTable,
     address,
-    tracking,
+    trackingBlock,
+    guestBlock,
     signOff(),
   ].join('\n');
 
@@ -138,9 +160,11 @@ export async function sendOrderConfirmedEmail(
     '',
     payload.shippingLines.length ? `Delivering to:\n${payload.shippingLines.join('\n')}` : '',
     '',
-    payload.trackingCode
-      ? `Keep this to track your order — it is the only way to find this order again:\n${payload.trackingCode}\nUse it with your order number ${payload.reference} on the Track My Order page.`
-      : 'You can see this order any time under My Account.',
+    `Track your order with this code and the email address you ordered with:\n${payload.trackingCode}`,
+    '',
+    payload.accessToken
+      ? `You checked out as a guest. Keep this code to attach the order to an account later:\n${payload.accessToken}`
+      : 'You can also see this order any time under My Account.',
     '',
     'The Kinkané Team',
   ]

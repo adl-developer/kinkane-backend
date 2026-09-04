@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   generateOrderReference,
   generateAccessToken,
+  generateTrackingCode,
+  normalizeTrackingCode,
   hashToken,
   tokensMatch,
 } from '../lib/order-identity';
@@ -42,6 +44,75 @@ describe('generateOrderReference', () => {
     expect(counts.size).toBe(32);
     const expected = 20000 / 32;
     for (const n of counts.values()) expect(Math.abs(n - expected)).toBeLessThan(expected * 0.35);
+  });
+});
+
+describe('generateTrackingCode', () => {
+  it('matches the shape the API validates', () => {
+    // The track endpoint's regex. A generated code the endpoint would reject is
+    // an order the customer can never look up.
+    for (let i = 0; i < 500; i++) expect(generateTrackingCode()).toMatch(/^[0-9A-HJKMNP-TV-Z]{8}$/);
+  });
+
+  it('omits the characters that get misread aloud or retyped', () => {
+    // This code exists to be read off a screen and typed into a form, so I/L/O/U
+    // being absent is the entire reason it is usable at all.
+    const codes = Array.from({ length: 500 }, generateTrackingCode).join('');
+    for (const forbidden of ['I', 'L', 'O', 'U']) expect(codes).not.toContain(forbidden);
+  });
+
+  it('carries no ORD- prefix — it is not the reference', () => {
+    // Two identifiers on one order is already a lot; a code that looked like the
+    // reference would have customers typing one into the other's field.
+    for (let i = 0; i < 100; i++) expect(generateTrackingCode()).not.toContain('-');
+  });
+
+  it('is not sequential — codes cannot be walked', () => {
+    const seen = new Set(Array.from({ length: 2000 }, generateTrackingCode));
+    expect(seen.size).toBe(2000);
+  });
+});
+
+describe('normalizeTrackingCode', () => {
+  it('accepts what a customer actually types', () => {
+    // Lower case off a phone screen, a dash inserted for readability, spaces
+    // from a copy-paste. Rejecting any of these is a support ticket.
+    for (const typed of ['7k2m9qx4', '7K2M-9QX4', ' 7K2M 9QX4 ', '7k2m-9qx4']) {
+      expect(normalizeTrackingCode(typed)).toBe('7K2M9QX4');
+    }
+  });
+
+  it('leaves an already-clean code alone', () => {
+    expect(normalizeTrackingCode('7K2M9QX4')).toBe('7K2M9QX4');
+  });
+});
+
+describe('the track endpoint\'s code validation', () => {
+  // Kept in sync with trackOrderSchema in orders.controller.ts. Duplicated
+  // rather than imported so this stays a pure schema test, but the rule is the
+  // point: normalise first, then require exactly eight alphabet characters.
+  const accepts = (input: string) => /^[0-9A-HJKMNP-TV-Z]{8}$/.test(normalizeTrackingCode(input));
+
+  it('accepts every generated code', () => {
+    for (let i = 0; i < 200; i++) expect(accepts(generateTrackingCode())).toBe(true);
+  });
+
+  it('accepts the punctuation a customer adds when retyping', () => {
+    for (const typed of ['7k2m9qx4', '7K2M-9QX4', '7K2M 9QX4']) expect(accepts(typed)).toBe(true);
+  });
+
+  it('rejects a string that is only separators', () => {
+    // The reason the code is normalised before validation rather than after: a
+    // pattern loose enough to allow the dash above would wave this through to a
+    // database lookup for the single character "7".
+    expect(accepts('7-------')).toBe(false);
+    expect(accepts('--------')).toBe(false);
+  });
+
+  it('rejects the wrong length and the excluded characters', () => {
+    for (const bad of ['7K2M9QX', '7K2M9QX45', 'ORD-7K2M9QX4', '7K2M9QXO', '7K2M9QXI']) {
+      expect(accepts(bad)).toBe(false);
+    }
   });
 });
 
