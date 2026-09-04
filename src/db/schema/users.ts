@@ -42,6 +42,25 @@ export const users = pgTable(
     passwordHash: varchar('password_hash', { length: 500 }),
     photoUrl: varchar('photo_url', { length: 1000 }),
     emailVerified: boolean('email_verified').default(false).notNull(),
+    // ── Guest accounts ─────────────────────────────────────────────────────
+    // The web shop requires a Bearer token on every cart and checkout call, so
+    // rather than show a login wall it silently signs the browser up on first
+    // add-to-cart, with the name "Guest" and a `guest-<uuid>@guest.kinkane.app`
+    // address. Those are ordinary accounts here — real password hash, real
+    // session, even a Plus trial — and there were roughly ten of them for every
+    // real signup, one per browser that ever opened the shop.
+    //
+    // Recorded as a column rather than re-derived from the email each time it
+    // matters. The domain is a convention the *frontend* owns (see isGuestUser
+    // in app/lib/auth-storage.ts); a query that pattern-matches on it is a
+    // metric that breaks silently the day that string changes.
+    //
+    // This says how the account was created and nothing more. It is emphatically
+    // not "does not count": a guest who completes a checkout is a real customer
+    // with real revenue, which is why the admin console keys off
+    // `countsAsCustomer` (has ordered, or is not a guest) rather than this flag
+    // on its own.
+    isGuest: boolean('is_guest').default(false).notNull(),
     // E.164, or null — most accounts never supply one. Collected at checkout
     // as a delivery contact and editable from the profile screen; it is not an
     // identity or a login factor, and nothing authenticates against it.

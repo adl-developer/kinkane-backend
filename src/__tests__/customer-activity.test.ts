@@ -155,8 +155,56 @@ describe('the "active" definition', () => {
   });
 
   it('still shares one window constant between them', () => {
-    expect(customers).toContain("import { ACTIVE_CUSTOMER_WINDOW_DAYS } from './dashboard.service'");
+    expect(customers).toMatch(/import \{[^}]*ACTIVE_CUSTOMER_WINDOW_DAYS[^}]*\} from '\.\/dashboard\.service'/);
     expect(dashboard).toContain('export const ACTIVE_CUSTOMER_WINDOW_DAYS = 365');
+  });
+
+  it('scopes every customer query to real customers', () => {
+    // The web shop signs a browser up on first add-to-cart, ~10 per real
+    // signup. Before this, "customers" counted browsers and "active customers"
+    // counted abandoned carts. Each of these four queries is a number on the
+    // screen; one left unscoped is one card quietly disagreeing with the rest.
+    const list = customers.slice(customers.indexOf('async list('));
+
+    // Four numbers, three mentions: the page and the total share one `where`,
+    // which is seeded with the scope so neither can be built without it.
+    expect(list).toContain('const conditions: SQL[] = [countsAsCustomer];');
+    expect((list.match(/countsAsCustomer/g) ?? []).length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('keeps guests who actually bought something', () => {
+    // A guest who completed a checkout is real money and a real person to
+    // contact. The line is "has ordered, or is not a guest" — never `is_guest`
+    // on its own, which would drop paying customers off the screen.
+    expect(dashboard).toContain('not ${users.isGuest}');
+    expect(dashboard).toMatch(/exists \(select 1 from orders o where o\.user_id = \$\{users\.id\} and o\.paid_at is not null\)/);
+  });
+
+  it('reads the guest email convention exactly once, at signup', () => {
+    // The domain belongs to the frontend. Re-deriving it in a query would mean
+    // a metric that breaks silently the day they rename that host.
+    const auth = read('services/auth.service.ts');
+    expect(auth).toContain('isGuest: isGuestEmail(email)');
+
+    const services = read('services/admin/customers.service.ts') + dashboard;
+    expect(services).not.toContain('guest.kinkane.app');
+  });
+
+  it('shows the buyer, not the word "Guest", against an order', () => {
+    // Guest accounts are real user rows named literally "Guest", so a plain
+    // coalesce(users.name, shipping_name) never falls through and every guest
+    // order — most of them — read "Guest" in the customer column.
+    expect(dashboard).toContain('when ${users.isGuest} then coalesce(${orders.shippingName}, ${users.name})');
+
+    // Both screens must use the shared expression rather than reintroducing the
+    // old coalesce, which is how the two ended up duplicating it in the first place.
+    const orders = read('services/admin/orders.service.ts');
+    expect(orders).toContain('customerName: orderCustomerName');
+    expect(dashboard).toContain('customerName: orderCustomerName');
+    // The bare coalesce must not survive at a call site. Not asserted against
+    // dashboard.service, which legitimately contains it inside the `else` branch
+    // of orderCustomerName itself.
+    expect(orders).not.toMatch(/coalesce\(\$\{users\.name\}/);
   });
 
   it('leaves the money columns counting paid orders only', () => {

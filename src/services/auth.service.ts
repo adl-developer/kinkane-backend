@@ -95,6 +95,25 @@ function assertNotBlacklisted(blacklistedAt: Date | null): void {
   }
 }
 
+/**
+ * The domain the web shop signs browsers up under when it needs a token for the
+ * cart before anyone has chosen to make an account. See createGuestAccount in
+ * the web frontend — the convention is theirs; this is where we read it.
+ */
+const GUEST_EMAIL_DOMAIN = '@guest.kinkane.app';
+
+/**
+ * Read exactly once, at signup, and stored on the row as `is_guest`.
+ *
+ * Deliberately not exported and deliberately not consulted anywhere else: the
+ * moment a second query pattern-matches this domain, the shape of an email
+ * becomes load-bearing in two places and the frontend can break a business
+ * metric by renaming a host.
+ */
+function isGuestEmail(email: string): boolean {
+  return email.toLowerCase().trim().endsWith(GUEST_EMAIL_DOMAIN);
+}
+
 export function signAccessToken(userId: number, email: string): string {
   return jwt.sign({ sub: userId, email }, config.jwt.accessSecret, {
     expiresIn: config.jwt.accessTtl,
@@ -497,6 +516,7 @@ export const authService = {
           name: name.trim(),
           email: email.toLowerCase().trim(),
           passwordHash,
+          isGuest: isGuestEmail(email),
           // Resolved once, here, and then frozen — see geo.service for why it is
           // never re-derived on later requests.
           countryCode: context.country?.code ?? null,

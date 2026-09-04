@@ -604,6 +604,11 @@ const commerceSchemas = {
         description: 'Last seen on an authenticated request, not just last password entry. Updated at most once a day. Accounts predating this field were seeded from their signup date.',
       },
       active: { type: 'boolean', description: 'Seen in the last 12 months.', example: true },
+      isGuest: {
+        type: 'boolean',
+        description: 'Account created by the web shop for a browser rather than by a person signing up. Only guests who completed a purchase appear here at all.',
+        example: false,
+      },
       blacklisted: { type: 'boolean', example: false },
       blacklistedAt: { type: 'string', format: 'date-time', nullable: true },
       blacklistReason: { type: 'string', nullable: true },

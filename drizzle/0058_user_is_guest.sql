@@ -1,0 +1,30 @@
+-- Marks the accounts the web shop creates on its visitors' behalf.
+--
+-- The shop requires a Bearer token on every cart and checkout call, so instead
+-- of a login wall it silently signs the browser up on first add-to-cart, with
+-- the name "Guest" and a `guest-<uuid>@guest.kinkane.app` address (see
+-- createGuestAccount in the web frontend). They arrive through the ordinary
+-- signup endpoint and are indistinguishable from real accounts down here: real
+-- password hash, real session, even a Plus trial.
+--
+-- There are roughly ten of them for every real signup — one per browser that
+-- ever opened the shop — so with nothing marking them the admin console counted
+-- abandoned carts as customers, and every one of them as an active customer the
+-- moment its browser made a request.
+--
+-- DEFAULT false is right for the backfill as well as for new rows: every
+-- account that predates the web shop was created by a person.
+ALTER TABLE "users" ADD COLUMN "is_guest" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+-- The one place the email convention is read. From here on the flag is set at
+-- signup and this pattern is never consulted again — a query that re-derives it
+-- is a metric that breaks silently the day the frontend changes that domain.
+-- ILIKE, not LIKE. Signup lower-cases the address so every row matches today,
+-- but this statement runs once and can never be re-run to catch a row it missed
+-- — and a miss is silent, leaving a browser counted as a customer forever.
+-- Not worth resting that on an invariant holding for every row ever written.
+UPDATE "users" SET "is_guest" = true WHERE "email" ILIKE '%@guest.kinkane.app';
+-- No index on this column deliberately. The console's predicate is
+-- "not a guest, OR has a paid order", and the half that costs anything is the
+-- order lookup — already served by idx_orders_user_id. A two-value index over
+-- `is_guest` would not be used for the OR, and an index nothing reads is just a
+-- write to maintain on every signup.

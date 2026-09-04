@@ -407,6 +407,13 @@
       "when": 1788491920733,
       "tag": "0057_user_last_sign_in",
       "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1788494240762,
+      "tag": "0058_user_is_guest",
+      "breakpoints": true
     }
   ]
 }
