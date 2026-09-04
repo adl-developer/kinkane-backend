@@ -1,9 +1,31 @@
 # Creating the title-sort indexes without locking the catalogue
 
-Migration `0056_books_title_sortable_index.sql` adds two expression indexes to
-`books`, which has ~2M rows. They are what keeps `GET /books?sortBy=title` an
-ordered index scan now that it sorts on a placeholder-title rank before the
-title itself — see `buildSortOrderBy` in `src/services/books.service.ts`.
+Migration `0061_books_title_sortable_rank_v2.sql` adds two expression indexes to
+`books`, which has ~2M rows, and drops the two that `0056` added. They are what
+keeps `GET /books?sortBy=title` an ordered index scan now that it sorts on a
+three-band title rank before the title itself — see `buildSortOrderBy` in
+`src/services/books.service.ts`.
+
+## The bands
+
+| rank | titles | example |
+| --- | --- | --- |
+| 0 | starts with a letter | `The Hobbit`, `"The Nose"`, `#Girlboss`, `Élégance` |
+| 1 | starts with a digit or a symbol | `1984`, `£10 Dinners`, `!!! Wow`, `(Un)Common` |
+| 2 | no letter or digit anywhere, or NULL | `?`, `.`, `...`, `-`, the empty string |
+
+The first character is read after stripping leading decoration — quotes, an
+apostrophe, `#`, `¡¿`, whitespace — so a quoted or hashtagged real book stays in
+band 0. On a 83k-row development catalogue the split is roughly 99.2% / 0.75% /
+one row.
+
+`COLLATE "und-x-icu"` is not decoration. Postgres derives a regex character
+class from the operand's ctype, and a database created with ctype `C` — which
+this one is — reads `'É' ~ '[[:alpha:]]'` as false, so without the collation
+every accented-initial title sorts with the symbols and an all-accented title
+counts as junk. It also stops the banding differing between two environments
+created with different ctypes. It needs a Postgres built with ICU; if the
+collation is missing, the migration fails loudly rather than banding wrongly.
 
 **The deploy handles this on its own.** `db:migrate` runs
 `src/db/build-concurrent-indexes.ts` ahead of `drizzle-kit migrate`, which
@@ -31,6 +53,25 @@ goes back to sorting the whole filtered set. `title-sort-placeholders.test.ts`
 asserts all three against each other, so drift fails the suite rather than
 production.
 
+## Why the indexes changed name
+
+`0061` builds `idx_books_title_band` / `_desc` rather than reusing `0056`'s
+`idx_books_title_sortable` / `_desc`, and drops the old pair.
+
+The rename is the safety mechanism, not tidiness. `CREATE INDEX IF NOT EXISTS`
+matches on **name, not definition**: reusing the old names would find the old
+two-band index sitting there, skip the create, and leave the page ordering on an
+expression that no index satisfies — a full sort of the filtered catalogue on
+every browse page, with nothing logged anywhere. Under a new name the create
+either happens or fails; it cannot quietly no-op onto the wrong index.
+
+The old pair is dropped because it leads on an expression nothing orders by any
+more: it answers no query and still costs every insert and update the ingester
+makes. The pre-build script drops it `CONCURRENTLY` ahead of the migration, for
+the same reason it builds concurrently — a plain `DROP INDEX` is instant in
+itself, but it needs an ACCESS EXCLUSIVE lock, and waiting for that behind a
+long-running reader queues every writer behind it too.
+
 ## What a deploy looks like
 
 The build is slower in wall-clock terms than the locking one — two passes over
@@ -52,11 +93,11 @@ automatic step failed and you would rather not wait for the next release.
 not a migration, not a wrapper that opens one.
 
 ```bash
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE INDEX CONCURRENTLY IF NOT EXISTS \"idx_books_title_sortable\" ON \"books\" USING btree ((CASE WHEN \"title\" ~ '[[:alnum:]]' THEN 0 ELSE 1 END), \"title\");"
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE INDEX CONCURRENTLY IF NOT EXISTS \"idx_books_title_band\" ON \"books\" USING btree ((CASE WHEN \"title\" IS NULL OR \"title\" COLLATE \"und-x-icu\" !~ '[[:alnum:]]' THEN 2 WHEN regexp_replace(\"title\" COLLATE \"und-x-icu\", '^[[:space:]''\"#¡¿“”‘’«»‹›]+', '') ~ '^[[:alpha:]]' THEN 0 ELSE 1 END), \"title\");"
 ```
 
 ```bash
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE INDEX CONCURRENTLY IF NOT EXISTS \"idx_books_title_sortable_desc\" ON \"books\" USING btree ((CASE WHEN \"title\" ~ '[[:alnum:]]' THEN 0 ELSE 1 END), \"title\" DESC);"
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE INDEX CONCURRENTLY IF NOT EXISTS \"idx_books_title_band_desc\" ON \"books\" USING btree ((CASE WHEN \"title\" IS NULL OR \"title\" COLLATE \"und-x-icu\" !~ '[[:alnum:]]' THEN 2 WHEN regexp_replace(\"title\" COLLATE \"und-x-icu\", '^[[:space:]''\"#¡¿“”‘’«»‹›]+', '') ~ '^[[:alpha:]]' THEN 0 ELSE 1 END), \"title\" DESC);"
 ```
 
 One at a time, not in one `-c`. Each takes two passes over the table and does
@@ -74,13 +115,13 @@ the migration's `IF NOT EXISTS`, so the deploy will skip past it and the page
 will be slow with no error anywhere.
 
 ```bash
-psql "$DATABASE_URL" -c "SELECT c.relname, i.indisvalid FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid WHERE c.relname LIKE 'idx_books_title_sortable%';"
+psql "$DATABASE_URL" -c "SELECT c.relname, i.indisvalid FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid WHERE c.relname LIKE 'idx_books_title_band%';"
 ```
 
 Both rows must read `t`. Any `f` — drop that one and build it again:
 
 ```bash
-psql "$DATABASE_URL" -c "DROP INDEX CONCURRENTLY \"idx_books_title_sortable\";"
+psql "$DATABASE_URL" -c "DROP INDEX CONCURRENTLY \"idx_books_title_band\";"
 ```
 
 ## Confirming the page uses them
@@ -88,10 +129,10 @@ psql "$DATABASE_URL" -c "DROP INDEX CONCURRENTLY \"idx_books_title_sortable\";"
 After the deploy, whichever way the indexes got built:
 
 ```bash
-psql "$DATABASE_URL" -c "EXPLAIN SELECT id FROM books WHERE is_removed = false ORDER BY (CASE WHEN title ~ '[[:alnum:]]' THEN 0 ELSE 1 END), title ASC LIMIT 20;"
+psql "$DATABASE_URL" -c "EXPLAIN SELECT id FROM books WHERE is_removed = false ORDER BY (CASE WHEN \"title\" IS NULL OR \"title\" COLLATE \"und-x-icu\" !~ '[[:alnum:]]' THEN 2 WHEN regexp_replace(\"title\" COLLATE \"und-x-icu\", '^[[:space:]''\"#¡¿“”‘’«»‹›]+', '') ~ '^[[:alpha:]]' THEN 0 ELSE 1 END), \"title\" ASC LIMIT 20;"
 ```
 
-Expect an `Index Scan using idx_books_title_sortable`. A `Sort` node over a
+Expect an `Index Scan using idx_books_title_band`. A `Sort` node over a
 `Seq Scan` means the expressions have drifted apart — compare the `CASE` in
 `buildSortOrderBy` against `pg_get_indexdef` character for character.
 
