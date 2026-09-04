@@ -42,6 +42,25 @@ export const users = pgTable(
     passwordHash: varchar('password_hash', { length: 500 }),
     photoUrl: varchar('photo_url', { length: 1000 }),
     emailVerified: boolean('email_verified').default(false).notNull(),
+    // ── Guest accounts ─────────────────────────────────────────────────────
+    // The web shop requires a Bearer token on every cart and checkout call, so
+    // rather than show a login wall it silently signs the browser up on first
+    // add-to-cart, with the name "Guest" and a `guest-<uuid>@guest.kinkane.app`
+    // address. Those are ordinary accounts here — real password hash, real
+    // session, even a Plus trial — and there were roughly ten of them for every
+    // real signup, one per browser that ever opened the shop.
+    //
+    // Recorded as a column rather than re-derived from the email each time it
+    // matters. The domain is a convention the *frontend* owns (see isGuestUser
+    // in app/lib/auth-storage.ts); a query that pattern-matches on it is a
+    // metric that breaks silently the day that string changes.
+    //
+    // This says how the account was created and nothing more. It is emphatically
+    // not "does not count": a guest who completes a checkout is a real customer
+    // with real revenue, which is why the admin console keys off
+    // `countsAsCustomer` (has ordered, or is not a guest) rather than this flag
+    // on its own.
+    isGuest: boolean('is_guest').default(false).notNull(),
     // E.164, or null — most accounts never supply one. Collected at checkout
     // as a delivery contact and editable from the profile screen; it is not an
     // identity or a login factor, and nothing authenticates against it.
@@ -103,6 +122,22 @@ export const users = pgTable(
     // the staff one. The id is enough to resolve a name when the console asks.
     blacklistedBy: integer('blacklisted_by'),
     blacklistReason: text('blacklist_reason'),
+    // ── Activity ───────────────────────────────────────────────────────────
+    // Last time this account was *seen*, not last time it typed a password.
+    // Written on any authenticated request (throttled to once a day — see
+    // touchLastSignIn in services/user-activity.service.ts) and directly on
+    // sign-in, so it keeps meaning something for a mobile client that silently
+    // rotates tokens for months and never re-authenticates.
+    //
+    // Backfilled to created_at for every account that existed before the column
+    // did. That is a deliberate fiction — we never recorded sign-ins before, and
+    // the alternative was a year of every customer reading "inactive" because
+    // the field was null rather than because anybody was dormant. It decays out
+    // of the data on its own as real activity overwrites it.
+    //
+    // Not null: the backfill covers the old rows and the default covers new
+    // ones, so "we have never seen this user" is not a state that exists.
+    lastSignInAt: timestamp('last_sign_in_at', { withTimezone: true }).defaultNow().notNull(),
     searchVector: tsvector('search_vector'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -110,6 +145,9 @@ export const users = pgTable(
   (t) => ({
     emailIdx: index('idx_users_email').on(t.email),
     searchVectorIdx: index('idx_users_search_vector').on(t.searchVector),
+    // The admin console counts and filters on this on every Customers and
+    // Overview load; without an index both become a seq scan over all users.
+    lastSignInAtIdx: index('idx_users_last_sign_in_at').on(t.lastSignInAt),
   }),
 );
 

@@ -8,6 +8,7 @@ import { config } from '../config';
 import { admin } from '../lib/firebase';
 import { adminNotificationsService } from './admin/notifications.service';
 import { logger } from '../lib/logger';
+import { touchLastSignIn } from './user-activity.service';
 import { enqueueEmail } from '../lib/email-queue';
 import { generateEmbedding } from '../lib/gemini';
 import { buildPreferenceText } from './recommendations.service';
@@ -94,6 +95,25 @@ function assertNotBlacklisted(blacklistedAt: Date | null): void {
   }
 }
 
+/**
+ * The domain the web shop signs browsers up under when it needs a token for the
+ * cart before anyone has chosen to make an account. See createGuestAccount in
+ * the web frontend — the convention is theirs; this is where we read it.
+ */
+const GUEST_EMAIL_DOMAIN = '@guest.kinkane.app';
+
+/**
+ * Read exactly once, at signup, and stored on the row as `is_guest`.
+ *
+ * Deliberately not exported and deliberately not consulted anywhere else: the
+ * moment a second query pattern-matches this domain, the shape of an email
+ * becomes load-bearing in two places and the frontend can break a business
+ * metric by renaming a host.
+ */
+function isGuestEmail(email: string): boolean {
+  return email.toLowerCase().trim().endsWith(GUEST_EMAIL_DOMAIN);
+}
+
 export function signAccessToken(userId: number, email: string): string {
   return jwt.sign({ sub: userId, email }, config.jwt.accessSecret, {
     expiresIn: config.jwt.accessTtl,
@@ -111,6 +131,23 @@ async function issueTokenPair(userId: number, email: string): Promise<TokenPair>
     tokenHash: hashToken(rawRefresh),
     expiresAt,
   });
+
+  // Records the sighting, but through the *throttled* path, and deliberately
+  // not awaited.
+  //
+  // This function is the funnel for refresh rotation as much as for a real
+  // sign-in, and with a 15-minute access token an active client comes back
+  // through here roughly every 15 minutes. An unconditional write here would
+  // mean ~96 updates per user per day rather than one, which is the throttle
+  // this feature was built around, defeated on the busiest auth path in the
+  // system.
+  //
+  // Not awaited, and never allowed to reject, because nothing about issuing a
+  // session depends on it: a transient failure writing an activity timestamp
+  // must not turn a valid login into a 500 — least of all here, where the
+  // refresh token row has already been written and the caller would be left
+  // holding an orphan.
+  touchLastSignIn(userId);
 
   return { accessToken, refreshToken: rawRefresh };
 }
@@ -479,6 +516,7 @@ export const authService = {
           name: name.trim(),
           email: email.toLowerCase().trim(),
           passwordHash,
+          isGuest: isGuestEmail(email),
           // Resolved once, here, and then frozen — see geo.service for why it is
           // never re-derived on later requests.
           countryCode: context.country?.code ?? null,

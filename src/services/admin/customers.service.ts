@@ -4,7 +4,7 @@ import { users, orders, refreshTokens } from '../../db/schema';
 
 /** Either the pool or an open transaction, so callers can share one. */
 type DbHandle = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
-import { ACTIVE_CUSTOMER_WINDOW_DAYS } from './dashboard.service';
+import { ACTIVE_CUSTOMER_WINDOW_DAYS, countsAsCustomer } from './dashboard.service';
 
 export interface AdminCustomerQuery {
   q?: string;
@@ -25,12 +25,16 @@ const lastOrderAt = sql<Date | null>`(select max(o.paid_at) from orders o where 
 
 export const adminCustomersService = {
   async list(query: AdminCustomerQuery) {
-    const conditions: SQL[] = [];
+    // Every query on this screen is scoped to real customers. A browser the web
+    // shop signed up so the cart would have a token is not someone the operator
+    // can act on — it has no name, no reachable address and no order — and at
+    // roughly ten per real signup they buried the people who are.
+    const conditions: SQL[] = [countsAsCustomer];
     if (query.q) {
       const like = `%${query.q}%`;
       conditions.push(or(ilike(users.name, like), ilike(users.email, like))!);
     }
-    const where = conditions.length ? and(...conditions) : undefined;
+    const where = and(...conditions);
 
     const activeSince = new Date(Date.now() - ACTIVE_CUSTOMER_WINDOW_DAYS * 24 * 60 * 60 * 1000);
 
@@ -47,6 +51,8 @@ export const adminCustomersService = {
           orders: orderCount,
           totalSpentMinor: totalSpent,
           lastOrderAt,
+          lastSignInAt: users.lastSignInAt,
+          isGuest: users.isGuest,
         })
         .from(users)
         .where(where)
@@ -61,14 +67,15 @@ export const adminCustomersService = {
           total: sql<number>`count(*)`,
           blacklisted: sql<number>`count(*) filter (where ${users.blacklistedAt} is not null)`,
         })
-        .from(users),
+        .from(users)
+        .where(countsAsCustomer),
     ]);
 
     const [[active], [spend]] = await Promise.all([
       db
-        .select({ n: sql<number>`count(distinct ${orders.userId})` })
-        .from(orders)
-        .where(and(isNotNull(orders.paidAt), gte(orders.paidAt, activeSince), isNotNull(orders.userId))),
+        .select({ n: sql<number>`count(*)` })
+        .from(users)
+        .where(and(gte(users.lastSignInAt, activeSince), countsAsCustomer)),
       db
         .select({ minor: sql<number>`coalesce(sum(${orders.totalMinor}), 0)` })
         .from(orders)
@@ -83,10 +90,12 @@ export const adminCustomersService = {
         ...r,
         orders: Number(r.orders),
         totalSpentMinor: Number(r.totalSpentMinor),
-        // "Active" is: paid for something in the last 12 months. A customer who
-        // has never ordered is inactive, not new — the operator wants to know
-        // who is buying.
-        active: r.lastOrderAt !== null && new Date(r.lastOrderAt) >= activeSince,
+        // "Active" is: seen in the last 12 months. Engagement, not spend — a
+        // reader who signs in every week and has never bought a book is a live
+        // account, and the previous rule (paid in the last 12 months) filed them
+        // with the abandoned ones. Purchase history is still right there in
+        // `orders`/`totalSpentMinor` for anyone asking the revenue question.
+        active: new Date(r.lastSignInAt) >= activeSince,
         blacklisted: r.blacklistedAt !== null,
       })),
       total: Number(total.n),

@@ -45,8 +45,55 @@ function statusList(tab: keyof typeof ADMIN_ORDER_TABS): SQL {
   return sql`(${sql.join(ADMIN_ORDER_TABS[tab].map((s) => sql`${s}`), sql`, `)})`;
 }
 
-/** "Active" for the customer counts: has paid for something in the last year. */
+/**
+ * "Active" for the customer counts: signed in — or was simply seen on an
+ * authenticated request — within the last year. Engagement rather than spend,
+ * and shared with the Customers list so the card and the table cannot drift
+ * apart on the meaning of the same word.
+ */
 export const ACTIVE_CUSTOMER_WINDOW_DAYS = 365;
+
+/**
+ * Who the console treats as a customer at all.
+ *
+ * The web shop signs a browser up on its first add-to-cart so the cart endpoints
+ * have a token to work with, which means most `users` rows are not people —
+ * they are browsers that once opened the shop, roughly ten for every real
+ * signup. Counting them made "customers" a measure of sessions and "active
+ * customers" a measure of abandoned carts.
+ *
+ * A guest who *bought* something is a different matter: real money, real order,
+ * a person the operator may well need to find. So the line is drawn at having
+ * ordered rather than at being a guest — this keeps them and drops only the
+ * browsers that never got as far as paying.
+ *
+ * Exported so the Customers list and the Overview cards apply exactly the same
+ * definition. They render the same words from different queries, and the two
+ * have drifted apart before.
+ */
+/**
+ * The name to show against an order.
+ *
+ * Not simply `coalesce(users.name, orders.shipping_name)`, which is what this
+ * was: that read correctly only while a guest order meant `user_id IS NULL`.
+ * The web shop now signs the browser up before checkout, so those orders point
+ * at a real row whose name is the literal string "Guest" — the coalesce stopped
+ * falling through and every guest order in the list read "Guest", which is most
+ * of them.
+ *
+ * For a guest the shipping name is the only real name we hold, so it wins. For
+ * everyone else the account name still wins, and shipping name remains the
+ * fallback for the genuinely account-less orders that predate all of this.
+ */
+export const orderCustomerName: SQL<string | null> = sql`case
+  when ${users.isGuest} then coalesce(${orders.shippingName}, ${users.name})
+  else coalesce(${users.name}, ${orders.shippingName})
+end`;
+
+export const countsAsCustomer: SQL = sql`(
+  not ${users.isGuest}
+  or exists (select 1 from orders o where o.user_id = ${users.id} and o.paid_at is not null)
+)`;
 
 function windowStart(days: number): Date {
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000);
@@ -89,16 +136,16 @@ export const adminDashboardService = {
           unpaid: sql<number>`count(*) filter (where ${orders.status} in ${statusList('unpaid')})`,
         })
         .from(orders),
-      db.select({ total: sql<number>`count(*)` }).from(users),
+      db.select({ total: sql<number>`count(*)` }).from(users).where(countsAsCustomer),
       db
-        .select({ active: sql<number>`count(distinct ${orders.userId})` })
-        .from(orders)
-        .where(and(isNotNull(orders.paidAt), gte(orders.paidAt, windowStart(ACTIVE_CUSTOMER_WINDOW_DAYS)))),
+        .select({ active: sql<number>`count(*)` })
+        .from(users)
+        .where(and(gte(users.lastSignInAt, windowStart(ACTIVE_CUSTOMER_WINDOW_DAYS)), countsAsCustomer)),
       db
         .select({
           id: orders.id,
           reference: orders.reference,
-          customerName: sql<string | null>`coalesce(${users.name}, ${orders.shippingName})`,
+          customerName: orderCustomerName,
           contactEmail: orders.contactEmail,
           status: orders.status,
           currency: orders.presentmentCurrency,

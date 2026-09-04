@@ -306,7 +306,11 @@ export const adminPaths = {
         '',
         '`stats` describes the **whole customer base**, not the current search — that is what the design shows, and a card that changed as you typed would be worse than useless.',
         '',
-        '`active` means *paid for something in the last 12 months*. Per-customer aggregates (`orders`, `totalSpentMinor`, `lastOrderAt`) count paid orders only.',
+        'The customer base excludes the accounts the web shop creates for a browser on its first add-to-cart (there are roughly ten of those per real signup). A guest who **completed a purchase** is kept and flagged with `isGuest`; one that never ordered is not a customer and appears in neither the list nor the cards.',
+        '',
+        '`active` means *seen in the last 12 months* — engagement, not spend. It tracks `lastSignInAt`, which moves on any authenticated request rather than only on password entry, so a mobile client that silently rotates tokens for months still reads as active.',
+        '',
+        'Per-customer aggregates (`orders`, `totalSpentMinor`, `lastOrderAt`) still count paid orders only — that is where the revenue question is answered.',
       ].join('\n'),
       parameters: [
         param('q', 'query', { type: 'string', maxLength: 200 }, 'Matches name or email.'),

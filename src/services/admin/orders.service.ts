@@ -1,7 +1,7 @@
 import { and, desc, eq, ilike, inArray, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { orders, orderItems, users } from '../../db/schema';
-import { ADMIN_ORDER_TABS, tabForStatus, type AdminOrderTab } from './dashboard.service';
+import { ADMIN_ORDER_TABS, orderCustomerName, tabForStatus, type AdminOrderTab } from './dashboard.service';
 
 export interface AdminOrderQuery {
   tab: AdminOrderTab;
@@ -62,7 +62,7 @@ export const adminOrdersService = {
           contactEmail: orders.contactEmail,
           contactPhone: orders.contactPhone,
           customerId: orders.userId,
-          customerName: sql<string | null>`coalesce(${users.name}, ${orders.shippingName})`,
+          customerName: orderCustomerName,
           shippingName: orders.shippingName,
           shippingLine1: orders.shippingLine1,
           shippingLine2: orders.shippingLine2,

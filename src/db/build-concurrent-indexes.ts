@@ -36,6 +36,14 @@ interface ConcurrentIndex {
   table: string;
   /** The migration this mirrors, for the log line when something needs chasing. */
   migration: string;
+  /**
+   * Set when the index covers a column its migration *adds*. This step runs
+   * before `drizzle-kit migrate`, so on the deploy that first introduces the
+   * column there is nothing here to index yet — without this the build throws
+   * and the (non-fatal) handler logs a failure for something that is working
+   * exactly as intended.
+   */
+  column?: string;
   sql: string;
 }
 
@@ -56,6 +64,17 @@ const INDEXES: ConcurrentIndex[] = [
     table: 'books',
     migration: '0056_books_title_sortable_index',
     sql: `CREATE INDEX CONCURRENTLY IF NOT EXISTS "idx_books_title_sortable_desc" ON "books" USING btree (${TITLE_JUNK_RANK}, "title" DESC)`,
+  },
+  {
+    // The admin console filters and counts on last_sign_in_at on every
+    // Customers and Overview load. `users` is far smaller than `books`, but a
+    // plain build still takes a SHARE lock, and the writers it would stall are
+    // sign-ins — so the one table where a lock is most visible to a customer.
+    name: 'idx_users_last_sign_in_at',
+    table: 'users',
+    migration: '0057_user_last_sign_in',
+    column: 'last_sign_in_at',
+    sql: `CREATE INDEX CONCURRENTLY IF NOT EXISTS "idx_users_last_sign_in_at" ON "users" USING btree ("last_sign_in_at")`,
   },
 ];
 
@@ -86,6 +105,15 @@ async function tableExists(table: string): Promise<boolean> {
   return Boolean(row?.oid);
 }
 
+async function columnExists(table: string, column: string): Promise<boolean> {
+  const rows = await sql<{ n: number }[]>`
+    SELECT 1 AS n
+    FROM information_schema.columns
+    WHERE table_name = ${table} AND column_name = ${column}
+  `;
+  return rows.length > 0;
+}
+
 async function build(index: ConcurrentIndex): Promise<void> {
   // .simple() because CREATE INDEX CONCURRENTLY is rejected under the extended
   // query protocol postgres.js uses by default.
@@ -108,6 +136,16 @@ async function ensure(index: ConcurrentIndex): Promise<void> {
     // A database new enough not to have the table yet: the migration will create
     // it and the index together, on a table with nothing in it to lock.
     console.log(`  ${index.name}: ${index.table} does not exist yet, leaving it to ${index.migration}`);
+    return;
+  }
+
+  if (index.column && !(await columnExists(index.table, index.column))) {
+    // The deploy that introduces the column: it does not exist until the
+    // migration runs, a few seconds from now, which then builds the index
+    // itself. Every later deploy takes the concurrent path above.
+    console.log(
+      `  ${index.name}: ${index.table}.${index.column} does not exist yet, leaving it to ${index.migration}`,
+    );
     return;
   }
 
