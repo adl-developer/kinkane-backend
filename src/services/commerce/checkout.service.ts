@@ -728,11 +728,11 @@ export const commerceCheckoutService = {
      * win rather than a hot path, but the alternative is failing a checkout on
      * a coin flip.
      */
-    let order: Order | undefined;
+    let written: Order | undefined;
 
-    for (let attempt = 0; !order; attempt++) {
+    for (let attempt = 0; !written; attempt++) {
       try {
-        order = await writeOrder(quote);
+        written = await writeOrder(quote);
       } catch (err) {
         if (!isUniqueViolation(err)) throw err;
 
@@ -753,6 +753,12 @@ export const commerceCheckoutService = {
         quote = priceBasket(0);
       }
     }
+
+    // Re-bound as a const before anything closes over it. The loop above cannot
+    // exit with it unset, but narrowing a `let` across a closure boundary only
+    // survives on TypeScript 5.4+ — and the transaction callback below captures
+    // it. A const is narrowed the same way on every version.
+    const order: Order = written;
 
     const session = await this.createSession(userId, order, quote.lines.map((line) => ({
       name: buyable.get(line.bookId)!.title,
