@@ -1,0 +1,45 @@
+-- `GET /books?sortBy=title` now sorts into three bands instead of two: titles
+-- starting with a letter, then titles starting with a digit or a symbol, then
+-- the punctuation-only placeholders (`?`, `.`, `...`) and NULLs last. Within a
+-- band it orders on the title with any leading decoration stripped, so a quoted
+-- or hashtagged book files under its first letter instead of under the quote.
+-- See buildSortOrderBy in src/services/books.service.ts.
+--
+-- The ordering changed, so the indexes built for the old two-band rank (0056)
+-- can no longer satisfy this ORDER BY. Left in place they would cost writes on
+-- every ingest run and serve nothing, so they are dropped here.
+--
+-- NEW NAMES, deliberately. Reusing `idx_books_title_sortable` would be the
+-- quiet failure mode this whole file exists to avoid: `IF NOT EXISTS` matches
+-- on *name*, not definition, so it would find the old two-band index, skip the
+-- create, and leave the page ordering on an expression no index satisfies —
+-- a full sort of the filtered catalogue before LIMIT applies, with no error
+-- anywhere. Dropping first and creating under a different name makes a botched
+-- rollout loud instead of slow.
+--
+-- The DROPs take a brief ACCESS EXCLUSIVE lock on `books`, but only long enough
+-- to delete a catalog entry — unlike a build, which is minutes of SHARE lock.
+--
+-- COLLATE "und-x-icu" is what makes `[[:alpha:]]` mean "letter" and not "ASCII
+-- letter": this database is ctype `C`, under which `'É' ~ '[[:alpha:]]'` is
+-- false and every accented-initial title would sort with the symbols. It needs
+-- a Postgres built with ICU; if the collation is missing this migration fails
+-- here, loudly, which is the intended outcome.
+--
+-- The raw "title" is the last key so that two titles differing only in their
+-- decoration have one stable order to page through.
+--
+-- Two indexes, because the rank does NOT reverse with the rest: the sunk bands
+-- stay last in both directions, so `sort=desc` means (rank ASC, everything else
+-- DESC), which is not a backwards read of the ASC index (a backwards scan
+-- reverses every key at once).
+--
+-- Both creates are IF NOT EXISTS because src/db/build-concurrent-indexes.ts has
+-- normally built them CONCURRENTLY by the time this runs, making them no-ops;
+-- the locking build here is the fallback for when that step failed. The
+-- expressions are duplicated there and in buildSortOrderBy, and must match this
+-- file character for character — see docs/title-sort-index-rollout.md.
+DROP INDEX IF EXISTS "idx_books_title_sortable";--> statement-breakpoint
+DROP INDEX IF EXISTS "idx_books_title_sortable_desc";--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "idx_books_title_band" ON "books" USING btree ((CASE WHEN "title" IS NULL OR "title" COLLATE "und-x-icu" !~ '[[:alnum:]]' THEN 2 WHEN regexp_replace("title" COLLATE "und-x-icu", '^[[:space:]''"#¡¿“”‘’«»‹›]+', '') ~ '^[[:alpha:]]' THEN 0 ELSE 1 END), (regexp_replace("title" COLLATE "und-x-icu", '^[[:space:]''"#¡¿“”‘’«»‹›]+', '')), "title");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "idx_books_title_band_desc" ON "books" USING btree ((CASE WHEN "title" IS NULL OR "title" COLLATE "und-x-icu" !~ '[[:alnum:]]' THEN 2 WHEN regexp_replace("title" COLLATE "und-x-icu", '^[[:space:]''"#¡¿“”‘’«»‹›]+', '') ~ '^[[:alpha:]]' THEN 0 ELSE 1 END), (regexp_replace("title" COLLATE "und-x-icu", '^[[:space:]''"#¡¿“”‘’«»‹›]+', '')) DESC, "title" DESC);

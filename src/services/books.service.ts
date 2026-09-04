@@ -948,31 +948,73 @@ function priceFields(
 }
 
 /**
- * Sinks placeholder titles to the bottom of a title-ordered page.
+ * Sorts a title-ordered page into three bands, letters first.
  *
- * The catalogue carries rows whose title is punctuation and nothing else — `?`,
- * `.`, `...`, `-`, the odd empty string — which sort ahead of every real book in
- * ASCII order and so occupied the first page of `sortBy=title&sort=asc`. This is
- * the rank they sort on first: 0 for a real title, 1 for one with no letter or
- * digit anywhere in it.
+ * The catalogue mixes three kinds of title, and left to plain ASCII order the
+ * two uninteresting kinds come first: punctuation-only rows (`?`, `.`, `...`,
+ * `-`, the odd empty string) beat everything, and symbol- or digit-led titles
+ * (`1984`, `£10 Dinners`, `!!! Wow`) beat every letter. Both used to occupy the
+ * first page of `sortBy=title&sort=asc`. This is the rank they sort on before
+ * the title itself:
  *
- * "No alphanumeric character *anywhere*" rather than the simpler "first
- * character isn't alphanumeric", which would bury real books: quoted titles
- * (`"The Nose"`) are common enough to appear four times in a 1000-row sample of
- * the live catalogue, and `#Girlboss`-style titles are the same shape.
+ * - `0` — starts with a letter. The great majority of the catalogue.
+ * - `1` — starts with a digit or a symbol, but has a letter or digit somewhere.
+ * - `2` — no letter or digit anywhere, or NULL. The placeholders.
  *
- * NULL titles rank 1 too — `NULL ~ '...'` is NULL, so the CASE falls through to
- * its ELSE — which is the intended answer, and saves a separate NULLS LAST.
+ * The first character is read *after* stripping leading decoration — quotes
+ * (straight, curly and guillemet), an apostrophe, `#`, inverted Spanish
+ * punctuation, and whitespace. Without that, band 1 buries real books rather
+ * than the intended junk: quoted titles (`"The Nose"`) appear four times in a
+ * 1000-row sample of the live catalogue, and `'Tis the Season`, `#Girlboss` and
+ * `¿Quién?` are all the same shape. Stripping is deliberately limited to
+ * decoration around a word — a title genuinely opening on `£`, `!` or `(` still
+ * sinks, which is what "starting with a symbol" was asked for.
+ *
+ * The *same* stripped form is then what band 0 sorts on, and that half is not
+ * optional. Ranking `"Brother Woodrow"` as a real book while still ordering it
+ * on the raw string only moves the problem: `"` sorts below every letter, so
+ * the quoted titles leave the bottom of the page and take over the top of it
+ * instead — page one of A–Z was eight `"…"` titles before this second key
+ * existed. Sorting on the stripped form files them under `B`, where a reader
+ * looking for them would go. The raw title follows as a tiebreak, so two titles
+ * differing only in their decoration still have one stable order to page
+ * through rather than an arbitrary one.
+ *
+ * The `IS NULL` arm is load-bearing and not defensive tidiness: `NULL !~ '...'`
+ * is NULL rather than true, so without it the CASE falls past both WHENs and a
+ * NULL title lands in band 1, above the placeholders it belongs with. (The
+ * column is NOT NULL today, so this decides nothing in practice — but it is the
+ * arm that would be silently wrong if that ever loosened.)
+ *
+ * `COLLATE "und-x-icu"` is what makes `[[:alpha:]]` mean *letter* rather than
+ * *ASCII letter*. Postgres derives a regex character class from the operand's
+ * ctype, and this database is `datctype = 'C'`, under which `'É' ~ '[[:alpha:]]'`
+ * is false — so uncollated, the rank sinks `Élégance`, `Öl und Wein`, `Čapek`,
+ * `Москва` and `東京` into band 1 alongside the symbols, and an all-accented
+ * title into band 2 as junk. The ICU collation is also why the classification
+ * cannot drift between environments: it no longer depends on the ctype the
+ * database happened to be created with. `und` (root) rather than a language,
+ * because the catalogue is not in one language and only character *classes* are
+ * being read here, never sort order.
+ *
+ * This expression is duplicated in three other places and the copies have to
+ * stay character-identical or the planner stops matching the index built for it
+ * — see docs/title-sort-index-rollout.md.
  */
-const TITLE_JUNK_RANK = sql`(CASE WHEN ${books.title} ~ '[[:alnum:]]' THEN 0 ELSE 1 END)`;
+const TITLE_SORTED_ON = sql`regexp_replace(${books.title} COLLATE "und-x-icu", '^[[:space:]''"#¡¿“”‘’«»‹›]+', '')`;
+
+const TITLE_SORT_RANK = sql`(CASE WHEN ${books.title} IS NULL OR ${books.title} COLLATE "und-x-icu" !~ '[[:alnum:]]' THEN 2 WHEN ${TITLE_SORTED_ON} ~ '^[[:alpha:]]' THEN 0 ELSE 1 END)`;
 
 export function buildSortOrderBy(opts: ListBooksOptions): (SQL | PgColumn)[] {
   // The rank is always ASC, including when the title is DESC: "at the bottom"
   // is a statement about the page, not about the sort direction, so reversing
-  // the title must not float the placeholders to the top. That asymmetry is
-  // also why it takes two indexes rather than one read backwards — see
-  // 0056_books_title_sortable_index.sql.
-  const byTitle = (): SQL[] => [TITLE_JUNK_RANK, sql`${books.title} ${opts.sort === 'desc' ? sql`DESC` : sql`ASC`}`];
+  // the title must not float the sunk bands to the top. That asymmetry is also
+  // why it takes two indexes rather than one read backwards — see
+  // 0061_books_title_sortable_rank_v2.sql.
+  const byTitle = (): SQL[] => {
+    const dir = opts.sort === 'desc' ? sql`DESC` : sql`ASC`;
+    return [TITLE_SORT_RANK, sql`${TITLE_SORTED_ON} ${dir}`, sql`${books.title} ${dir}`];
+  };
 
   switch (opts.sortBy) {
     case 'title':

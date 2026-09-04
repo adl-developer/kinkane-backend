@@ -47,23 +47,55 @@ interface ConcurrentIndex {
   sql: string;
 }
 
-const TITLE_JUNK_RANK = `(CASE WHEN "title" ~ '[[:alnum:]]' THEN 0 ELSE 1 END)`;
+/**
+ * The title ordering: a three-band rank (letters, then digits and symbols, then
+ * the punctuation-only placeholders) over the title with leading decoration
+ * stripped. Character-identical to the copies in buildSortOrderBy and
+ * drizzle/0061 — see docs/title-sort-index-rollout.md.
+ */
+const TITLE_SORTED_ON = `regexp_replace("title" COLLATE "und-x-icu", '^[[:space:]''"#¡¿“”‘’«»‹›]+', '')`;
+
+// Written out in full rather than interpolated from TITLE_SORTED_ON: the drift
+// check in title-sort-placeholders.test.ts reads this file as text, and an
+// interpolated copy would leave nothing for it to compare.
+const TITLE_SORT_RANK = `(CASE WHEN "title" IS NULL OR "title" COLLATE "und-x-icu" !~ '[[:alnum:]]' THEN 2 WHEN regexp_replace("title" COLLATE "und-x-icu", '^[[:space:]''"#¡¿“”‘’«»‹›]+', '') ~ '^[[:alpha:]]' THEN 0 ELSE 1 END)`;
+
+/**
+ * Indexes that a migration drops, dropped here CONCURRENTLY first.
+ *
+ * Same bargain as the builds: `DROP INDEX` needs an ACCESS EXCLUSIVE lock on
+ * `books`, and while it waits behind a long-running reader every new writer
+ * queues behind it. The drop itself is instant, but the wait for the lock is
+ * not, and on this table the writers are the ONIX pipeline and the feed runs.
+ * The concurrent drop takes no such lock; the migration's DROP IF EXISTS then
+ * finds nothing and no-ops.
+ *
+ * Unlike a failed build, a failed drop costs nothing but a stale index until
+ * the migration gets to it, so this needs no valid/invalid handling.
+ */
+const SUPERSEDED_INDEXES = [
+  // Superseded by idx_books_title_band / _desc: the two-band rank they lead on
+  // is not the expression the page orders by any more, so they serve nothing
+  // and still cost every write to books.
+  'idx_books_title_sortable',
+  'idx_books_title_sortable_desc',
+];
 
 const INDEXES: ConcurrentIndex[] = [
   {
-    name: 'idx_books_title_sortable',
+    name: 'idx_books_title_band',
     table: 'books',
-    migration: '0056_books_title_sortable_index',
-    sql: `CREATE INDEX CONCURRENTLY IF NOT EXISTS "idx_books_title_sortable" ON "books" USING btree (${TITLE_JUNK_RANK}, "title")`,
+    migration: '0061_books_title_sortable_rank_v2',
+    sql: `CREATE INDEX CONCURRENTLY IF NOT EXISTS "idx_books_title_band" ON "books" USING btree (${TITLE_SORT_RANK}, (${TITLE_SORTED_ON}), "title")`,
   },
   {
-    // Separate from its ASC sibling because the placeholder rank stays ASC while
-    // the title flips, so `sort=desc` is not a backwards read of the other one.
+    // Separate from its ASC sibling because the band rank stays ASC while the
+    // title flips, so `sort=desc` is not a backwards read of the other one.
     // See buildSortOrderBy in services/books.service.ts.
-    name: 'idx_books_title_sortable_desc',
+    name: 'idx_books_title_band_desc',
     table: 'books',
-    migration: '0056_books_title_sortable_index',
-    sql: `CREATE INDEX CONCURRENTLY IF NOT EXISTS "idx_books_title_sortable_desc" ON "books" USING btree (${TITLE_JUNK_RANK}, "title" DESC)`,
+    migration: '0061_books_title_sortable_rank_v2',
+    sql: `CREATE INDEX CONCURRENTLY IF NOT EXISTS "idx_books_title_band_desc" ON "books" USING btree (${TITLE_SORT_RANK}, (${TITLE_SORTED_ON}) DESC, "title" DESC)`,
   },
   {
     // The admin console filters and counts on last_sign_in_at on every
@@ -186,6 +218,23 @@ async function ensure(index: ConcurrentIndex): Promise<void> {
 }
 
 async function main() {
+  console.log('Dropping superseded indexes concurrently...');
+  for (const name of SUPERSEDED_INDEXES) {
+    try {
+      if (!(await indexState(name))) {
+        console.log(`  ${name}: already gone`);
+        continue;
+      }
+      console.log(`  ${name}: dropping concurrently...`);
+      await sql.unsafe(`DROP INDEX CONCURRENTLY IF EXISTS "${name}"`).simple();
+      console.log(`  ${name}: dropped`);
+    } catch (err) {
+      // Same reasoning as the build failures below: the migration drops it too,
+      // under a lock. A worse deploy, not a broken one.
+      console.error(`  ${name}: concurrent drop failed, the migration will drop it under a lock`, err);
+    }
+  }
+
   console.log('Pre-building concurrent indexes...');
   for (const index of INDEXES) {
     try {

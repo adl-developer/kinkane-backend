@@ -5,6 +5,7 @@
 
 ### Features
 
+* show book formats in plain language and link sibling editions ([75445dd](https://adl.github.com/adl-developer/kinkane-backend/commit/75445dd210d90aeb1c1228cee4d8d8c6aafece6b)) — [details](changelog/2026-09-04-book-format-labels-and-editions.md)
 * populate the main genre across the existing catalogue ([86b1510](https://adl.github.com/adl-developer/kinkane-backend/commit/86b1510361000f2bd96126f3d1bb22cc365740e6)) — [details](changelog/2026-09-04-main-genre.md)
 * record the main genre for every book, as named by the publisher ([ea43421](https://adl.github.com/adl-developer/kinkane-backend/commit/ea434213ac2592d1f54c198037730f12c1bbab8a)) — [details](changelog/2026-09-04-book-format-labels-and-editions.md)
 * let customers track an order with a short code and their email ([d012141](https://adl.github.com/adl-developer/kinkane-backend/commit/d012141dc563b785c3be6a356063f0972cb39f21)) — [details](changelog/2026-09-04-book-format-labels-and-editions.md)

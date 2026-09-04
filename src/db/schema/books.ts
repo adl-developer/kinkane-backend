@@ -154,12 +154,15 @@ export const books = pgTable(
       .on(t.mainGenreId, t.updatedAt)
       .where(sql`${t.isRemoved} = false`),
     // idx_books_title is still what a plain title lookup uses, but it no longer
-    // orders GET /books?sortBy=title: that page sorts on a placeholder-title
-    // rank before the title (see buildSortOrderBy in services/books.service.ts),
-    // which only idx_books_title_sortable / _desc can satisfy. Both are created
-    // in migration 0056 rather than here because drizzle-kit cannot express an
+    // orders GET /books?sortBy=title: that page sorts on a three-band title rank
+    // before the title — letters, then digits and symbols, then punctuation-only
+    // placeholders (see buildSortOrderBy in services/books.service.ts) — which
+    // only idx_books_title_band / _desc can satisfy. Both are created in
+    // migration 0061 rather than here because drizzle-kit cannot express an
     // expression index; the CASE in that migration and the one in the service
-    // have to stay character-identical or the planner matches neither.
+    // have to stay character-identical or the planner matches neither. (0056
+    // built the two-band originals, idx_books_title_sortable / _desc; 0061 drops
+    // them, since the expression they lead on is no longer the one ordered by.)
   }),
 );
 

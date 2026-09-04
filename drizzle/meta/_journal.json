@@ -428,6 +428,13 @@
       "when": 1788529336968,
       "tag": "0060_books_main_genre",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1788615736968,
+      "tag": "0061_books_title_sortable_rank_v2",
+      "breakpoints": true
     }
   ]
 }
