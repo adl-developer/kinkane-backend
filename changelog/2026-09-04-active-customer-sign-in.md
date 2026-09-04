@@ -63,9 +63,20 @@ customer's request because an activity timestamp could not be written would be a
 bad trade. On a failed write the local guard is cleared so the next request
 retries rather than going quiet for a full day.
 
-Explicit sign-ins additionally call `recordSignIn`, which skips the throttle.
-That hangs off `issueTokenPair`, the single funnel for password, social, signup
-and refresh.
+`issueTokenPair` — the single funnel for password, social, signup and refresh —
+also records a sighting, so an account returning after a year of dormancy is
+marked the moment it signs in rather than on whatever request happens next. It
+goes through the same throttled, fire-and-forget call, deliberately:
+
+- **Throttled**, because that funnel serves *refresh rotation* as much as real
+  sign-ins. With a 15-minute access token an active client comes back through it
+  roughly every 15 minutes, so an unconditional write there would mean ~96
+  updates per user per day — the throttle defeated on the busiest auth path in
+  the system.
+- **Fire-and-forget**, because nothing about issuing a session depends on it. An
+  earlier version awaited it alongside the refresh-token insert, which meant a
+  transient database error turned a valid login into a 500 — with the refresh
+  token row already committed, leaving the caller holding an orphan.
 
 ## The backfill, and why it is a fiction
 
@@ -94,6 +105,22 @@ account as seen *today* and the console would read "100% active" on first load.
 - **The column is `NOT NULL`.** The backfill covers old rows and the default
   covers new ones, so "never seen" is not a state any row can be in and nothing
   downstream has to handle null.
+- **The index is pre-built concurrently.** `idx_users_last_sign_in_at` is
+  registered in `src/db/build-concurrent-indexes.ts`, which runs ahead of
+  migrations, so from the second deploy onward the migration's `IF NOT EXISTS`
+  finds it present and never takes the lock. That file gained a `column` guard
+  for this: it runs *before* the migration that adds the column, so on the first
+  deploy there is nothing to index yet and it now says so rather than throwing
+  into the non-fatal handler. On that one deploy the migration builds the index
+  itself, under a `SHARE` lock — the writers it can stall are sign-ins, which is
+  worth knowing before choosing when to run it.
+- **The throttle map evicts, it does not clear.** Overflow first drops entries
+  older than the throttle window (they suppress nothing, so it is lossless) and
+  only then sheds live guards, oldest first. Clearing the whole map was cheaper
+  to write but discarded ~50k live guards at once, so the entire active
+  population re-issued a redundant `UPDATE` on its next request. A working set
+  genuinely larger than the cap will still thrash — that is a capacity question,
+  not an eviction-policy one.
 
 ## Out of scope
 
@@ -107,15 +134,21 @@ account as seen *today* and the console would read "100% active" on first load.
 
 ## Testing done
 
-`src/__tests__/customer-activity.test.ts` (13 cases) covers the throttle
+`src/__tests__/customer-activity.test.ts` (14 cases) covers the throttle
 directly — first write happens, repeat calls inside the window do not write, a
 new write happens after a day, throttling is per-account, a failed write clears
 the guard so the next request retries, and the function never rejects into its
-caller. It also pins the consistency property that motivated the whole change:
-the Customers list and the Overview card must key off the same column, and the
-money columns must still count paid orders only.
+caller. Overflow eviction is pinned by a case that fills the map with 40k stale
+and 10k live guards and asserts the live ones survive; it was checked against the
+old clear-everything policy and fails there with 10,001 redundant writes, so it
+is a real regression test rather than one that merely passes.
 
-Full suite: 683 passing. Four failures in `subscription-pricing` and
+It also pins the properties the review turned up: `issueTokenPair` must use the
+throttled call and must not await it, and the Customers list and Overview card
+must key off the same column while the money columns still count paid orders
+only.
+
+Full suite: 684 passing. Four failures in `subscription-pricing` and
 `referral-copy` predate this change and are unrelated (both are Stripe/referral
 environment configuration); they fail identically on a clean tree.
 

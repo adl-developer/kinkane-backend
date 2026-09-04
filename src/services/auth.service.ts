@@ -8,7 +8,7 @@ import { config } from '../config';
 import { admin } from '../lib/firebase';
 import { adminNotificationsService } from './admin/notifications.service';
 import { logger } from '../lib/logger';
-import { recordSignIn } from './user-activity.service';
+import { touchLastSignIn } from './user-activity.service';
 import { enqueueEmail } from '../lib/email-queue';
 import { generateEmbedding } from '../lib/gemini';
 import { buildPreferenceText } from './recommendations.service';
@@ -107,18 +107,28 @@ async function issueTokenPair(userId: number, email: string): Promise<TokenPair>
   const rawRefresh = generateRefreshToken();
   const expiresAt = new Date(Date.now() + config.jwt.refreshTtl * 1000);
 
-  // Every path that issues a session funnels through here — password, social,
-  // signup and refresh rotation alike — which makes it the one place that has
-  // to record the sign-in. Run alongside the insert rather than after it: it is
-  // an activity timestamp, and nothing about the session depends on it.
-  await Promise.all([
-    db.insert(refreshTokens).values({
-      userId,
-      tokenHash: hashToken(rawRefresh),
-      expiresAt,
-    }),
-    recordSignIn(userId),
-  ]);
+  await db.insert(refreshTokens).values({
+    userId,
+    tokenHash: hashToken(rawRefresh),
+    expiresAt,
+  });
+
+  // Records the sighting, but through the *throttled* path, and deliberately
+  // not awaited.
+  //
+  // This function is the funnel for refresh rotation as much as for a real
+  // sign-in, and with a 15-minute access token an active client comes back
+  // through here roughly every 15 minutes. An unconditional write here would
+  // mean ~96 updates per user per day rather than one, which is the throttle
+  // this feature was built around, defeated on the busiest auth path in the
+  // system.
+  //
+  // Not awaited, and never allowed to reject, because nothing about issuing a
+  // session depends on it: a transient failure writing an activity timestamp
+  // must not turn a valid login into a 500 — least of all here, where the
+  // refresh token row has already been written and the caller would be left
+  // holding an orphan.
+  touchLastSignIn(userId);
 
   return { accessToken, refreshToken: rawRefresh };
 }

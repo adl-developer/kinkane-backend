@@ -102,22 +102,40 @@ describe('touchLastSignIn', () => {
   });
 });
 
-describe('recordSignIn', () => {
+describe('cache eviction', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     where.mockImplementation(() => Promise.resolve());
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-04T10:00:00Z'));
   });
 
-  it('writes unconditionally and then satisfies the throttle', async () => {
-    const { recordSignIn, touchLastSignIn } = await loadService();
+  afterEach(() => {
+    vi.useRealTimers();
+  });
 
-    await recordSignIn(42);
-    expect(update).toHaveBeenCalledTimes(1);
+  it('sheds expired entries rather than live guards when it overflows', async () => {
+    const { touchLastSignIn } = await loadService();
 
-    // An explicit sign-in has just set the timestamp; the request that follows
-    // it should not immediately write the same value again.
-    touchLastSignIn(42);
-    expect(update).toHaveBeenCalledTimes(1);
+    // 40k accounts seen today, which will be stale by the time the map fills.
+    for (let id = 1; id <= 40_000; id++) touchLastSignIn(id);
+
+    // A day later — those 40k guards now suppress nothing, so dropping them is
+    // free. These 10k are live and must survive.
+    vi.setSystemTime(new Date('2026-09-05T10:00:01Z'));
+    for (let id = 40_001; id <= 50_010; id++) touchLastSignIn(id);
+
+    const writesBefore = update.mock.calls.length;
+
+    // Every live account is touched again in the same instant. All are still
+    // guarded, so none of them should write.
+    //
+    // This is the case the old policy got wrong: clearing the whole map when it
+    // overflowed threw away the 10k live guards alongside the 40k dead ones, and
+    // this second pass re-issued an UPDATE for every one of them.
+    for (let id = 40_001; id <= 50_010; id++) touchLastSignIn(id);
+
+    expect(update.mock.calls.length).toBe(writesBefore);
   });
 });
 
@@ -155,14 +173,38 @@ describe('recording sightings', () => {
     // The point of "last seen" over "last login": a mobile client silently
     // rotates tokens for months, so keying on credential entry would file the
     // heaviest users as dormant.
+    //
+    // Asserted per entry point rather than as a total count — a later third
+    // call site (a websocket handshake, an API-key middleware) is exactly the
+    // behaviour this feature wants, and should not fail the suite.
     const middleware = read('middleware/auth.middleware.ts');
-    expect(middleware).toContain('touchLastSignIn');
-    expect(middleware.match(/touchLastSignIn\(/g) ?? []).toHaveLength(2);
+    const split = middleware.indexOf('export function optionalAuth');
+    expect(split, 'optionalAuth was renamed?').toBeGreaterThan(-1);
+
+    expect(middleware.slice(0, split)).toContain('touchLastSignIn(');
+    expect(middleware.slice(split)).toContain('touchLastSignIn(');
   });
 
-  it('records every path that issues a session', () => {
+  it('records every path that issues a session, through the throttle', () => {
     // issueTokenPair is the funnel for password, social, signup and refresh.
+    // It must use the throttled call: refresh rotation comes back through here
+    // every ~15 minutes per active client (ACCESS_TOKEN_TTL is 900s), so an
+    // unconditional write would be ~96 updates per user per day.
     const auth = read('services/auth.service.ts');
-    expect(auth).toContain('recordSignIn(userId)');
+    expect(auth).toContain('touchLastSignIn(userId)');
+  });
+
+  it('never lets the activity write fail a login', () => {
+    // touchLastSignIn is fire-and-forget. Awaiting it here — as an earlier
+    // version did, inside a Promise.all with the refresh-token insert — meant a
+    // transient DB error turned a valid login into a 500, with the refresh
+    // token row already committed as an orphan.
+    const auth = read('services/auth.service.ts');
+    const fn = auth.slice(auth.indexOf('async function issueTokenPair'));
+    const body = fn.slice(0, fn.indexOf('\n}\n'));
+
+    expect(body).toContain('touchLastSignIn(userId);');
+    expect(body).not.toMatch(/await\s+touchLastSignIn/);
+    expect(body).not.toMatch(/Promise\.all/);
   });
 });

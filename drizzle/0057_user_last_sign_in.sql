@@ -29,4 +29,11 @@ ALTER TABLE "users" ALTER COLUMN "last_sign_in_at" SET DEFAULT now();--> stateme
 ALTER TABLE "users" ALTER COLUMN "last_sign_in_at" SET NOT NULL;--> statement-breakpoint
 -- The Customers list and the Overview card both filter and count on this on
 -- every load. Without an index each becomes a seq scan of the whole users table.
+--
+-- Mirrored CONCURRENTLY in src/db/build-concurrent-indexes.ts, which runs ahead
+-- of this migration on every deploy — so from the second deploy onward the index
+-- is already there and this statement's IF NOT EXISTS makes it a no-op. On the
+-- deploy that first adds the column there is nothing for that step to index yet
+-- and it skips by design, so this is the build that runs, under a SHARE lock.
+-- That is the one deploy where sign-in writes can stall here.
 CREATE INDEX IF NOT EXISTS "idx_users_last_sign_in_at" ON "users" USING btree ("last_sign_in_at");

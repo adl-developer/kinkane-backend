@@ -26,11 +26,50 @@ const lastTouched = new Map<number, number>();
 
 /**
  * Bound on the map. Roughly "active users in a day" — past this we are holding
- * memory to save writes we are no longer making. Dropping the whole map costs
- * one extra UPDATE per user next time they appear, which the WHERE clause then
- * no-ops anyway if another instance got there first.
+ * memory to save writes we are no longer making.
  */
 const MAX_TRACKED_USERS = 50_000;
+
+/**
+ * Records a sighting in the local guard.
+ *
+ * Deletes before setting so the Map's insertion order tracks *recency* rather
+ * than first-sight — `set` on an existing key leaves its position alone, which
+ * would make the eviction in `prune` shed whoever we happened to see first
+ * rather than whoever we saw longest ago.
+ */
+function remember(userId: number, at: number): void {
+  lastTouched.delete(userId);
+  lastTouched.set(userId, at);
+}
+
+/**
+ * Brings the map back under its bound.
+ *
+ * The first pass is free: an entry older than the throttle window no longer
+ * suppresses anything, so dropping it loses nothing at all. Only if that is not
+ * enough do we shed live guards, oldest first.
+ *
+ * The previous version cleared the whole map instead. That looked cheap but
+ * stopped the throttle working exactly when it mattered: past the bound, every
+ * one of the 50,000 tracked users — including the one whose request triggered
+ * the clear — lost its guard at once and issued a redundant UPDATE on its next
+ * request, over and over as the map refilled.
+ */
+function prune(now: number): void {
+  for (const [id, at] of lastTouched) {
+    // Insertion order is recency order, so the first live entry means every
+    // entry behind it is live too.
+    if (now - at < TOUCH_THROTTLE_MS) break;
+    lastTouched.delete(id);
+  }
+
+  while (lastTouched.size > MAX_TRACKED_USERS) {
+    const oldest = lastTouched.keys().next();
+    if (oldest.done) break;
+    lastTouched.delete(oldest.value);
+  }
+}
 
 /**
  * Records that we have seen this account, for the admin console's
@@ -53,9 +92,9 @@ export function touchLastSignIn(userId: number): void {
 
   // Recorded before the write resolves, so a burst of concurrent requests from
   // one client issues a single UPDATE rather than one per request in flight.
-  lastTouched.set(userId, now);
+  remember(userId, now);
 
-  if (lastTouched.size > MAX_TRACKED_USERS) lastTouched.clear();
+  if (lastTouched.size > MAX_TRACKED_USERS) prune(now);
 
   void db
     .update(users)
@@ -69,17 +108,6 @@ export function touchLastSignIn(userId: number): void {
       lastTouched.delete(userId);
       logger.warn('Failed to update last_sign_in_at', { error: (err as Error).message, userId });
     });
-}
-
-/**
- * Moves the timestamp unconditionally, for the paths that genuinely are a
- * sign-in (password, social, token refresh). Skips the throttle because those
- * are rare and because an explicit sign-in is exactly the event most worth
- * recording precisely.
- */
-export async function recordSignIn(userId: number): Promise<void> {
-  lastTouched.set(userId, Date.now());
-  await db.update(users).set({ lastSignInAt: new Date() }).where(eq(users.id, userId));
 }
 
 /** Test seam — the module-level cache would otherwise leak between cases. */
