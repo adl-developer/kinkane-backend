@@ -5,6 +5,7 @@
 
 ### Features
 
+* stop counting shop browsers as customers in the admin console ([1267818](https://adl.github.com/adl-developer/kinkane-backend/commit/12678186e661d4998c0d29524d85a46d4950284f)) — [details](changelog/2026-09-04-active-customer-sign-in.md)
 * count a customer as active if they've been seen in the last year ([272991e](https://adl.github.com/adl-developer/kinkane-backend/commit/272991e840b180a017553a1096fda60d674a6488)) — [details](changelog/2026-09-04-active-customer-sign-in.md)
 
 ### Bug Fixes

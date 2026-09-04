@@ -15,13 +15,15 @@ import {
 import { adminNotificationsService } from '../admin/notifications.service';
 import { formatMinor } from '../../lib/money';
 import { logger } from '../../lib/logger';
-import { hashToken, tokensMatch } from '../../lib/order-identity';
+import { hashToken, normalizeTrackingCode, tokensMatch } from '../../lib/order-identity';
 import { interactionsService } from '../interactions.service';
 
 export interface OrderView {
   id: number;
   /** Customer-facing identity, e.g. `ORD-7K2M9QX4`. */
   reference: string;
+  /** The short code for "Track My Order", e.g. `7K2M9QX4`. Ours, not the carrier's. */
+  trackingCode: string;
   status: OrderStatus;
   /** The status collapsed for the order UI's filter tabs. */
   statusBucket: 'pending' | 'in_progress' | 'delivered' | 'closed';
@@ -93,6 +95,7 @@ function toView(order: Order, items?: OrderItem[]): OrderView {
   return {
     id: order.id,
     reference: order.reference,
+    trackingCode: order.trackingCode,
     status: order.status,
     statusBucket: ORDER_STATUS_BUCKET[order.status],
     carrier: order.carrier,
@@ -249,6 +252,42 @@ export const ordersService = {
 
     if (!order?.guestAccessTokenHash) return null;
     if (!tokensMatch(order.guestAccessTokenHash, hashToken(token))) return null;
+
+    const items = await db.select().from(orderItems).where(eq(orderItems.orderId, order.id));
+    return toView(order, items);
+  },
+
+  /**
+   * An order fetched by its short tracking code and the email it was placed
+   * with. This is what the "Track My Order" form runs on, for guests and
+   * signed-in customers alike.
+   *
+   * **Both halves are required, and neither is a credential on its own.** The
+   * code is eight characters — quotable, printable, and small enough that a
+   * patient attacker could walk the space — so the contact email is what makes
+   * a guessed code worthless. That is also why the email is compared here in
+   * application code rather than being part of the SQL predicate: the query
+   * finds one row by its unique code, and the comparison decides whether the
+   * caller may see it.
+   *
+   * `contactEmail` is compared case-insensitively, **not** via
+   * `normalizeEmailForPromotions`. That normaliser deliberately collapses
+   * `+tags` and gmail dots so two addresses can be the same person for a
+   * discount — exactly the property that must not exist here, where a
+   * near-miss address would open somebody else's order.
+   *
+   * A wrong email and an unknown code return the same `null`, so this cannot be
+   * used to test which codes exist.
+   */
+  async findByTrackingCodeAndEmail(code: string, email: string): Promise<OrderView | null> {
+    const [order] = await db
+      .select()
+      .from(orders)
+      .where(eq(orders.trackingCode, normalizeTrackingCode(code)))
+      .limit(1);
+
+    if (!order) return null;
+    if (order.contactEmail.trim().toLowerCase() !== email.trim().toLowerCase()) return null;
 
     const items = await db.select().from(orderItems).where(eq(orderItems.orderId, order.id));
     return toView(order, items);

@@ -469,6 +469,48 @@ export const commercePaths = {
     },
   },
 
+  '/api/v1/orders/track': {
+    post: {
+      tags: [ORDERS],
+      ...publicEndpoint,
+      summary: 'Track an order with the short code',
+      description: [
+        'The "Track My Order" call a customer can actually complete from memory: the 8-character `trackingCode` printed on their confirmation, plus the email address the order was placed with.',
+        '',
+        'Works for guests **and** signed-in customers, and is not scoped to the caller — someone reading a code off a printed slip should not be told "not found" because the order hangs off another account.',
+        '',
+        '### Why the email is required',
+        'The code is short enough to be typed, which makes it short enough to be guessed. It is an identifier, not a credential; the email is the second factor. Do not build a UI that submits the code alone.',
+        '',
+        'The code is case-insensitive, and spaces and dashes are stripped — accept whatever the customer types.',
+        '',
+        'An unknown code and a mismatched email return the same `404` with the same body. Show one "we couldn\u2019t find that order" state.',
+        '',
+        '**Rate limit:** 10 per 15 minutes per IP. This is what makes guessing the code impractical, so it is deliberately tight.',
+      ].join('\n'),
+      requestBody: body(object({
+        code: {
+          type: 'string',
+          description: 'The `trackingCode` from the order. Case-insensitive; spaces and dashes ignored.',
+          example: '7K2M9QX4',
+        },
+        email: {
+          type: 'string',
+          format: 'email',
+          description: 'The address the order was placed with, matched case-insensitively.',
+          example: 'rachel@example.com',
+        },
+      }, ['code', 'email'])),
+      responses: {
+        200: json('The order, with its lines.', ref('Order')),
+        400: resp('ValidationError'),
+        404: json('No such code, or the email does not match. Deliberately indistinguishable.', ref('Error'),
+          { error: 'Order not found' }),
+        429: resp('RateLimited'),
+      },
+    },
+  },
+
   '/api/v1/orders/claim': {
     post: {
       tags: [ORDERS],

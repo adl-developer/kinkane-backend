@@ -180,7 +180,41 @@ payment webhook may not have landed yet.
 { "reference": "ORD-7K2M9QX4", "token": "v4Xk9..." }
 ```
 
-### 6. Offer the account, then claim
+### 6. Build "Track My Order" on the short code
+
+The reference-plus-token pair above is right for *your* code, which still has
+both to hand. It is wrong for a customer typing into a form: the token is 43
+characters and they no longer have it.
+
+Every order also carries `trackingCode` — eight characters, e.g. `7K2M9QX4`,
+printed on the confirmation email. Pair it with the email address the order was
+placed with:
+
+```jsonc
+// POST /api/v1/orders/track   (no auth)
+{ "code": "7K2M9QX4", "email": "rachel@example.com" }
+```
+
+Both fields are required, and **the form must ask for both**. The code is short
+enough to type, which makes it short enough to guess; the email is what stops a
+guessed code opening somebody else's order. It is an identifier, not a password.
+
+Send the code exactly as the customer typed it — case is ignored, and spaces and
+dashes are stripped server-side.
+
+This works for signed-in customers too, and is not scoped to the caller, so the
+same screen serves everyone. A `404` covers both an unknown code and a wrong
+email and is deliberately indistinguishable: show one "we couldn't find that
+order" state rather than trying to tell the user which half was wrong.
+
+Do not confuse `trackingCode` with `trackingNumber`. The first is ours and
+exists from the moment the order is placed, so it tracks an order that has not
+shipped yet. The second is the carrier's, arrives with the dispatch, and is null
+until the parcel actually moves — along with `carrier`, `trackingUrl` and
+`dispatchedAt`. All four being null is the normal state of a new order, not an
+error.
+
+### 7. Offer the account, then claim
 
 On the confirmation screen ("Save your order details"): sign the user up, then
 call `POST /api/v1/orders/claim` with the same reference and token, this time
@@ -432,6 +466,7 @@ appears on rows that are sellable in the first place.
 | `GET` | `/api/v1/orders?status=` | required |
 | `GET` | `/api/v1/orders/:id` | required |
 | `POST` | `/api/v1/orders/lookup` | none |
+| `POST` | `/api/v1/orders/track` | none |
 | `POST` | `/api/v1/orders/claim` | required |
 | `GET` | `/api/v1/books?shoppable=true` | none |
 | `GET` | `/api/v1/books/:id/similar` | optional |

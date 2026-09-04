@@ -17,6 +17,7 @@
  * written down.
  */
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
+import { randomCode } from './random-code';
 
 /**
  * Crockford base32 minus the characters that get misread when a reference is
@@ -25,6 +26,9 @@ import { createHash, randomBytes, timingSafeEqual } from 'crypto';
  */
 const REFERENCE_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 const REFERENCE_LENGTH = 8;
+
+/** Length of the customer-facing tracking code. See generateTrackingCode. */
+export const TRACKING_CODE_LENGTH = 8;
 
 /**
  * ~40 bits of entropy. Not a security boundary on its own — the access token
@@ -65,4 +69,28 @@ export function tokensMatch(aHex: string, bHex: string): boolean {
   const b = Buffer.from(bHex, 'hex');
   if (a.length !== b.length || a.length === 0) return false;
   return timingSafeEqual(a, b);
+}
+
+/**
+ * The short, quotable code a customer types into "Track My Order".
+ *
+ * Eight Crockford base32 characters (~40 bits) with no `ORD-` prefix, because
+ * the whole point is that it survives being read off a phone screen and typed
+ * into a form by someone who is not looking at their confirmation email.
+ *
+ * **It is an identifier, not a credential** — the same rule the reference lives
+ * under, and for the same reason: it is printed on receipts and pasted into
+ * support tickets. Tracking lookup pairs it with the order's contact email, so
+ * a guessed code on its own reveals nothing. Do not add a code-only read path.
+ *
+ * Distinct from `orders.tracking_number`, which is the *carrier's* number
+ * recovered from a Gardners dispatch file and only exists once a parcel ships.
+ */
+export function generateTrackingCode(): string {
+  return randomCode(TRACKING_CODE_LENGTH);
+}
+
+/** Uppercases and strips the spacing and dashes people add when retyping. */
+export function normalizeTrackingCode(input: string): string {
+  return input.trim().toUpperCase().replace(/[\s-]/g, '');
 }
