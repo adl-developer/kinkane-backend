@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { eq, sql, and, ilike, inArray, asc, desc, gt, notInArray, type SQL } from 'drizzle-orm';
+import { eq, ne, sql, and, ilike, inArray, isNull, asc, desc, gt, notInArray, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import { db } from '../db';
 import {
@@ -41,6 +41,7 @@ import {
 } from '../lib/shoppable';
 import { toPresentment } from './commerce/pricing';
 import { config } from '../config';
+import { getProductFormLabel } from '../lib/product-form';
 
 const BOOK_DETAIL_TTL    = 60 * 60;    // 1 hour
 const LIST_TTL           = 5 * 60;     // 5 minutes
@@ -319,6 +320,7 @@ export interface BookListItem {
   publisherName: string | null;
   imprintName: string | null;
   productForm: string | null;
+  productFormLabel: string | null;
   publicationDate: string | null;
   publishingStatus: string | null;
   availabilityCode: string | null;
@@ -393,6 +395,7 @@ export interface SuggestionItem {
   subtitle: string | null;
   isbn13: string | null;
   productForm: string | null;
+  productFormLabel: string | null;
   coverUrl: string | null;
   authors: string[];
   excerpt: BookExcerptInfo | null;
@@ -410,6 +413,7 @@ export interface TrendingBookItem {
   coverUrl: string | null;
   isbn13: string | null;
   productForm: string | null;
+  productFormLabel: string | null;
   publicationDate: string | null;
   contributors: Pick<BookContributor, 'role' | 'personName' | 'sequenceNumber'>[];
   genres: Pick<Genre, 'name' | 'slug'>[];
@@ -446,6 +450,21 @@ function stripFeedScoring(row: FeedScoringRow): TrendingBookItem {
   return item;
 }
 
+/**
+ * Another format of the same title, offered alongside a book's detail page.
+ *
+ * Deliberately minimal — just enough for a client to render "Also available
+ * as: Hardback / E-book" links through to the sibling's own detail page.
+ */
+export interface EditionSummary {
+  id: number;
+  isbn13: string | null;
+  productForm: string | null;
+  productFormLabel: string | null;
+  coverUrl: string | null;
+  publicationDate: string | null;
+}
+
 export interface BookDetail extends BookListItem {
   shortDescription: string | null;
   longDescription: string | null;
@@ -459,6 +478,20 @@ export interface BookDetail extends BookListItem {
   countryOfPublication: string | null;
   returnsCode: string | null;
   orderTime: number | null;
+  /**
+   * Other editions of this same title — matched on exact title + publisher
+   * (both indexed columns, no fuzzy scan) and at least one shared contributor,
+   * normalised the same way name search is (see lib/contributor-name.ts,
+   * since ~22% of contributor rows have doubled internal spaces and an exact
+   * string match would silently miss them). Gardners' ONIX feed has no
+   * publisher-supplied "other formats" link (checked: no `<RelatedProduct>`
+   * anywhere in it), so this is a heuristic, not a supplier-asserted fact —
+   * it can miss a real sibling edition (title text drifted between editions)
+   * or, in principle, match two different works that share both an exact
+   * title and a contributor. Empty when the book has no contributors at all,
+   * rather than falling back to title-only matching.
+   */
+  otherEditions: EditionSummary[];
   subjects: Pick<BookSubject, 'schemeIdentifier' | 'subjectCode' | 'subjectHeadingText' | 'isMainSubject'>[];
 }
 
@@ -1565,6 +1598,69 @@ async function fetchBlendedSearchPage(
   return merged.slice(opts.offset, branchLimit);
 }
 
+// Generic writing credits, not identifying names — verified against production data
+// (2026-09-04): rows with these as their only contributor consistently pair with a
+// placeholder title too (e.g. "SOS TITLE UNKNOWN" / publisher "Not Stated", 49 rows
+// in one cluster alone, all crediting "UNKNOWN"). Sharing one of these is not evidence
+// two books are the same work — it is evidence both are missing real metadata — so
+// they are excluded from the match rather than treated as a shared identity. Matched
+// as a normalised whole name, not a substring: "Manon Tremblay" and "Canon Mark
+// Oakley" are real people who must not be caught by a loose LIKE '%anon%'.
+const GENERIC_CONTRIBUTOR_NAMES = ['UNKNOWN', 'VARIOUS', 'VARIOUS AUTHORS', 'ANONYMOUS', 'ANON', 'NOT STATED'];
+
+/**
+ * Other editions of `title` (exact match — `idx_books_title` covers it, no
+ * scan) from the same publisher, sharing at least one *identifying*
+ * contributor with `id`.
+ *
+ * The contributor check is what keeps this from matching two unrelated books
+ * that happen to share a title: it requires a shared row in
+ * `book_contributors`, name-normalised on both sides the same way author
+ * search is (see lib/contributor-name.ts — ~22% of contributor rows have
+ * doubled internal spaces from the ONIX feed, so a plain string comparison
+ * would silently miss real siblings) and excluding GENERIC_CONTRIBUTOR_NAMES
+ * (see above — otherwise every "Various"-credited anthology in the catalogue
+ * would match every other one). A book with zero *identifying* contributors
+ * of its own matches nothing here rather than falling back to title-only.
+ */
+async function fetchOtherEditions(
+  id: number,
+  title: string,
+  publisherName: string | null,
+): Promise<Pick<EditionSummary, 'id' | 'isbn13' | 'productForm' | 'coverUrl' | 'publicationDate'>[]> {
+  const CANDIDATE_NAME = sql.raw(normalisedNameSql('book_contributors.person_name'));
+  const OWN_NAME = sql.raw(normalisedNameSql('person_name'));
+  const notGeneric = (nameExpr: SQL) =>
+    sql`upper(${nameExpr}) NOT IN (${sql.join(
+      GENERIC_CONTRIBUTOR_NAMES.map((n) => sql`${n}`),
+      sql`, `,
+    )})`;
+
+  return db
+    .selectDistinct({
+      id: books.id,
+      isbn13: books.isbn13,
+      productForm: books.productForm,
+      coverUrl: books.coverUrl,
+      publicationDate: books.publicationDate,
+    })
+    .from(books)
+    .innerJoin(bookContributors, eq(bookContributors.bookId, books.id))
+    .where(
+      and(
+        eq(books.title, title),
+        publisherName === null ? isNull(books.publisherName) : eq(books.publisherName, publisherName),
+        eq(books.isRemoved, false),
+        ne(books.id, id),
+        notGeneric(CANDIDATE_NAME),
+        sql`${CANDIDATE_NAME} IN (
+          SELECT ${OWN_NAME} FROM book_contributors
+          WHERE book_id = ${id} AND ${notGeneric(OWN_NAME)}
+        )`,
+      ),
+    );
+}
+
 // ── Public service ────────────────────────────────────────────────────────────
 
 export const booksService = {
@@ -2061,6 +2157,7 @@ export const booksService = {
           ]);
           const enriched = rawRows.map((r) => ({
             ...r,
+            productFormLabel: getProductFormLabel(r.productForm),
             ...relations.get(r.id)!,
             excerpt: pickExcerpt(r.isbn13, excerptMap),
             // Absent entirely unless asked for. On a sellable row a missing stock
@@ -2472,6 +2569,7 @@ export const booksService = {
 
     const results = rows.map(({ shortDescription: _shortDescription, availabilityCode: _availabilityCode, publicationDate: _publicationDate, ...r }) => ({
       ...r,
+      productFormLabel: getProductFormLabel(r.productForm),
       authors: authorMap.get(r.id) ?? [],
       excerpt: pickExcerpt(r.isbn13, excerptMap),
     }));
@@ -2593,6 +2691,7 @@ export const booksService = {
         if (!row) return null;
         return {
           ...row,
+          productFormLabel: getProductFormLabel(row.productForm),
           ...(relations.get(id) ?? { contributors: [], genres: [], prices: [] }),
           excerpt: pickExcerpt(row.isbn13, excerptMap),
         } as BookListItem;
@@ -2613,7 +2712,7 @@ export const booksService = {
     const [book] = await db.select().from(books).where(eq(books.id, id)).limit(1);
     if (!book) return null;
 
-    const [contributors, genreRows, priceRows, subjects, excerptMap] = await Promise.all([
+    const [contributors, genreRows, priceRows, subjects, excerptMap, otherEditionRows] = await Promise.all([
       db
         .select({
           role: bookContributors.role,
@@ -2650,6 +2749,8 @@ export const booksService = {
         .where(eq(bookSubjects.bookId, id)),
 
       getExcerptsByIsbns([book.isbn13]),
+
+      fetchOtherEditions(id, book.title, book.publisherName),
     ]);
 
     const detail: BookDetail = {
@@ -2663,6 +2764,7 @@ export const booksService = {
       publisherName: book.publisherName,
       imprintName: book.imprintName,
       productForm: book.productForm,
+      productFormLabel: getProductFormLabel(book.productForm),
       publicationDate: book.publicationDate,
       publishingStatus: book.publishingStatus,
       availabilityCode: book.availabilityCode,
@@ -2684,6 +2786,10 @@ export const booksService = {
       prices: priceRows,
       subjects,
       excerpt: pickExcerpt(book.isbn13, excerptMap),
+      otherEditions: otherEditionRows.map((row) => ({
+        ...row,
+        productFormLabel: getProductFormLabel(row.productForm),
+      })),
     };
 
     await redis.set(cacheKey, JSON.stringify(detail), 'EX', BOOK_DETAIL_TTL);
@@ -2820,7 +2926,7 @@ export const booksService = {
     const bookMap = new Map(
       bookRows.map((b) => [
         b.id,
-        { ...b, contributors: [] as TrendingBookItem['contributors'], genres: [] as TrendingBookItem['genres'], genreCount: 0, hasPrice: false, excerpt: pickExcerpt(b.isbn13, excerptMap) },
+        { ...b, productFormLabel: getProductFormLabel(b.productForm), contributors: [] as TrendingBookItem['contributors'], genres: [] as TrendingBookItem['genres'], genreCount: 0, hasPrice: false, excerpt: pickExcerpt(b.isbn13, excerptMap) },
       ]),
     );
     for (const c of contributors) bookMap.get(c.bookId)?.contributors.push({ role: c.role, personName: c.personName, sequenceNumber: c.sequenceNumber });
@@ -2950,7 +3056,7 @@ export const booksService = {
     const bookMap = new Map(
       rows.map((b) => [
         b.id,
-        { ...b, contributors: [] as TrendingBookItem['contributors'], genres: [] as TrendingBookItem['genres'], genreCount: 0, hasPrice: false, excerpt: pickExcerpt(b.isbn13, excerptMap) },
+        { ...b, productFormLabel: getProductFormLabel(b.productForm), contributors: [] as TrendingBookItem['contributors'], genres: [] as TrendingBookItem['genres'], genreCount: 0, hasPrice: false, excerpt: pickExcerpt(b.isbn13, excerptMap) },
       ]),
     );
     for (const c of contributors) bookMap.get(c.bookId)?.contributors.push({ role: c.role, personName: c.personName, sequenceNumber: c.sequenceNumber });
@@ -3168,7 +3274,7 @@ export const booksService = {
     const bookMap = new Map(
       rows.map((b) => [
         b.id,
-        { ...b, contributors: [] as TrendingBookItem['contributors'], genres: [] as TrendingBookItem['genres'], genreCount: 0, hasPrice: false, excerpt: pickExcerpt(b.isbn13, excerptMap) },
+        { ...b, productFormLabel: getProductFormLabel(b.productForm), contributors: [] as TrendingBookItem['contributors'], genres: [] as TrendingBookItem['genres'], genreCount: 0, hasPrice: false, excerpt: pickExcerpt(b.isbn13, excerptMap) },
       ]),
     );
     for (const c of contributors) bookMap.get(c.bookId)?.contributors.push({ role: c.role, personName: c.personName, sequenceNumber: c.sequenceNumber });

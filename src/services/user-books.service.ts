@@ -18,6 +18,7 @@ import { redis } from '../lib/redis';
 import { bustUserExclusions } from '../lib/exclusions';
 import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-excerpts.service';
 import { interactionsService, type InteractionType } from './interactions.service';
+import { getProductFormLabel } from '../lib/product-form';
 
 /**
  * Reading statuses that are also trending signals. Every value the API accepts is
@@ -48,6 +49,7 @@ export interface UserBookItem {
   publisherName: string | null;
   imprintName: string | null;
   productForm: string | null;
+  productFormLabel: string | null;
   publicationDate: string | null;
   publishingStatus: string | null;
   availabilityCode: string | null;
@@ -227,6 +229,7 @@ export const userBooksService = {
     return {
       books: rows.map((r) => ({
         ...r,
+        productFormLabel: getProductFormLabel(r.productForm),
         ...relations.get(r.bookId)!,
         excerpt: pickExcerpt(r.isbn13, excerptMap),
       })),
