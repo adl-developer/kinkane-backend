@@ -7,6 +7,7 @@
  * preDeployCommand, and onix_ingester's own removed drizzle.config.ts for
  * the actual convention.)
  */
+import { sql } from 'drizzle-orm';
 import {
   pgTable,
   serial,
@@ -94,6 +95,22 @@ export const books = pgTable(
     // same recordReference arrives later (e.g. the title is reissued).
     isRemoved: boolean('is_removed').notNull().default(false),
     removedAt: timestamp('removed_at', { withTimezone: true }),
+    // The book's primary genre, denormalised from the publisher's own
+    // <MainSubject/> nomination — the scheme-93 row in book_subjects carrying
+    // is_main_subject — rather than derived at read time. It only changes when
+    // ingestion rewrites the book's subjects, so it belongs on the row.
+    //
+    // Nullable, and a large part of the catalogue is expected to stay null:
+    // measured on production 2026-09-04, 1,415,382 of 2,029,071 live books
+    // carry that flag, and 54,805 have no Thema data at all. Every consumer
+    // has to render a book that has no main genre.
+    //
+    // Deliberately NOT the most frequent of the book's genres: Thema codes are
+    // hierarchical, so the commonest genre attached to a book is always its
+    // broadest ancestor (a title tagged NH/NHD/NHTB would resolve to "History"
+    // over "European history"), and that rule disagrees with the publisher's
+    // own nomination on 37% of books.
+    mainGenreId: integer('main_genre_id').references(() => genres.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
@@ -108,6 +125,34 @@ export const books = pgTable(
     // Supports trending()'s fallback ORDER BY publication_date DESC LIMIT — without
     // this, that query was a full parallel sequential scan + sort of the whole table.
     publicationDateIdx: index('idx_books_publication_date').on(t.publicationDate),
+    // Serves GET /books?mainGenre=: the equality on main_genre_id and the
+    // list's default ordering in one scan, so a filtered page needs no sort
+    // step. Three details make that work, and each was measured rather than
+    // assumed — get any of them wrong and the index still gets used, but a
+    // Sort node reappears on top of it.
+    //
+    // Column order: a single-column index on main_genre_id alone would still
+    // sort every page.
+    //
+    // Ascending updated_at, with no direction modifier: the default listing
+    // sorts on a bare `books.updatedAt` (buildSortOrderBy in
+    // services/books.service.ts), which is ASC. A DESC index — or an ASC one
+    // spelled `DESC NULLS LAST` — describes a different ordering and the
+    // planner sorts anyway. The other sortBy modes ride their own indexes and
+    // are expected to sort here; this covers the default path only.
+    //
+    // The WHERE clause: every list path pushes `is_removed = false` (see
+    // buildWhereClause), and without it in the index the planner bitmap-ANDs
+    // this with idx_books_is_removed — bitmap scans lose ordering, so the sort
+    // comes back. Partial also keeps the index off withdrawn titles, which no
+    // listing can return anyway.
+    //
+    // Built CONCURRENTLY ahead of the migration by build-concurrent-indexes.ts;
+    // on ~2M rows a plain build takes a SHARE lock long enough to stall the
+    // ONIX pipeline and any Gardners feed run.
+    mainGenreIdx: index('idx_books_main_genre')
+      .on(t.mainGenreId, t.updatedAt)
+      .where(sql`${t.isRemoved} = false`),
     // idx_books_title is still what a plain title lookup uses, but it no longer
     // orders GET /books?sortBy=title: that page sorts on a placeholder-title
     // rank before the title (see buildSortOrderBy in services/books.service.ts),

@@ -76,6 +76,26 @@ const INDEXES: ConcurrentIndex[] = [
     column: 'last_sign_in_at',
     sql: `CREATE INDEX CONCURRENTLY IF NOT EXISTS "idx_users_last_sign_in_at" ON "users" USING btree ("last_sign_in_at")`,
   },
+  {
+    // GET /books?mainGenre= filters on this and then reads in the list's default
+    // updated_at order, which the second column serves — so the whole page is one
+    // scan. `books` is the largest table here (~2M rows) and its writers are the
+    // ONIX chunk pipeline and the Gardners feed runs, so this is the build most
+    // worth keeping off a lock.
+    //
+    // The bare ascending updated_at and the WHERE are both load-bearing, and
+    // both must match drizzle/0060 character for character. A partial index is
+    // a different index from a full one, and `DESC NULLS LAST` is a different
+    // ordering from the default listing's bare ASC — either mismatch describes
+    // something other than the migration's index, and IF NOT EXISTS, which
+    // matches on name and not definition, would hide it: the migration would
+    // skip, and the planner would sort on top of whatever got built.
+    name: 'idx_books_main_genre',
+    table: 'books',
+    migration: '0060_books_main_genre',
+    column: 'main_genre_id',
+    sql: `CREATE INDEX CONCURRENTLY IF NOT EXISTS "idx_books_main_genre" ON "books" USING btree ("main_genre_id", "updated_at") WHERE "books"."is_removed" = false`,
+  },
 ];
 
 const sql = postgres(process.env.DATABASE_URL!, {
