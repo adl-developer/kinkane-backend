@@ -30,6 +30,7 @@ export interface UnsentRecommendation {
   bookId: number;
   title: string;
   author: string;
+  coverUrl: string | null;
 }
 
 /**
@@ -64,7 +65,7 @@ export async function pickUnsentRecommendation(userId: number): Promise<UnsentRe
   // pushed into the ON clause so the NULL check correctly identifies non-matches
   // rather than rows where the book exists for a different user.
   const [top] = await db
-    .select({ id: books.id, title: books.title })
+    .select({ id: books.id, title: books.title, coverUrl: books.coverUrl })
     .from(books)
     .leftJoin(
       userBooks,
@@ -124,6 +125,7 @@ export async function pickUnsentRecommendation(userId: number): Promise<UnsentRe
     bookId: top.id,
     title: top.title,
     author: contributor?.personName ?? 'Unknown',
+    coverUrl: top.coverUrl,
   };
 }
 
@@ -148,6 +150,7 @@ export async function sendRecommendationEmail(
       author: pick.author,
       reason: "Based on your reading preferences, we think you'll enjoy this one.",
       url: `${config.appUrl}/books/${pick.bookId}`,
+      coverUrl: pick.coverUrl,
     },
   });
 
