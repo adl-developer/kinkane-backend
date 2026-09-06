@@ -21,8 +21,16 @@ export interface ShelfItem {
   addedAt: Date;
 }
 
+export type FollowRequestDirection = 'incoming' | 'outgoing';
+
 export interface PendingFollowRequest {
+  /** The follow-request id — what the accept/decline endpoints take. */
   id: number;
+  /**
+   * The *other* user: the sender for incoming requests, the receiver for
+   * outgoing ones. Withdrawing an outgoing request needs this, not the id above.
+   */
+  userId: number;
   name: string;
   photoUrl: string | null;
 }
@@ -152,29 +160,43 @@ export const usersService = {
   },
 
   /**
-   * Lists pending incoming follow requests for the authenticated user —
-   * i.e. people who have requested to follow them, newest first. Paginated
-   * since a spammed account could otherwise accumulate an unbounded number
-   * of pending requests.
+   * Lists pending follow requests for the authenticated user. `direction`
+   * picks the side: `incoming` (default) is people who have asked to follow
+   * them — the ones they can accept or decline; `outgoing` is requests they
+   * have sent that are still awaiting the other person's decision. Newest
+   * first, and paginated since a spammed account could otherwise accumulate
+   * an unbounded number of pending requests.
    */
   async listPendingFollowRequests(
-    receiverId: number,
+    userId: number,
     limit: number,
     offset: number,
+    direction: FollowRequestDirection = 'incoming',
   ): Promise<{ items: PendingFollowRequest[]; total: number }> {
+    const incoming = direction === 'incoming';
+    // The caller sits on one side of the row; the user we want to show is the other.
+    const mineColumn  = incoming ? followRequests.receiverId : followRequests.senderId;
+    const theirColumn = incoming ? followRequests.senderId   : followRequests.receiverId;
+    const where = and(eq(mineColumn, userId), eq(followRequests.status, 'pending'));
+
     const [rows, [countRow]] = await Promise.all([
       db
-        .select({ id: followRequests.id, name: users.name, photoUrl: users.photoUrl })
+        .select({
+          id: followRequests.id,
+          userId: users.id,
+          name: users.name,
+          photoUrl: users.photoUrl,
+        })
         .from(followRequests)
-        .innerJoin(users, eq(users.id, followRequests.senderId))
-        .where(and(eq(followRequests.receiverId, receiverId), eq(followRequests.status, 'pending')))
+        .innerJoin(users, eq(users.id, theirColumn))
+        .where(where)
         .orderBy(desc(followRequests.createdAt))
         .limit(limit)
         .offset(offset),
       db
         .select({ count: sql<number>`COUNT(*)::int` })
         .from(followRequests)
-        .where(and(eq(followRequests.receiverId, receiverId), eq(followRequests.status, 'pending'))),
+        .where(where),
     ]);
 
     return { items: rows, total: countRow?.count ?? 0 };
