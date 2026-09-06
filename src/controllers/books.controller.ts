@@ -8,6 +8,7 @@ import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 import { config } from '../config';
 import { fromPresentment, resolveCurrency, resolveRequestCountry } from '../services/commerce/pricing';
 import { minorUnitsPerMajor } from '../lib/money';
+import { isbnFromQuery } from '../lib/isbn';
 
 // z.coerce.boolean() would treat the literal string "false" as truthy (any non-empty
 // string coerces to true), so accepted values are explicit — see refreshQuerySchema in
@@ -190,6 +191,40 @@ export async function shopCurrency(req: Request): Promise<string> {
 }
 
 /**
+ * Rewrites `?q=<an ISBN>` into `?isbn=`, leaving every other query untouched.
+ *
+ * Someone with the book in their hand searches by the number on the back of it,
+ * in the one search box the UI has. That is a lookup wearing a search's
+ * clothes, and running it as a search is the worst of both: the digits match no
+ * title, so it walks the full fuzzy ladder — trigram similarity, then FTS —
+ * across the catalogue to return nothing. Rewritten, it is one probe of the
+ * unique index on books.isbn13.
+ *
+ * Done here, at the edge, rather than inside booksService.list, so the search
+ * path is not touched at all: the service sees an ordinary ISBN-filtered
+ * listing, of the kind `?isbn=` has always produced, and every tier probe,
+ * ranking rule and cache key downstream is the same code on the same shape. It
+ * also means both versions of the endpoint get it, since they share this body.
+ *
+ * `q` is dropped rather than kept alongside the filter: keeping it would AND a
+ * fuzzy title match for the digits onto the exact one and reliably return
+ * nothing, and it would also send the request down the search ranking path this
+ * exists to avoid. There is no fall back to text search when the ISBN matches
+ * no book — an ISBN identifies one edition or none, and the search it would
+ * fall back to is the search that returns nothing slowly.
+ *
+ * An explicit `isbn=` wins: a caller that sent both is using the parameter
+ * deliberately, and quietly overwriting it with something inferred from `q`
+ * would be a filter doing the opposite of what it says.
+ */
+function asIsbnLookup<T extends { q?: string; isbn?: string }>(parsed: T): T {
+  if (!parsed.q || parsed.isbn) return parsed;
+  const isbn = isbnFromQuery(parsed.q);
+  if (!isbn) return parsed;
+  return { ...parsed, q: undefined, isbn };
+}
+
+/**
  * The shared body of both versions of `GET /books`. Everything except which side `q`
  * matches is identical, so it lives here once — a new filter, a pagination fix or a
  * pricing change lands on v1 and v2 together, which is the point of them sharing a
@@ -217,7 +252,7 @@ async function runList(
     // request working when someone drops the flag.
     const cursor = parsed.data.dedupe ? decodeDedupeCursor(parsed.data.cursor) : null;
 
-    const { priceMin, priceMax, currency, ...rest } = parsed.data;
+    const { priceMin, priceMax, currency, ...rest } = asIsbnLookup(parsed.data);
 
     // Bounds arrive in the customer's currency and the catalogue stores GBP
     // pence, so they are converted once here rather than per row. The

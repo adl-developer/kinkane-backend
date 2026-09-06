@@ -71,6 +71,13 @@ router.get('/recommendations', optionalAuth, booksController.basketRecommendatio
  * offset pagination on the deduped path could, because two raw editions of
  * one book can straddle a page boundary.
  *
+ * A `q` that is just an ISBN — 13 digits, or a valid ISBN-10, in either case
+ * with hyphens and spaces optional — is treated as `isbn=` instead of as a
+ * search, since that is what someone reading the number off the back of a book
+ * means by it. It becomes a single index lookup rather than a fuzzy title
+ * search that would scan the catalogue to match nothing. An explicit `isbn=`
+ * wins if both are sent, and no other query is affected.
+ *
  * `isbn` matches exactly (hyphens stripped); `yearMin`/`yearMax` bound
  * publication date, excluding undated books; `priceMin`/`priceMax` bound the
  * supplier price and are **only valid with `shoppable=true`**, since that is

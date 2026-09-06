@@ -1,10 +1,18 @@
 # Changelog
 
 
+## 2026-09-06
+
+### Features
+
+* list follow requests the user has sent, not just ones they received ([0cafdcd](https://adl.github.com/adl-developer/kinkane-backend/commit/0cafdcd16d2866d5a0b73cf625022eb992d1a61d)) — [details](changelog/2026-09-06-isbn-search.md)
+
+
 ## 2026-09-04
 
 ### Features
 
+* sort titles starting with numbers or symbols to the bottom of A-Z ([2800331](https://adl.github.com/adl-developer/kinkane-backend/commit/28003319638561ba768e67ce95ffe584b1952d41)) — [details](changelog/2026-09-04-active-customer-sign-in.md)
 * show book formats in plain language and link sibling editions ([75445dd](https://adl.github.com/adl-developer/kinkane-backend/commit/75445dd210d90aeb1c1228cee4d8d8c6aafece6b)) — [details](changelog/2026-09-04-book-format-labels-and-editions.md)
 * populate the main genre across the existing catalogue ([86b1510](https://adl.github.com/adl-developer/kinkane-backend/commit/86b1510361000f2bd96126f3d1bb22cc365740e6)) — [details](changelog/2026-09-04-main-genre.md)
 * record the main genre for every book, as named by the publisher ([ea43421](https://adl.github.com/adl-developer/kinkane-backend/commit/ea434213ac2592d1f54c198037730f12c1bbab8a)) — [details](changelog/2026-09-04-book-format-labels-and-editions.md)

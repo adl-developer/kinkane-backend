@@ -33,7 +33,9 @@ const router = Router();
  * the volume they edited.
  *
  * `type` is accepted and inert when `q` is absent, so a UI can keep one query-string
- * builder for both its browse and its search.
+ * builder for both its browse and its search. It is inert for an ISBN `q` too, which is
+ * answered as an exact lookup on both versions and so has no side to pick — see
+ * books.routes.ts.
  *
  * **This is not a drop-in swap from v1.** A search box wired to `?q=` returns title
  * matches only here, where v1 would have folded in that author's books. Moving a search

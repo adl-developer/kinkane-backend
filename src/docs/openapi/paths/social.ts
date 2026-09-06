@@ -495,15 +495,23 @@ export const socialPaths = {
   '/api/v1/users/follow-requests': {
     get: {
       tags: [PEOPLE],
-      summary: 'List incoming follow requests',
+      summary: 'List pending follow requests, incoming or outgoing',
       description:
-        'Requests awaiting the caller’s decision. Each carries a **`requestId`** — that is what the accept and decline endpoints take, not the user id.',
-      parameters: followParams,
+        'Pending requests on either side of the caller, chosen with `direction`.\n\n' +
+        '- `incoming` (default) — people asking to follow the caller. Each carries a **`requestId`**: that is what the accept and decline endpoints take, not the user id.\n' +
+        '- `outgoing` — requests the caller has sent that are still awaiting the other person’s decision. There is nothing to accept here; to cancel one, use `DELETE /users/{userId}/follow` with the **`user.id`** from the entry.\n\n' +
+        'Either way `user` is the *other* person — the sender for incoming, the recipient for outgoing.',
+      parameters: [
+        param('direction', 'query', { type: 'string', enum: ['incoming', 'outgoing'], default: 'incoming' },
+          'Which side to list: requests received (default) or requests sent.'),
+        ...followParams,
+      ],
       responses: {
         200: json('A page of pending requests.',
           object({
             requests: arrayOf(ref('FollowRequest')),
             total: { type: 'integer', example: 2 },
+            direction: { type: 'string', enum: ['incoming', 'outgoing'], example: 'incoming' },
             limit: { type: 'integer', example: 20 },
             offset: { type: 'integer', example: 0 },
           })),

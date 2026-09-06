@@ -16,6 +16,11 @@ const followGraphQuerySchema = z.object({
   offset: z.coerce.number().int().min(0).default(0),
 });
 
+const followRequestsQuerySchema = followGraphQuerySchema.extend({
+  // 'incoming' is the default so existing clients keep the behaviour they had.
+  direction: z.enum(['incoming', 'outgoing']).default('incoming'),
+});
+
 export const usersController = {
   async getUserProfile(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
@@ -29,15 +34,15 @@ export const usersController = {
   },
 
   async listPendingFollowRequests(req: AuthenticatedRequest, res: Response): Promise<void> {
-    const parsed = followGraphQuerySchema.safeParse(req.query);
+    const parsed = followRequestsQuerySchema.safeParse(req.query);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.flatten().fieldErrors });
       return;
     }
     try {
-      const { limit, offset } = parsed.data;
-      const result = await usersService.listPendingFollowRequests(req.user.id, limit, offset);
-      res.status(200).json({ ...result, limit, offset });
+      const { limit, offset, direction } = parsed.data;
+      const result = await usersService.listPendingFollowRequests(req.user.id, limit, offset, direction);
+      res.status(200).json({ ...result, direction, limit, offset });
     } catch (err: unknown) {
       const e = err as Error & { statusCode?: number };
       res.status(e.statusCode ?? 500).json({ error: e.message });
