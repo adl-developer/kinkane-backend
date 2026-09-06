@@ -1,5 +1,5 @@
 import { sendEmail, FROM } from '../../lib/resend';
-import { emailLayout, ctaButton, greeting, signOff, escapeHtml, p } from '../lib/layout';
+import { emailLayout, ctaButton, greeting, signOff, escapeHtml, p, bookCard } from '../lib/layout';
 import { unsubscribeUrl } from '../../lib/unsubscribe-token';
 
 export interface RecommendedBook {
@@ -7,6 +7,8 @@ export interface RecommendedBook {
   author: string;
   reason: string;
   url: string;
+  /** Jacket image, or null when the catalogue has no cover for this title. */
+  coverUrl?: string | null;
 }
 
 export async function sendNewRecommendationEmail(
@@ -23,7 +25,7 @@ export async function sendNewRecommendationEmail(
   const body = [
     greeting(safeName),
     p('Based on your reading preferences, we think you might enjoy:'),
-    `<p style="margin:0 0 20px;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:14px;line-height:22.75px;color:#262626;"><strong>${safeTitle}</strong><br /><span style="color:#52514E;">by ${safeAuthor}</span></p>`,
+    bookCard(safeTitle, safeAuthor, book.coverUrl ?? null, book.url),
     p(safeReason),
     p('Add it to your bookshelf, explore similar titles, or start reading today.'),
     ctaButton('View Recommendation', book.url),

@@ -165,3 +165,47 @@ export function escapeHtml(str: string): string {
 export function p(content: string, last = false): string {
   return `<p style="margin:0${last ? '' : ' 0 20px'};font-family:${SANS};font-size:14px;font-weight:400;line-height:22.75px;letter-spacing:-0.15px;color:#52514E;">${content}</p>`;
 }
+
+/**
+ * Book card — cover thumbnail beside the title and author, on the cream panel.
+ *
+ * Laid out as a two-cell table rather than floats or flexbox: Outlook's Word
+ * renderer supports neither, and this is the only email surface that pairs an
+ * image with text. The cover is given explicit width/height attributes as well
+ * as CSS so the card doesn't collapse while the image loads or when images are
+ * blocked entirely — in that case the `alt` text stands in for the jacket.
+ *
+ * Pass `coverUrl` as null when the book has no jacket on file: the cell is
+ * dropped rather than rendering a broken image, and the text takes the full
+ * width. Covers are hotlinked from wherever the catalogue stores them, so the
+ * URL must be https — Gmail proxies images and silently drops http ones.
+ */
+export function bookCard(
+  title: string,
+  author: string,
+  coverUrl: string | null,
+  url: string,
+): string {
+  const coverCell =
+    coverUrl && coverUrl.startsWith('https://')
+      ? `<td width="96" valign="top" style="width:96px;padding-right:20px;">
+              <a href="${url}" style="text-decoration:none;"><img src="${coverUrl}" alt="${title}" width="96" style="display:block;width:96px;max-width:96px;height:auto;border:0;border-radius:4px;outline:1px solid #E8E8E7;" /></a>
+            </td>`
+      : '';
+
+  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width:100%;margin:0 0 20px;background-color:#F5F0E8;border-radius:6px;outline:1px solid #E8E8E7;">
+    <tr>
+      <td style="padding:24px;">
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width:100%;">
+          <tr>
+            ${coverCell}
+            <td valign="top">
+              <p style="margin:0 0 6px;font-family:Georgia,'Times New Roman',serif;font-size:18px;font-weight:400;line-height:26px;color:#262626;"><a href="${url}" style="color:#262626;text-decoration:none;">${title}</a></p>
+              <p style="margin:0;font-family:${SANS};font-size:13px;font-weight:400;line-height:20px;color:#52514E;">by ${author}</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>`;
+}
