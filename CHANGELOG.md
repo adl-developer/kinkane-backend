@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-09-06
+
+### Features
+
+* list follow requests the user has sent, not just ones they received ([0cafdcd](https://adl.github.com/adl-developer/kinkane-backend/commit/0cafdcd16d2866d5a0b73cf625022eb992d1a61d)) — [details](changelog/2026-09-06-isbn-search.md)
+
+
 ## 2026-09-04
 
 ### Features
