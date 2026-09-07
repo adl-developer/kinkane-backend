@@ -45,20 +45,62 @@ import { redis } from '../lib/redis';
 // 250 because each result gets its own synchronous Gemini explanation call —
 // fewer results means fewer explanation chunks and a faster response.
 const TARGET_RESULTS = 100;
-// How large a pool to fetch per pass (both the strict and backfill passes
-// below use this same cap). Larger than TARGET_RESULTS so title dedup still
-// tends to leave us with 100.
-const FETCH_POOL = 1000;
+// How large a pool the single candidate pass fetches. It covers both tiers —
+// the pool divides itself, since a preference set with few strict matches
+// simply spends more of the pool on backfill. Larger than TARGET_RESULTS so
+// title dedup still tends to leave us with 100.
+//
+// Was 1000, which is free headroom only under a brute-force mental model. With
+// the iterative index scan below the LIMIT is what the scan works towards, so
+// the pool size is paid for in latency: measured against the live catalogue,
+// 300 rows come back in ~800ms and 1000 in ~5-18s.
+const FETCH_POOL = 300;
 // Cosine distance upper bound — books further than this from the preference
 // vector are excluded. Lower = stricter (0 = identical, 1 = orthogonal).
 const SIMILARITY_THRESHOLD = 0.5;
 // For narrow/niche preference combinations, fewer than TARGET_RESULTS books
 // fall within SIMILARITY_THRESHOLD out of 1M+ in the catalogue. Rather than
-// return a short list, a second pass loosens the cutoff to this value and
-// fills the remainder — those backfilled books are always ranked after every
-// strict match (see fetchCandidateBooks).
+// return a short list, the search reaches out to this looser cutoff and fills
+// the remainder — those backfilled books are always ranked after every strict
+// match (see fetchCandidateBooks).
+//
+// This is the outer bound of ONE query, not a band fetched by a second one.
+// A `distance >= SIMILARITY_THRESHOLD` predicate reads naturally but is the
+// worst thing to ask an HNSW index: the scan walks outward from the nearest
+// neighbour, so such a filter rejects every row the scan visits first and the
+// iterative scan burns through the whole reject zone — bounded by
+// hnsw.max_scan_tuples — before a single row qualifies. Measured on an 83k-row
+// catalogue that cost 2753ms against 739ms for the same query without the
+// floor, and it grows with the catalogue, on the exact path taken when the
+// strict tier already came up short.
 const BACKFILL_SIMILARITY_THRESHOLD = 0.7;
+// The <=> searches below run against the HNSW index, which visits roughly
+// `ef_search` graph nodes and then stops — every condition in baseConditions
+// (sellability, format intent, dislikes, the user's exclusions) is applied to
+// whatever that scan handed back, not pushed into it. At the default ef_search
+// of 40, a query asking for FETCH_POOL rows hands the filter 40 candidates and
+// keeps the handful that survive. Measured against the live catalogue (1.1M
+// embedded books): the strict pass returned 0-6 rows of a requested 1000. That
+// is the single-book response.
+//
+// The real fix is the iterative scan, which resumes the search when the filter
+// has eaten a batch rather than giving up — so ef_search only needs to size the
+// first batch. strict_order, not relaxed_order, because `rank` is the position
+// in cosine order and has to stay exact.
+const HNSW_EF_SEARCH = 100;
+const HNSW_ITERATIVE_SCAN = 'strict_order';
+// Iterative scan landed in pgvector 0.8.0. Below that there is no resuming, so
+// the only lever is a single wide pass — 1000 is the ceiling this GUC accepts.
+const HNSW_EF_SEARCH_NO_ITERATIVE = 1000;
+const MIN_ITERATIVE_SCAN_VERSION = [0, 8, 0];
 const CACHE_TTL_HOURS = 48;
+// A result set this short is either a genuinely niche preference combination or
+// a bad day for recall, and from here the two are indistinguishable. Caching
+// either one for the full 48 hours means every reader with those preferences is
+// served the same short list until it expires, so short lists get a much
+// shorter lease and re-run sooner. The rate limiter (20/hour) bounds the cost.
+const MIN_HEALTHY_RESULTS = 10;
+const SHORT_RESULT_CACHE_TTL_HOURS = 1;
 // v2 — explanations now carry the reader-name token (see NAME_PLACEHOLDER).
 // v3 — explanations must address the reader in second person, so entries
 //      written under v2 (which allowed "Elisabeth will love this") are retired.
@@ -441,12 +483,13 @@ function buildFormatCondition(intent: 'fiction' | 'non-fiction' | null) {
  * Runs the pgvector similarity search for a preference vector and returns up
  * to TARGET_RESULTS candidate books, ordered best-match-first.
  *
- * Two passes: a strict pass at SIMILARITY_THRESHOLD, then — only if that
- * leaves fewer than TARGET_RESULTS after title dedup — a backfill pass at
- * the looser BACKFILL_SIMILARITY_THRESHOLD to fill the remainder. Backfilled
- * books always sort after every strict match, so overall rank still reflects
- * match quality. `baseConditions` (dislikes, format, already-owned books)
- * applies identically to both passes.
+ * One pass out to BACKFILL_SIMILARITY_THRESHOLD, split into two tiers in
+ * memory: books within SIMILARITY_THRESHOLD are the strict matches, deduped on
+ * title by best edition; anything beyond it only tops the list off if the
+ * strict tier left fewer than TARGET_RESULTS. Backfilled books always sort
+ * after every strict match, so overall rank still reflects match quality.
+ * `baseConditions` (dislikes, format, already-owned books) applies to the pass,
+ * so it holds for both tiers by construction.
  */
 type CandidateRow = { id: number; title: string };
 
@@ -463,6 +506,83 @@ type ScoredCandidateRow = CandidateRow & {
   hasPrice: boolean;
 };
 
+/**
+ * Whether this Postgres has pgvector's iterative index scan (0.8.0+). Probed
+ * once per process and remembered.
+ *
+ * Asks pg_extension rather than `SHOW hnsw.iterative_scan`. pgvector registers
+ * its GUCs when its library is first loaded into a session, which happens
+ * lazily on the first vector operation — so on a freshly checked-out pooled
+ * connection the SHOW raises `unrecognized configuration parameter` even on
+ * 0.8.x, and a probe built on it would report "unsupported" on a server that
+ * supports it perfectly well. The catalogue version is readable at any time.
+ */
+let iterativeScanSupport: Promise<boolean> | null = null;
+
+function supportsIterativeScan(): Promise<boolean> {
+  iterativeScanSupport ??= probeIterativeScan().catch((err: unknown) => {
+    // Deliberately not memoized. A probe that never reached the server says
+    // nothing about the server, and caching its answer would let one blip —
+    // a failover, a restart, a saturated pool during the first request after
+    // deploy — pin the whole process to the capped-recall path for its
+    // lifetime, silently reinstating the single-book bug this widening exists
+    // to prevent. Clearing the slot makes the next call probe again; this one
+    // degrades safely to a single wide pass.
+    iterativeScanSupport = null;
+    logger.warn('Could not determine pgvector version — assuming no iterative scan for this query', {
+      error: (err as Error).message,
+    });
+    return false;
+  });
+  return iterativeScanSupport;
+}
+
+/**
+ * Reads the answer the server actually gives. Both outcomes here are
+ * determinate and safe to remember for the process; only a thrown error (which
+ * means "we could not ask") is retried by the caller above.
+ */
+async function probeIterativeScan(): Promise<boolean> {
+  const rows = await db.execute(sql`SELECT extversion FROM pg_extension WHERE extname = 'vector'`);
+  const version = (rows as unknown as { extversion?: string }[])[0]?.extversion;
+  // No row means the question could not be answered, not that the answer is no.
+  if (!version) throw new Error('pgvector not listed in pg_extension');
+
+  const parts = version.split('.').map((n) => Number.parseInt(n, 10) || 0);
+  const supported = compareVersion(parts, MIN_ITERATIVE_SCAN_VERSION) >= 0;
+  if (!supported) {
+    logger.warn('pgvector predates the iterative index scan — recommendation recall is capped', {
+      version,
+    });
+  }
+  return supported;
+}
+
+function compareVersion(a: number[], b: number[]): number {
+  for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+    const diff = (a[i] ?? 0) - (b[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+/**
+ * How long a generated list is allowed to live in the two caches. A full list
+ * gets the standard lease; anything short enough to look like a recall failure
+ * (see MIN_HEALTHY_RESULTS) gets an hour, so one bad search is not frozen in
+ * front of every reader who shares those preferences for two days.
+ */
+function cacheTtlSecondsFor(results: RecommendationItem[]): number {
+  if (results.length >= MIN_HEALTHY_RESULTS) return CACHE_TTL_HOURS * 60 * 60;
+  // Logged rather than silently shortened: a list this far below TARGET_RESULTS
+  // is the symptom to watch if the endpoint starts under-returning again.
+  logger.warn('Recommendation list came back short', {
+    count: results.length,
+    target: TARGET_RESULTS,
+  });
+  return SHORT_RESULT_CACHE_TTL_HOURS * 60 * 60;
+}
+
 async function fetchCandidateBooks(
   vectorLiteral: string,
   baseConditions: SQL[],
@@ -475,10 +595,26 @@ async function fetchCandidateBooks(
     shortDescription: books.shortDescription,
     availabilityCode: books.availabilityCode,
     publicationDate: books.publicationDate,
+    // Selected so the single pass below can be split into the strict and
+    // backfill tiers in memory, without a second query to define the boundary.
+    distance: sql<number>`${books.embedding} <=> ${vectorLiteral}::vector`,
   };
 
-  const fetchRows = (where: SQL | undefined, limit: number) =>
-    db.select(candidateColumns).from(books).where(where).orderBy(distanceExpr).limit(limit);
+  // SET LOCAL keeps both GUCs scoped to this one transaction — a bare SET would
+  // stick to the pooled connection and change the plan of unrelated queries that
+  // reuse it afterwards.
+  const fetchRows = async (where: SQL | undefined, limit: number) => {
+    const iterative = await supportsIterativeScan();
+    return db.transaction(async (tx) => {
+      await tx.execute(
+        sql.raw(`SET LOCAL hnsw.ef_search = ${iterative ? HNSW_EF_SEARCH : HNSW_EF_SEARCH_NO_ITERATIVE}`),
+      );
+      if (iterative) {
+        await tx.execute(sql.raw(`SET LOCAL hnsw.iterative_scan = ${HNSW_ITERATIVE_SCAN}`));
+      }
+      return tx.select(candidateColumns).from(books).where(where).orderBy(distanceExpr).limit(limit);
+    });
+  };
 
   // Attaches genreCount/hasPrice (the two DedupeCandidate fields not directly on `books`)
   // via one batched IN query each, so dedupeByTitle can score the pool — same pattern as
@@ -506,38 +642,41 @@ async function fetchCandidateBooks(
 
   const stripScoring = (r: ScoredCandidateRow): CandidateRow => ({ id: r.id, title: r.title });
 
-  const primaryRows = await fetchRows(and(sql`${distanceExpr} < ${SIMILARITY_THRESHOLD}`, ...baseConditions), FETCH_POOL);
-  const primaryCandidates = dedupeByTitle(await withScoring(primaryRows)).slice(0, TARGET_RESULTS).map(stripScoring);
+  // One pass, out to the loosest distance we would ever accept, nearest first.
+  // The two tiers are then cut out of this one result set rather than fetched
+  // separately — see the note on BACKFILL_SIMILARITY_THRESHOLD for why asking
+  // the index for the far tier on its own is the one thing not to do here.
+  const rows = await fetchRows(
+    and(sql`${distanceExpr} < ${BACKFILL_SIMILARITY_THRESHOLD}`, ...baseConditions),
+    FETCH_POOL,
+  );
+
+  const isStrict = (row: { distance: number }) => Number(row.distance) < SIMILARITY_THRESHOLD;
+
+  const primaryCandidates = dedupeByTitle(await withScoring(rows.filter(isStrict)))
+    .slice(0, TARGET_RESULTS)
+    .map(stripScoring);
 
   if (primaryCandidates.length >= TARGET_RESULTS) {
     return primaryCandidates;
   }
 
   const stillNeeded = TARGET_RESULTS - primaryCandidates.length;
-  const excludeIds = primaryCandidates.map((r) => r.id);
   const seenTitles = new Set(primaryCandidates.map((r) => r.title.trim().toLowerCase()));
 
-  const backfillRows = await fetchRows(
-    and(
-      sql`${distanceExpr} >= ${SIMILARITY_THRESHOLD}`,
-      sql`${distanceExpr} < ${BACKFILL_SIMILARITY_THRESHOLD}`,
-      ...baseConditions,
-      ...(excludeIds.length > 0 ? [notInArray(books.id, excludeIds)] : []),
-    ),
-    FETCH_POOL,
-  );
-
   // Backfill candidates are a strictly worse-match pool, only reached because the primary
-  // pass came up short — they exist to top the list off, not to be scored against each
+  // tier came up short — they exist to top the list off, not to be scored against each
   // other, so this keeps the simple first-seen-title rule rather than the full priority
-  // scoring above.
+  // scoring above. Rows already considered for the strict tier are skipped: one that lost
+  // its title there must not reappear as a worse match here.
   const backfillCandidates: CandidateRow[] = [];
-  for (const row of backfillRows) {
+  for (const row of rows) {
+    if (backfillCandidates.length >= stillNeeded) break;
+    if (isStrict(row)) continue;
     const key = row.title.trim().toLowerCase();
     if (seenTitles.has(key)) continue;
     seenTitles.add(key);
     backfillCandidates.push({ id: row.id, title: row.title });
-    if (backfillCandidates.length >= stillNeeded) break;
   }
 
   return [...primaryCandidates, ...backfillCandidates];
@@ -632,7 +771,8 @@ export const recommendationsService = {
 
     if (candidateRows.length === 0) {
       // Cache the empty result so identical preferences don't re-run the vector search
-      const cacheExpiresAt = new Date(now.getTime() + CACHE_TTL_HOURS * 60 * 60 * 1000);
+      const emptyTtlSeconds = cacheTtlSecondsFor([]);
+      const cacheExpiresAt = new Date(now.getTime() + emptyTtlSeconds * 1000);
       await Promise.all([
         db
           .insert(recommendationCache)
@@ -641,7 +781,7 @@ export const recommendationsService = {
             target: recommendationCache.inputHash,
             set: { results: [], expiresAt: cacheExpiresAt },
           }),
-        redis.set(redisCacheKey, '[]', 'EX', CACHE_TTL_HOURS * 60 * 60),
+        redis.set(redisCacheKey, '[]', 'EX', emptyTtlSeconds),
       ]);
 
       const { id: guestSessionId, expiresAt } = await guestService.create({
@@ -708,7 +848,8 @@ export const recommendationsService = {
     }));
 
     // 8. Persist to cache — upsert in case of a race condition on concurrent identical requests
-    const cacheExpiresAt = new Date(now.getTime() + CACHE_TTL_HOURS * 60 * 60 * 1000);
+    const ttlSecondsForResults = cacheTtlSecondsFor(results);
+    const cacheExpiresAt = new Date(now.getTime() + ttlSecondsForResults * 1000);
     await Promise.all([
       db
         .insert(recommendationCache)
@@ -717,7 +858,7 @@ export const recommendationsService = {
           target: recommendationCache.inputHash,
           set: { results, expiresAt: cacheExpiresAt },
         }),
-      redis.set(redisCacheKey, JSON.stringify(results), 'EX', CACHE_TTL_HOURS * 60 * 60),
+      redis.set(redisCacheKey, JSON.stringify(results), 'EX', ttlSecondsForResults),
     ]);
 
     // 9. Create guest session now that results are ready
@@ -1030,7 +1171,8 @@ async function computeRecommendations(
     }));
   }
 
-  const cacheExpiresAt = new Date(now.getTime() + CACHE_TTL_HOURS * 60 * 60 * 1000);
+  const ttlSecondsForResults = cacheTtlSecondsFor(results);
+  const cacheExpiresAt = new Date(now.getTime() + ttlSecondsForResults * 1000);
   await Promise.all([
     db
       .insert(recommendationCache)
@@ -1039,7 +1181,7 @@ async function computeRecommendations(
         target: recommendationCache.inputHash,
         set: { results, expiresAt: cacheExpiresAt },
       }),
-    redis.set(redisCacheKey, JSON.stringify(results), 'EX', CACHE_TTL_HOURS * 60 * 60),
+    redis.set(redisCacheKey, JSON.stringify(results), 'EX', ttlSecondsForResults),
   ]);
 
   // Both caches above hold the name token; the name is this reader's alone.

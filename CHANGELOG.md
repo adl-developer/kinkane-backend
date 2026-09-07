@@ -5,6 +5,7 @@
 
 ### Features
 
+* show the book's cover in the recommendation email ([dfa3365](https://adl.github.com/adl-developer/kinkane-backend/commit/dfa33654cc604a56c3bee4feedad4519994b5fce)) — [details](changelog/2026-09-06-recommendation-email-cover.md)
 * find a book by typing its ISBN into the search box ([5a60849](https://adl.github.com/adl-developer/kinkane-backend/commit/5a608495781f1b1149cc35332e3c2e680289b8c4)) — [details](changelog/2026-09-06-isbn-search.md)
 * list follow requests the user has sent, not just ones they received ([0cafdcd](https://adl.github.com/adl-developer/kinkane-backend/commit/0cafdcd16d2866d5a0b73cf625022eb992d1a61d))
 
