@@ -2,12 +2,13 @@
  * Reading orders back — the customer's own order history and detail view, plus
  * the state transitions the Stripe webhook drives.
  */
-import { and, desc, eq, lt, inArray, isNull } from 'drizzle-orm';
+import { and, desc, eq, lt, inArray, isNull, or } from 'drizzle-orm';
 import { db } from '../../db';
 import {
   orders,
   orderItems,
   carts,
+  users,
   type Order,
   type OrderItem,
   type OrderStatus,
@@ -306,6 +307,13 @@ export const ordersService = {
    * row level, and clearing the token hash retires the credential — a link
    * forwarded from an order confirmation email cannot re-home somebody else's
    * order afterwards.
+   *
+   * An order already owned by a **guest account** is claimable too. The web
+   * shop signs a browser up silently before it can hold a cart, so those orders
+   * arrive with a `user_id` set — under `is_guest` rather than `IS NULL` — and
+   * the plain unowned test locked out exactly the buyers this endpoint exists
+   * for. Single-use survives the widening: a successful claim moves the row to
+   * a real account, which fails the predicate the second time.
    */
   async claim(reference: string, token: string, userId: number): Promise<OrderView | null> {
     const [order] = await db
@@ -323,7 +331,16 @@ export const ordersService = {
       .where(
         and(
           eq(orders.id, order.id),
-          isNull(orders.userId),
+          // Unowned, or owned by an account that is itself only a placeholder.
+          // A subquery rather than a join so the whole check stays one
+          // conditional UPDATE — the property the note above turns on.
+          or(
+            isNull(orders.userId),
+            inArray(
+              orders.userId,
+              db.select({ id: users.id }).from(users).where(eq(users.isGuest, true)),
+            ),
+          ),
           eq(orders.guestAccessTokenHash, order.guestAccessTokenHash),
         ),
       )

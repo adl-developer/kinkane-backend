@@ -150,6 +150,49 @@ async function hasPaidBefore(
   return Boolean(existing);
 }
 
+/**
+ * Who the buyer is reachable as, and whether they count as a guest.
+ *
+ * Split out of `start` and pure so the rule has one statement and a test can
+ * reach it: the three-way distinction below is the thing the whole
+ * unreachable-order bug turned on, and it was previously spelled out inline in
+ * the middle of pricing.
+ *
+ * The three cases:
+ *
+ *  - **No account.** The typed address is all there is, and is required.
+ *  - **A guest account.** Signed up silently by the shop so the cart endpoints
+ *    have a token (see `is_guest` in db/schema/users). It has a userId and a
+ *    row, and neither means what "signed in" normally means: the address is a
+ *    `guest-<uuid>@guest.kinkane.app` placeholder with no inbox, and the only
+ *    thing keeping the account reachable is a token in browser storage. Counts
+ *    as a guest, and the typed address is required.
+ *  - **A real signed-in buyer.** The account email wins and the request body's
+ *    is ignored, so checkout cannot be used to send someone else's receipt
+ *    wherever the caller likes.
+ */
+export function resolveBuyerContact(input: {
+  account: { email: string; isGuest: boolean } | null;
+  contactEmail?: string | null;
+}): { contactEmail: string; isGuestBuyer: boolean } {
+  const isGuestBuyer = input.account === null || input.account.isGuest;
+
+  if (!isGuestBuyer) {
+    return { contactEmail: input.account!.email, isGuestBuyer: false };
+  }
+
+  // Demanded rather than falling back to the placeholder, deliberately. The
+  // fallback is what the old behaviour was: it always succeeded, and every one
+  // of those orders was unreachable — the receipt bounced, the tracking pair
+  // named an address the buyer had never seen, and the first-order discount
+  // keyed on a value unique to the browser. A 400 the client can fix is the
+  // better failure.
+  if (!input.contactEmail) {
+    throw httpError('An email address is required to check out', 400, 'EMAIL_REQUIRED');
+  }
+  return { contactEmail: input.contactEmail, isGuestBuyer: true };
+}
+
 /** Either the pool or a transaction — so money checks can run inside one. */
 type DbHandle = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -330,6 +373,16 @@ export const commerceCheckoutService = {
        * signed-in buyer, whose account email is authoritative: letting a
        * request name its own contact address would turn checkout into a way to
        * send someone else's receipt wherever you liked.
+       *
+       * **A guest account counts as a guest here, not as a signed-in buyer.**
+       * The web shop signs a browser up silently on first add-to-cart so the
+       * cart endpoints have a token to work with, under a synthetic
+       * `guest-<uuid>@guest.kinkane.app` address (see the note on `is_guest` in
+       * db/schema/users). That address has no inbox. Treating it as
+       * authoritative wrote it onto the order, mailed the confirmation into a
+       * void, and left the buyer with no way to reach their own order —
+       * "authoritative" was only ever meant to describe an address its owner
+       * chose and can receive mail at.
        */
       contactEmail?: string | null;
       /**
@@ -450,16 +503,35 @@ export const commerceCheckoutService = {
     }
 
     // The account's own email for a signed-in buyer; the one they typed for a
-    // guest. Never the request body's value for a signed-in buyer — see the
-    // note on `contactEmail` above.
-    let contactEmail: string;
+    // guest — see resolveBuyerContact for which is which.
     // Falls back to the account's stored number when the request omits one, so
     // a returning buyer is not made to retype it. Null for a guest who gave
     // none: there is no profile to fall back to.
     let contactPhone: string | null = options.contactPhone ?? null;
+    /**
+     * Whether this checkout is a guest's, which is **not** the same question as
+     * "is `userId` null".
+     *
+     * A browser that has only ever been signed up silently by the shop carries
+     * a real token for a real row, so it arrives here with a userId — but it
+     * has a placeholder address, no password its owner knows, and nothing but
+     * browser storage keeping it reachable. Every downstream decision that
+     * asks "does this buyer have an account to fall back on?" wants this
+     * answer, not the userId's.
+     *
+     * The order still records `userId`, so the account's own order history
+     * keeps working for as long as that browser holds its token. This governs
+     * how the buyer is *reached and re-found*, not who the order belongs to.
+     */
+    let account: { email: string; isGuest: boolean } | null = null;
     if (userId !== null) {
       const [user] = await db
-        .select({ email: users.email, phone: users.phone, blacklistedAt: users.blacklistedAt })
+        .select({
+          email: users.email,
+          phone: users.phone,
+          blacklistedAt: users.blacklistedAt,
+          isGuest: users.isGuest,
+        })
         .from(users)
         .where(eq(users.id, userId))
         .limit(1);
@@ -471,14 +543,16 @@ export const commerceCheckoutService = {
       if (user.blacklistedAt !== null) {
         throw httpError('This account has been suspended. Contact support.', 403, 'ACCOUNT_SUSPENDED');
       }
-      contactEmail = user.email;
+      // The stored number is a fallback for *any* account, guest included: a
+      // guest who gave a number on a previous order should not retype it.
       contactPhone ??= user.phone;
-    } else {
-      if (!options.contactEmail) {
-        throw httpError('An email address is required to check out', 400, 'EMAIL_REQUIRED');
-      }
-      contactEmail = options.contactEmail;
+      account = { email: user.email, isGuest: user.isGuest };
     }
+
+    const { contactEmail, isGuestBuyer } = resolveBuyerContact({
+      account,
+      contactEmail: options.contactEmail,
+    });
 
     const normalizedEmail = normalizeEmailForPromotions(contactEmail);
     const firstOrderPercent = config.commerce.discount.firstOrderPercent;
@@ -763,7 +837,7 @@ export const commerceCheckoutService = {
     // it. A const is narrowed the same way on every version.
     const order: Order = written;
 
-    const session = await this.createSession(userId, order, quote.lines.map((line) => ({
+    const session = await this.createSession(userId, isGuestBuyer, order, quote.lines.map((line) => ({
       name: buyable.get(line.bookId)!.title,
       contributor: buyable.get(line.bookId)!.contributor,
       quantity: line.quantity,
@@ -808,7 +882,11 @@ export const commerceCheckoutService = {
     // Parked for the confirmation email, which is sent from the paid webhook
     // long after this raw value is gone. Guests only — a signed-in buyer has
     // order history and needs no credential printed in an inbox.
-    if (userId === null) {
+    //
+    // A guest *account* does need one: its order history is reachable only
+    // through a token in browser storage, so clearing site data would otherwise
+    // take the order with it. The emailed credential is the way back.
+    if (isGuestBuyer) {
       await stashGuestToken(order.id, accessToken);
     }
 
@@ -836,6 +914,8 @@ export const commerceCheckoutService = {
    */
   async createSession(
     userId: number | null,
+    /** See the note on `isGuestBuyer` in `start` — not simply `userId === null`. */
+    isGuestBuyer: boolean,
     order: Order,
     lines: { name: string; contributor: string | null; quantity: number; unitPriceMinor: number }[],
   ): Promise<Stripe.Checkout.Session> {
@@ -843,8 +923,16 @@ export const commerceCheckoutService = {
     // customer records for people without accounts builds a second, unlinked
     // identity store that nothing in the app can ever reconcile or delete on
     // request. Stripe takes the email directly instead.
+    //
+    // A guest account is on the same side of that line. ensureStripeCustomer
+    // builds the customer from `users.email`, so attaching one here filed every
+    // web-shop order in Stripe under a placeholder address — the buyer's real
+    // one appeared nowhere in the dashboard, which is no way to answer "where
+    // is my order" from a payment record.
     const customerId =
-      userId !== null ? await subscriptionCheckoutService.ensureStripeCustomer(userId) : null;
+      userId !== null && !isGuestBuyer
+        ? await subscriptionCheckoutService.ensureStripeCustomer(userId)
+        : null;
     const currency = order.presentmentCurrency.toLowerCase();
 
     const lineItems: Stripe.Checkout.SessionCreateParams.LineItem[] = lines.map((line) => ({
