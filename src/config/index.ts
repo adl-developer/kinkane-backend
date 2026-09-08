@@ -11,6 +11,23 @@ const envSchema = z.object({
   // development and starts at info everywhere else (see lib/logger).
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).optional(),
 
+  // Attach every request's body, query and route params to its log line.
+  //
+  // Unset, it follows NODE_ENV: on in development, off everywhere else. Set it
+  // explicitly to override in either direction — `true` to debug a live
+  // integration, `false` to quieten a noisy local run.
+  //
+  // Off by default outside development on purpose. The scrubber hides the
+  // fields it can name (see lib/log-scrubber), but a body is caller-controlled
+  // and the next endpoint to take a secret under a name nobody added to that
+  // list writes it to the log in the clear. In development that is a bug to
+  // fix; in production it is a disclosure in a log aggregator with a much
+  // longer retention than anyone's memory of having turned this on.
+  LOG_REQUEST_PAYLOADS: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((v) => (v === undefined ? undefined : v === 'true')),
+
   DATABASE_URL: z.string().url(),
   REDIS_URL: z.string().url(),
 
@@ -504,6 +521,7 @@ export const config = {
   port: env.PORT,
   nodeEnv: env.NODE_ENV,
   logLevel: env.LOG_LEVEL,
+  logRequestPayloads: env.LOG_REQUEST_PAYLOADS ?? env.NODE_ENV === 'development',
   database: {
     url: env.DATABASE_URL,
   },
