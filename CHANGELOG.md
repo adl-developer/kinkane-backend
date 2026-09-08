@@ -5,10 +5,12 @@
 
 ### Features
 
+* show the body and parameters of every request in the logs ([819914c](https://adl.github.com/adl-developer/kinkane-backend/commit/819914c4730e9cb5fd97862bebb8953fb2cc4c12)) — [details](changelog/2026-09-08-log-request-payloads.md)
 * hide session tokens from every log line ([3b8bf38](https://adl.github.com/adl-developer/kinkane-backend/commit/3b8bf3895df1207fc8753b7ef07526c1e52e43a3)) — [details](changelog/2026-09-08-log-token-scrubber.md)
 
 ### Bug Fixes
 
+* send shop receipts to the address the buyer typed, not a placeholder ([4e81549](https://adl.github.com/adl-developer/kinkane-backend/commit/4e8154980ca7c5f44a78a4f5db483393aca1ca5e)) — [details](changelog/2026-09-08-guest-account-contact-email.md)
 * harden the log scrubber against three coverage gaps ([ed7510a](https://adl.github.com/adl-developer/kinkane-backend/commit/ed7510a7d67fd97214b679be55ba7e0a5532c187)) — [details](changelog/2026-09-08-log-scrubber-hardening.md)
 * only surface a 5xx to the client when it carries a machine-readable code ([e35e611](https://adl.github.com/adl-developer/kinkane-backend/commit/e35e61102a79f3cc2ccf8864593f4eac63140b86)) — [details](changelog/2026-09-08-other-editions-author-name-order.md)
 * prefix inbound X-Request-Id values so they can't be spoofed ([cae705c](https://adl.github.com/adl-developer/kinkane-backend/commit/cae705cf93bcee11576a460f9b872dd1a8692aea)) — [details](changelog/2026-09-08-guest-account-contact-email.md)

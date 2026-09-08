@@ -31,14 +31,10 @@ export interface OrderConfirmedPayload {
    * The guest's long access token, or null for a signed-in buyer who has order
    * history instead.
    *
-   * Printed as a code to copy, never as a link. A token in a URL leaks through
-   * Referer headers, browser history and any analytics on the landing page —
-   * which is why checkout.service says never to put it in one. In an inbox it
-   * is as durable as a link and leaks nowhere.
-   *
-   * Distinct from `trackingCode` above and doing a different job: this one is a
-   * credential, it is what claiming the order into a new account requires, and
-   * it is why the guest block below is still guest-only.
+   * Deliberately **not** printed anywhere in this email — it is a credential,
+   * and the email now carries only the short `trackingCode`. All this field
+   * does here is tell a guest apart from a signed-in buyer, so we do not
+   * promise "My Account" to someone who has no account.
    */
   accessToken: string | null;
 }
@@ -118,17 +114,10 @@ export async function sendOrderConfirmedEmail(
          color:#1a1a1a;">${escapeHtml(payload.trackingCode)}</div>`,
   ].join('\n');
 
-  // Guests only. A signed-in buyer finds this under their account, and printing
-  // a credential they do not need is a credential that can leak for no reason.
-  const guestBlock = payload.accessToken
-    ? [
-        p(
-          'You checked out as a guest. This longer code is what attaches the order to an account if you make one later:',
-        ),
-        `<div style="margin:16px 0;padding:16px;background:#f6f4ef;border-radius:8px;
-             font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:14px;
-             color:#1a1a1a;word-break:break-all;">${escapeHtml(payload.accessToken)}</div>`,
-      ].join('\n')
+  // Guests get nothing extra here: the claim token is deliberately kept out of
+  // the email, and "My Account" is only true for a buyer who has one.
+  const accountBlock = payload.accessToken
+    ? ''
     : p('You can also see this order any time under <strong>My Account</strong>.');
 
   const body = [
@@ -137,7 +126,7 @@ export async function sendOrderConfirmedEmail(
     orderTable,
     address,
     trackingBlock,
-    guestBlock,
+    accountBlock,
     signOff(),
   ].join('\n');
 
@@ -162,9 +151,7 @@ export async function sendOrderConfirmedEmail(
     '',
     `Track your order with this code and the email address you ordered with:\n${payload.trackingCode}`,
     '',
-    payload.accessToken
-      ? `You checked out as a guest. Keep this code to attach the order to an account later:\n${payload.accessToken}`
-      : 'You can also see this order any time under My Account.',
+    payload.accessToken ? '' : 'You can also see this order any time under My Account.',
     '',
     'The Kinkané Team',
   ]
