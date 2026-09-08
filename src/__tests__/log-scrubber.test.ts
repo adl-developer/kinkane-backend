@@ -37,15 +37,30 @@ describe('scrubString', () => {
 
 describe('scrubContext', () => {
   it('walks nested plain objects', () => {
+    const input = { req: { headers: { accept: `json ${JWT}` } } };
+    expect(scrubContext(input)).toEqual({
+      req: { headers: { accept: 'json ****' } },
+    });
+  });
+
+  it('redacts a whole value when its key names a credential', () => {
+    // `authorization` is hidden by name, so the `Bearer ` prefix goes too —
+    // stronger than the pattern rule, which would have left it in place.
     const input = { req: { headers: { authorization: `Bearer ${JWT}` } } };
     expect(scrubContext(input)).toEqual({
-      req: { headers: { authorization: 'Bearer ****' } },
+      req: { headers: { authorization: '****' } },
     });
   });
 
   it('walks arrays', () => {
+    expect(scrubContext({ items: [REFRESH, 'not-a-token'] })).toEqual({
+      items: ['****', 'not-a-token'],
+    });
+  });
+
+  it('redacts an array wholesale when its key names a credential', () => {
     expect(scrubContext({ tokens: [REFRESH, 'not-a-token'] })).toEqual({
-      tokens: ['****', 'not-a-token'],
+      tokens: '****',
     });
   });
 
@@ -59,9 +74,9 @@ describe('scrubContext', () => {
 
   it('walks null-prototype objects (Express 5 req.query is one of these)', () => {
     const nullProto = Object.create(null) as Record<string, unknown>;
-    nullProto.authorization = `Bearer ${JWT}`;
+    nullProto.accept = `json ${JWT}`;
     expect(scrubContext({ req: { query: nullProto } })).toEqual({
-      req: { query: { authorization: 'Bearer ****' } },
+      req: { query: { accept: 'json ****' } },
     });
   });
 
@@ -93,5 +108,46 @@ describe('scrubContext', () => {
     expect(scrubContext(true)).toBe(true);
     expect(scrubContext(null)).toBeNull();
     expect(scrubContext(undefined)).toBeUndefined();
+  });
+});
+
+describe('scrubContext — request payloads', () => {
+  it('hides credentials no pattern could recognise', () => {
+    const body = {
+      email: 'reader@example.com',
+      password: 'hunter2',
+      otp: '481920',
+      newPassword: 'correct horse',
+    };
+    expect(scrubContext({ body })).toEqual({
+      body: {
+        email: 'reader@example.com',
+        password: '****',
+        otp: '****',
+        newPassword: '****',
+      },
+    });
+  });
+
+  it('hides a credential nested under a sensitive key rather than descending', () => {
+    const body = { token: { raw: 'abc', hash: 'def' } };
+    expect(scrubContext({ body })).toEqual({ body: { token: '****' } });
+  });
+
+  it('keeps the fields that make a payload worth logging', () => {
+    // `code` is deliberately not a sensitive key — see SENSITIVE_KEYS.
+    const body = {
+      contactEmail: 'reader@example.com',
+      trackingCode: 'K7M2QX4P',
+      referralCode: 'ABCD12',
+      lines: [{ bookId: 42, quantity: 2 }],
+    };
+    expect(scrubContext({ body })).toEqual({ body });
+  });
+
+  it('summarises a Buffer instead of walking it byte by byte', () => {
+    expect(scrubContext({ body: Buffer.from('hello') })).toEqual({
+      body: '[Buffer 5 bytes]',
+    });
   });
 });

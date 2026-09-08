@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Request, Response, NextFunction } from 'express';
 import { logger, runWithLogContext, addLogContext } from '../lib/logger';
+import { config } from '../config';
 import type { AuthenticatedRequest } from './auth.middleware';
 
 // The header we both honour on the way in and echo on the way out, so a client
@@ -18,6 +19,47 @@ declare global {
 }
 
 /**
+ * How much of one payload is kept, in characters of its JSON form.
+ *
+ * A cap rather than the whole thing because a 50kb bulk import body (the
+ * express.json limit) in every log line buries the requests either side of it
+ * and costs real money in an ingest-priced aggregator. 2kb is comfortably more
+ * than any hand-written request this API takes.
+ */
+const MAX_PAYLOAD_CHARS = 2_048;
+
+/**
+ * Returns the payload to log, or undefined when there is nothing worth logging.
+ *
+ * Empty objects are dropped rather than logged as `{}`: a GET with no query
+ * string and no route params would otherwise add two dead fields to every line.
+ *
+ * The value is returned as a structure, not a string — the logger's scrubber
+ * walks it field by field, and pre-stringifying here would flatten it into one
+ * opaque blob that only the pattern rules could reach into.
+ */
+function payload(value: unknown): unknown {
+  if (value === null || typeof value !== 'object') return undefined;
+  if (Object.keys(value as object).length === 0) return undefined;
+
+  // Measured on the serialised form because that is what actually lands in the
+  // log. Oversized payloads are truncated to a quotable prefix rather than
+  // dropped — the first 2kb usually names the endpoint's shape, which is the
+  // part being debugged.
+  let json: string;
+  try {
+    json = JSON.stringify(value);
+  } catch {
+    // A body that cannot be serialised (a cycle, a BigInt) must not take the
+    // request's log line down with it.
+    return '[unserialisable]';
+  }
+
+  if (json.length <= MAX_PAYLOAD_CHARS) return value;
+  return `${json.slice(0, MAX_PAYLOAD_CHARS)}… [truncated, ${json.length} chars]`;
+}
+
+/**
  * Logs one line per request and gives the request an id.
  *
  * Every log line emitted while the request is on the stack carries `requestId`
@@ -27,8 +69,16 @@ declare global {
  * path, status and duration — turning the logger from occasional notes into an
  * actual audit trail of what the API is doing.
  *
- * Mounted before the routes but after body parsing; it does not read the body.
+ * Mounted before the routes but after body parsing, so `req.body` is already
+ * a parsed object by the time the summary line is written.
+ *
+ * With `LOG_REQUEST_PAYLOADS` on (the default in development), that line also
+ * carries the request's `body`, `query` and route `params`. Everything in them
+ * passes through the logger's scrubber first, which redacts by field name as
+ * well as by pattern — see lib/log-scrubber for what that does and does not
+ * cover, and config for why this is off outside development.
  */
+
 export function requestLogger(req: Request, res: Response, next: NextFunction): void {
   // Trust an inbound id only for correlation, not identity. A well-formed
   // one is prefixed with `client-` so a caller can't spoof a server-minted
@@ -69,12 +119,30 @@ export function requestLogger(req: Request, res: Response, next: NextFunction): 
       const userId = (req as AuthenticatedRequest).user?.id;
       if (userId !== undefined) addLogContext({ userId });
 
+      // Read at finish rather than at entry so `params` is populated — the
+      // route has been matched by now, and before it there is nothing to read.
+      // `body` is unchanged by routing, and reading a reference to it here
+      // rather than copying it keeps the hot path free of a clone that only
+      // the log would use.
+      const payloads: Record<string, unknown> = {};
+      if (config.logRequestPayloads) {
+        for (const [field, value] of [
+          ['body', req.body],
+          ['query', req.query],
+          ['params', req.params],
+        ] as const) {
+          const logged = payload(value);
+          if (logged !== undefined) payloads[field] = logged;
+        }
+      }
+
       const context = {
         method: req.method,
         path,
         status: res.statusCode,
         durationMs: Math.round(durationMs * 10) / 10,
         ...(userId !== undefined && { userId }),
+        ...payloads,
       };
 
       // A 5xx is our fault, a 4xx is the caller's, everything else is routine.

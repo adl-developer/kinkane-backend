@@ -20,6 +20,14 @@
  * change OTP, unsubscribe) are deliberately out of scope: they use different
  * shapes and are not what "JWT / refresh token" covers. A future extension
  * can add them alongside — see the SCRUB_RULES table below.
+ *
+ * Pattern matching alone stops being enough once request bodies are logged
+ * (see the request logger's payload capture). A password, an OTP and a guest
+ * access token are all just strings — nothing about their *shape* marks them
+ * as secret. So a second, key-based rule runs alongside the patterns:
+ * SENSITIVE_KEYS redacts a value because of the field it arrived in, whatever
+ * it looks like. Both rules apply to every log line, so neither the payload
+ * capture nor any future call site can opt out of them.
  */
 
 /**
@@ -48,6 +56,48 @@ const SCRUB_RULES: RegExp[] = [
   // Refresh token: exactly 80 lowercase hex characters.
   /\b[a-f0-9]{80}\b/g,
 ];
+
+/**
+ * Field names whose value is redacted outright, matched case-insensitively
+ * against the key it arrived under. Non-word characters are stripped first, so
+ * one entry covers `new_password`, `newPassword` and `new-password` alike.
+ *
+ * These are credentials that no pattern can recognise: a password is an
+ * arbitrary string, an OTP is six digits, and a guest access token is
+ * base64url with no distinguishing prefix. Matching on the key is the only
+ * thing that catches them.
+ *
+ * Substring matching on purpose — `token` covers `accessToken`,
+ * `refreshToken`, `guestAccessToken` and `deviceToken` without listing each,
+ * and a new credential field named in the house style is hidden the day it is
+ * added rather than the day someone remembers to update this list.
+ *
+ * Deliberately **not** here: `code`. Referral codes, tracking codes, ISBNs and
+ * country codes all live under it, and redacting the field would blind the
+ * logs to most of what the commerce endpoints actually do. The tracking code
+ * is an identifier, not a credential — it is useless without the order email
+ * (see lib/order-identity) — so logging it costs nothing.
+ */
+const SENSITIVE_KEYS = [
+  'password',
+  'token',
+  'secret',
+  'authorization',
+  'cookie',
+  'apikey',
+  'otp',
+  'pin',
+  'cvc',
+  'cvv',
+  'cardnumber',
+  'signature',
+];
+
+/** True when a field's *name* marks its value as a credential. */
+function isSensitiveKey(key: string): boolean {
+  const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return SENSITIVE_KEYS.some((needle) => normalized.includes(needle));
+}
 
 /**
  * Sentinel written when the walker meets an object it has already visited
@@ -88,6 +138,13 @@ export function scrubContext<T>(value: T, seen: WeakSet<object> = new WeakSet())
     return value;
   }
 
+  // A Buffer is an object whose own enumerable keys are its byte indices, so
+  // walking one turns a 50kb raw body into 50,000 numbered fields. Summarised
+  // instead — the length is the only part that ever helps.
+  if (Buffer.isBuffer(value)) {
+    return `[Buffer ${value.length} bytes]` as unknown as T;
+  }
+
   const object = value as object;
   if (seen.has(object)) {
     return CIRCULAR as unknown as T;
@@ -100,7 +157,10 @@ export function scrubContext<T>(value: T, seen: WeakSet<object> = new WeakSet())
 
   const out: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-    out[key] = scrubContext(entry, seen);
+    // The key check comes first and replaces the whole value, nested objects
+    // included: `{ token: { raw, hash } }` is hidden entirely rather than
+    // descending and leaving both halves in the clear.
+    out[key] = isSensitiveKey(key) ? REDACTED : scrubContext(entry, seen);
   }
   return out as T;
 }
