@@ -154,27 +154,39 @@ app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
 
   // An error a service deliberately tagged with a `statusCode` carries a
   // client-safe message (the same convention the auth middleware honours).
-  // Surface it rather than masking every tagged failure as a generic 500 — that
-  // is what made an expected "parcel too heavy" 503 reach the client as an
-  // unexplained Internal Server Error. These are expected outcomes, not bugs,
-  // so they are logged at warn only.
+  // 4xx tagged errors always surface — that is how an expected "you already
+  // have this in your cart" reaches the client rather than being masked as
+  // a bare 500.
+  //
+  // 5xx tagged errors surface ONLY when `code` is also set. That extra
+  // gate is what separates a curated failure like PARCEL_TOO_HEAVY from a
+  // stray `throw Object.assign(stripeErr, { statusCode: 503 })` — without
+  // it, the raw underlying error text (request ids, endpoint fragments)
+  // would leak into a client-visible response. Anything else — untagged,
+  // or 5xx-with-no-code — falls through to the generic 500 below.
   const tagged = err as Error & {
     statusCode?: number;
     code?: string;
     details?: Record<string, unknown>;
   };
-  if (tagged.statusCode) {
-    if (tagged.statusCode >= 500) {
-      logger.warn('Service error surfaced by global handler', {
-        statusCode: tagged.statusCode,
-        code: tagged.code,
-        message: tagged.message,
-        requestId: req.requestId,
-      });
-    }
+  if (tagged.statusCode && tagged.statusCode < 500) {
     res.status(tagged.statusCode).json({
       error: tagged.message,
       ...(tagged.code && { code: tagged.code }),
+      ...(tagged.details ?? {}),
+    });
+    return;
+  }
+  if (tagged.statusCode && tagged.statusCode >= 500 && tagged.code) {
+    logger.warn('Service error surfaced by global handler', {
+      statusCode: tagged.statusCode,
+      code: tagged.code,
+      message: tagged.message,
+      requestId: req.requestId,
+    });
+    res.status(tagged.statusCode).json({
+      error: tagged.message,
+      code: tagged.code,
       ...(tagged.details ?? {}),
     });
     return;

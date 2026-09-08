@@ -97,7 +97,10 @@ export const webhooksService = {
    */
   constructEvent(rawBody: Buffer, signature: string): Stripe.Event {
     if (!config.stripe.webhookSecret) {
-      throw Object.assign(new Error('Stripe webhooks are not configured'), { statusCode: 503 });
+      throw Object.assign(new Error('Stripe webhooks are not configured'), {
+        statusCode: 503,
+        code: 'STRIPE_WEBHOOK_NOT_CONFIGURED',
+      });
     }
     try {
       return stripe().webhooks.constructEvent(rawBody, signature, config.stripe.webhookSecret);

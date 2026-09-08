@@ -172,7 +172,10 @@ export const checkoutService = {
     });
 
     if (!session.url) {
-      throw Object.assign(new Error('Stripe did not return a checkout URL'), { statusCode: 502 });
+      throw Object.assign(new Error('Stripe did not return a checkout URL'), {
+        statusCode: 502,
+        code: 'STRIPE_NO_URL',
+      });
     }
 
     // The reference the client holds. Minted here so the mobile app gets one

@@ -116,7 +116,10 @@ export function fxRateFor(currency: string): number {
 
   const rate = config.commerce.currency.fxFromGbp[code];
   if (!rate || !Number.isFinite(rate) || rate <= 0) {
-    throw Object.assign(new Error(`No exchange rate configured for ${code}`), { statusCode: 503 });
+    throw Object.assign(new Error(`No exchange rate configured for ${code}`), {
+      statusCode: 503,
+      code: 'FX_UNAVAILABLE',
+    });
   }
 
   return rate;
@@ -291,7 +294,7 @@ export function quoteShipping(options: {
     // an operator seeing a 503 the first time they ship somewhere new.
     throw Object.assign(
       new Error('Shipping is not configured for this destination'),
-      { statusCode: 503 },
+      { statusCode: 503, code: 'SHIPPING_NOT_CONFIGURED' },
     );
   }
 

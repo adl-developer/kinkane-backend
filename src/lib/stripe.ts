@@ -29,13 +29,19 @@ export function isStripeConfigured(): boolean {
  */
 export function assertStripeConfigured(): void {
   if (!isStripeConfigured()) {
-    throw Object.assign(new Error('Payments are not available right now'), { statusCode: 503 });
+    throw Object.assign(new Error('Payments are not available right now'), {
+      statusCode: 503,
+      code: 'PAYMENTS_UNAVAILABLE',
+    });
   }
 }
 
 export function stripe(): Stripe {
   if (!config.stripe.secretKey) {
-    throw Object.assign(new Error('Payments are not available right now'), { statusCode: 503 });
+    throw Object.assign(new Error('Payments are not available right now'), {
+      statusCode: 503,
+      code: 'PAYMENTS_UNAVAILABLE',
+    });
   }
   if (!client) {
     // Pinned so a Stripe-side API upgrade can never change the shape of the
@@ -81,7 +87,10 @@ export function resolvePrice(plan: SubscriptionPlan, now: Date = new Date()): Re
   const standardPriceId = plan === 'monthly' ? prices.monthly : prices.annual;
 
   if (!standardPriceId) {
-    throw Object.assign(new Error('Payments are not available right now'), { statusCode: 503 });
+    throw Object.assign(new Error('Payments are not available right now'), {
+      statusCode: 503,
+      code: 'PAYMENTS_UNAVAILABLE',
+    });
   }
 
   const foundingPriceId = plan === 'monthly' ? prices.monthlyFounding : prices.annualFounding;

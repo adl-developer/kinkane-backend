@@ -77,7 +77,10 @@ export function convertFromGbpPence(
   if (code === 'GBP') return Math.round(gbpPence);
 
   if (!Number.isFinite(rate) || rate <= 0) {
-    throw Object.assign(new Error(`No usable exchange rate for ${code}`), { statusCode: 503 });
+    throw Object.assign(new Error(`No usable exchange rate for ${code}`), {
+      statusCode: 503,
+      code: 'FX_UNAVAILABLE',
+    });
   }
 
   // GBP pence -> GBP -> target major -> target minor, then up to a whole unit.
@@ -106,7 +109,10 @@ export function toGbpPenceFromMinor(
   if (code === 'GBP') return Math.round(minor);
 
   if (!Number.isFinite(rate) || rate <= 0) {
-    throw Object.assign(new Error(`No usable exchange rate for ${code}`), { statusCode: 503 });
+    throw Object.assign(new Error(`No usable exchange rate for ${code}`), {
+      statusCode: 503,
+      code: 'FX_UNAVAILABLE',
+    });
   }
 
   const major = minor / minorUnitsPerMajor(code);
