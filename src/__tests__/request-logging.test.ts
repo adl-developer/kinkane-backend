@@ -110,6 +110,25 @@ describe('request logger middleware', () => {
     );
   });
 
+  it('drops the query string from the logged path — for matched and unmatched routes alike', async () => {
+    await withServer(
+      (app) => app.get('/hit', (_req, res) => res.end()),
+      async (base) => {
+        const { lines, restore } = captureLogs();
+        await fetch(`${base}/hit?limit=20&secret=xyz`);
+        await fetch(`${base}/miss?token=eyJabcdefgh.zzz.aaa`);
+        restore();
+        const summaries = lines.filter((l) => l.message === 'request');
+        const hit = summaries.find((l) => l.status === 200);
+        const miss = summaries.find((l) => l.status === 404);
+        // Matched route: template-only, no query.
+        expect(hit?.path).toBe('/hit');
+        // Unmatched route: raw path, but query stripped.
+        expect(miss?.path).toBe('/miss');
+      },
+    );
+  });
+
   it('logs 4xx at warn and 5xx at error', async () => {
     await withServer(
       (app) => {

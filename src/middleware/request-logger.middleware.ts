@@ -48,12 +48,15 @@ export function requestLogger(req: Request, res: Response, next: NextFunction): 
 
       // req.route?.path is the matched template ('/books/:id'), which keeps ids
       // out of the log's cardinality; fall back to the raw path when unmatched
-      // (a 404 has no route).
+      // (a 404 has no route). Either way the query string is stripped — an
+      // unmatched /whatever?token=... would otherwise land the whole token in
+      // the log, and even matched paths gain nothing from having their query
+      // repeated verbatim on top of the route template.
       const routePath = req.route?.path;
       const path =
         typeof routePath === 'string'
           ? `${req.baseUrl ?? ''}${routePath}`
-          : req.originalUrl;
+          : req.originalUrl.split('?', 1)[0];
 
       // req.user is set by the auth middleware within this same async context.
       const userId = (req as AuthenticatedRequest).user?.id;

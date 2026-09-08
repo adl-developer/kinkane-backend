@@ -3,6 +3,10 @@
 
 ## 2026-09-08
 
+### Features
+
+* hide session tokens from every log line ([3b8bf38](https://adl.github.com/adl-developer/kinkane-backend/commit/3b8bf3895df1207fc8753b7ef07526c1e52e43a3))
+
 ### Bug Fixes
 
 * link other editions of a book even when the publisher differs ([fa86e2b](https://adl.github.com/adl-developer/kinkane-backend/commit/fa86e2bb3cabff6a65de5d1647d65afeee2b8759)) — [details](changelog/2026-09-08-other-editions-author-name-order.md)
