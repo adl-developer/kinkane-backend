@@ -9,6 +9,7 @@
 
 ### Bug Fixes
 
+* harden the log scrubber against three coverage gaps ([ed7510a](https://adl.github.com/adl-developer/kinkane-backend/commit/ed7510a7d67fd97214b679be55ba7e0a5532c187)) — [details](changelog/2026-09-08-log-scrubber-hardening.md)
 * only surface a 5xx to the client when it carries a machine-readable code ([e35e611](https://adl.github.com/adl-developer/kinkane-backend/commit/e35e61102a79f3cc2ccf8864593f4eac63140b86)) — [details](changelog/2026-09-08-other-editions-author-name-order.md)
 * prefix inbound X-Request-Id values so they can't be spoofed ([cae705c](https://adl.github.com/adl-developer/kinkane-backend/commit/cae705cf93bcee11576a460f9b872dd1a8692aea)) — [details](changelog/2026-09-08-other-editions-author-name-order.md)
 * drop query strings from the request log so tokens can't sneak in ([0666da6](https://adl.github.com/adl-developer/kinkane-backend/commit/0666da6db53310ec139abcf80ebdb6d3ebbfa46b)) — [details](changelog/2026-09-08-log-strip-query-string.md)
