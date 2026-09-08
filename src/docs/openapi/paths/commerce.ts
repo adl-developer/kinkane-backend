@@ -288,7 +288,7 @@ export const commercePaths = {
         lines: arrayOf(requestedLine, 'Guests only — the client-held basket. Ignored when signed in, because the stored cart is authoritative.'),
         contactEmail: {
           type: 'string', format: 'email', maxLength: 254,
-          description: 'Guests only, and required for them — there is no account to read an email from. Ignored when signed in; the account email always wins.',
+          description: 'Required for a guest, and for a guest account — the silently-created account the web shop signs a browser up under has a placeholder address with no inbox, so it cannot receive a receipt. Ignored for a real signed-in buyer, whose account email always wins. Missing where it is required returns `EMAIL_REQUIRED`.',
           example: 'rachel@example.com',
         },
         contactPhone: {
@@ -332,7 +332,7 @@ export const commercePaths = {
               example: 'v4Xk9…',
             },
           })),
-        400: json('`CART_EMPTY`; `LINES_REQUIRED` for a guest who sent no basket; `EMAIL_REQUIRED` for a guest with no `contactEmail`; `CART_TOO_LARGE`; or `INVALID_COUNTRY`.', ref('Error'),
+        400: json('`CART_EMPTY`; `LINES_REQUIRED` for a guest who sent no basket; `EMAIL_REQUIRED` for a guest — or a guest account — with no `contactEmail`; `CART_TOO_LARGE`; or `INVALID_COUNTRY`.', ref('Error'),
           { error: 'Send your basket as `lines` to check out without an account', code: 'LINES_REQUIRED' }),
         409: json(
           'Prices or stock moved. **Expected** — the cart has already been repaired, so show `changes` and retry.',

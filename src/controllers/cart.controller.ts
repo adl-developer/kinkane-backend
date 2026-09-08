@@ -77,8 +77,11 @@ const checkoutSchema = z.object({
   shippingCountry: z.string().length(2).optional(),
   currency: z.string().length(3).optional(),
   shippingAddress: shippingAddressSchema.optional(),
-  // Guests only. Ignored for a signed-in buyer, whose account email wins — see
-  // the note in checkout.service.start.
+  // Guests only, where "guest" includes the silently-created guest accounts the
+  // web shop signs browsers up under — their address is a placeholder with no
+  // inbox, so it cannot be the one a receipt is sent to. Ignored for a real
+  // signed-in buyer, whose account email wins. See the note in
+  // checkout.service.start.
   contactEmail: z.string().trim().email().max(254).optional(),
   // Delivery contact number, taken from whoever is checking out. Unlike
   // contactEmail this *is* honoured for a signed-in buyer: a phone number is
