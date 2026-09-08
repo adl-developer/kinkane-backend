@@ -91,21 +91,20 @@ describe('order confirmation email', () => {
   });
 
   describe('the guest access token', () => {
-    it('is printed for a guest, in both html and text', async () => {
+    it('never reaches the email at all, in html or text', async () => {
       const token = 'v4Xk9aB2cD3eF4gH5iJ6kL7mN8oP9qR0sT1uV2wX';
       await sendOrderConfirmedEmail('a@kinkane.app', null, { ...BASE, accessToken: token });
-      expect(sent[0].html).toContain(token);
-      expect(sent[0].text).toContain(token);
+      expect(sent[0].html).not.toContain(token);
+      expect(sent[0].text).not.toContain(token);
     });
 
-    it('never appears inside a URL', async () => {
-      // checkout.service is explicit: never put this in a URL. A token in a link
-      // leaks through Referer headers, browser history and page analytics.
+    it('leaves a guest with the short code and no account promise', async () => {
+      // A guest has no account, so the "My Account" line would be a lie; the
+      // tracking code is the whole of what they are given.
       const token = 'v4Xk9aB2cD3eF4gH5iJ6kL7mN8oP9qR0sT1uV2wX';
       await sendOrderConfirmedEmail('a@kinkane.app', null, { ...BASE, accessToken: token });
-      const urls = sent[0].html.match(/https?:\/\/[^\s"'<>]+/g) ?? [];
-      for (const url of urls) expect(url).not.toContain(token);
-      expect(sent[0].text).not.toMatch(new RegExp(`https?://[^\\s]*${token}`));
+      expect(sent[0].html).toContain('7K2M9QX4');
+      expect(sent[0].html).not.toContain('My Account');
     });
 
     it('is absent for a signed-in buyer, who has order history instead', async () => {
