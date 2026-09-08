@@ -5,7 +5,6 @@ import { createBullBoard } from '@bull-board/api';
 import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
 import { ExpressAdapter } from '@bull-board/express';
 import { logger } from './lib/logger';
-import { captureError } from './lib/sentry';
 import { requestLogger } from './middleware/request-logger.middleware';
 import { emailQueue } from './lib/email-queue';
 import { pushQueue } from './lib/push-queue';
@@ -157,8 +156,8 @@ app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
   // client-safe message (the same convention the auth middleware honours).
   // Surface it rather than masking every tagged failure as a generic 500 — that
   // is what made an expected "parcel too heavy" 503 reach the client as an
-  // unexplained Internal Server Error. These are expected outcomes, not bugs, so
-  // they are logged at warn and NOT reported to Sentry.
+  // unexplained Internal Server Error. These are expected outcomes, not bugs,
+  // so they are logged at warn only.
   const tagged = err as Error & {
     statusCode?: number;
     code?: string;
@@ -182,10 +181,6 @@ app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
   }
 
   logger.error('Unhandled express error', { error: err.message, stack: err.stack });
-  // Report the real Error (with its stack) to Sentry, tagged with the request
-  // id so it lines up with the request log. logger.error above already forwards
-  // a message-level copy; this adds the stack trace and grouping.
-  captureError(err, { requestId: req.requestId });
   res.status(500).json({ error: 'Internal server error' });
 });
 

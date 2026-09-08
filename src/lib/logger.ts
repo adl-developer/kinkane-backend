@@ -1,6 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { config } from '../config';
-import { captureLog } from './sentry';
 
 type Level = 'debug' | 'info' | 'warn' | 'error';
 type Context = Record<string, unknown>;
@@ -45,12 +44,6 @@ function write(level: Level, message: string, context?: Context): void {
     process.stderr.write(line);
   } else {
     process.stdout.write(line);
-  }
-
-  // Forward warn/error to Sentry so the lines that matter become searchable and
-  // alertable there too. A no-op when SENTRY_DSN is unset.
-  if (level === 'error' || level === 'warn') {
-    captureLog(level, message, { ...store.getStore(), ...context });
   }
 }
 

@@ -5,6 +5,7 @@
 
 ### Bug Fixes
 
+* link other editions of a book even when the publisher differs ([fa86e2b](https://adl.github.com/adl-developer/kinkane-backend/commit/fa86e2bb3cabff6a65de5d1647d65afeee2b8759)) — [details](changelog/2026-09-08-other-editions-author-name-order.md)
 * find other editions when an author's name is stored back to front ([2a0f519](https://adl.github.com/adl-developer/kinkane-backend/commit/2a0f5191128e682eb53a21e4f21fdc36cd865d0a)) — [details](changelog/2026-09-08-other-editions-author-name-order.md)
 
 
