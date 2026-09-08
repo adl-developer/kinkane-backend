@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { config } from '../config';
-import { captureLog } from './sentry';
+import { scrubContext } from './log-scrubber';
 
 type Level = 'debug' | 'info' | 'warn' | 'error';
 type Context = Record<string, unknown>;
@@ -33,24 +33,22 @@ export function addLogContext(context: Context): void {
 function write(level: Level, message: string, context?: Context): void {
   if (LEVEL_WEIGHT[level] < LEVEL_WEIGHT[threshold]) return;
 
-  const entry: Record<string, unknown> = {
+  // Scrub JWTs and refresh tokens out of every field before we build the
+  // line. Applied here rather than at each call site so no future
+  // logger.error somewhere in the codebase can bypass it by mistake.
+  const rawEntry: Record<string, unknown> = {
     ts: new Date().toISOString(),
     level,
     message,
     ...store.getStore(),
     ...context,
   };
+  const entry = scrubContext(rawEntry);
   const line = JSON.stringify(entry) + '\n';
   if (level === 'error' || level === 'warn') {
     process.stderr.write(line);
   } else {
     process.stdout.write(line);
-  }
-
-  // Forward warn/error to Sentry so the lines that matter become searchable and
-  // alertable there too. A no-op when SENTRY_DSN is unset.
-  if (level === 'error' || level === 'warn') {
-    captureLog(level, message, { ...store.getStore(), ...context });
   }
 }
 

@@ -88,12 +88,12 @@ describe('request logger middleware', () => {
     );
   });
 
-  it('honours and echoes a well-formed inbound x-request-id', async () => {
+  it('prefixes a well-formed inbound x-request-id with "client-" so it cannot spoof a server-minted id', async () => {
     await withServer(
       (app) => app.get('/x', (_req, res) => res.end()),
       async (base) => {
         const res = await fetch(`${base}/x`, { headers: { 'x-request-id': 'abc-123' } });
-        expect(res.headers.get('x-request-id')).toBe('abc-123');
+        expect(res.headers.get('x-request-id')).toBe('client-abc-123');
       },
     );
   });
@@ -106,6 +106,25 @@ describe('request logger middleware', () => {
         const id = res.headers.get('x-request-id');
         expect(id).not.toBe('bad id with spaces');
         expect(id).toMatch(/^[\w-]+$/);
+      },
+    );
+  });
+
+  it('drops the query string from the logged path — for matched and unmatched routes alike', async () => {
+    await withServer(
+      (app) => app.get('/hit', (_req, res) => res.end()),
+      async (base) => {
+        const { lines, restore } = captureLogs();
+        await fetch(`${base}/hit?limit=20&secret=xyz`);
+        await fetch(`${base}/miss?token=eyJabcdefgh.zzz.aaa`);
+        restore();
+        const summaries = lines.filter((l) => l.message === 'request');
+        const hit = summaries.find((l) => l.status === 200);
+        const miss = summaries.find((l) => l.status === 404);
+        // Matched route: template-only, no query.
+        expect(hit?.path).toBe('/hit');
+        // Unmatched route: raw path, but query stripped.
+        expect(miss?.path).toBe('/miss');
       },
     );
   });

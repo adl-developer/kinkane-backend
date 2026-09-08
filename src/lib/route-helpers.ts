@@ -47,7 +47,17 @@ export const wrapHttp =
   (fn: (req: AuthenticatedRequest, res: Response) => Promise<void>): RequestHandler =>
   (req: Request, res: Response, next: NextFunction) =>
     fn(req as AuthenticatedRequest, res).catch((err: HttpError) => {
+      // Untagged errors always fall through to the global handler, which
+      // returns the generic 500 and keeps the stack trace out of the
+      // response body. Same for 5xx errors with no `code` — that extra
+      // gate is what separates a curated failure (PARCEL_TOO_HEAVY) from
+      // a stray attach onto a raw Stripe or database error, whose message
+      // would otherwise leak straight to the client.
       if (!err.statusCode) {
+        next(err);
+        return;
+      }
+      if (err.statusCode >= 500 && !err.code) {
         next(err);
         return;
       }

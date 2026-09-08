@@ -555,9 +555,12 @@ export const commerceCheckoutService = {
         // has one but nothing in the table can carry a parcel this heavy. They
         // want different messages — telling someone with a heavy basket that we
         // "don't ship there" sends them away from an order they could complete
-        // by dropping an item.
-        const countryHasAnyService =
-          (await shippingOptionsService.defaultServiceCode(destinationCountry)) !== null;
+        // by dropping an item. The rate card is already loaded above, so the
+        // coverage check reuses it rather than reading the table a second time.
+        const countryHasAnyService = await shippingOptionsService.hasCountryCoverage(
+          destinationCountry,
+          rateCard,
+        );
 
         if (countryHasAnyService) {
           logger.warn('Refused checkout: basket too heavy for every service to destination', {

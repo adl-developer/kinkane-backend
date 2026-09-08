@@ -310,4 +310,25 @@ export const shippingOptionsService = {
     }
     return best?.code ?? null;
   },
+
+  /**
+   * True when any service in the rate table serves this country, before any
+   * parcel-fit filter is applied.
+   *
+   * Used by the checkout flow to distinguish "we don't deliver there" from
+   * "we do but nothing can carry this basket" after `defaultServiceCode` came
+   * back null. The caller usually already has the rate card loaded, so it
+   * can be passed in to avoid a second load — same reason `fit.rateCard`
+   * exists on `defaultServiceCode` above.
+   */
+  async hasCountryCoverage(countryCode: string, rateCard?: RateCard): Promise<boolean> {
+    if (!config.commerce.shipping.useRateTable) return false;
+
+    const country = normalizeCountry(countryCode);
+    if (!country) return false;
+
+    const card = rateCard ?? (await shippingRatesService.load());
+    const available = availableServiceCodes(card, country);
+    return available.some((code) => !NOT_SELECTABLE.has(code));
+  },
 };

@@ -257,6 +257,7 @@ export const schedulesService = {
     if (!currentPhaseEnd) {
       throw Object.assign(new Error('Cannot determine when the current phase ends'), {
         statusCode: 502,
+        code: 'SCHEDULE_PHASE_INDETERMINATE',
       });
     }
     const currentPreserved = {

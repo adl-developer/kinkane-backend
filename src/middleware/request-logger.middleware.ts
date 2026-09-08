@@ -30,11 +30,18 @@ declare global {
  * Mounted before the routes but after body parsing; it does not read the body.
  */
 export function requestLogger(req: Request, res: Response, next: NextFunction): void {
-  // Trust an inbound id only if it looks sane; otherwise mint our own. This
-  // stops a client from smuggling newlines or huge strings into our log lines.
+  // Trust an inbound id only for correlation, not identity. A well-formed
+  // one is prefixed with `client-` so a caller can't spoof a server-minted
+  // id (say, one another user's request produced earlier) — the prefix
+  // makes "supplied by the caller" visible at a glance in every log line
+  // it reaches and stops the incident-forensics muddying that trusting
+  // inbound ids without a marker allows.
+  //
+  // The regex on the raw value also keeps a caller from smuggling newlines
+  // or huge strings into our log lines.
   const inbound = req.header(REQUEST_ID_HEADER);
   const requestId =
-    inbound && /^[\w-]{1,128}$/.test(inbound) ? inbound : randomUUID();
+    inbound && /^[\w-]{1,128}$/.test(inbound) ? `client-${inbound}` : randomUUID();
 
   req.requestId = requestId;
   res.setHeader('X-Request-Id', requestId);
@@ -48,12 +55,15 @@ export function requestLogger(req: Request, res: Response, next: NextFunction): 
 
       // req.route?.path is the matched template ('/books/:id'), which keeps ids
       // out of the log's cardinality; fall back to the raw path when unmatched
-      // (a 404 has no route).
+      // (a 404 has no route). Either way the query string is stripped — an
+      // unmatched /whatever?token=... would otherwise land the whole token in
+      // the log, and even matched paths gain nothing from having their query
+      // repeated verbatim on top of the route template.
       const routePath = req.route?.path;
       const path =
         typeof routePath === 'string'
           ? `${req.baseUrl ?? ''}${routePath}`
-          : req.originalUrl;
+          : req.originalUrl.split('?', 1)[0];
 
       // req.user is set by the auth middleware within this same async context.
       const userId = (req as AuthenticatedRequest).user?.id;

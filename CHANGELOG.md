@@ -3,8 +3,17 @@
 
 ## 2026-09-08
 
+### Features
+
+* hide session tokens from every log line ([3b8bf38](https://adl.github.com/adl-developer/kinkane-backend/commit/3b8bf3895df1207fc8753b7ef07526c1e52e43a3)) — [details](changelog/2026-09-08-log-token-scrubber.md)
+
 ### Bug Fixes
 
+* harden the log scrubber against three coverage gaps ([ed7510a](https://adl.github.com/adl-developer/kinkane-backend/commit/ed7510a7d67fd97214b679be55ba7e0a5532c187)) — [details](changelog/2026-09-08-log-scrubber-hardening.md)
+* only surface a 5xx to the client when it carries a machine-readable code ([e35e611](https://adl.github.com/adl-developer/kinkane-backend/commit/e35e61102a79f3cc2ccf8864593f4eac63140b86)) — [details](changelog/2026-09-08-other-editions-author-name-order.md)
+* prefix inbound X-Request-Id values so they can't be spoofed ([cae705c](https://adl.github.com/adl-developer/kinkane-backend/commit/cae705cf93bcee11576a460f9b872dd1a8692aea)) — [details](changelog/2026-09-08-other-editions-author-name-order.md)
+* drop query strings from the request log so tokens can't sneak in ([0666da6](https://adl.github.com/adl-developer/kinkane-backend/commit/0666da6db53310ec139abcf80ebdb6d3ebbfa46b)) — [details](changelog/2026-09-08-log-strip-query-string.md)
+* link other editions of a book even when the publisher differs ([fa86e2b](https://adl.github.com/adl-developer/kinkane-backend/commit/fa86e2bb3cabff6a65de5d1647d65afeee2b8759)) — [details](changelog/2026-09-08-other-editions-author-name-order.md)
 * find other editions when an author's name is stored back to front ([2a0f519](https://adl.github.com/adl-developer/kinkane-backend/commit/2a0f5191128e682eb53a21e4f21fdc36cd865d0a)) — [details](changelog/2026-09-08-other-editions-author-name-order.md)
 
 
