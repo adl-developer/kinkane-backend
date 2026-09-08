@@ -88,12 +88,12 @@ describe('request logger middleware', () => {
     );
   });
 
-  it('honours and echoes a well-formed inbound x-request-id', async () => {
+  it('prefixes a well-formed inbound x-request-id with "client-" so it cannot spoof a server-minted id', async () => {
     await withServer(
       (app) => app.get('/x', (_req, res) => res.end()),
       async (base) => {
         const res = await fetch(`${base}/x`, { headers: { 'x-request-id': 'abc-123' } });
-        expect(res.headers.get('x-request-id')).toBe('abc-123');
+        expect(res.headers.get('x-request-id')).toBe('client-abc-123');
       },
     );
   });

@@ -30,11 +30,18 @@ declare global {
  * Mounted before the routes but after body parsing; it does not read the body.
  */
 export function requestLogger(req: Request, res: Response, next: NextFunction): void {
-  // Trust an inbound id only if it looks sane; otherwise mint our own. This
-  // stops a client from smuggling newlines or huge strings into our log lines.
+  // Trust an inbound id only for correlation, not identity. A well-formed
+  // one is prefixed with `client-` so a caller can't spoof a server-minted
+  // id (say, one another user's request produced earlier) — the prefix
+  // makes "supplied by the caller" visible at a glance in every log line
+  // it reaches and stops the incident-forensics muddying that trusting
+  // inbound ids without a marker allows.
+  //
+  // The regex on the raw value also keeps a caller from smuggling newlines
+  // or huge strings into our log lines.
   const inbound = req.header(REQUEST_ID_HEADER);
   const requestId =
-    inbound && /^[\w-]{1,128}$/.test(inbound) ? inbound : randomUUID();
+    inbound && /^[\w-]{1,128}$/.test(inbound) ? `client-${inbound}` : randomUUID();
 
   req.requestId = requestId;
   res.setHeader('X-Request-Id', requestId);
