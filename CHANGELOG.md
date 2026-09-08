@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-09-07
+
+### Bug Fixes
+
+* stop the recommendation quiz returning a handful of books ([4935944](https://adl.github.com/adl-developer/kinkane-backend/commit/493594422ebfc4448899805e2b88fa5f5861c4a9)) — [details](changelog/2026-09-07-recommendation-recall.md)
+
+
 ## 2026-09-06
 
 ### Features
