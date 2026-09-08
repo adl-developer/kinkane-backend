@@ -199,9 +199,10 @@ const bookSchemas = {
           otherEditions: {
             type: 'array',
             description:
-              'Other formats of this same title (matched on exact title + publisher and a shared ' +
-              'contributor — a heuristic, since the supplier feed carries no explicit link between ' +
-              "editions). Empty when none are found, not just when this book has no siblings.",
+              'Other editions of this same title (matched on exact title and a shared contributor — ' +
+              'a heuristic, since the supplier feed carries no explicit link between editions). ' +
+              'Publisher is not compared, so adjacent editions of the same work can appear, not ' +
+              'strictly format variants. Capped at 20. Empty when none are found.',
             items: {
               type: 'object',
               properties: {

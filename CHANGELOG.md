@@ -1,6 +1,20 @@
 # Changelog
 
 
+## 2026-09-08
+
+### Bug Fixes
+
+* find other editions when an author's name is stored back to front ([2a0f519](https://adl.github.com/adl-developer/kinkane-backend/commit/2a0f5191128e682eb53a21e4f21fdc36cd865d0a)) — [details](changelog/2026-09-08-other-editions-author-name-order.md)
+
+
+## 2026-09-07
+
+### Bug Fixes
+
+* stop the recommendation quiz returning a handful of books ([4935944](https://adl.github.com/adl-developer/kinkane-backend/commit/493594422ebfc4448899805e2b88fa5f5861c4a9)) — [details](changelog/2026-09-07-recommendation-recall.md)
+
+
 ## 2026-09-06
 
 ### Features
