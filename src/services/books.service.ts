@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { eq, ne, sql, and, ilike, inArray, isNull, asc, desc, gt, notInArray, type SQL } from 'drizzle-orm';
+import { eq, ne, sql, and, ilike, inArray, asc, desc, gt, notInArray, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import { db } from '../db';
 import {
@@ -479,17 +479,25 @@ export interface BookDetail extends BookListItem {
   returnsCode: string | null;
   orderTime: number | null;
   /**
-   * Other editions of this same title — matched on exact title + publisher
-   * (both indexed columns, no fuzzy scan) and at least one shared contributor,
-   * normalised the same way name search is (see lib/contributor-name.ts,
-   * since ~22% of contributor rows have doubled internal spaces and an exact
-   * string match would silently miss them). Gardners' ONIX feed has no
-   * publisher-supplied "other formats" link (checked: no `<RelatedProduct>`
-   * anywhere in it), so this is a heuristic, not a supplier-asserted fact —
-   * it can miss a real sibling edition (title text drifted between editions)
-   * or, in principle, match two different works that share both an exact
-   * title and a contributor. Empty when the book has no contributors at all,
-   * rather than falling back to title-only matching.
+   * Other editions of this same title — matched on exact title (an indexed
+   * column, no fuzzy scan) plus at least one shared contributor, normalised
+   * the same way name search is (see lib/contributor-name.ts, since ~22% of
+   * contributor rows have doubled internal spaces and an exact string match
+   * would silently miss them). Publisher is deliberately not compared:
+   * formats are routinely split across imprints and public-domain titles are
+   * reissued by unrelated houses, so requiring it to match returned nothing
+   * for the titles readers most often open.
+   *
+   * Gardners' ONIX feed has no publisher-supplied "other formats" link
+   * (checked: no `<RelatedProduct>` anywhere in it), so this is a heuristic,
+   * not a supplier-asserted fact — it can miss a real sibling edition (title
+   * text drifted between editions) or, in principle, match two different
+   * works that share both an exact title and a contributor. Since publisher
+   * no longer narrows it, expect adjacent editions rather than strictly the
+   * trade formats: a study edition or an annotated critical edition of the
+   * same work by the same author qualifies. Empty when the book has no
+   * identifying contributors at all, rather than falling back to
+   * title-only matching, and capped at OTHER_EDITIONS_LIMIT.
    */
   otherEditions: EditionSummary[];
   subjects: Pick<BookSubject, 'schemeIdentifier' | 'subjectCode' | 'subjectHeadingText' | 'isMainSubject'>[];
@@ -1650,10 +1658,23 @@ async function fetchBlendedSearchPage(
 // Oakley" are real people who must not be caught by a loose LIKE '%anon%'.
 const GENERIC_CONTRIBUTOR_NAMES = ['UNKNOWN', 'VARIOUS', 'VARIOUS AUTHORS', 'ANONYMOUS', 'ANON', 'NOT STATED'];
 
+/** Most siblings ever returned for one book — see fetchOtherEditions. */
+const OTHER_EDITIONS_LIMIT = 20;
+
 /**
  * Other editions of `title` (exact match — `idx_books_title` covers it, no
- * scan) from the same publisher, sharing at least one *identifying*
- * contributor with `id`.
+ * scan), sharing at least one *identifying* contributor with `id`.
+ *
+ * **Publisher is deliberately not part of the match.** It was, until a
+ * paperback of *Animal Farm* (Nick Hern Books) came back with nothing: eight
+ * other editions shared its exact title and credited George Orwell — Pan
+ * Macmillan's hardback among them — and every one was rejected purely for
+ * carrying a different publisher. That is the normal shape of a reissued
+ * title rather than an edge case: a work out of copyright is published by
+ * many unrelated houses, formats are often split across imprints, and a
+ * large slice of the catalogue carries the placeholder publisher
+ * `Not Stated`. Requiring publishers to agree guaranteed an empty list for
+ * exactly the famous titles a reader is most likely to open.
  *
  * The contributor check is what keeps this from matching two unrelated books
  * that happen to share a title: it requires a shared row in
@@ -1674,11 +1695,15 @@ const GENERIC_CONTRIBUTOR_NAMES = ['UNKNOWN', 'VARIOUS', 'VARIOUS AUTHORS', 'ANO
  * `person_name_inverted` to the comparison, and a hit on any pairing counts:
  * the natural-order row matches on its own inverted form, which is the
  * spelling the other row happens to have kept.
+ *
+ * Capped at OTHER_EDITIONS_LIMIT. Without the publisher narrowing the
+ * candidate set is every book sharing the title, and a placeholder title can
+ * be carried by thousands of rows — the cap bounds both the payload and the
+ * work the join has to do for one of those.
  */
 async function fetchOtherEditions(
   id: number,
   title: string,
-  publisherName: string | null,
 ): Promise<Pick<EditionSummary, 'id' | 'isbn13' | 'productForm' | 'coverUrl' | 'publicationDate'>[]> {
   const CANDIDATE_NAME = sql.raw(normalisedNameSql('book_contributors.person_name'));
   const CANDIDATE_NAME_INVERTED = sql.raw(normalisedNameSql('book_contributors.person_name_inverted'));
@@ -1713,7 +1738,6 @@ async function fetchOtherEditions(
     .where(
       and(
         eq(books.title, title),
-        publisherName === null ? isNull(books.publisherName) : eq(books.publisherName, publisherName),
         eq(books.isRemoved, false),
         ne(books.id, id),
         sql`(
@@ -1724,7 +1748,8 @@ async function fetchOtherEditions(
              AND ${CANDIDATE_NAME_INVERTED} IN (SELECT name FROM ${ownNames} AS own_names_inv))
         )`,
       ),
-    );
+    )
+    .limit(OTHER_EDITIONS_LIMIT);
 }
 
 // ── Public service ────────────────────────────────────────────────────────────
@@ -2816,7 +2841,7 @@ export const booksService = {
 
       getExcerptsByIsbns([book.isbn13]),
 
-      fetchOtherEditions(id, book.title, book.publisherName),
+      fetchOtherEditions(id, book.title),
     ]);
 
     const detail: BookDetail = {

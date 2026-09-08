@@ -95,11 +95,23 @@ you're actually looking at.
 | `coverUrl` | Can be `null`. Fall back to a placeholder, same as anywhere else in the catalogue. |
 | `publicationDate` | Can be `null`. Useful for ordering entries if you show more than one. |
 
-**An empty array is normal, not an error.** Most books have exactly one
-edition in the catalogue — Gardners' feed doesn't publish an explicit "these
-ISBNs are the same work" link, so this is server-side matching on title +
-publisher + a shared author/contributor, not a supplier-asserted fact. Treat
-it as "we found some," not "this book definitely has no other formats."
+**An empty array is normal, not an error.** Gardners' feed doesn't publish an
+explicit "these ISBNs are the same work" link, so this is server-side
+matching on exact title + a shared author/contributor, not a
+supplier-asserted fact. Treat it as "we found some," not "this book
+definitely has no other formats."
+
+**Expect adjacent editions, not strictly format variants.** Publisher is not
+part of the match (the same work is routinely reissued by unrelated houses,
+and formats get split across imprints). So a study edition or an annotated
+critical edition of the same work by the same author can appear alongside
+the plain hardback. If you present this strictly as "choose a format", be
+aware some entries are a different *edition* rather than the same book in a
+different binding — showing the title/publication date alongside the format
+label is worth doing.
+
+**At most 20 are returned**, so don't build a UI that assumes it has the
+complete set for a heavily reissued title.
 
 **What it will not do:**
 - It won't surface an edition credited only to a generic byline — "Various",

@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-09-08
+
+### Bug Fixes
+
+* find other editions when an author's name is stored back to front ([2a0f519](https://adl.github.com/adl-developer/kinkane-backend/commit/2a0f5191128e682eb53a21e4f21fdc36cd865d0a)) — [details](changelog/2026-09-08-other-editions-author-name-order.md)
+
+
 ## 2026-09-07
 
 ### Bug Fixes
