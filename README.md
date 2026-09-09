@@ -1,107 +1,111 @@
-# Kinkane Server
+# Kinkané Server
 
-The main API for the Kinkane book platform. Serves book catalogue data, handles user authentication, AI-powered book recommendations, and the pre-registration onboarding flow.
+The main API behind Kinkané: the book catalogue, accounts and auth, AI recommendations,
+the onboarding quiz, the community feed, the shop, the referral competition, Kinkané Plus
+subscriptions, and the staff admin console.
 
-This is one of two independent services that share the same PostgreSQL database:
+It is one of two independent services sharing a single PostgreSQL database:
 
 | Service | Responsibility |
 |---------|---------------|
-| **kinkane-server** (this) | Serves books to clients, manages users, auth, recommendations, and onboarding |
-| **onix-ingester** | Ingests ONIX 3.1 XML feeds from Cloudflare R2 into PostgreSQL |
+| **kinkane-server** (this) | Everything a client talks to: users, auth, recommendations, community, shop, referrals, billing, admin console |
+| **onix-ingester** | Ingests ONIX 3.1 XML and Gardners feeds into the shared catalogue tables |
+
+Runtime: Node 20+, Express 4, TypeScript, Drizzle ORM over `postgres.js`, Redis (rate
+limits, caches, BullMQ), deployed as a single web service on Render.
 
 ---
 
 ## Table of Contents
 
 - [Prerequisites](#prerequisites)
-- [Project Setup](#project-setup)
+- [Quick start](#quick-start)
+- [Available scripts](#available-scripts)
 - [Architecture](#architecture)
   - [Two apps, one database](#two-apps-one-database)
+  - [Request lifecycle](#request-lifecycle)
+  - [Auth model](#auth-model)
   - [Onboarding flow](#onboarding-flow)
   - [AI recommendations](#ai-recommendations)
-  - [Auth flow](#auth-flow)
+  - [Kinkané Plus and gating](#kinkané-plus-and-gating)
+  - [The shop](#the-shop)
+  - [Referral competition](#referral-competition)
+  - [Admin surfaces](#admin-surfaces)
   - [Route versioning](#route-versioning)
-- [Project Structure](#project-structure)
-- [Environment Variables](#environment-variables)
+- [Project structure](#project-structure)
+- [Environment variables](#environment-variables)
 - [Database](#database)
-- [API Reference](#api-reference)
-  - [Health](#health)
-  - [Auth](#auth)
-  - [Books](#books)
-  - [Recommendations](#recommendations)
-  - [Guest Sessions](#guest-sessions)
-  - [User Books](#user-books)
-  - [User Settings](#user-settings)
-- [Subscriptions](#subscriptions)
-- [Rate Limiting](#rate-limiting)
-- [Search Behaviour](#search-behaviour)
-- [Background Jobs](#background-jobs)
-  - [Guest session cleanup](#guest-session-cleanup)
-  - [Email queue](#email-queue)
-  - [Weekly digest](#weekly-digest)
+- [API reference](#api-reference)
+- [Rate limiting](#rate-limiting)
+- [Search behaviour](#search-behaviour)
+- [Background jobs and queues](#background-jobs-and-queues)
 - [Email](#email)
-- [Running Locally](#running-locally)
+- [Push notifications](#push-notifications)
+- [Logging and observability](#logging-and-observability)
+- [Testing](#testing)
 - [Deploying to Render](#deploying-to-render)
-- [Firebase Setup](#firebase-setup)
+- [Firebase setup](#firebase-setup)
+- [Further reading](#further-reading)
 
 ---
 
 ## Prerequisites
 
-| Requirement | Minimum version | Notes |
-|-------------|----------------|-------|
+| Requirement | Minimum | Notes |
+|-------------|---------|-------|
 | Node.js | 20+ | Node 22 recommended |
 | npm | 9+ | Bundled with Node |
-| PostgreSQL | 14+ | Must have `pg_trgm` and `pgvector` extensions enabled (handled by `onix_ingester`) |
-| Redis | 6+ | Required for rate limiting and the email job queue |
-| Google Gemini API key | — | Same key used by `onix_ingester` — see [AI Recommendations](#ai-recommendations) |
-| Resend API key | — | Required for transactional and marketing emails — see [Email](#email) |
+| PostgreSQL | 14+ | Needs `pg_trgm` and `pgvector`; `npm run db:migrate` installs them |
+| Redis | 6+ | Rate limits, entitlement/catalogue caches, and the BullMQ queues |
+| Google Gemini API key | — | Embeddings + recommendation explanations |
+| Resend API key | — | All outbound email |
+| Firebase service account | — | Social sign-in and push notifications |
+| Stripe account | — | Optional locally; required for subscriptions and the shop |
 
 ---
 
-## Project Setup
-
-### 1. Clone and install
+## Quick start
 
 ```bash
 cd server
 npm install
+cp .env.example .env      # then fill it in — see Environment variables
+npm run db:migrate        # installs extensions, builds indexes, applies migrations
+npm run dev               # http://localhost:3000, hot reload
 ```
 
-### 2. Configure environment variables
+Check it is alive:
 
 ```bash
-cp .env.example .env
+curl http://localhost:3000/api/health
 ```
 
-Fill in all values. See [Environment Variables](#environment-variables) for the full list.
+The server refuses to start if any required environment variable is missing or malformed —
+validation happens in `src/config/index.ts` before anything else runs.
 
-### 3. Run migrations
-
-```bash
-npm run db:migrate
-```
-
-Creates all tables owned by this service. Book-related tables are owned by `onix_ingester` — this service only reads from them.
-
-### 4. Start the development server
-
-```bash
-npm run dev
-```
-
-Server starts on `http://localhost:3000` with hot reload.
+The catalogue tables (`books`, `book_contributors`, …) are owned by `onix_ingester`. If you
+are running this service against an empty database, apply the ingester's migrations first or
+run its `db:init`; this service only reads those tables and will not create them.
 
 ### Available scripts
 
-| Script | Description |
-|--------|-------------|
-| `npm run dev` | Start with hot reload (tsx watch) |
+| Script | What it does |
+|--------|--------------|
+| `npm run dev` | Start with hot reload (`tsx watch`) |
 | `npm run build` | Compile TypeScript to `dist/` |
-| `npm start` | Run compiled output (production) |
-| `npm run db:generate` | Generate a new Drizzle migration from schema changes |
-| `npm run db:migrate` | Apply pending migrations |
-| `npm run db:reset` | Drop all tables and migration records — run `db:migrate` after to start fresh |
+| `npm start` | Run the compiled output (production) |
+| `npm test` | Run the Vitest suite once |
+| `npm run test:watch` | Vitest in watch mode |
+| `npm run db:generate` | Generate a Drizzle migration from schema changes |
+| `npm run db:migrate` | Install extensions, build concurrent indexes, apply migrations |
+| `npm run db:init` | `db:migrate` plus seed data (`src/db/setup.ts`) |
+| `npm run db:reset` | Drop all tables and migration records — destructive |
+| `npm run admin:create` | Create an admin-console user interactively |
+| `npm run seed:demo` | Seed demo content for local work |
+| `npm run firebase:check` | Verify Firebase credentials actually work |
+| `npm run gardners:dropship-test` | End-to-end test against the Gardners dropship SFTP |
+| `npm run shipping:margin` | Report what shipping actually costs versus what is charged |
+| `npm run changelog` | Regenerate `CHANGELOG.md` from commit history |
 
 ---
 
@@ -109,1200 +113,583 @@ Server starts on `http://localhost:3000` with hot reload.
 
 ### Two apps, one database
 
-Both `kinkane-server` and `onix_ingester` point to the same `DATABASE_URL`. They manage separate tables:
+Both services point at the same `DATABASE_URL` and own different tables.
 
-- `onix_ingester` owns: `books`, `book_contributors`, `book_subjects`, `book_genres`, `book_prices`, `genres`
-- `kinkane-server` owns: `users`, `refresh_tokens`, `user_providers`, `user_subscriptions`, `recommendation_cache`, `guest_sessions`, `user_preferences`, `user_interactions`, `user_books`, `password_reset_tokens`
+- **`onix_ingester` owns** the catalogue and supplier feeds: `books`, `book_contributors`,
+  `book_subjects`, `book_genres`, `book_prices`, `genres`, `ingestion_jobs`,
+  `ingestion_chunks`, and the `gardners_*` feed tables.
+- **`kinkane-server` owns** everything else: accounts, sessions, preferences, community,
+  commerce, referrals, subscriptions, notifications, admin.
 
-The server defines read-only Drizzle schema representations of the book tables so it can query them without owning their migrations. This is clearly marked in `src/db/schema/books.ts`.
+This service declares read-only Drizzle representations of the catalogue tables so it can
+query them without owning their migrations — marked as such in `src/db/schema/books.ts`.
+Never generate a migration that alters a table this service does not own.
 
----
+### Request lifecycle
+
+```
+Cloudflare → Render LB → express
+  trust proxy = 2          real client IP for rate limits (two proxy hops)
+  helmet + cors
+  /api/v1/user/subscription/webhook   ← mounted BEFORE express.json (raw body for Stripe)
+  express.json (50kb)
+  requestLogger            one line per request + a request id on every downstream log
+  /admin/queues            Bull Board, static ADMIN_TOKEN
+  /admin/gardners/dropship static ADMIN_TOKEN
+  /admin/console           per-person admin session (ADMIN_JWT_SECRET)
+  /admin/referrals         static ADMIN_TOKEN
+  /r/:code[/:slug]         referral links, unversioned by design
+  /docs                    OpenAPI UI, only when SWAGGER_PASSWORD is set
+  /api/health              unversioned, unthrottled
+  /api/v1/*                apiLimiter + feature routers
+  /api/v2/books            the only v2 route
+  404 → error handler
+```
+
+The global error handler in `src/app.ts` has a deliberate rule worth knowing before you
+throw: a tagged error with `statusCode < 500` always surfaces its message to the client; a
+tagged `5xx` surfaces **only** if it also carries a machine-readable `code`. Everything else
+becomes a generic 500, so raw upstream error text cannot leak.
+
+### Auth model
+
+There are three separate identities in this codebase. Do not mix them.
+
+| Identity | Credential | Guard | Used by |
+|----------|-----------|-------|---------|
+| Customer | `JWT_ACCESS_SECRET` access token + rotating refresh token | `requireAuth` | The mobile app and storefront |
+| Admin person | `ADMIN_JWT_SECRET` session token | `requireAdmin` | `/admin/console` — can blacklist customers, export the customer list |
+| Deployment | Static `ADMIN_TOKEN` bearer | `requireAdminToken` | Bull Board, Gardners dropship, referral corrections |
+
+The admin secret is deliberately separate and optional: without `ADMIN_JWT_SECRET` the
+console refuses every login rather than falling back to the customer secret.
+
+**Customer sign-in** works two ways and produces the same token pair either way:
+
+```
+POST /api/v1/auth/signup | /login        email + password
+POST /api/v1/auth/social { idToken }     Firebase ID token from Google / Facebook / Apple
+  ← { accessToken, refreshToken, user }
+```
+
+Firebase is only involved at sign-in. After the first exchange every client uses the same
+JWT pair.
+
+**Token lifecycle.** Access tokens are short-lived (`ACCESS_TOKEN_TTL`, default 15 min).
+Refresh tokens are stored as a SHA-256 hash — the raw value only ever exists on the client —
+and **rotate on every refresh**: the submitted token is deleted and a new pair issued, so a
+stolen token dies the moment the real client next refreshes. `POST /auth/logout` deletes the
+token server-side, so logout is real.
 
 ### Onboarding flow
 
-New users go through a guided wizard before creating an account. The entire flow is designed to work without an account — a temporary guest session holds the user's data.
+The whole quiz works without an account. A guest session holds the answers until the person
+decides whether to sign up.
 
 ```
-1.  User enters their name
-2.  Selects 3 feelings (how they want to feel while reading)
-3.  Selects up to 10 books they've enjoyed
-4.  Selects 3 genres
-5.  Selects reading dislikes
+1. Name  →  2. Three feelings  →  3. Books they enjoyed (≤10)  →  4. Three genres  →  5. Dislikes
 
-       ↓  POST /api/v1/recommendations
+     ↓ POST /api/v1/recommendations
 
-6.  Server generates ranked book recommendations + creates a guest session
-7.  Client receives: recommendations + guestSessionId + expiresAt
-
-8.  User picks 5 books from the results
-
-       ↓  POST /api/v1/guest-sessions/:id/selections
-
-9.  Server saves the 5 chosen books to the guest session
-
-10. User chooses: create account or skip
+6. Ranked recommendations + guestSessionId + expiresAt come back
+7. They pick 5  →  POST /api/v1/guest-sessions/:id/selections
+8. They register, or they don't
 ```
 
-**If they register:**
-`POST /api/v1/auth/signup` or `/auth/social` with `guestSessionId` (required) → server creates the account, starts a 90-day Kinkane Plus trial, and migrates all onboarding data (preferences, reading list, interaction signals) to the new account in the background.
+**If they register** (`/auth/signup` or `/auth/social` with `guestSessionId`): the account is
+created, a 90-day Kinkané Plus trial starts synchronously, and preferences, reading list and
+interaction signals migrate to the new account in the background.
 
-**If they skip:**
-The guest session expires after `GUEST_SESSION_TTL_HOURS` (default 72 hours / 3 days). The cleanup cron deletes it automatically.
-
----
+**If they don't**: the guest session expires after `GUEST_SESSION_TTL_HOURS` (default 72) and
+the cleanup cron deletes it.
 
 ### AI recommendations
 
-Recommendations are powered by two Gemini models working together:
-
-| Step | Model | Purpose |
-|------|-------|---------|
-| Query embedding | `text-embedding-004` | Converts user preferences to a 768-dim vector |
-| Ranking | pgvector (`<=>`) | Cosine similarity against stored book embeddings |
-| Explanations | `gemini-2.5-flash-lite` | Generates a ≤120-char explanation per book |
-
-**Important:** `GEMINI_EMBEDDING_MODEL` must match the model `onix_ingester` used to embed books. Both default to `text-embedding-004`. If you change one, change both.
-
-**Recommendation flow:**
-
 ```
 User preferences (feelings, genres, dislikes, liked books)
-  → buildPreferenceText()         natural language paragraph
-  → text-embedding-004            768-dim query vector
-  → pgvector cosine search        top 250 most similar books
-  → dislike SQL filters           page count, series patterns
-  → gemini-2.5-flash-lite (batch) one ≤120-char explanation per book
-  → recommendation_cache (48h)    same preferences return instantly
-  → guest session created         guestSessionId returned to client
+  → buildPreferenceText()            a natural-language paragraph
+  → text-embedding-004               768-dim query vector
+  → pgvector cosine search           candidate books, HNSW index
+  → dislike + sellability filters    page count, series patterns, unbuyable titles
+  → gemini-2.5-flash-lite (batched)  one ≤120-char explanation per book
+  → recommendation_cache (48h)       identical preferences return instantly
 ```
 
-**Caching:** Results are cached in `recommendation_cache` for 48 hours keyed on a SHA-256 hash of the preferences. `displayName` is excluded from the hash — two users with identical preferences but different names share the same cached results. A new guest session is always created regardless of cache state.
+| Step | Model |
+|------|-------|
+| Query embedding | `GEMINI_EMBEDDING_MODEL` (default `text-embedding-004`) |
+| Ranking | pgvector `<=>` cosine distance |
+| Explanations | `GEMINI_FLASH_MODEL` (default `gemini-2.5-flash-lite`), with `GEMINI_FLASH_MODEL_FALLBACK` |
 
-**Cost:** At `gemini-2.5-flash-lite` rates, a full uncached request (250 books, 250 explanations) costs roughly $0.01. Cached requests cost nothing.
+**`GEMINI_EMBEDDING_MODEL` must match the model `onix_ingester` used to embed books.** Change
+one and you must change the other, or every similarity score is meaningless.
 
----
+**Caching.** Results are cached for 48 hours against a SHA-256 hash of the preferences.
+`displayName` is excluded from the hash, so two people with identical answers share a cache
+entry — which is also why the stored explanation holds a `{{name}}` token rather than a real
+name, substituted at read time. A new guest session is created regardless of cache state.
 
-### Auth flow
+**Sellability.** The shop and the recommender share a catalogue, so recommendations are
+filtered to books the shop can actually sell (`src/lib/shoppable.ts`). Recommending a title
+nobody can buy is worse than recommending one fewer book.
 
-Supports two sign-in methods that both produce the same token pair:
+### Kinkané Plus and gating
 
-**Email/password**
+Every new account starts on a **90-day Kinkané Plus trial**, created synchronously at signup.
+There is no downgrade cron: the effective tier is computed at read time, so a trial that has
+run out simply reads as `free`.
+
+| Tier | How you get it | What you get |
+|------|---------------|--------------|
+| **Free** | The default once the trial ends | Quiz, recommendations, browsing, the shop, referrals |
+| **Kinkané Plus** | 90-day trial, then a paid monthly or annual plan | Everything, plus the gated features below |
+
+Two pieces of code matter:
+
+- `entitlementsService.get(userId)` (`src/services/subscriptions/entitlements.service.ts`) —
+  the read that happens on nearly every authenticated request, cached in Redis for 60s and
+  invalidated explicitly on every write that could change it. `past_due` is deliberately
+  still entitled: Stripe is retrying the card, and cutting access on the first failure costs
+  more than it saves.
+- `requirePlus` (`src/middleware/require-plus.middleware.ts`) — the route guard. It responds
+  **402 Payment Required** with `code: 'PLUS_REQUIRED'`, never 403, so the app can tell "you
+  need to subscribe" apart from "this isn't yours" without parsing prose. It fails **open**:
+  if entitlement can't be read, paying subscribers are not locked out.
+
+`GATING_ENABLED` turns the gate on and off without a deploy, so it can ship dark.
+
+Gated today: creating and liking community posts and comments, `GET /explore/personalized`,
+recommendation refresh and selections, and writes to the reading list. Deliberately **not**
+gated: referrals, the cart, orders, and saved books — buying and inviting are open to
+everyone who signed up, and each of those routers says so in a comment.
+
+Billing runs through Stripe (`src/services/subscriptions/`): `checkout.service` creates the
+session, `webhooks.service` is the source of truth for state, `state.service` owns writes and
+history, `schedules.service` handles plan changes. Note that a Stripe subscription *schedule*
+must be released before `cancel_at_period_end` can be set — otherwise a founding member
+cannot cancel.
+
+### The shop
+
 ```
-POST /api/v1/auth/signup or /login
-  ← { accessToken, refreshToken, user }
+Cart  →  price quote  →  shipping options  →  Stripe Checkout  →  webhook
+                                                                    ↓
+                                            order recorded → fulfilment queue → Gardners SFTP
+                                                                    ↓
+                                                       .ACK / .HDD polling → tracking
 ```
 
-**Social (Google, Facebook, Apple) via Firebase**
-```
-Mobile app signs in with provider via Firebase SDK
-  ← Firebase ID token
+The design constraint that shapes all of it: **shipping and tax depend on the destination,
+but Stripe only collects an address after the price is fixed.** So the destination country is
+collected by our own API up front, everything is priced against it, and Stripe's address
+collection is locked to that one country. The buyer's address can vary in every way except
+the country we priced on.
 
-POST /api/v1/auth/social  { idToken: "<firebase-id-token>" }
-  ← { accessToken, refreshToken, user }
-```
+- **Pricing** (`src/services/commerce/pricing.ts`) is a pure function of amount, country and
+  config — no database, no Redis, no request object. Currency resolution, FX from GBP with a
+  buffer, shipping bands, VAT and the first-order discount all live there and are driven by
+  environment configuration so an operator can change them without a deploy.
+- **Fulfilment** (`src/services/commerce/fulfilment.service.ts`) runs on a queue, never in
+  the Stripe webhook: submitting an order is an SFTP round trip to a UK server, and payment
+  success must not depend on whether a supplier's FTP is up.
+- **Bestsellers** (`src/services/commerce/bestsellers.service.ts`) are computed from our own
+  `order_items` because no Gardners feed carries a sales rank. It counts copies, never money,
+  and when nothing has sold in the window it falls back to trending — labelled, via `source`,
+  never silently.
+- **Guest checkout** is supported: an order can be looked up with a short tracking code plus
+  the buyer's email, and claimed onto an account later.
 
-Firebase is only involved at sign-in time. After the first exchange the mobile app uses the same JWT pair as email/password users — `requireAuth` middleware is identical for both.
+Refunds are deliberately out of scope for automation — there is no cancellation feed
+integration, so a refund is a manual Stripe action plus a call to Gardners. The `refunded`
+order status exists so that manual action can be recorded.
 
-**Token lifecycle**
-```
-Client stores accessToken + refreshToken.
+### Referral competition
 
-Every request → Authorization: Bearer <accessToken>   (15 min TTL)
+"Around the World": you score by how far your referrals reach, not how many you make.
 
-When access token expires:
-POST /api/v1/auth/refresh  { refreshToken }
-  ← { accessToken, refreshToken }   ← store the NEW refreshToken; old one is deleted
+| Award | Points |
+|-------|--------|
+| Same country | 1 |
+| Same continent | 10 |
+| Cross continent | 20 |
+| Indirect (same continent) | 5 |
+| Indirect (cross continent) | 10 |
+| Full circuit | 30 |
 
-POST /api/v1/auth/logout  { refreshToken }
-  → refresh token deleted from DB, immediately invalidated
-```
+Attribution and scoring are deliberately separate services: `referrals.service.ts` owns *who
+referred whom*, which is a durable fact, and `referral-scoring.service.ts` owns *what that is
+worth*, which is a rule that can change and be recomputed. Nothing in scoring is allowed to
+fail a signup.
 
-Refresh tokens are stored in PostgreSQL as a SHA-256 hash — the raw token is only ever held by the client. **Token rotation is enforced on every refresh** — the submitted token is deleted and a new pair is issued. This means a stolen token becomes invalid the moment the legitimate client next refreshes. Logout is real: the token cannot be used again even if intercepted.
+Country is resolved once, at signup, by `geo.service.ts` (trusted CDN header first, then a
+local MaxMind database) and then frozen on the user row — someone travelling must not change
+continent mid-competition. The service reports *how* it knows and returns `unknown` rather
+than guessing. A VPN defeats IP geolocation; with no prizes attached that exposure is
+accepted deliberately (see `docs/referral-system-plan.md`).
 
----
+Referral links are mounted at the root as `/r/:code/:slug`, not under `/api/v1`, because they
+are links a person sends over WhatsApp. That path is also registered as the universal/app
+link so an installed app opens straight through.
+
+### Admin surfaces
+
+| Surface | Path | Auth |
+|---------|------|------|
+| Admin console | `/admin/console` | Per-person session — dashboard, orders, customers, blacklist, reports, banners, notifications |
+| Queue dashboard | `/admin/queues` | Static `ADMIN_TOKEN` — Bull Board over the email, push and fulfilment queues |
+| Gardners dropship | `/admin/gardners/dropship` | Static `ADMIN_TOKEN` — submit and poll wholesale orders |
+| Referral admin | `/admin/referrals` | Static `ADMIN_TOKEN` — map, standings, voiding a referral |
+
+The first admin can be created without a shell via `ADMIN_BOOTSTRAP_EMAIL` /
+`ADMIN_BOOTSTRAP_PASSWORD`; `bootstrapFirstAdmin()` runs at startup and does nothing once the
+table is non-empty. Otherwise use `npm run admin:create`.
+
+The fulfilment queue is on Bull Board for a different reason than the other two: a failed job
+there is a paid order that never reached the supplier, and this is where an operator goes to
+find and retry it.
 
 ### Route versioning
 
-All routes are versioned under `/api/v1/`. Adding a v2 means creating a new router and mounting it at `/v2` in `src/routes/index.ts` — nothing else changes.
+Everything is under `/api/v1/`. There is exactly one v2 route — `GET /api/v2/books`, which
+accepts a `type` parameter that v1 rejects. The rest of the API is **not** duplicated under
+v2 on purpose: mirroring routes that behave identically creates pairs to keep in step, and
+the first divergence would be an accident rather than a decision.
 
-```
-/api/health                        — unversioned, no rate limit (uptime checks)
-/api/v1/auth/...                   — auth routes
-/api/v1/books/...                  — book routes
-/api/v1/recommendations            — AI recommendation route
-/api/v1/guest-sessions/...         — onboarding guest session routes
-/api/v1/user-books/...             — authenticated user reading list routes
-/api/v1/user/settings/...          — authenticated user settings routes
-```
+The v2 router reuses the same `apiLimiter` *instance* as v1, so a client gets one budget
+across both versions rather than two.
 
 ---
 
-## Project Structure
+## Project structure
 
 ```
 server/
 ├── src/
-│   ├── config/index.ts              # Env validation (zod), typed config
+│   ├── app.ts                    Express app: middleware order, admin mounts, error handler
+│   ├── server.ts                 Entry point: crons, workers, admin bootstrap, graceful shutdown
+│   ├── config/index.ts           Zod-validated env → typed config (the only place env is read)
 │   ├── db/
-│   │   ├── index.ts                 # Drizzle client
-│   │   ├── reset.ts                 # Drops all tables (dev utility)
-│   │   └── schema/
-│   │       ├── users.ts             # users, refresh_tokens, user_providers, shelfVisibilityEnum
-│   │       ├── books.ts             # Read-only book tables (owned by onix_ingester)
-│   │       ├── recommendations.ts   # recommendation_cache
-│   │       ├── onboarding.ts        # guest_sessions, user_preferences, user_interactions, user_books
-│   │       ├── subscriptions.ts     # user_subscriptions + getEffectiveTier() helper
-│   │       ├── password-reset-tokens.ts  # password_reset_tokens
-│   │       └── index.ts
-│   ├── emails/
-│   │   ├── index.ts                 # Re-exports all email senders
-│   │   ├── transactional/
-│   │   │   ├── welcome.ts           # New user welcome
-│   │   │   ├── verify-email.ts      # Email verification OTP
-│   │   │   ├── password-reset.ts    # Password reset link (forgot password flow)
-│   │   │   ├── password-changed.ts  # Security notice after password change
-│   │   │   └── account-deleted.ts   # Goodbye email after account deletion
-│   │   ├── notifications/
-│   │   │   ├── trial-ending.ts      # Trial expiry warning
-│   │   │   └── new-recommendation.ts
-│   │   ├── marketing/
-│   │   │   └── newsletter.ts        # Bulk marketing sends
-│   │   └── reports/
-│   │       └── weekly-digest.ts     # Weekly reading summary
-│   ├── jobs/
-│   │   ├── guest-cleanup.cron.ts    # Deletes expired guest sessions every 6 hours
-│   │   └── weekly-digest.cron.ts    # Enqueues digest emails every Monday at 08:00 UTC
-│   ├── lib/
-│   │   ├── email-queue.ts           # BullMQ queue, job type map, enqueueEmail() helper
-│   │   ├── firebase.ts              # Firebase Admin SDK initialisation
-│   │   ├── gemini.ts                # Gemini embedding + explanation helpers
-│   │   ├── logger.ts                # Structured JSON logger
-│   │   ├── redis.ts                 # ioredis client (rate limiting)
-│   │   └── resend.ts                # Resend client initialisation
-│   ├── workers/
-│   │   └── email.worker.ts          # BullMQ worker — processes all email job types
-│   ├── services/
-│   │   ├── auth.service.ts          # signup, login, refresh, logout, socialLogin, forgotPassword, resetPassword, changePassword, deleteAccount, getMe
-│   │   ├── books.service.ts         # list (FTS + trigram fallback), suggestions, getById
-│   │   ├── guest.service.ts         # create, saveSelections, getById
-│   │   ├── recommendations.service.ts  # pgvector search, Gemini calls, caching
-│   │   ├── user-books.service.ts    # reading list CRUD, resetLibrary
-│   │   └── user-settings.service.ts # getUserSettings, updateShelfVisibility
-│   ├── controllers/
-│   │   ├── auth.controller.ts
-│   │   ├── books.controller.ts
-│   │   ├── guest.controller.ts
-│   │   ├── recommendations.controller.ts
-│   │   ├── user-books.controller.ts
-│   │   └── user-settings.controller.ts
-│   ├── middleware/
-│   │   ├── auth.middleware.ts       # requireAuth — verifies Bearer JWT
-│   │   └── rate-limit.middleware.ts # Per-route rate limiters
-│   ├── routes/
-│   │   ├── index.ts                 # Mounts /health + v1 router
-│   │   ├── auth.routes.ts
-│   │   ├── books.routes.ts
-│   │   ├── guest.routes.ts
-│   │   ├── recommendations.routes.ts
-│   │   ├── user-books.routes.ts
-│   │   └── user-settings.routes.ts
-│   ├── app.ts                       # Express app, middleware, Bull Board at /admin/queues
-│   └── server.ts                    # Entry point, starts worker + cron jobs, graceful shutdown
-├── drizzle/                         # Migration SQL files
-├── drizzle.config.ts
+│   │   ├── index.ts              Drizzle client
+│   │   ├── install-extensions.ts pgvector and pg_trgm
+│   │   ├── build-concurrent-indexes.ts
+│   │   ├── setup.ts / reset.ts   Seed / drop everything (dev)
+│   │   ├── seeds/
+│   │   └── schema/               34 files — see Database below
+│   ├── routes/                   Thin: path, guards, limiter, JSDoc contract
+│   │   ├── index.ts              Mounts /health, the v1 router, the v2 router
+│   │   ├── admin/index.ts        The staffed console
+│   │   └── *.routes.ts           One per feature area
+│   ├── controllers/              Parse and validate input, call a service, shape the response
+│   ├── services/                 All business logic
+│   │   ├── commerce/             cart, checkout, pricing, shipping, fulfilment, orders, bestsellers
+│   │   ├── subscriptions/        checkout, webhooks, state, schedules, entitlements
+│   │   ├── gardners-dropship/    SFTP connection, order builder, .ACK and .HDD parsers
+│   │   └── admin/                dashboard, orders, customers, reports, settings, notifications
+│   ├── middleware/               requireAuth, requireAdmin, requirePlus, rate limits, request logger
+│   ├── lib/                      Shared primitives: queues, stripe, firebase, gemini, redis,
+│   │                             money, isbn, country, logger, log-scrubber, route-helpers
+│   ├── emails/                   Templates by kind: transactional, notifications, marketing, reports
+│   ├── jobs/                     node-cron schedules
+│   ├── workers/                  BullMQ workers: email, push, fulfilment
+│   ├── docs/openapi/             The OpenAPI document served at /docs
+│   └── __tests__/                Vitest suite
+├── drizzle/                      Generated migration SQL
+├── changelog/                    One detailed write-up per notable change
+├── docs/                         Design docs, client briefs, and the TRD
+├── scripts/                      Operational one-offs and checks
 ├── render.yaml
-├── .env.example
-├── package.json
-└── tsconfig.json
+└── .env.example                  The authoritative, commented environment reference
 ```
+
+The layering rule is worth stating: **routes are thin, controllers are thin, services hold
+the logic.** A route file should tell you the path, the guards and the contract; anything
+that makes a decision belongs in a service. The JSDoc block above each route is the contract
+— request shape, response shape, and every error code it can return.
 
 ---
 
-## Environment Variables
+## Environment variables
 
-Create a `.env` file from `.env.example`. All values are validated at startup — the server refuses to start if anything is missing or malformed.
+`.env.example` is the authoritative reference. It is fully commented — every variable there
+explains what it is for and why its default is what it is — and it is kept in step with
+`src/config/index.ts`, which validates all of it with Zod at startup. **Read `.env.example`
+rather than this section** for the full list; what follows is only the map.
 
-```env
-# Server
-PORT=3000
-NODE_ENV=development
-
-# PostgreSQL — same database as onix_ingester
-DATABASE_URL=postgresql://user:password@host:5432/dbname
-
-# Redis — used for rate limiting and the email job queue
-REDIS_URL=redis://localhost:6379
-
-# JWT secrets — must be at least 32 characters each, keep separate
-JWT_ACCESS_SECRET=your_access_token_secret_min_32_chars
-JWT_REFRESH_SECRET=your_refresh_token_secret_min_32_chars
-
-# Token lifetimes in seconds
-ACCESS_TOKEN_TTL=900        # 15 minutes
-REFRESH_TOKEN_TTL=2592000   # 30 days
-
-# Firebase Admin SDK — the whole service account JSON, base64-encoded:
-#   base64 -i serviceAccountKey.json
-# (the individual FIREBASE_PROJECT_ID / _CLIENT_EMAIL / _PRIVATE_KEY vars still
-# work as a fallback — see the Firebase setup section)
-FIREBASE_SERVICE_ACCOUNT_B64=eyJ0eXBlIjoic2VydmljZV9hY2NvdW50Iiwi...
-
-# Google Gemini — same API key as onix_ingester
-# GEMINI_EMBEDDING_MODEL must match the model used to embed books (default: text-embedding-004)
-GEMINI_API_KEY=your-gemini-api-key
-GEMINI_EMBEDDING_MODEL=text-embedding-004
-GEMINI_FLASH_MODEL=gemini-2.5-flash-lite
-
-# Guest session lifetime in hours. Default: 72 (24 * 3 = 3 days).
-# Set to 168 for a full week, 24 for a single day, etc.
-GUEST_SESSION_TTL_HOURS=72
-
-# Resend — https://resend.com/api-keys
-RESEND_API_KEY=re_your-api-key-here
-EMAIL_FROM=hello@kinkane.app
-EMAIL_FROM_NAME=Kinkane
-
-# Frontend base URL — used to build links in emails (e.g. password reset)
-# Use http://localhost:3001 (or your frontend's port) in development
-APP_URL=https://kinkane.app
+```bash
+cp .env.example .env
 ```
 
-**Why two JWT secrets?** Access and refresh tokens are signed with different secrets. A leaked access token cannot be used to forge a refresh token.
+| Group | Variables | Required to boot |
+|-------|-----------|------------------|
+| Server | `PORT`, `NODE_ENV`, `APP_URL` | Yes |
+| Logging | `LOG_LEVEL`, `LOG_REQUEST_PAYLOADS` | No |
+| Data | `DATABASE_URL`, `REDIS_URL` | Yes |
+| Customer auth | `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET` (≥32 chars each), `ACCESS_TOKEN_TTL`, `REFRESH_TOKEN_TTL` | Yes |
+| Admin auth | `ADMIN_JWT_SECRET`, `ADMIN_TOKEN`, `ADMIN_TOKEN_TTL`, `ADMIN_BOOTSTRAP_EMAIL`, `ADMIN_BOOTSTRAP_PASSWORD` | No (console disabled without them) |
+| Firebase | `FIREBASE_SERVICE_ACCOUNT_B64` **or** the three individual fields | Yes |
+| Gemini | `GEMINI_API_KEY`, `GEMINI_EMBEDDING_MODEL`, `GEMINI_FLASH_MODEL`, `GEMINI_FLASH_MODEL_FALLBACK` | Yes |
+| Email | `RESEND_API_KEY`, `EMAIL_FROM`, `EMAIL_FROM_NAME`, `SUPPORT_INBOX`, `UNSUBSCRIBE_SECRET` | Yes |
+| Onboarding | `GUEST_SESSION_TTL_HOURS` | No |
+| Subscriptions | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, the four `STRIPE_PRICE_PLUS_*`, `FOUNDING_OFFER_ENDS_AT`, `STRIPE_CHECKOUT_*_URL`, `GATING_ENABLED` | No (billing disabled without them) |
+| Shop pricing | `SUPPORTED_CURRENCIES`, `DEFAULT_CURRENCY`, `CURRENCY_BY_COUNTRY`, `FX_RATES_FROM_GBP`, `FX_BUFFER_PERCENT`, `FIRST_ORDER_DISCOUNT_PERCENT`, `VAT_*` | No |
+| Shipping | `SHIPPING_RATES`, `SHIPPING_USE_RATE_TABLE`, `SHIPPING_FULFILMENT_*`, `SHIPPING_EU_SURCHARGE_PENCE`, `SHIPPING_PEAK_*`, `SHIPPING_MARKUP_PERCENT`, `SHIPPING_FREE_THRESHOLD_*` | No |
+| Cart & orders | `CART_MAX_ITEMS`, `CART_MAX_QUANTITY_PER_LINE`, `GUEST_CART_TTL_DAYS`, `STRIPE_ORDER_*_URL` | No |
+| Gardners | `GARDNERS_DROPSHIP_SFTP_*`, `GARDNERS_DROPSHIP_ACCOUNT_CODE`, `GARDNERS_DROPSHIP_DEFAULT_TESTING`, `GARDNERS_DROPSHIP_ALLOW_IN_DEV`, `GARDNERS_REGION_BY_COUNTRY`, `GARDNERS_COUNTRY_NAMES_EXTRA` | No |
+| Geo & referrals | `GEO_COUNTRY_HEADER`, `MAXMIND_DB_PATH`, `REFERRAL_VIDEO_URL`, `REFERRAL_CAMPAIGN_STARTS_AT`, `REFERRAL_CAMPAIGN_ENDS_AT` | No |
+| Docs | `SWAGGER_PASSWORD`, `SWAGGER_SESSION_TTL_HOURS` | No (`/docs` 404s without it) |
+| Media | `CLOUDINARY_CLOUD_NAME` | No |
 
-**Firebase private key newlines:** The private key in service account JSON contains literal `\n` characters. When pasting into Render or a `.env` file, wrap the value in double quotes and keep the `\n` literals — the server unescapes them automatically at startup.
-
-**Gemini embedding model:** Must be identical to the value used by `onix_ingester` when it generated book embeddings. If the ingester used a different model, the query vector and book vectors will be in different spaces and similarity results will be meaningless.
+Anything marked "No" degrades a feature rather than the process: without Stripe keys the
+billing endpoints return 503, without `SWAGGER_PASSWORD` the docs page does not exist,
+without `ADMIN_JWT_SECRET` the console refuses every login. That is the intended behaviour —
+the feature is off, not half on.
 
 ---
 
 ## Database
 
-### Tables owned by this service
+Around 60 tables, defined across 34 files in `src/db/schema/`. Grouped by what they are for:
 
-#### users
+| Area | Tables |
+|------|--------|
+| Accounts | `users`, `refresh_tokens`, `user_providers`, `password_reset_tokens`, `email_verification_tokens`, `email_change_requests` |
+| Onboarding & preferences | `guest_sessions`, `user_preferences`, `user_interactions`, `user_books`, `user_disliked_books`, `user_preference_history` |
+| Recommendations | `recommendation_cache`, `recommendation_email_log` |
+| Community | `posts`, `post_likes`, `comments`, `comment_likes`, `follow_requests`, `user_reports` |
+| Commerce | `carts`, `cart_items`, `orders`, `order_items`, `payments`, `saved_books`, `shipping_rates` |
+| Subscriptions | `user_subscriptions`, `subscription_events`, `subscription_state_history`, `stripe_webhook_events` |
+| Referrals | `referral_codes`, `referrals`, `referral_points`, `referral_clicks`, `referral_invites`, `countries` |
+| Notifications | `notifications`, `notification_preferences`, `device_tokens` |
+| Admin | `admins`, `admin_notifications`, `announcement_banners`, `contact_messages` |
+| Fulfilment | `gardners_dropship_orders`, `gardners_dropship_order_lines`, `gardners_dropship_dispatches` |
+| **Read-only** (owned by `onix_ingester`) | `books`, `book_contributors`, `book_subjects`, `book_genres`, `book_prices`, `book_excerpts`, `book_promotions`, `genres`, `gardners_*` feed tables, `ingestion_jobs`, `ingestion_chunks` |
 
-| Column | Type | Notes |
-|--------|------|-------|
-| id | serial PK | |
-| name | varchar(500) NOT NULL | Freeform — no first/last splitting |
-| email | varchar(500) UNIQUE NOT NULL | Stored lowercase |
-| password_hash | varchar(500) | Nullable — NULL for social-only accounts |
-| photo_url | varchar(1000) | Profile photo from social provider, if provided |
-| email_verified | boolean | Default false; set true when provider confirms email |
-| shelf_visibility | enum `public \| friends \| private` | Default `private` — controls who can view the user's reading list |
-| created_at / updated_at | timestamptz | |
-
-#### refresh_tokens
-
-| Column | Type | Notes |
-|--------|------|-------|
-| id | serial PK | |
-| user_id | integer FK → users.id CASCADE DELETE | |
-| token_hash | varchar(64) UNIQUE | SHA-256 hex of the raw token — raw never stored |
-| expires_at | timestamptz | |
-| created_at | timestamptz | |
-
-#### user_providers
-
-Links a user account to one or more Firebase social providers. A user who signs in with both Google and Apple has two rows here pointing to the same `user_id`.
-
-| Column | Type | Notes |
-|--------|------|-------|
-| id | serial PK | |
-| user_id | integer FK → users.id CASCADE DELETE | |
-| provider | varchar(50) NOT NULL | `google.com`, `facebook.com`, or `apple.com` |
-| provider_uid | varchar(256) NOT NULL | Firebase UID for this provider |
-| created_at | timestamptz | |
-
-Unique index on `(provider, provider_uid)` — prevents the same social account being linked to two different users.
-
-#### user_subscriptions
-
-One row per user. Created synchronously at account creation — every new user starts on a 90-day Kinkane Plus trial. The effective tier is computed at read time using `getEffectiveTier()` — no cron job is needed to downgrade expired trials.
-
-| Column | Type | Notes |
-|--------|------|-------|
-| id | serial PK | |
-| user_id | integer UNIQUE FK → users.id CASCADE DELETE | |
-| tier | enum `free \| plus` | DB-level tier. Defaults to `free` |
-| status | enum `active \| trialing \| cancelled` | New signups start as `trialing` |
-| trial_ends_at | timestamptz | `NOW() + 90 days` on signup. Null on non-trial plans |
-| stripe_customer_id | varchar(256) | Nullable — populated when Stripe is integrated |
-| stripe_subscription_id | varchar(256) | Nullable — populated when Stripe is integrated |
-| created_at / updated_at | timestamptz | |
-
-**Effective tier rule:** if `status = 'trialing'` and `trial_ends_at < NOW()`, the user is treated as `free` — no DB write needed. Call `getEffectiveTier(subscription)` wherever tier-gating is required.
-
-**Free tier limit:** Free users can save a maximum of **5 books** to their reading list. Check `user_books` count before any insert and reject with 403 if the user is on the free tier and already has 5 books.
-
----
-
-#### recommendation_cache
-
-Caches recommendation results for 48 hours to avoid redundant Gemini API calls. Keyed on a SHA-256 hash of the user's preferences (excluding their name).
-
-| Column | Type | Notes |
-|--------|------|-------|
-| id | serial PK | |
-| input_hash | varchar(64) UNIQUE NOT NULL | SHA-256 of sorted preferences |
-| results | jsonb NOT NULL | `[{ bookId, rank, explanation }]` |
-| created_at | timestamptz | |
-| expires_at | timestamptz NOT NULL | created_at + 48 hours |
-
-#### guest_sessions
-
-Temporary record created at recommendation time. Lives for `GUEST_SESSION_TTL_HOURS` (default 72 hours). Migrated to user tables on account creation, or deleted by the cleanup cron if the user never registers.
-
-| Column | Type | Notes |
-|--------|------|-------|
-| id | uuid PK | `gen_random_uuid()` — returned to client as `guestSessionId` |
-| display_name | varchar(200) NOT NULL | Name entered during onboarding |
-| feelings | jsonb NOT NULL | `string[3]` |
-| book_ids | jsonb NOT NULL | `number[]` — books they said they enjoyed (up to 10) |
-| genres | jsonb NOT NULL | `string[3]` |
-| dislikes | jsonb NOT NULL | `{ emotionalTone?, pacingStructure?, writingStyle?, genreFocus?, commitmentLevel? }` |
-| chosen_book_ids | jsonb | `number[]` — 5 books chosen from recommendations. Null until `POST /:id/selections` is called |
-| recommendation_hash | varchar(64) | Links back to `recommendation_cache.input_hash` |
-| created_at | timestamptz | |
-| expires_at | timestamptz NOT NULL | created_at + GUEST_SESSION_TTL_HOURS |
-
-#### user_preferences
-
-Migrated from `guest_sessions` when the user creates an account. One row per user.
-
-| Column | Type | Notes |
-|--------|------|-------|
-| id | serial PK | |
-| user_id | integer UNIQUE FK → users.id CASCADE DELETE | |
-| feelings | jsonb NOT NULL | |
-| book_ids | jsonb NOT NULL | Books they enjoyed during onboarding |
-| genres | jsonb NOT NULL | |
-| dislikes | jsonb NOT NULL | |
-| updated_at | timestamptz | |
-
-#### user_interactions
-
-Behavioural signals for future recommendation tuning. Seeded at registration from the 5 chosen onboarding books, then grows as the user browses, purchases, and rates books.
-
-| Column | Type | Notes |
-|--------|------|-------|
-| id | serial PK | |
-| user_id | integer FK → users.id CASCADE DELETE | |
-| book_id | integer FK → books.id CASCADE DELETE | |
-| type | varchar(50) NOT NULL | `view`, `purchase`, `high_rating`, `wishlist`, `chosen_from_recommendation` |
-| weight | real NOT NULL | Default `1.0` — higher = stronger signal |
-| created_at | timestamptz | |
-
-#### user_books
-
-The user's personal reading list. Seeded at registration with the 5 onboarding choices as `want_to_read`.
-
-| Column | Type | Notes |
-|--------|------|-------|
-| id | serial PK | |
-| user_id | integer FK → users.id CASCADE DELETE | |
-| book_id | integer FK → books.id CASCADE DELETE | |
-| status | varchar(20) NOT NULL | `want_to_read`, `reading`, `read` |
-| source | varchar(50) NOT NULL | `chosen_from_onboarding`, `manual`, `recommended` |
-| note | text | Optional user note about the book (max 1000 chars) |
-| note_is_public | boolean NOT NULL | Default false — when true, note is visible to all users |
-| added_at | timestamptz | |
-
-Unique index on `(user_id, book_id)` — a book can only appear once per reading list.
-
-#### password_reset_tokens
-
-One row per in-flight password reset request. The raw token is never stored — only its SHA-256 hex hash. Deleted on use, and replaced when a new reset is requested (one active token per user at a time).
-
-| Column | Type | Notes |
-|--------|------|-------|
-| id | serial PK | |
-| user_id | integer FK → users.id CASCADE DELETE | |
-| token_hash | varchar(64) UNIQUE NOT NULL | SHA-256 hex of the raw token sent to the client |
-| expires_at | timestamptz NOT NULL | 1 hour from creation |
-| created_at | timestamptz | |
-
-### Tables read from (owned by onix_ingester)
-
-`books`, `book_contributors`, `book_subjects`, `book_genres`, `book_prices`, `genres`
-
-See [onix_ingester README](../onix_ingester/README.md) for full schema documentation.
+Column-level documentation lives in the schema files themselves, which carry the reasoning
+alongside the definition. `docs/technical-requirements.md` covers the entities and their
+relationships in prose.
 
 ### Running migrations
 
 ```bash
-npm run db:migrate
+npm run db:generate   # after editing a schema file — writes SQL into drizzle/
+npm run db:migrate    # applies pending migrations; safe to run on every deploy
 ```
 
-Safe to run on every deploy — Drizzle tracks applied migrations. To generate a new migration after editing a schema file:
+`db:migrate` also installs the required extensions and builds concurrent indexes before
+Drizzle runs, so it works on a fresh database.
 
-```bash
-npm run db:generate   # creates a new SQL file in drizzle/
-npm run db:migrate    # applies it
-```
+> Only generate migrations for tables this service owns. The catalogue and feed tables belong
+> to `onix_ingester`.
 
 ---
 
-## API Reference
+## API reference
 
-Base URL: `https://your-service.onrender.com`
+The **authoritative, executable reference is the OpenAPI UI at `/docs`**, served from
+`src/docs/openapi/` and gated behind `SWAGGER_PASSWORD`. It is generated from the same
+source as the running API, so it cannot drift the way a hand-written endpoint list does.
+Set `SWAGGER_PASSWORD`, restart, and open `http://localhost:3000/docs`.
 
-All `/api/v1/` routes return JSON. Errors follow the shape `{ "error": "..." }` or `{ "error": { "field": ["message"] } }` for validation failures.
+For the reasoning behind a particular endpoint — why it returns 402 rather than 403, why a
+field is required — read the JSDoc block above the route in `src/routes/`. That is where the
+contract and its justification live.
 
----
+What follows is the index: every route family, where it lives, and how it is guarded.
 
-### Health
+Base URL: `https://<service>.onrender.com`. All responses are JSON. Errors are
+`{ "error": "..." }`, plus `code` and sometimes `details` when the failure is one the client
+is expected to handle.
 
-#### `GET /api/health`
+### Public
 
-No auth. No rate limit.
+| Path | Methods | Notes |
+|------|---------|-------|
+| `/api/health` | `GET` | Unversioned, no rate limit — uptime checks |
+| `/api/v1/books` | `GET /`, `/search`, `/recommendations`, `/:id`, `/:id/similar` | Catalogue browse and search |
+| `/api/v2/books` | `GET /` | Same as v1 plus the `type` filter |
+| `/api/v1/authors` | `GET /search` | |
+| `/api/v1/genres` | `GET /` | |
+| `/api/v1/settings` | `GET /banners` | Storefront announcement strips; only enabled banners |
+| `/api/v1/contact` | `POST /` | Public by design — the people who need it often cannot log in |
+| `/api/v1/unsubscribe` | `GET /` | Signed token, no session |
+| `/r/:code`, `/r/:code/:slug` | `GET` | Referral links, root-mounted |
 
-```json
-{ "status": "ok", "service": "kinkane-server" }
-```
+### Onboarding
 
----
+| Path | Methods | Guard |
+|------|---------|-------|
+| `/api/v1/recommendations` | `POST /`, `GET /preferences`, `PATCH /refresh`, `POST /selections` | `POST /` is open; refresh and selections need auth + Plus |
+| `/api/v1/guest-sessions` | `GET /:id`, `POST /:id/selections`, `POST /:id/referral` | Session id is the credential |
 
-### Auth
+### Account
 
-#### `POST /api/v1/auth/signup`
+| Path | Methods | Guard |
+|------|---------|-------|
+| `/api/v1/auth` | `POST /signup`, `/login`, `/social`, `/refresh`, `/logout`, `/forgot-password`, `/reset-password`, `/verify-email`, `/change-password`; `GET /me`; `DELETE /account` | Mixed — see the route file |
+| `/api/v1/user/settings` | `GET /`, `PATCH /profile`, `PATCH /shelf-visibility` | `requireAuth` |
+| `/api/v1/user/email-change` | `POST /request`, `/verify`, `/resend`; `GET /cancel` | `requireAuth` (cancel uses a signed link) |
+| `/api/v1/user/notification-preferences` | `GET /`, `PATCH /` | `requireAuth` |
+| `/api/v1/user/notifications` | `GET /`, `PATCH /read` | `requireAuth` |
+| `/api/v1/user/device-tokens` | `POST /`, `DELETE /:fcmToken` | `requireAuth` |
+| `/api/v1/user/preference-history` | `GET /` | `requireAuth` |
 
-Creates a new email/password account. `guestSessionId` is **required** — the user must complete the onboarding quiz before registering. A 90-day Kinkane Plus trial is started synchronously before tokens are returned. Guest session data (preferences, reading list, interaction signals) is migrated to the new account in the background.
+### Library and discovery
 
-**Body**
-```json
-{
-  "name": "Jane Smith",
-  "email": "jane@example.com",
-  "password": "min8characters",
-  "guestSessionId": "f47ac10b-58cc-4372-a567-0e02b2c3d479"
-}
-```
+| Path | Methods | Guard |
+|------|---------|-------|
+| `/api/v1/user-books` | `GET /`, `PUT /:bookId`, `DELETE /:bookId`, `POST /reset`, `POST|DELETE /:bookId/like` | `requireAuth`; writes also `requirePlus` |
+| `/api/v1/explore` | `GET /trending`, `/bestsellers`, `/personalized` | `/personalized` needs auth + Plus |
 
-**Response `201`**
-```json
-{
-  "user": {
-    "id": 1,
-    "name": "Jane Smith",
-    "email": "jane@example.com",
-    "emailVerified": false
-  },
-  "accessToken": "<jwt>",
-  "refreshToken": "<opaque-token>"
-}
-```
+### Community
 
-**Errors**
-- `400` — validation failure (missing guestSessionId, password too short, invalid email, etc.)
-- `409` — email already registered
+| Path | Methods | Guard |
+|------|---------|-------|
+| `/api/v1/community` | Posts, comments, likes, `GET /search` | `requireAuth`; creating and liking also `requirePlus` |
+| `/api/v1/users` | Profiles, books, followers/following, follow requests | `requireAuth` |
+| `/api/v1/reports` | `POST /` | `requireAuth` |
 
----
+### Shop
 
-#### `POST /api/v1/auth/login`
+Deliberately **no `requirePlus` anywhere** — buying is open to every signed-up user.
 
-**Body**
-```json
-{
-  "email": "jane@example.com",
-  "password": "yourpassword"
-}
-```
+| Path | Methods | Guard |
+|------|---------|-------|
+| `/api/v1/cart` | `GET /`, `POST /items`, `PATCH /items/:bookId`, `DELETE /items/:bookId`, `DELETE /` | `requireAuth` — the stored cart |
+| `/api/v1/cart` | `POST /price`, `POST /shipping-options`, `POST /checkout` | `optionalAuth` — a guest sends the lines with the request; nothing is stored for a visitor who never signs up |
+| `/api/v1/orders` | `GET /`, `GET /:id`, `POST /claim` | `requireAuth` |
+| `/api/v1/orders` | `POST /lookup`, `POST /track` | Unauthenticated — a tracking code plus the buyer's email is the credential |
+| `/api/v1/saved-books` | `GET /`, `POST /`, `DELETE /:bookId` | `requireAuth` |
+| `/api/v1/payments` | `GET /:reference` | Confirmation by reference — subscriptions and orders alike |
 
-**Response `200`** — same shape as signup.
+### Subscriptions
 
-**Errors**
-- `401` — invalid email or password (deliberately vague — no account enumeration)
+| Path | Methods | Guard |
+|------|---------|-------|
+| `/api/v1/user/subscription` | `GET /`, `GET /history`, `GET /plans`, `POST /checkout-session`, `POST /change`, `POST /cancel`, `POST /reactivate` | `requireAuth` |
+| `/api/v1/user/subscription/webhook` | `POST /` | Stripe signature — mounted before `express.json` |
 
----
+Cancellation always takes effect at the end of the paid period, never immediately, and is
+idempotent. `POST /change` with `plan: 'free'` is the same action and also requires a reason,
+so every cancellation reaches the reasons ledger regardless of which button triggered it.
 
-#### `POST /api/v1/auth/refresh`
+### Referrals
 
-Exchanges a valid refresh token for a new access token and a **rotated refresh token**. The submitted token is deleted immediately — store the new `refreshToken` from the response. Each token can only be used once.
+Open to every signed-up user — `requireAuth` only, never `requirePlus`.
 
-**Body**
-```json
-{ "refreshToken": "<opaque-token>" }
-```
+| Path | Methods |
+|------|---------|
+| `/api/v1/referrals` | `GET /me`, `/me/stats`, `/me/network`, `/leaderboard`, `/analytics`, `/map`; `POST /me/rotate`, `/clicks`, `/shares`, `/invite` |
 
-**Response `200`**
-```json
-{
-  "accessToken": "<new-jwt>",
-  "refreshToken": "<new-opaque-token>"
-}
-```
+### Admin
 
-**Errors**
-- `401` — token not found or expired
-
----
-
-#### `POST /api/v1/auth/logout`
-
-Deletes the refresh token from the database. The access token expires naturally (15 min).
-
-**Body**
-```json
-{ "refreshToken": "<opaque-token>" }
-```
-
-**Response `200`**
-```json
-{ "message": "Logged out successfully" }
-```
+| Path | Auth | Endpoints |
+|------|------|-----------|
+| `/admin/console` | Admin session | `POST /auth/login`, `GET /auth/me`, `/dashboard`, `/badges`, orders (+ `/orders/export`), `/shipping-margin`, customers (+ export, blacklist), reports, `/settings/banners`, notifications |
+| `/admin/referrals` | `ADMIN_TOKEN` | `GET /tree`, `GET /leaderboard`, `POST /:id/void` |
+| `/admin/users/:id/country` | `ADMIN_TOKEN` | `PATCH` — correct a mis-resolved country |
+| `/admin/gardners/dropship` | `ADMIN_TOKEN` | `POST /orders`, `GET /orders/:id`, `POST /orders/:id/poll-ack` |
+| `/admin/queues` | `ADMIN_TOKEN` | Bull Board UI |
 
 ---
 
-#### `POST /api/v1/auth/social`
+## Rate limiting
 
-Sign in or register using a Firebase ID token. If no account exists for this provider identity, one is created automatically. If an account with the same email already exists, the social provider is linked to it.
+Limits are per IP (per user where the request is authenticated), counted in Redis so they
+hold across instances. Exceeding one returns `429` with `RateLimit-Limit`,
+`RateLimit-Remaining` and `RateLimit-Reset` headers.
 
-`guestSessionId` is **required**. For new accounts it triggers onboarding migration and starts a 90-day Plus trial. For returning users the field is validated but migration is skipped. Embed the `guestSessionId` in the Firebase OAuth `customParameters` state so it survives the provider redirect.
+| Route | Limit | Window |
+|-------|-------|--------|
+| All `/api/v1` and `/api/v2` | 300 | 15 min |
+| `POST /auth/signup` | 10 | 1 hour |
+| `POST /auth/login`, `/auth/social` | 20 | 15 min |
+| `POST /auth/refresh` | 60 | 15 min |
+| `POST /auth/forgot-password`, `/reset-password` | 5 | 1 hour |
+| `POST /auth/verify-email` | 10 | 1 hour |
+| Resend verification email | 5 | 1 hour |
+| Email change | 5 | 1 hour |
+| `POST /recommendations` and refresh | 20 | 1 hour |
+| Checkout (cart and subscription) | 20 | 1 hour |
+| Payment confirmation polling | 60 | 1 min |
+| Guest order lookup / tracking | 10 | 15 min |
+| Follow requests | 30 | 1 hour |
+| `POST /contact` | 3 | 1 hour |
+| Admin console login | 10 | 15 min |
+| `GET /api/health` | none | — |
 
-**Body**
-```json
-{
-  "idToken": "<firebase-id-token>",
-  "guestSessionId": "f47ac10b-58cc-4372-a567-0e02b2c3d479"
-}
-```
-
-**Response `201` (new account) / `200` (returning user)**
-```json
-{
-  "user": {
-    "id": 1,
-    "name": "Jane Smith",
-    "email": "jane@example.com",
-    "emailVerified": true
-  },
-  "accessToken": "<jwt>",
-  "refreshToken": "<opaque-token>"
-}
-```
-
-**Errors**
-- `400` — missing or invalid guestSessionId
-- `401` — Firebase rejected the token
-- `422` — social account has no email address
-
-**Mobile note:** Send the Firebase ID token, not the Google/Facebook/Apple access token. Obtain it with `firebaseUser.getIdToken()` after a successful Firebase sign-in.
+`app.set('trust proxy', 2)` is what makes these correct in production: Render fronts every
+service with its own Cloudflare, so a request passes two proxies before reaching us. Peeling
+only one hop left `req.ip` holding a Cloudflare edge address — which meant one shared rate
+limit bucket for every anonymous user behind that PoP. If the proxy chain ever changes, that
+number is what changes.
 
 ---
 
-#### `POST /api/v1/auth/forgot-password`
+## Search behaviour
 
-Sends a password reset link to the given email address. Always returns `200` regardless of whether the email is registered — this prevents account enumeration. The reset link expires in **1 hour**.
+When `q` is supplied to `GET /api/v1/books`:
 
-**Body**
-```json
-{ "email": "jane@example.com" }
-```
+1. **ISBN** — a query that parses as an ISBN-10 or ISBN-13 goes straight to a lookup.
+2. **Full-text search** — `plainto_tsquery('english', q)` against the `search_vector`
+   tsvector column maintained by a database trigger, ranked by `ts_rank`.
+3. **Trigram fallback** — if FTS returns nothing, a `pg_trgm` similarity query on the title
+   catches typos: "Filosopher Stone" still finds the book.
+4. **Filters combine** — `q` intersects with every other filter, so
+   `q=rowling&genre=childrens_fiction` returns only books matching both.
 
-**Response `200`**
-```json
-{ "message": "If that email is registered, a reset link has been sent" }
-```
+Title sorting has its own rules: placeholder titles sink to the bottom, and titles starting
+with a number or symbol sort below A–Z rather than above it.
 
-**Errors**
-- `400` — invalid email format
-- `429` — rate limit exceeded (5 requests per hour)
-
----
-
-#### `POST /api/v1/auth/reset-password`
-
-Validates the reset token and updates the user's password. The token is single-use — it is deleted on success. All active sessions (refresh tokens) are invalidated, forcing the user to log in again on all devices.
-
-**Body**
-```json
-{
-  "token": "<raw-token-from-email-link>",
-  "password": "NewPassword123!"
-}
-```
-
-Password must be at least 8 characters and contain at least one uppercase letter, one lowercase letter, one number, and one special character.
-
-**Response `200`**
-```json
-{ "message": "Password updated successfully. Please log in again." }
-```
-
-**Errors**
-- `400` — invalid or expired token, or password fails validation
-- `429` — rate limit exceeded (5 requests per hour)
+> **Database collation:** this database's ctype is `C`, so POSIX regex classes are
+> ASCII-only. Anything touching accented text needs `COLLATE "und-x-icu"`.
 
 ---
 
-#### `GET /api/v1/auth/me`
-
-Returns the full profile of the currently authenticated user including their subscription status and linked social providers.
-
-**Headers**
-```
-Authorization: Bearer <accessToken>
-```
-
-**Response `200`**
-```json
-{
-  "user": {
-    "id": 1,
-    "name": "Jane Smith",
-    "email": "jane@example.com",
-    "emailVerified": true,
-    "photoUrl": null,
-    "subscription": {
-      "tier": "plus",
-      "status": "trialing",
-      "effectiveTier": "plus",
-      "trialEndsAt": "2026-08-29T00:00:00.000Z"
-    },
-    "providers": ["google.com"]
-  }
-}
-```
-
-- `effectiveTier` is the computed tier — always use this to gate features, not `tier` directly. A trialing user with an expired `trialEndsAt` will have `effectiveTier: "free"` even if `tier` is `"plus"`.
-- `providers` is an empty array for email/password-only accounts.
-
-**Errors**
-- `401` — missing, malformed, or expired access token
-- `404` — user not found
-
----
-
-#### `POST /api/v1/auth/change-password`
-
-Allows an authenticated user to change their password by verifying their current password first. Social-only accounts (no password set) receive a `400`. Other active sessions are **not** invalidated — only the password is updated.
-
-**Headers**
-```
-Authorization: Bearer <accessToken>
-```
-
-**Body**
-```json
-{
-  "currentPassword": "OldPassword123!",
-  "newPassword": "NewPassword456!"
-}
-```
-
-Password rules apply to `newPassword` (min 8 chars, uppercase, lowercase, number, special character).
-
-**Response `200`**
-```json
-{ "message": "Password updated successfully" }
-```
-
-A security notification email is sent to the user after a successful change.
-
-**Errors**
-- `400` — validation failure or social-only account
-- `401` — current password incorrect
-
----
-
-#### `DELETE /api/v1/auth/account`
-
-Permanently deletes the authenticated user's account and all associated data — reading list, preferences, interactions, subscription, and linked social providers. A goodbye email is sent after deletion. The client should discard the access token on receipt of `200`.
-
-**Headers**
-```
-Authorization: Bearer <accessToken>
-```
-
-**Body**
-```json
-{ "password": "YourPassword123!" }
-```
-
-**Response `200`**
-```json
-{ "message": "Account deleted successfully" }
-```
-
-**Errors**
-- `400` — missing password or social-only account
-- `401` — incorrect password
-
----
-
-### Books
-
-All book endpoints are **public** — no auth required.
-
-#### `GET /api/v1/books/search`
-
-Typeahead suggestions. Designed to be called on every keystroke. Returns up to 15 results. Minimum 1 character.
-
-**Query parameters**
-
-| Param | Type | Description |
-|-------|------|-------------|
-| `q` | string | The text being typed. Min 2, max 100 chars |
-| `limit` | number | Max suggestions. 1–15, default `8` |
-| `dedupe` | `true`/`false` | Collapse same-titled editions down to the best one. Default `false` — pass `true` (e.g. the mobile app) to avoid showing the same book twice under different ISBNs |
-
-**Response `200`**
-```json
-{
-  "suggestions": [
-    {
-      "id": 42,
-      "title": "Harry Potter and the Philosopher's Stone",
-      "subtitle": null,
-      "isbn13": "9781234567890",
-      "productForm": "BC",
-      "coverUrl": "https://...",
-      "authors": ["J.K. Rowling"]
-    }
-  ]
-}
-```
-
-Results ranked: title-starts-with → word-starts-with → trigram similarity > 0.3.
-
----
-
-#### `GET /api/v1/books`
-
-Paginated book list with optional filters and full-text search.
-
-**Query parameters**
-
-| Param | Type | Description |
-|-------|------|-------------|
-| `q` | string | Full text search |
-| `genre` | string | Genre slug |
-| `availability` | string | ONIX availability code e.g. `20` |
-| `productForm` | string | ONIX product form e.g. `BB`, `BC`, `ED` |
-| `publishingStatus` | string | ONIX publishing status e.g. `04` |
-| `publisher` | string | Partial match on publisher name |
-| `limit` | number | 1–50, default `20` |
-| `offset` | number | Default `0` |
-| `dedupe` | `true`/`false` | Collapse same-titled editions down to the best one (has a cover > has a description + genre + is available to order > newest publication date > has a price). Default `false` — pass `true` (e.g. the mobile app) so browsing/search doesn't show the same title once per ISBN. When on, `totalIsApproximate` is always `true`: paginate on `hasMore`, not `total` |
-
-**Response `200`**
-```json
-{
-  "books": [ { "id": 42, "title": "...", "contributors": [], "genres": [], "prices": [] } ],
-  "total": 1,
-  "totalIsApproximate": false,
-  "hasMore": false,
-  "limit": 20,
-  "offset": 0
-}
-```
-
----
-
-#### `GET /api/v1/books/:id`
-
-Full book detail including descriptions, subjects, and physical dimensions.
-
-**Response `200`**
-```json
-{
-  "book": {
-    "id": 42,
-    "isbn13": "9781234567890",
-    "title": "Harry Potter and the Philosopher's Stone",
-    "shortDescription": "The book that started it all.",
-    "longDescription": "Harry Potter has never even heard of Hogwarts...",
-    "pageCount": 223,
-    "contributors": [ { "role": "A01", "personName": "J.K. Rowling", "sequenceNumber": 1 } ],
-    "genres": [ { "name": "Children's fiction", "slug": "childrens_fiction" } ],
-    "prices": [ { "priceType": "02", "priceAmount": "9.99", "currencyCode": "GBP" } ],
-    "subjects": [ { "schemeIdentifier": "93", "subjectCode": "YFB", "subjectHeadingText": "Children's fiction", "isMainSubject": true } ]
-  }
-}
-```
-
-**Errors**
-- `400` — ID is not a valid integer
-- `404` — book not found
-
----
-
-### Recommendations
-
-#### `POST /api/v1/recommendations`
-
-The core of the onboarding flow. Generates a ranked list of up to 250 book recommendations personalised to the user's preferences using pgvector similarity search, then adds a short explanation per book via Gemini. Also creates a guest session and returns its ID alongside the results.
-
-Results are cached for 48 hours — identical preferences (regardless of name) return instantly from cache. A fresh guest session is always created.
-
-**Body**
-
-| Field | Type | Required | Notes |
-|-------|------|----------|-------|
-| `displayName` | string | Yes | The name entered in step 1 of onboarding. Max 200 chars |
-| `feelings` | string[3] | Yes | Exactly 3. Preset labels or freeform text (max 200 chars each) |
-| `bookIds` | number[] | No | IDs of books they've enjoyed. Max 10. Default `[]` |
-| `genres` | string[3] | Yes | Exactly 3 from the genre enum |
-| `dislikes` | object | No | Reading experiences to avoid — all sub-arrays optional |
-
-**Dislikes object**
-
-```json
-{
-  "emotionalTone":    ["too dark or heavy", "sad or tragic ending", "emotionally intense"],
-  "pacingStructure":  ["slow paced", "complex or layered plot", "multiple POVs"],
-  "writingStyle":     ["academic or dense", "experimental writing style"],
-  "genreFocus":       ["romance-heavy", "fantasy-heavy", "faith-based themes"],
-  "commitmentLevel":  ["long book (500+ pages)", "series commitment"]
-}
-```
-
-`commitmentLevel` dislikes apply hard SQL filters before the similarity search. The others are factored into the preference embedding.
-
-**Valid genre values**
-
-`literary fiction`, `poetry`, `self-help`, `mystery`, `romance`, `business`, `horror`, `sci-fi`, `historical fiction`, `biography`, `fantasy`, `non-fiction`, `society & education`, `sport`, `crime`, `young adult`, `classics`, `graphic novel`, `politics`, `health & lifestyle`, `travel`
-
-**Example**
-```bash
-curl -X POST http://localhost:3000/api/v1/recommendations \
-  -H "Content-Type: application/json" \
-  -d '{
-    "displayName": "Jason",
-    "feelings": ["inspired", "relaxed", "thoughtful"],
-    "bookIds": [1, 4, 17],
-    "genres": ["literary fiction", "biography", "self-help"],
-    "dislikes": {
-      "emotionalTone": ["too dark or heavy"],
-      "commitmentLevel": ["long book (500+ pages)", "series commitment"]
-    }
-  }'
-```
-
-**Response `200`**
-```json
-{
-  "recommendations": [
-    {
-      "bookId": 42,
-      "rank": 1,
-      "explanation": "A quiet memoir matching your love of biography and need to feel inspired."
-    },
-    {
-      "bookId": 7,
-      "rank": 2,
-      "explanation": "Short literary essays perfect for relaxed, reflective reading."
-    }
-  ],
-  "guestSessionId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-  "expiresAt": "2026-05-26T14:32:00.000Z"
-}
-```
-
-The client should store `guestSessionId` immediately — it is needed for the next two steps.
-
-**Errors**
-- `400` — validation failure (wrong number of feelings/genres, invalid genre value, etc.)
-- `429` — rate limit exceeded (20 requests per hour per IP)
-
----
-
-### Guest Sessions
-
-#### `POST /api/v1/guest-sessions/:id/selections`
-
-Saves the 5 books the user chose from the recommendations screen. Must be called after `POST /recommendations` and before the user registers.
-
-**Params**
-- `id` — the `guestSessionId` returned by `POST /recommendations`
-
-**Body**
-```json
-{ "chosenBookIds": [42, 7, 103, 56, 88] }
-```
-
-| Field | Type | Notes |
-|-------|------|-------|
-| `chosenBookIds` | number[] | 1–5 book IDs from the recommendation results |
-
-**Response `200`**
-```json
-{ "ok": true }
-```
-
-**Errors**
-- `400` — invalid UUID or validation failure
-- `404` — session not found or expired
-
----
-
-#### `GET /api/v1/guest-sessions/:id`
-
-Checks whether a stored `guestSessionId` is still alive. Useful on app resume to decide whether to prompt the user to re-do the flow or proceed to registration.
-
-**Response `200`**
-```json
-{
-  "guestSessionId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-  "displayName": "Jason",
-  "expiresAt": "2026-05-26T14:32:00.000Z"
-}
-```
-
-**Errors**
-- `400` — invalid UUID format
-- `404` — session not found or expired
-
----
-
-### User Books
-
-All user book endpoints require a valid Bearer token.
-
-#### `POST /api/v1/user-books/reset`
-
-Clears the user's entire reading list after verifying their password. Irreversible.
-
-**Headers**
-```
-Authorization: Bearer <accessToken>
-```
-
-**Body**
-```json
-{ "password": "YourPassword123!" }
-```
-
-**Response `200`**
-```json
-{ "deleted": 12 }
-```
-
-**Errors**
-- `400` — missing password or social-only account
-- `401` — incorrect password
-
----
-
-### User Settings
-
-All user settings endpoints require a valid Bearer token.
-
-#### `GET /api/v1/user/settings`
-
-Returns all settings for the authenticated user.
-
-**Headers**
-```
-Authorization: Bearer <accessToken>
-```
-
-**Response `200`**
-```json
-{
-  "settings": {
-    "shelfVisibility": "private"
-  }
-}
-```
-
-**Errors**
-- `401` — unauthenticated
-- `404` — user not found
-
----
-
-#### `PATCH /api/v1/user/settings/shelf-visibility`
-
-Controls who can view the user's reading list.
-
-**Headers**
-```
-Authorization: Bearer <accessToken>
-```
-
-**Body**
-```json
-{ "visibility": "public" }
-```
-
-| Value | Who can see the shelf |
-|-------|-----------------------|
-| `public` | All Kinkane users |
-| `friends` | Mutual friends/followers only |
-| `private` | Only the user themselves (default) |
-
-**Response `200`**
-```json
-{ "shelfVisibility": "public" }
-```
-
-**Errors**
-- `400` — invalid visibility value
-- `401` — unauthenticated
-
----
-
-## Subscriptions
-
-Every user starts on a **90-day Kinkane Plus trial** created synchronously at account creation. After the trial period, their effective tier becomes **Free** — no cron job or DB write is needed.
-
-### Tiers
-
-| Tier | How obtained | Bookshelf limit | Features |
-|------|-------------|-----------------|----------|
-| **Free** | Default after trial expires | **5 books max** | Quiz, recommendations, basic bookshelf, community browsing, trending content |
-| **Kinkane Plus** | Trial (90 days) or paid subscription | Unlimited | Everything in Free + memory across sessions, smarter recommendations, reading identity profile, Kin Reads, expanded history, enhanced community features |
-
-### Trial lifecycle
-
-```
-Signup
-  → user_subscriptions: { tier: 'plus', status: 'trialing', trial_ends_at: NOW() + 90 days }
-
-During trial
-  → getEffectiveTier() returns 'plus'
-
-After trial_ends_at
-  → getEffectiveTier() returns 'free'  ← no DB write required, computed at read time
-
-User pays
-  → tier updated to 'plus', status to 'active', trial_ends_at cleared
-  → stripe_customer_id / stripe_subscription_id populated
-```
-
-### Checking a user's tier
-
-Use `getEffectiveTier(subscription)` from `src/db/schema/subscriptions.ts` anywhere tier-gating is required. It takes the `user_subscriptions` row and returns `'free'` or `'plus'`.
-
-### Free tier bookshelf cap
-
-Before inserting into `user_books`, check the count of existing rows for that user. If count ≥ 5 and `getEffectiveTier()` returns `'free'`, reject with **403 Forbidden**. The onboarding migration seeds at most 5 books (enforced by the selections endpoint), so newly registered free users start exactly at the limit.
-
-### Stripe integration
-
-`stripe_customer_id` and `stripe_subscription_id` columns are present but nullable. Wire them up when adding Stripe webhooks to handle payment confirmation, cancellation, and renewal.
-
----
-
-## Rate Limiting
-
-Rate limits are applied per IP address. Exceeding a limit returns `429 Too Many Requests`.
-
-| Route | Limit | Window | Reason |
-|-------|-------|--------|--------|
-| `POST /auth/signup` | 10 | 1 hour | Prevents mass account creation |
-| `POST /auth/login` | 20 | 15 min | Brute-force protection |
-| `POST /auth/social` | 20 | 15 min | Same risk profile as login |
-| `POST /auth/refresh` | 60 | 15 min | Apps refresh silently on every token expiry |
-| `POST /auth/forgot-password` | 5 | 1 hour | Prevents email bombing and token brute-forcing |
-| `POST /auth/reset-password` | 5 | 1 hour | Same window as forgot-password |
-| `POST /recommendations` | 20 | 1 hour | Each uncached request calls Gemini API (real cost) |
-| All other `/v1/` routes | 300 | 15 min | Comfortable for active browsing |
-| `GET /health` | None | — | Uptime checkers must not be blocked |
-
-Response headers on every rate-limited route:
-- `RateLimit-Limit` — the cap for this window
-- `RateLimit-Remaining` — requests left in current window
-- `RateLimit-Reset` — Unix timestamp when the window resets
-
----
-
-## Search Behaviour
-
-When `q` is provided on `GET /api/v1/books`:
-
-1. **Full text search** — uses the `search_vector` tsvector column maintained by a database trigger. Runs `plainto_tsquery('english', q)`. Results ranked by `ts_rank`.
-
-2. **Trigram fallback** — if FTS returns zero results, a second query runs using `pg_trgm` similarity on the title column. Catches typos (e.g. `"Filosopher Stone"` still finds the right book).
-
-3. **Filter combination** — `q` combines with all other filter params. Searching `q=rowling&genre=childrens_fiction` returns only books matching both.
-
----
-
-## Background Jobs
-
-### Guest session cleanup
-
-A `node-cron` job runs inside the server process every 6 hours:
-
-```
-Cron: 0 */6 * * *
-Task: DELETE FROM guest_sessions WHERE expires_at < NOW()
-```
-
-Logs the number of deleted rows at `info` level. Errors are caught and logged without crashing the server. The cleanup interval is fixed at 6 hours; the session lifetime itself is controlled by `GUEST_SESSION_TTL_HOURS`.
-
----
-
-### Email queue
-
-All outgoing emails are processed through a **BullMQ** queue backed by Redis. Emails are never sent directly from the HTTP request path — the service layer enqueues a job and returns immediately. A worker running inside the same process picks it up asynchronously.
-
-**Why a queue instead of direct sends?**
-- Automatic retries with exponential backoff (3 attempts, 2s → 4s)
-- Survives transient Resend outages without losing emails
-- Controlled concurrency (5 simultaneous sends) respects Resend rate limits
-- Priority lanes ensure password reset emails jump ahead of bulk newsletter jobs
-- Full job history visible in Bull Board
-
-**Job priorities** (lower = higher priority):
-
-| Job type | Priority |
-|----------|----------|
-| `password-reset` | 1 — user is blocked without this |
-| `password-changed` | 1 — security notification |
-| `account-deleted` | 1 — security notification |
-| `welcome` | 5 |
-| `trial-ending` | 5 |
-| `new-recommendation` | 7 |
-| `weekly-digest` | 8 |
-| `newsletter` | 10 — bulk, can wait |
-
-**Retry policy:** 3 attempts with exponential backoff (2s, 4s). After all attempts are exhausted the job moves to `failed` state and is retained in Redis for inspection via Bull Board.
-
-**Bull Board** — a visual dashboard for the email queue — is available at `/admin/queues`. It shows all pending, active, completed, and failed jobs with full payloads and error details.
-
-> **Important:** Protect `/admin/queues` with authentication before going to production.
-
-**Graceful shutdown:** On `SIGTERM`/`SIGINT` the worker finishes its currently active job before closing, ensuring no email is dropped mid-send.
-
----
-
-### Weekly digest
-
-A `node-cron` job fires every Monday at **08:00 UTC** and enqueues a `weekly-digest` job for each active user. The worker processes them in batches of 5 (controlled by the worker's `concurrency` setting).
-
-```
-Cron: 0 8 * * 1  (Mondays at 08:00 UTC)
-Task: enqueueEmail('weekly-digest', { to, payload }) per active user
-```
-
-> The query to fetch active users and build each digest payload is not yet implemented — the cron stub is in place and ready to be wired up once the user activity data layer is built.
+## Background jobs and queues
+
+Two mechanisms, chosen for different reasons. **Cron jobs** run on a schedule inside the web
+process and do bulk database work. **BullMQ queues** carry per-item work that must survive a
+restart, retry on failure, and never block an HTTP response.
+
+### Cron schedule
+
+All of these run in-process via `node-cron`, are started in `src/server.ts`, and are stopped
+cleanly on `SIGTERM`/`SIGINT`.
+
+| Job | Schedule (UTC) | What it does |
+|-----|---------------|--------------|
+| Guest cleanup | `0 */6 * * *` | Deletes guest sessions past `expires_at` |
+| Trial expiry | `0 * * * *` | Flips trials that have run out to free |
+| Order reconciliation | `*/30 * * * *` | Polls Gardners for `.ACK` acknowledgements, then for `.HDD` dispatches |
+| Subscription reconciliation | `15 3 * * *` | Re-syncs subscription state against Stripe |
+| Preference history cleanup | `20 3 * * *` | Trims old preference snapshots |
+| Interaction cleanup | `40 3 * * *` | Trims old `user_interactions` rows |
+| Bestseller refresh | `10 4 * * *` | Drops the cached bestseller windows so the day's first reader gets a correctly-bounded `7d` |
+| Recommendation email | `0 9 * * *` | Emails a new recommendation to each opted-in user, at most once every 5 days |
+| Weekly digest | `0 8 * * 1` | Mondays — **stub**: the cron fires but the active-user query is not written yet |
+
+### Queues
+
+| Queue | Worker | Why it is a queue |
+|-------|--------|-------------------|
+| `email` | `src/workers/email.worker.ts` | Retries through a transient Resend outage; priority lanes; concurrency capped at 5 |
+| `push` | `src/workers/push.worker.ts` | Same, plus stale FCM tokens get pruned as they are discovered |
+| `fulfilment` | `src/workers/fulfilment.worker.ts` | Submitting an order is an SFTP round trip; payment success must not depend on a supplier's FTP being up |
+
+Retry policy is 3 attempts with exponential backoff (2s, 4s). Exhausted jobs stay in Redis in
+the `failed` state so they can be inspected and retried from **Bull Board at `/admin/queues`**
+(bearer `ADMIN_TOKEN`).
+
+**Graceful shutdown** waits for in-flight jobs: the email worker finishes its active send,
+and the fulfilment worker finishes its SFTP write — killing that one mid-write would leave a
+partial `.ORD` file on Gardners' server.
 
 ---
 
 ## Email
 
-All emails are sent via **Resend** and routed through the BullMQ queue. Email templates live in `src/emails/` organised by type.
-
-### Email types
-
-| Type | File | Trigger |
-|------|------|---------|
-| Welcome | `transactional/welcome.ts` | New account created (email/password or social) |
-| Password reset | `transactional/password-reset.ts` | `POST /auth/forgot-password` |
-| Password changed | `transactional/password-changed.ts` | `POST /auth/change-password` |
-| Account deleted | `transactional/account-deleted.ts` | `DELETE /auth/account` |
-| Trial ending | `notifications/trial-ending.ts` | Manually enqueued when trial nears expiry |
-| New recommendation | `notifications/new-recommendation.ts` | Manually enqueued after recommendation generation |
-| Newsletter | `marketing/newsletter.ts` | Manually enqueued per campaign |
-| Weekly digest | `reports/weekly-digest.ts` | Monday 08:00 UTC cron |
-
-### Sending an email from code
-
-Always enqueue via the helper — never call `sendXxxEmail()` directly from a service:
+Every email goes through Resend, and **always through the queue** — never send directly from
+a request path.
 
 ```ts
 import { enqueueEmail } from '../lib/email-queue';
@@ -1311,83 +698,133 @@ await enqueueEmail('welcome', { to: user.email, name: user.name });
 await enqueueEmail('trial-ending', { to: user.email, name: user.name, daysLeft: 7 });
 ```
 
-The helper is fully typed — TypeScript will catch mismatched payloads at compile time.
+The helper is fully typed against `EmailJobMap`, so a mismatched payload is a compile error.
+Templates live in `src/emails/`, grouped by kind, sharing `emails/lib/layout.ts`.
+
+Priorities are set per job type — lower number wins — so a password reset never queues behind
+a newsletter:
+
+| Priority | Jobs |
+|----------|------|
+| 1 | `password-reset`, `password-changed`, `account-deleted`, `order-confirmed`, `email-change-otp`, `email-change-notify`, all three `subscription-*` |
+| 3 | `verify-email` |
+| 5 | `welcome`, `trial-ending`, `referral-invite` |
+| 7 | `new-recommendation`, `follow-request`, `follow-accepted`, `rate-review-reminder` |
+| 8 | `weekly-digest` |
+| 10 | `newsletter` |
+
+One-click unsubscribe (`UNSUBSCRIBE_SECRET`) switches off exactly three things:
+`marketingEmails`, `newBookSuggestions` and `rateReviewReminders`. It deliberately does not
+touch follow requests, trial-ending, billing or security email — those are either another
+person contacting the user or something about their own account they need to see. That rule
+is enforced by `src/__tests__/unsubscribe-scope.test.ts`, which exists because an earlier
+version silently stopped follow-request emails for anyone who left a newsletter.
 
 ### Resend setup
 
-1. Create an account at [resend.com](https://resend.com)
-2. Go to **API Keys** and create a key with **Sending access**
-3. Add and verify your sender domain under **Domains** (DNS records for SPF/DKIM).
-   The domain must match the one in `EMAIL_FROM` or every send is rejected.
-4. Enable click/open tracking under **Domains → Tracking** if you want it — Resend
-   configures tracking per domain, not per message
-5. Add `RESEND_API_KEY` and `EMAIL_FROM` to your `.env`
+1. Create an API key with **Sending access** at [resend.com](https://resend.com).
+2. Add and verify the sender domain under **Domains** — it must match `EMAIL_FROM` or every
+   send is rejected.
+3. Set `RESEND_API_KEY`, `EMAIL_FROM`, `EMAIL_FROM_NAME` and `SUPPORT_INBOX`.
 
 ---
 
-## Running Locally
+## Push notifications
+
+Push runs on Firebase Cloud Messaging through the same Admin SDK used for social sign-in.
+Devices register with `POST /api/v1/user/device-tokens`; `sendPush(userId, payload)` fans out
+to every token that user has registered, and tokens FCM reports as unregistered or invalid
+are deleted as they are found, so the table self-cleans.
+
+If Firebase is not initialised the send is skipped with a warning rather than throwing — a
+missing push credential must not fail the action that triggered the notification.
+
+In-app notifications are separate and durable: they live in `notifications`, are read through
+`/api/v1/user/notifications`, and respect `notification_preferences`.
+
+---
+
+## Logging and observability
+
+Structured JSON to stdout, read in Render's log explorer (there is no Sentry — it was
+removed deliberately in favour of the platform's own tooling).
+
+- **One line per request** — method, path, status, duration — plus a request id threaded
+  into every downstream log line for that request.
+- **Inbound `X-Request-Id` values are prefixed** so a client cannot spoof another request's id.
+- **Query strings are dropped** from the request log: tokens end up in them.
+- **`lib/log-scrubber.ts`** redacts session tokens, passwords and other named secrets from
+  every log line.
+- **`LOG_REQUEST_PAYLOADS`** attaches body, query and params to each line. It follows
+  `NODE_ENV` by default — on in development, off elsewhere — and that default is the point:
+  a body is caller-controlled, and the next endpoint to accept a secret under a name nobody
+  added to the scrubber would otherwise write it in the clear into a log aggregator with a
+  much longer retention than anyone's memory of having turned this on.
+- **`LOG_LEVEL`** overrides the default (`debug` in development, `info` elsewhere).
+
+Health check: `GET /api/health`, unversioned and unthrottled, is what Render polls.
+
+---
+
+## Testing
 
 ```bash
-# 1. Install dependencies
-npm install
-
-# 2. Set up environment
-cp .env.example .env
-# Fill in DATABASE_URL, REDIS_URL, JWT secrets, Firebase credentials,
-# GEMINI_API_KEY, RESEND_API_KEY, and APP_URL
-
-# 3. Apply migrations
-npm run db:migrate
-
-# 4. Start with hot reload
-npm run dev
+npm test          # once
+npm run test:watch
 ```
 
-The server requires:
-- **PostgreSQL** with the book tables already created by `onix_ingester`. If running without the ingester, run the ingester's `db:init` first, or manually apply its migrations against the same database.
-- **Redis** running locally (`redis://localhost:6379` by default). Used for rate limiting and the email job queue.
+Vitest, with the suite in `src/__tests__/`. The coverage is deliberately concentrated on the
+things that are expensive to get wrong and cheap to test in isolation: pricing and money
+arithmetic, shipping bands and rate cards, subscription cancellation and pricing, referral
+scoring and links, search and catalogue filters, the Gardners parsers, and the log scrubber.
 
-Once running, the **Bull Board** queue dashboard is available at `http://localhost:3000/admin/queues`.
+That is why so much logic is written as pure functions of plain data — `commerce/pricing.ts`
+and `referral-scoring.service.ts` are the clearest examples. The interesting cases (a
+circuit that closes six levels down, a parcel that crosses a weight band) are miserable to
+set up as database fixtures and trivial to express as arrays.
 
 ---
 
 ## Deploying to Render
 
-`render.yaml` defines the web service configuration. The service connects to the same PostgreSQL instance as `onix_ingester` via `DATABASE_URL`.
-
-### Environment variables on Render
-
-Set all values from [Environment Variables](#environment-variables) in the Render dashboard. `DATABASE_URL` is injected automatically from the linked database. `REDIS_URL` is injected automatically from the linked Redis instance. Set `RESEND_API_KEY`, `EMAIL_FROM`, `EMAIL_FROM_NAME`, and `APP_URL` manually.
-
-### Pre-deploy command
-
-```bash
-npm run db:migrate
-```
-
-Runs on every deploy before the new instance starts. Idempotent and safe.
-
-### Build and start
+`render.yaml` defines the service. It runs on the same PostgreSQL and Redis instances as
+`onix_ingester`.
 
 ```
-Build:  npm install && npm run build
-Start:  node dist/server.js
+Build:       npm install && npm run build
+Pre-deploy:  npm run db:init          (idempotent — safe on every deploy)
+Start:       node dist/server.js
+Health:      /api/health
 ```
+
+`DATABASE_URL` and `REDIS_URL` are injected from the linked resources; `JWT_ACCESS_SECRET`
+and `JWT_REFRESH_SECRET` are generated by Render. Everything else is set in the dashboard.
+
+`GEO_COUNTRY_HEADER` is set to `cf-ipcountry`, which is safe despite being a client-settable
+header name: Render's own Cloudflare overwrites any `cf-*` header a client sends (verified
+2026-09-02 — a request carrying a forged `cf-ipcountry: ZZ` arrived as the true `GH`). That
+Cloudflare is Render's rather than ours, so it is undocumented and could go away; if it does,
+`geo.service` degrades to a null country rather than trusting the header.
+
+Crons and workers run inside the web process, so **more than one instance means every cron
+fires in every instance.** The jobs that would be dangerous under that are written to be
+idempotent — the trial flip re-checks its guards inside the `UPDATE`, dispatch inserts are
+arbitrated by a unique constraint — but treat that as a property to verify per job before
+scaling out, not a blanket guarantee.
 
 ---
 
-## Firebase Setup
+## Firebase setup
 
-### 1. Create a Firebase project
+### 1. Create the project
 
-1. Go to [console.firebase.google.com](https://console.firebase.google.com) and create a new project
-2. Go to **Authentication → Sign-in method** and enable the providers you need: Google, Facebook, Apple
+Create a project at [console.firebase.google.com](https://console.firebase.google.com), then
+under **Authentication → Sign-in method** enable Google, Facebook and Apple.
 
 ### 2. Generate a service account key
 
-1. Go to **Project Settings → Service accounts**
-2. Click **Generate new private key** — downloads a JSON file
-3. Base64-encode the whole file and set the result as a single variable:
+**Project Settings → Service accounts → Generate new private key** downloads a JSON file.
+Base64-encode the whole file and set the result as one variable:
 
 ```bash
 base64 -i serviceAccountKey.json
@@ -1397,9 +834,13 @@ base64 -i serviceAccountKey.json
 FIREBASE_SERVICE_ACCOUNT_B64=<the base64 output>
 ```
 
-The server decodes this and reads `project_id`, `client_email` and `private_key` out of the JSON.
+The server decodes it and reads `project_id`, `client_email` and `private_key` out of the JSON.
 
-**Use this form for Render and any other dashboard-configured environment.** A raw PEM private key does not survive a web form intact: dashboards store the value verbatim, so wrapping double quotes become part of the string and multi-line pastes can arrive with the newlines flattened. Either way OpenSSL rejects the key and Firebase fails to start with the unhelpful message `error:1E08010C:DECODER routines::unsupported`. Base64 contains no characters a form can mangle.
+**Use this form for Render and any other dashboard-configured environment.** A raw PEM key
+does not survive a web form intact: dashboards store the value verbatim, so wrapping quotes
+become part of the string and multi-line pastes can arrive with the newlines flattened.
+Either way OpenSSL rejects the key and Firebase fails to start with the unhelpful
+`error:1E08010C:DECODER routines::unsupported`. Base64 contains nothing a form can mangle.
 
 <details>
 <summary>Alternative: the three fields individually</summary>
@@ -1412,7 +853,8 @@ FIREBASE_CLIENT_EMAIL    ← "client_email"
 FIREBASE_PRIVATE_KEY     ← "private_key"
 ```
 
-Keep the private key wrapped in double quotes and leave the `\n` characters as-is. These are read only when `FIREBASE_SERVICE_ACCOUNT_B64` is unset.
+Keep the private key wrapped in double quotes and leave the `\n` characters as-is. These are
+read only when `FIREBASE_SERVICE_ACCOUNT_B64` is unset.
 
 </details>
 
@@ -1422,33 +864,69 @@ Keep the private key wrapped in double quotes and leave the `\n` characters as-i
 npm run firebase:check
 ```
 
-Reports which credential source is in use, whether the private key is well-formed PEM, and whether Google actually accepts it (it mints a real access token). Pass a Firebase ID token as an argument — `npm run firebase:check -- <idToken>` — to also verify the exact path `POST /api/v1/auth/social` takes. It prints no secret material; keys are reported by length and SHA-256 prefix, so the output is safe to paste into a ticket.
-
-Run it in Render's shell (**Shell** tab on the service) to check the deployed environment without waiting on a deploy and a login attempt.
+Reports which credential source is in use, whether the private key is well-formed PEM, and
+whether Google actually accepts it (it mints a real access token). Pass a Firebase ID token —
+`npm run firebase:check -- <idToken>` — to also verify the exact path `POST /api/v1/auth/social`
+takes. It prints no secret material; keys are reported by length and SHA-256 prefix, so the
+output is safe to paste into a ticket. Run it in Render's **Shell** tab to check the deployed
+environment without waiting on a deploy and a login attempt.
 
 ### Getting an ID token to test with
 
 Call `firebaseUser.getIdToken()` in the mobile app after signing in. Tokens last one hour.
-
-`scripts/google-signin-test.html` does the same from a browser, via a real Google sign-in popup — see the comment at the top of that file for how to run it. It needs a **Web** app registered in the Firebase project first; only Android and iOS are registered today, so it won't work until someone adds one.
+`scripts/google-signin-test.html` does the same from a browser via a real Google sign-in
+popup — see the comment at the top of that file. It needs a **Web** app registered in the
+Firebase project first; only Android and iOS are registered today.
 
 ### Failure behaviour
 
-The server exits at startup if neither form is configured, and throws with a diagnostic message if the key is present but unparseable — Firebase backs social sign-in and push, so a server running without it would pass health checks while rejecting every Google login.
+The server exits at startup if neither credential form is configured, and throws with a
+diagnostic message if the key is present but unparseable. Firebase backs social sign-in and
+push, so a server running without it would pass health checks while rejecting every Google
+login.
 
-### 3. Mobile integration
+### Mobile integration
 
-The mobile app initialises Firebase and calls the appropriate sign-in method per provider. After a successful sign-in, call `firebaseUser.getIdToken()` and POST that string to `POST /api/v1/auth/social`.
+The app signs in with the provider, then POSTs `firebaseUser.getIdToken()` to
+`POST /api/v1/auth/social`. For onboarding, `guestSessionId` must survive the OAuth redirect:
+embed it in Firebase's `customParameters` state before initiating sign-in, read it back in
+the callback, and include it in the request body.
 
-For the onboarding flow, the `guestSessionId` must survive the OAuth redirect. Embed it in the Firebase `customParameters` state parameter before initiating the provider sign-in, then read it back from state in the OAuth callback and include it in the `POST /auth/social` request body.
-
-### 4. Facebook & Apple extra steps
-
-- **Facebook** — requires a Facebook App ID and secret entered into Firebase's Facebook provider settings
-- **Apple** — requires an Apple Developer account. Apple sign-in is mandatory on iOS if your app offers any other social login option (App Store guideline 4.8)
+- **Facebook** needs an App ID and secret in Firebase's Facebook provider settings.
+- **Apple** needs an Apple Developer account, and is mandatory on iOS if the app offers any
+  other social login (App Store guideline 4.8).
 
 ### Service account security
 
-- Never commit the service account JSON or your `.env` to version control
-- On Render, set `FIREBASE_SERVICE_ACCOUNT_B64` as an environment variable in the dashboard
-- If a key is ever pasted somewhere it shouldn't be — a chat, a ticket, a log — treat it as compromised: generate a new one under **Service accounts** and delete the old key, rather than assuming it went unnoticed
+Never commit the service account JSON or your `.env`. If a key is ever pasted somewhere it
+shouldn't be — a chat, a ticket, a log — treat it as compromised: generate a new one under
+**Service accounts** and delete the old key, rather than assuming it went unnoticed.
+
+---
+
+## Further reading
+
+| Document | What it covers |
+|----------|---------------|
+| [`docs/technical-requirements.md`](docs/technical-requirements.md) | The TRD — scope, requirements, data model, integrations, non-functional requirements |
+| [`CLAUDE.md`](CLAUDE.md) | Commit message and changelog conventions for this repo |
+| [`CHANGELOG.md`](CHANGELOG.md) | One line per commit, generated |
+| [`changelog/`](changelog/) | Detailed write-up per notable change — what, why, what was left out, how it was verified |
+| [`docs/ecommerce-plan.md`](docs/ecommerce-plan.md) | The shop's original design |
+| [`docs/referral-system-plan.md`](docs/referral-system-plan.md) | Referral competition design and its accepted risks |
+| [`docs/mobile-integration.md`](docs/mobile-integration.md) | What the mobile client needs from this API |
+| [`docs/shop-integration.md`](docs/shop-integration.md) | What the storefront needs |
+| [`docs/order-tracking-client-brief.md`](docs/order-tracking-client-brief.md) | Order and tracking flow for clients |
+| [`docs/delivery-options-client-brief.md`](docs/delivery-options-client-brief.md) | Shipping options as the client sees them |
+| [`docs/open-issues.md`](docs/open-issues.md) | Known issues not yet filed |
+
+### Conventions
+
+- **Commits** are Conventional Commits with a plain-language description — `CHANGELOG.md` is
+  generated from them and read by non-engineers. Anything beyond a trivial change also gets a
+  write-up in `changelog/`. See `CLAUDE.md`.
+- **Routes are thin, services hold the logic**, and the JSDoc above a route is its contract.
+- **Comments explain why, not what.** The codebase is unusually heavily commented on purpose:
+  the non-obvious decisions — why a 402 rather than a 403, why two proxy hops, why fulfilment
+  is off the webhook path — are recorded where the code is, and that convention is worth
+  keeping.

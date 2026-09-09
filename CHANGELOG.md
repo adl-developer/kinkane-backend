@@ -10,6 +10,7 @@
 
 ### Bug Fixes
 
+* stop printing the guest's long access code in the order confirmation email ([385b52c](https://adl.github.com/adl-developer/kinkane-backend/commit/385b52c3d13ec06b126e399255116339a8fad935)) — [details](changelog/2026-09-08-order-email-drop-guest-token.md)
 * send shop receipts to the address the buyer typed, not a placeholder ([4e81549](https://adl.github.com/adl-developer/kinkane-backend/commit/4e8154980ca7c5f44a78a4f5db483393aca1ca5e)) — [details](changelog/2026-09-08-guest-account-contact-email.md)
 * harden the log scrubber against three coverage gaps ([ed7510a](https://adl.github.com/adl-developer/kinkane-backend/commit/ed7510a7d67fd97214b679be55ba7e0a5532c187)) — [details](changelog/2026-09-08-log-scrubber-hardening.md)
 * only surface a 5xx to the client when it carries a machine-readable code ([e35e611](https://adl.github.com/adl-developer/kinkane-backend/commit/e35e61102a79f3cc2ccf8864593f4eac63140b86)) — [details](changelog/2026-09-08-other-editions-author-name-order.md)
