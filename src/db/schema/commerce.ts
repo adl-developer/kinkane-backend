@@ -131,25 +131,25 @@ export const orders = pgTable(
      * The suffix is crypto-random base32 (Crockford, ambiguous characters
      * removed so it survives being read aloud or retyped from an email).
      *
-     * Random alone is not the access control — `guestAccessTokenHash` below is
-     * — but it removes enumeration as an attack surface entirely rather than
-     * relying on rate limiting to make it merely slow.
+     * Random alone is not the access control — `guestAccessTokenHash` below
+     * is, and "Track My Order" pairs this with `contact_email` — but it
+     * removes enumeration as an attack surface entirely rather than relying on
+     * rate limiting to make it merely slow.
      */
     reference: varchar('reference', { length: 32 }).notNull().unique(),
 
     /**
-     * The short code a customer types into "Track My Order", e.g. `7K2M9QX4`.
+     * A short internal code, e.g. `7K2M9QX4`. **Nothing customer-facing reads
+     * it.**
      *
-     * Exists because the guest lookup credential — a 43-character base64url
-     * token — is fine in a link and hopeless to a customer who has lost the
-     * email and is standing at a counter reading a code off their phone. This
-     * is eight Crockford base32 characters, paired with the order's contact
-     * email as the second factor.
+     * It was once the string typed into "Track My Order". Tracking now runs on
+     * `reference` plus `contact_email`, because a customer holding an order
+     * number and a code that looked almost identical had to guess which box
+     * each went in. The column stays populated so orders written before and
+     * after that change look the same in support and in history.
      *
      * **Not** `tracking_number` below: that is the carrier's, arrives from a
-     * Gardners dispatch file, and does not exist until the parcel ships. This
-     * one is ours, exists from the moment the order is written, and is what a
-     * customer uses to watch an order *before* it is dispatched.
+     * Gardners dispatch file, and does not exist until the parcel ships.
      */
     trackingCode: varchar('tracking_code', { length: 16 }).notNull().unique(),
 

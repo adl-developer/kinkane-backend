@@ -135,10 +135,11 @@ describe('scrubContext — request payloads', () => {
   });
 
   it('keeps the fields that make a payload worth logging', () => {
-    // `code` is deliberately not a sensitive key — see SENSITIVE_KEYS.
+    // `code` and `reference` are deliberately not sensitive keys — see
+    // SENSITIVE_KEYS.
     const body = {
       contactEmail: 'reader@example.com',
-      trackingCode: 'K7M2QX4P',
+      reference: 'ORD-K7M2QX4P',
       referralCode: 'ABCD12',
       lines: [{ bookId: 42, quantity: 2 }],
     };

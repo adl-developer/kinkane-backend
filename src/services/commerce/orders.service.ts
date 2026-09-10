@@ -16,14 +16,16 @@ import {
 import { adminNotificationsService } from '../admin/notifications.service';
 import { formatMinor } from '../../lib/money';
 import { logger } from '../../lib/logger';
-import { hashToken, normalizeTrackingCode, tokensMatch } from '../../lib/order-identity';
+import { hashToken, normalizeReference, tokensMatch } from '../../lib/order-identity';
 import { interactionsService } from '../interactions.service';
 
 export interface OrderView {
   id: number;
-  /** Customer-facing identity, e.g. `ORD-7K2M9QX4`. */
+  /** The order number, e.g. `ORD-7K2M9QX4`. What a customer types into "Track
+   * My Order", alongside the email the order was placed with. */
   reference: string;
-  /** The short code for "Track My Order", e.g. `7K2M9QX4`. Ours, not the carrier's. */
+  /** @deprecated An internal short code. Nothing accepts it and no email
+   * prints it; see the column comment in db/schema/commerce.ts. */
   trackingCode: string;
   status: OrderStatus;
   /** The status collapsed for the order UI's filter tabs. */
@@ -248,7 +250,7 @@ export const ordersService = {
     const [order] = await db
       .select()
       .from(orders)
-      .where(eq(orders.reference, reference.toUpperCase()))
+      .where(eq(orders.reference, normalizeReference(reference)))
       .limit(1);
 
     if (!order?.guestAccessTokenHash) return null;
@@ -259,17 +261,16 @@ export const ordersService = {
   },
 
   /**
-   * An order fetched by its short tracking code and the email it was placed
-   * with. This is what the "Track My Order" form runs on, for guests and
-   * signed-in customers alike.
+   * An order fetched by its reference and the email it was placed with. This
+   * is what the "Track My Order" form runs on, for guests and signed-in
+   * customers alike.
    *
    * **Both halves are required, and neither is a credential on its own.** The
-   * code is eight characters — quotable, printable, and small enough that a
-   * patient attacker could walk the space — so the contact email is what makes
-   * a guessed code worthless. That is also why the email is compared here in
-   * application code rather than being part of the SQL predicate: the query
-   * finds one row by its unique code, and the comparison decides whether the
-   * caller may see it.
+   * reference is quotable — it is printed on receipts and pasted into support
+   * tickets — so the contact email is what makes it safe to look up on. That is
+   * also why the email is compared here in application code rather than being
+   * part of the SQL predicate: the query finds one row by its unique
+   * reference, and the comparison decides whether the caller may see it.
    *
    * `contactEmail` is compared case-insensitively, **not** via
    * `normalizeEmailForPromotions`. That normaliser deliberately collapses
@@ -277,14 +278,14 @@ export const ordersService = {
    * discount — exactly the property that must not exist here, where a
    * near-miss address would open somebody else's order.
    *
-   * A wrong email and an unknown code return the same `null`, so this cannot be
-   * used to test which codes exist.
+   * A wrong email and an unknown reference return the same `null`, so this
+   * cannot be used to test which references exist.
    */
-  async findByTrackingCodeAndEmail(code: string, email: string): Promise<OrderView | null> {
+  async findByReferenceAndEmail(reference: string, email: string): Promise<OrderView | null> {
     const [order] = await db
       .select()
       .from(orders)
-      .where(eq(orders.trackingCode, normalizeTrackingCode(code)))
+      .where(eq(orders.reference, normalizeReference(reference)))
       .limit(1);
 
     if (!order) return null;
@@ -319,7 +320,7 @@ export const ordersService = {
     const [order] = await db
       .select()
       .from(orders)
-      .where(eq(orders.reference, reference.toUpperCase()))
+      .where(eq(orders.reference, normalizeReference(reference)))
       .limit(1);
 
     if (!order?.guestAccessTokenHash) return null;

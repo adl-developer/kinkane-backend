@@ -47,8 +47,8 @@ export type EmailJobName = keyof EmailJobMap;
 
 export const EMAIL_PRIORITY: Record<EmailJobName, number> = {
   // Highest of the transactional set: somebody has just been charged, and for a
-  // guest this email is the only copy of their tracking code that will ever
-  // exist. It must not queue behind a newsletter.
+  // guest this email is the only durable copy of the order number they will
+  // need to track it. It must not queue behind a newsletter.
   'order-confirmed':    1,
   'password-reset':     1,
   'password-changed':   1,

@@ -14,7 +14,9 @@
  * Conflating the two is the classic way order-lookup endpoints leak: a
  * reference is quotable and gets pasted into support tickets and screenshots,
  * so anything that treats it as a password inherits every place it has been
- * written down.
+ * written down. That is why "Track My Order" asks for the reference *and* the
+ * email the order was placed with: the pair is what makes a quotable
+ * identifier safe to look up on.
  */
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import { randomCode } from './random-code';
@@ -27,7 +29,7 @@ import { randomCode } from './random-code';
 const REFERENCE_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 const REFERENCE_LENGTH = 8;
 
-/** Length of the customer-facing tracking code. See generateTrackingCode. */
+/** Length of the legacy tracking code. See generateTrackingCode. */
 export const TRACKING_CODE_LENGTH = 8;
 
 /**
@@ -72,16 +74,15 @@ export function tokensMatch(aHex: string, bHex: string): boolean {
 }
 
 /**
- * The short, quotable code a customer types into "Track My Order".
+ * The short code that used to be typed into "Track My Order".
  *
- * Eight Crockford base32 characters (~40 bits) with no `ORD-` prefix, because
- * the whole point is that it survives being read off a phone screen and typed
- * into a form by someone who is not looking at their confirmation email.
+ * **Nothing customer-facing reads this any more.** Tracking is by order
+ * reference plus contact email, so a customer sees one identifier instead of
+ * choosing between two that looked alike. The column is still `NOT NULL
+ * UNIQUE` and still populated at checkout, so orders written before and after
+ * the change look the same to support and to anything reading history.
  *
- * **It is an identifier, not a credential** — the same rule the reference lives
- * under, and for the same reason: it is printed on receipts and pasted into
- * support tickets. Tracking lookup pairs it with the order's contact email, so
- * a guessed code on its own reveals nothing. Do not add a code-only read path.
+ * Eight Crockford base32 characters (~40 bits) with no `ORD-` prefix.
  *
  * Distinct from `orders.tracking_number`, which is the *carrier's* number
  * recovered from a Gardners dispatch file and only exists once a parcel ships.
@@ -90,7 +91,25 @@ export function generateTrackingCode(): string {
   return randomCode(TRACKING_CODE_LENGTH);
 }
 
-/** Uppercases and strips the spacing and dashes people add when retyping. */
-export function normalizeTrackingCode(input: string): string {
-  return input.trim().toUpperCase().replace(/[\s-]/g, '');
+/**
+ * Turns what a customer typed into the canonical `ORD-XXXXXXXX` form.
+ *
+ * The reference is the one string a customer is now asked for, so this is
+ * deliberately forgiving: case is ignored, spaces and dashes are stripped, and
+ * the `ORD` prefix is optional — someone reading the tail off a screen has
+ * typed a valid reference.
+ *
+ * Stripping a leading `ORD` cannot eat part of a real code: `O` is not in
+ * `REFERENCE_ALPHABET`, so no reference body can begin with those letters.
+ *
+ * Returns the normalised string without validating it. The caller decides
+ * whether the result is a well-formed reference.
+ */
+export function normalizeReference(input: string): string {
+  const bare = input
+    .trim()
+    .toUpperCase()
+    .replace(/[\s-]/g, '')
+    .replace(/^ORD/, '');
+  return `ORD-${bare}`;
 }

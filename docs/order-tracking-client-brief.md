@@ -2,8 +2,9 @@
 
 **Audience:** whoever builds the checkout confirmation, order history and
 "Track My Order" screens in the Kinkané apps.
-**Status:** live on `main` as of 2026-09-04. The short tracking code is new;
-everything else described here already shipped.
+**Status:** live on `main` as of 2026-09-10. Tracking now runs on the order
+number; the short tracking code that briefly sat alongside it is gone from
+every customer-facing surface.
 
 This document is self-contained. It restates what you need from the wider shop
 integration guide so you do not have to read that first.
@@ -14,22 +15,20 @@ spec is correct** — it is generated from the running code.
 
 ---
 
-## 1. The mental model: two identifiers and one credential
+## 1. The mental model: one identifier and one credential
 
-Almost every mistake made against this API comes from treating these three
-strings as interchangeable. They are not. Read this section before writing any
-code.
+A customer has exactly one string to know: the order number. Everything below
+follows from that.
 
 | String | Example | What it is | Secret? |
 | --- | --- | --- | --- |
-| `reference` | `ORD-7K2M9QX4` | The order's name. Printed on receipts, quoted in support, safe to show anywhere. | **No** |
-| `trackingCode` | `7K2M9QX4` | Short code the customer types to track an order. Ours, not the carrier's. | **No** |
+| `reference` | `ORD-7K2M9QX4` | The order number. Its name. Printed on receipts, quoted in support, typed into the tracking form, safe to show anywhere. | **No** |
 | `accessToken` | `v4Xk9…` (43 chars) | The credential that proves a guest owns the order. Returned **once**, at checkout. | **Yes** |
 
-The two identifiers are random rather than sequential, so nobody can walk the
-order book by incrementing a number. But random is not the same as secret:
-either can end up in a screenshot or a support ticket, so **neither is ever
-enough on its own** to read an order.
+The reference is random rather than sequential, so nobody can walk the order
+book by incrementing a number. But random is not the same as secret: it ends up
+in screenshots and support tickets, so **it is never enough on its own** to read
+an order.
 
 That gives three ways into an order, and they are for three different
 situations:
@@ -38,35 +37,44 @@ situations:
 | --- | --- | --- |
 | Signed-in customer browsing their own orders | `GET /orders`, `GET /orders/:id` | Bearer token |
 | Your code, right after checkout, still holding the access token | `POST /orders/lookup` | reference + accessToken |
-| A human typing into a form | `POST /orders/track` | trackingCode + email |
+| A human typing into a form | `POST /orders/track` | reference + email |
 
 A fourth call, `POST /orders/claim`, is not a read at all — it transfers
 ownership of a guest order to an account. See §7.
 
-### Why the tracking code needs the email
+### There used to be a tracking code. There isn't now.
 
-Eight characters is short enough for a customer to read off their phone and
-type into a form. That is the entire point of it — and it is also why it cannot
-be the only thing you send. A code that short is guessable given enough
-attempts, so the email address the order was placed with is the second factor.
+An eight-character `trackingCode` was briefly the thing a customer typed. It
+sat next to an order number that looked almost exactly like it, and the only
+question it ever produced was which of the two went in the box. Tracking now
+takes the order number, and nothing accepts the code.
 
-**Do not build a screen that submits the code alone.** There is no endpoint that
-would accept it, and asking for the email is not friction to be optimised away —
-it is what stops a stranger reading a customer's name, address and purchases.
+The field is still on the order object, deprecated, for continuity with orders
+placed before the change. **Do not render it, and do not offer a field for
+it.** Codes printed in confirmation emails sent before 2026-09-10 no longer
+work anywhere; the order number in that same email does.
+
+### Why the order number needs the email
+
+The order number is printed, forwarded and pasted into support tickets, so it
+is an identifier and never a password. The email address the order was placed
+with is the second factor.
+
+**Do not build a screen that submits the order number alone.** There is no
+endpoint that would accept it, and asking for the email is not friction to be
+optimised away — it is what stops a stranger reading a customer's name, address
+and purchases.
 
 ---
 
-## 2. Two tracking fields, and they are not the same thing
-
-The order object carries both. Confusing them is the single most likely bug on
-the tracking screen.
+## 2. The order number is not the carrier's tracking number
 
 | Field | Whose | Exists when | Example |
 | --- | --- | --- | --- |
-| `trackingCode` | **Ours** | From the moment the order is placed | `7K2M9QX4` |
+| `reference` | **Ours** | From the moment the order is placed | `ORD-7K2M9QX4` |
 | `trackingNumber` | The carrier's (Royal Mail etc.) | Only once the parcel physically ships | `AB123456789GB` |
 
-`trackingCode` is what the customer types to find their order. It works
+`reference` is what the customer types to find their order. It works
 immediately, including while the order is still being prepared — which is
 exactly when an anxious customer goes looking for it.
 
@@ -122,17 +130,18 @@ definitive answer.
 ```jsonc
 // POST /api/v1/orders/track     (no auth)
 {
-  "code": "7K2M9QX4",
+  "reference": "ORD-7K2M9QX4",
   "email": "rachel@example.com"
 }
 ```
 
 Returns `200` with the full order object (§5).
 
-**Both fields are required.** Send the code exactly as the customer typed it —
-case is ignored, and spaces and dashes are stripped server-side, so `7k2m-9qx4`
-and `7K2M 9QX4` both work. Do not build a masked or segmented input that fights
-the customer over formatting; a plain text field is correct.
+**Both fields are required.** Send the order number exactly as the customer
+typed it — case is ignored, the `ORD-` prefix is optional, and spaces and dashes
+are stripped server-side, so `ord-7k2m9qx4`, `7K2M9QX4` and `ORD 7K2M 9QX4` all
+work. Do not build a masked or segmented input that fights the customer over
+formatting; a plain text field is correct.
 
 The email is matched case-insensitively and trimmed, but is otherwise exact.
 `rachel+shop@gmail.com` will **not** open an order placed with
@@ -152,19 +161,20 @@ the better path when they simply want to see their own history.
 
 | Status | Meaning | What to show |
 | --- | --- | --- |
-| `400` | Malformed code or email | Field-level validation message |
-| `404` | Unknown code **or** wrong email | One "we couldn't find that order" state |
+| `400` | Malformed order number or email | Field-level validation message |
+| `404` | Unknown order number **or** wrong email | One "we couldn't find that order" state |
 | `429` | Rate limited: 10 per 15 min per IP | "Too many attempts, try again shortly" |
 
-> The `404` is deliberately identical for an unknown code and a mismatched
-> email, so the endpoint cannot be used to discover which codes exist. **Do not
-> try to tell the user which half was wrong** — you cannot, and guessing at it
-> in the copy ("check your code") will send people down the wrong path half the
-> time. Say both: "Check the code and the email address you ordered with."
+> The `404` is deliberately identical for an unknown order number and a
+> mismatched email, so the endpoint cannot be used to discover which orders
+> exist. **Do not try to tell the user which half was wrong** — you cannot, and
+> guessing at it in the copy ("check your order number") will send people down
+> the wrong path half the time. Say both: "Check your order number and the email
+> address you ordered with."
 
-The rate limit is what makes guessing a short code impractical, so it is
-deliberately tight. A customer retyping a code will never hit it; a script will.
-Do not retry automatically on `429`.
+The rate limit is what makes guessing impractical, so it is deliberately tight.
+A customer retyping an order number will never hit it; a script will. Do not
+retry automatically on `429`.
 
 ---
 
@@ -178,7 +188,7 @@ too, so an order history screen needs no follow-up request per row.
 {
   "id": 1042,
   "reference": "ORD-7K2M9QX4",
-  "trackingCode": "7K2M9QX4",
+  "trackingCode": "7K2M9QX4",   // deprecated — ignore it, nothing accepts it
   "status": "dispatched",
   "statusBucket": "in_progress",
 
@@ -301,16 +311,16 @@ This is the "Save your order details" step: sign the user up, then claim the
 order so it appears in their history.
 
 **This one genuinely requires the access token and always will.** It is a write
-that transfers ownership permanently. If it accepted code plus email, anyone who
-guessed a code and knew the buyer's address could pull someone else's order into
-their own account. That is precisely the attack the token exists to prevent.
+that transfers ownership permanently. If it accepted the order number plus an
+email, anyone holding a forwarded confirmation could pull someone else's order
+into their own account. That is precisely the attack the token exists to prevent.
 
 Claiming is **single-use** — the token is retired on success, so a forwarded
 confirmation email cannot re-home an order that already has an owner. A second
 claim returns `404`, as do an unknown reference and a wrong token.
 
 If the customer skips the account offer, nothing breaks: the token keeps working
-for `/lookup`, and the tracking code keeps working for `/track`.
+for `/lookup`, and the order number keeps working for `/track`.
 
 ---
 
@@ -319,13 +329,14 @@ for `/lookup`, and the tracking code keeps working for `/track`.
 The order confirmation email arrives when **payment lands**, not at checkout.
 It contains:
 
-- The order reference, in the subject line, so an inbox search finds it
-- **The tracking code**, shown large, for everyone — guest or signed-in
-- The access token, printed as text, **for guests only**
+- The order number, in the subject line, so an inbox search finds it
+- **The order number again**, shown large, next to the reminder that the email
+  address they ordered with is the other half
+- Nothing else. The access token is not printed, and neither is any code
 
 The token is never put in a URL. A token in a link leaks through Referer
 headers, browser history and any analytics on the landing page. If you build a
-deep link into the tracking screen, it may carry the tracking code but **must
+deep link into the tracking screen, it may carry the order number but **must
 not** carry the access token.
 
 Email is a safety net, not a substitute for client-side storage — it is slower
@@ -335,19 +346,19 @@ than the confirmation screen and sometimes never arrives.
 
 ## 9. Common mistakes
 
-- **Building a code-only tracking form.** The email is required. There is no
-  endpoint that takes the code alone.
+- **Building an order-number-only tracking form.** The email is required. There
+  is no endpoint that takes the order number alone.
 - **Showing "no tracking available" as an error state** for a paid order. Null
   carrier fields are the normal first phase of every order's life.
-- **Rendering `trackingNumber` where you meant `trackingCode`.** One is null for
-  the first day or two of an order; the other never is.
+- **Rendering `trackingNumber` where you meant the order number.** One is null
+  for the first day or two of an order; the other never is.
 - **Displaying `status` instead of `statusBucket`.** New status values may be
   added; the buckets are stable.
 - **Treating minor units as decimals.** `2997` is £29.97.
-- **Trying to distinguish a bad code from a bad email** from the `404`. You
-  cannot; the response is identical by design.
-- **Auto-retrying on `429`.** The limiter is the security control on a short
-  code. Show the message and stop.
+- **Trying to distinguish a bad order number from a bad email** from the `404`.
+  You cannot; the response is identical by design.
+- **Auto-retrying on `429`.** The limiter is the security control here. Show the
+  message and stop.
 - **Losing the access token** by not persisting it before opening the Stripe
   page. It is returned exactly once and can never be re-issued.
 
@@ -359,7 +370,7 @@ than the confirmation screen and sometimes never arrives.
 | --- | --- | --- | --- |
 | `POST` | `/api/v1/cart/checkout` | optional | Create the order, get the Stripe URL + access token |
 | `GET` | `/api/v1/payments/{reference}` | none | Confirm payment landed. 60/min |
-| `POST` | `/api/v1/orders/track` | none | **Track by code + email.** 10 per 15 min |
+| `POST` | `/api/v1/orders/track` | none | **Track by order number + email.** 10 per 15 min |
 | `POST` | `/api/v1/orders/lookup` | none | Read by reference + access token. 10 per 15 min |
 | `POST` | `/api/v1/orders/claim` | **required** | Attach a guest order to the account. 10 per 15 min |
 | `GET` | `/api/v1/orders?status=` | required | The signed-in customer's order history |

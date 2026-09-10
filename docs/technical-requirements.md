@@ -264,7 +264,7 @@ Requirements are numbered by area so they can be referenced from tickets and com
 | FR-G5a | The minor unit is not always 1/100. JPY, KRW and roughly twenty others have none, and Stripe rejects an amount that assumes one. Nothing may multiply by a hardcoded 100. |
 | FR-G5b | Conversion rounds **up**, against the customer's favour. That is a pricing decision, not a numerical one, and it is concentrated in `lib/money.ts` so it can be argued with in one place. |
 | FR-G6 | A basket too heavy or too large for one parcel must fail with a specific, client-readable code, never a bare 500. |
-| FR-G7 | Guests can check out. An order is retrievable with a short tracking code plus the buyer's email, and can be claimed onto an account later. |
+| FR-G7 | Guests can check out. An order is retrievable with its order number plus the buyer's email, and can be claimed onto an account later. |
 | FR-G8 | The order confirmation email goes to the address the buyer actually typed, and must never print a guest's long access code. |
 | FR-G9 | Fulfilment runs on a queue, never inside the Stripe webhook. An SFTP round trip inside a webhook would time out, Stripe would redeliver, and payment success would depend on a supplier's FTP being up. |
 | FR-G10 | Gardners' EDI address fields are fixed-width `varchar(35)` (postcode 8) read by a legacy parser. Over-long values are truncated before submission, never rejected at the far end. |
@@ -423,7 +423,7 @@ shipping_rates   the rate card, seeded and regenerable
 `orders` records both sides of the money: the GBP figures the order was costed in
 (`*_gbp_pence`) and the presentment figures the buyer was actually charged (`*_minor` plus
 `presentment_currency`), with the `fx_rate` and `fx_captured_at` that connect them. It also
-carries the reference, the short tracking code, the hashed guest access token, the tax rate
+carries the reference, the hashed guest access token, the tax rate
 and its source, the shipping rule, service code and measured weight, the captured shipping
 address, the Stripe session and payment intent ids, the discount and its reason, and the
 carrier tracking details once dispatched.

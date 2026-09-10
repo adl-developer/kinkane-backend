@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 import { ordersService } from '../services/commerce/orders.service';
 import { parseId } from '../lib/route-helpers';
-import { normalizeTrackingCode } from '../lib/order-identity';
+import { normalizeReference } from '../lib/order-identity';
 
 const listSchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).default(20),
@@ -21,28 +21,29 @@ const listSchema = z.object({
 });
 
 /**
+ * The order number plus the email that is its second factor.
+ *
+ * The reference is normalised *before* it is validated, not after. A customer
+ * retyping `ord-7k2m 9qx4` off their confirmation has typed a valid order
+ * number, and validating the raw string would mean either rejecting them or
+ * writing a pattern loose enough to also accept `ORD-7-------`. Normalising
+ * first makes "ORD- plus exactly eight characters from the alphabet" the only
+ * rule there is.
+ */
+const trackOrderSchema = z.object({
+  reference: z
+    .string()
+    .max(64)
+    .transform(normalizeReference)
+    .refine((ref) => /^ORD-[0-9A-HJKMNP-TV-Z]{8}$/.test(ref), 'Invalid order number'),
+  email: z.string().trim().email('Invalid email').max(254),
+});
+
+/**
  * Reference plus token. Both bounded before anything touches the database:
  * these are the only unauthenticated order endpoints, so they take the
  * narrowest input the format allows.
  */
-/**
- * The short code plus the email that is its second factor.
- *
- * The code is normalised *before* it is validated, not after. A customer
- * retyping `7k2m-9qx4` off their phone has typed a valid code, and validating
- * the raw string would mean either rejecting them or writing a pattern loose
- * enough to also accept `7-------`. Normalising first makes "exactly eight
- * characters from the alphabet" the only rule there is.
- */
-const trackOrderSchema = z.object({
-  code: z
-    .string()
-    .max(64)
-    .transform(normalizeTrackingCode)
-    .refine((code) => /^[0-9A-HJKMNP-TV-Z]{8}$/.test(code), 'Invalid tracking code'),
-  email: z.string().trim().email('Invalid email').max(254),
-});
-
 const guestOrderSchema = z.object({
   reference: z.string().trim().regex(/^ORD-[0-9A-HJKMNP-TV-Z]{8}$/i, 'Invalid order reference'),
   token: z.string().trim().regex(/^[A-Za-z0-9_-]{43}$/, 'Invalid access token'),
@@ -117,16 +118,18 @@ export const ordersController = {
   /**
    * POST /api/v1/orders/track
    *
-   * "Track My Order" by short code plus the email the order was placed with.
-   * Unauthenticated by design and rate limited hard — the code is short enough
-   * that the limiter, not its length, is what makes guessing impractical.
+   * "Track My Order" by order number plus the email the order was placed with.
+   * Unauthenticated by design and rate limited hard — the reference is an
+   * identifier rather than a secret, so the limiter, not its length, is what
+   * makes guessing impractical.
    *
    * Signed-in customers can use this too. It is not scoped to the caller: a
    * customer tracking an order they had shipped by a colleague, or reading a
-   * code off a printed slip, should not be told "not found" because the order
-   * hangs off a different account.
+   * number off a printed slip, should not be told "not found" because the
+   * order hangs off a different account.
    *
-   * An unknown code and a mismatched email are the same 404 with the same body.
+   * An unknown reference and a mismatched email are the same 404 with the same
+   * body.
    */
   async track(req: Request, res: Response): Promise<void> {
     const parsed = trackOrderSchema.safeParse(req.body);
@@ -135,8 +138,8 @@ export const ordersController = {
       return;
     }
 
-    const order = await ordersService.findByTrackingCodeAndEmail(
-      parsed.data.code,
+    const order = await ordersService.findByReferenceAndEmail(
+      parsed.data.reference,
       parsed.data.email,
     );
 
