@@ -48,18 +48,19 @@ router.get('/', requireAuth, wrapHttp(ordersController.list));
 router.post('/lookup', guestOrderLimiter, wrapHttp(ordersController.lookup));
 
 /**
- * POST /api/v1/orders/track   { code, email }
+ * POST /api/v1/orders/track   { reference, email }
  *
- * "Track My Order" by the short code printed on the confirmation, plus the
+ * "Track My Order" by the order number printed on the confirmation, plus the
  * email the order was placed with. Unauthenticated and open to signed-in
  * customers alike — see the controller for why it is not scoped to the caller.
  *
- * The 8-character code is an identifier, not a credential; the email is the
- * second factor, and `guestOrderLimiter` is what stops the pair being ground
- * through offline.
+ * The order number is an identifier, not a credential; the email is the second
+ * factor, and `guestOrderLimiter` is what stops the pair being ground through
+ * offline.
  *
  * Returns 200: the order with `items`
- * Errors: 400 malformed code or email | 404 unknown code or wrong email | 429
+ * Errors: 400 malformed order number or email | 404 unknown order number or
+ * wrong email | 429
  */
 router.post('/track', guestOrderLimiter, wrapHttp(ordersController.track));
 

@@ -24,7 +24,6 @@ const BASE = {
     { title: 'The River is Waiting', contributor: 'Wally Lamb', quantity: 2, lineTotalMinor: 4549 },
   ],
   shippingLines: ['Ama Boateng', '19 H P Nyemitei St', 'Accra', 'GH'],
-  trackingCode: '7K2M9QX4',
   accessToken: null as string | null,
 };
 
@@ -33,9 +32,9 @@ beforeEach(() => {
 });
 
 /**
- * This email is the only durable copy a guest ever gets of the credential that
- * reaches their order. Before it existed, closing the checkout tab made a paid
- * order permanently unreachable to the person who paid for it.
+ * This email is the only durable copy a guest ever gets of the order number
+ * that reaches their order. Before it existed, closing the checkout tab made a
+ * paid order permanently unreachable to the person who paid for it.
  */
 describe('order confirmation email', () => {
   it('carries the order number in the subject, so an inbox search finds it', async () => {
@@ -74,19 +73,30 @@ describe('order confirmation email', () => {
     expect(sent[0].html).toContain('Free');
   });
 
-  describe('the short tracking code', () => {
-    it('is printed for everyone, guest or not, in both html and text', async () => {
+  describe('the tracking block', () => {
+    it('shows the order number for everyone, guest or not, in html and text', async () => {
       await sendOrderConfirmedEmail('a@kinkane.app', 'Ama', { ...BASE, accessToken: null });
-      expect(sent[0].html).toContain('7K2M9QX4');
-      expect(sent[0].text).toContain('7K2M9QX4');
+      expect(sent[0].html).toContain('ORD-7K2M9QX4');
+      expect(sent[0].text).toContain('ORD-7K2M9QX4');
     });
 
     it('tells the reader the email address is the other half', async () => {
-      // A code with no second factor named reads like a password, and someone
-      // will treat it like one. The pairing has to be stated where it is shown.
+      // An order number with no second factor named reads like a password, and
+      // someone will treat it like one. The pairing has to be stated where the
+      // number is shown.
       await sendOrderConfirmedEmail('a@kinkane.app', 'Ama', BASE);
       expect(sent[0].html).toContain('email address you ordered with');
       expect(sent[0].text).toContain('email address you ordered with');
+    });
+
+    it('never mentions a separate tracking code', async () => {
+      // The order number is the only string a customer is asked for. A second
+      // one printed alongside it is the confusion this email used to cause.
+      await sendOrderConfirmedEmail('a@kinkane.app', 'Ama', BASE);
+      // Every occurrence of the digits must be part of the order number, so a
+      // bare `7K2M9QX4` anywhere is the old code sneaking back in.
+      expect(sent[0].html).not.toMatch(/(?<!ORD-)7K2M9QX4/);
+      expect(sent[0].text).not.toMatch(/(?<!ORD-)7K2M9QX4/);
     });
   });
 
@@ -98,12 +108,12 @@ describe('order confirmation email', () => {
       expect(sent[0].text).not.toContain(token);
     });
 
-    it('leaves a guest with the short code and no account promise', async () => {
+    it('leaves a guest with the order number and no account promise', async () => {
       // A guest has no account, so the "My Account" line would be a lie; the
-      // tracking code is the whole of what they are given.
+      // order number is the whole of what they are given.
       const token = 'v4Xk9aB2cD3eF4gH5iJ6kL7mN8oP9qR0sT1uV2wX';
       await sendOrderConfirmedEmail('a@kinkane.app', null, { ...BASE, accessToken: token });
-      expect(sent[0].html).toContain('7K2M9QX4');
+      expect(sent[0].html).toContain('ORD-7K2M9QX4');
       expect(sent[0].html).not.toContain('My Account');
     });
 

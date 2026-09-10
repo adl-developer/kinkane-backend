@@ -707,13 +707,14 @@ const commerceSchemas = {
       reference: {
         type: 'string',
         description:
-          'The customer-facing order identity — this is what to print on receipts and quote in support. Random, not sequential. **It is an identifier, not a credential**: reading a guest order also requires the access token from checkout.',
+          'The customer-facing order identity — the order number. This is what to print on receipts, quote in support, and ask for on the tracking form. Random, not sequential. **It is an identifier, not a credential**: `POST /orders/track` also requires the contact email, and `POST /orders/lookup` the access token from checkout.',
         example: 'ORD-7K2M9QX4',
       },
       trackingCode: {
         type: 'string',
+        deprecated: true,
         description:
-          'The short code for `POST /orders/track`, paired with the order\u2019s contact email. **Ours, not the carrier\u2019s** \u2014 it exists from the moment the order is placed, so it tracks an order that has not shipped yet. For the carrier\u2019s number see `trackingNumber`.',
+          '**Deprecated and not customer-facing.** An internal short code kept on the order for continuity; no endpoint accepts it and it appears in no email. Track an order with `reference` plus the contact email. For the carrier\u2019s number see `trackingNumber`.',
         example: '7K2M9QX4',
       },
       status: {

@@ -259,8 +259,6 @@ async function sendOrderConfirmation(orderId: number): Promise<void> {
         totalMinor: order.totalMinor,
         items,
         shippingLines,
-        // Everyone gets the short code — it is an identifier, not a credential.
-        trackingCode: order.trackingCode,
         // Guests only — takeGuestToken returns null for a signed-in buyer,
         // whose order lives under their account instead.
         accessToken: await takeGuestToken(orderId),

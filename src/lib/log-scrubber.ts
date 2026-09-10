@@ -72,11 +72,11 @@ const SCRUB_RULES: RegExp[] = [
  * and a new credential field named in the house style is hidden the day it is
  * added rather than the day someone remembers to update this list.
  *
- * Deliberately **not** here: `code`. Referral codes, tracking codes, ISBNs and
- * country codes all live under it, and redacting the field would blind the
- * logs to most of what the commerce endpoints actually do. The tracking code
- * is an identifier, not a credential — it is useless without the order email
- * (see lib/order-identity) — so logging it costs nothing.
+ * Deliberately **not** here: `code` or `reference`. Referral codes, ISBNs and
+ * country codes all live under `code`, and redacting either field would blind
+ * the logs to most of what the commerce endpoints actually do. An order
+ * reference is an identifier, not a credential — it is useless without the
+ * order email (see lib/order-identity) — so logging it costs nothing.
  */
 const SENSITIVE_KEYS = [
   'password',

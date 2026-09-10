@@ -204,10 +204,11 @@ function isUniqueViolation(err: unknown): boolean {
 /**
  * Which unique index rejected the write.
  *
- * Two different constraints can fire on the same insert and they want opposite
+ * Different constraints can fire on the same insert and they want opposite
  * handling: the first-order discount index means "re-price and write again",
- * a tracking code collision means "roll the dice again and write the same
- * order". Without the constraint name the first handler swallows the second.
+ * a collision on a random identifier means "roll the dice again and write the
+ * same order". Without the constraint name the first handler swallows the
+ * second.
  */
 function violatedConstraint(err: unknown): string | undefined {
   return (err as { constraint?: string })?.constraint;
@@ -799,11 +800,12 @@ export const commerceCheckoutService = {
      * Writes the order, absorbing the two unique violations that are expected
      * here rather than exceptional.
      *
-     * A tracking code collision is retried in place — the order is fine, only
-     * its code was unlucky, and writeOrder generates a fresh one on every call
-     * so going round again is the whole fix. At ~1.1e12 codes this is a lottery
-     * win rather than a hot path, but the alternative is failing a checkout on
-     * a coin flip.
+     * A collision on either random identifier — the reference or the tracking
+     * code — is retried in place. The order is fine, only its string was
+     * unlucky, and writeOrder generates fresh ones on every call so going round
+     * again is the whole fix. At ~1.1e12 values each this is a lottery win
+     * rather than a hot path, but the alternative is failing a checkout on a
+     * coin flip.
      */
     let written: Order | undefined;
 
@@ -813,9 +815,10 @@ export const commerceCheckoutService = {
       } catch (err) {
         if (!isUniqueViolation(err)) throw err;
 
-        if (violatedConstraint(err) === 'orders_tracking_code_unique') {
+        const collided = violatedConstraint(err);
+        if (collided === 'orders_reference_unique' || collided === 'orders_tracking_code_unique') {
           if (attempt >= 4) throw err;
-          logger.warn('Tracking code collision — regenerating', { attempt });
+          logger.warn('Order identifier collision — regenerating', { attempt, collided });
           continue;
         }
 

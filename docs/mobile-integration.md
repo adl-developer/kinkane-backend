@@ -295,9 +295,9 @@ parcel that already shipped.
 When payment lands, the buyer now gets a confirmation email: order number, the
 books, the totals (including the discount), and where it is going.
 
-**For guest orders it also carries the tracking code.** That code is handed to
-your client exactly once, in the checkout response — before this email existed,
-a guest who closed the tab lost access to their own paid order permanently.
+**The order number in it is what a guest tracks with**, paired with the email
+address they ordered with. Before this email existed, a guest who closed the
+checkout tab lost access to their own paid order permanently.
 
 Two things this does not change for you:
 

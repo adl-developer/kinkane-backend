@@ -20,21 +20,13 @@ export interface OrderConfirmedPayload {
   items: OrderConfirmedItem[];
   shippingLines: string[];
   /**
-   * The short "Track My Order" code, e.g. `7K2M9QX4`. Always present.
-   *
-   * Safe to print for signed-in buyers too, because it is an identifier rather
-   * than a credential — reading the order needs this *and* the contact email.
-   */
-  trackingCode: string;
-
-  /**
    * The guest's long access token, or null for a signed-in buyer who has order
    * history instead.
    *
    * Deliberately **not** printed anywhere in this email — it is a credential,
-   * and the email now carries only the short `trackingCode`. All this field
-   * does here is tell a guest apart from a signed-in buyer, so we do not
-   * promise "My Account" to someone who has no account.
+   * and the email carries only the order number. All this field does here is
+   * tell a guest apart from a signed-in buyer, so we do not promise "My
+   * Account" to someone who has no account.
    */
   accessToken: string | null;
 }
@@ -56,10 +48,10 @@ function totalRow(label: string, amount: string, bold = false): string {
  * what was bought, where it is going, what the order is called, and — for a
  * guest — how to find it again.
  *
- * That last part is the reason this email exists at all. A guest's tracking
- * code is handed to the client exactly once, in the checkout response. Before
- * this, closing the tab meant the order became permanently unreachable to the
- * person who paid for it.
+ * That last part is the reason this email exists at all. The order number and
+ * the email address you ordered with are the only two things needed to track
+ * an order, and this is where a guest who closed the checkout tab gets the
+ * first of them back.
  */
 export async function sendOrderConfirmedEmail(
   to: string,
@@ -104,14 +96,16 @@ export async function sendOrderConfirmedEmail(
     ? p(`<strong>Delivering to</strong><br />${payload.shippingLines.map(escapeHtml).join('<br />')}`)
     : '';
 
-  // Everyone gets the short code: it is the thing a customer will actually go
-  // looking for, and it is an identifier rather than a credential, so there is
-  // nothing to leak by printing it for a signed-in buyer too.
+  // The order number is repeated large here even though it is already in the
+  // subject line and the paragraph above. This is the block a customer comes
+  // back to the email to find, and it is an identifier rather than a
+  // credential, so there is nothing to leak by printing it for a signed-in
+  // buyer too.
   const trackingBlock = [
-    p('<strong>Track your order</strong> with this code and the email address you ordered with:'),
+    p('<strong>Track your order</strong> with this order number and the email address you ordered with:'),
     `<div style="margin:16px 0;padding:16px;background:#f6f4ef;border-radius:8px;text-align:center;
          font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:24px;letter-spacing:3px;
-         color:#1a1a1a;">${escapeHtml(payload.trackingCode)}</div>`,
+         color:#1a1a1a;">${escapeHtml(payload.reference)}</div>`,
   ].join('\n');
 
   // Guests get nothing extra here: the claim token is deliberately kept out of
@@ -149,7 +143,7 @@ export async function sendOrderConfirmedEmail(
     '',
     payload.shippingLines.length ? `Delivering to:\n${payload.shippingLines.join('\n')}` : '',
     '',
-    `Track your order with this code and the email address you ordered with:\n${payload.trackingCode}`,
+    `Track your order with this order number and the email address you ordered with:\n${payload.reference}`,
     '',
     payload.accessToken ? '' : 'You can also see this order any time under My Account.',
     '',

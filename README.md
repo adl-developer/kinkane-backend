@@ -296,7 +296,7 @@ the country we priced on.
   `order_items` because no Gardners feed carries a sales rank. It counts copies, never money,
   and when nothing has sold in the window it falls back to trending — labelled, via `source`,
   never silently.
-- **Guest checkout** is supported: an order can be looked up with a short tracking code plus
+- **Guest checkout** is supported: an order can be looked up with its order number plus
   the buyer's email, and claimed onto an account later.
 
 Refunds are deliberately out of scope for automation — there is no cancellation feed
@@ -557,7 +557,7 @@ Deliberately **no `requirePlus` anywhere** — buying is open to every signed-up
 | `/api/v1/cart` | `GET /`, `POST /items`, `PATCH /items/:bookId`, `DELETE /items/:bookId`, `DELETE /` | `requireAuth` — the stored cart |
 | `/api/v1/cart` | `POST /price`, `POST /shipping-options`, `POST /checkout` | `optionalAuth` — a guest sends the lines with the request; nothing is stored for a visitor who never signs up |
 | `/api/v1/orders` | `GET /`, `GET /:id`, `POST /claim` | `requireAuth` |
-| `/api/v1/orders` | `POST /lookup`, `POST /track` | Unauthenticated — a tracking code plus the buyer's email is the credential |
+| `/api/v1/orders` | `POST /lookup`, `POST /track` | Unauthenticated — `track` takes the order number plus the buyer's email, `lookup` the reference plus the access token |
 | `/api/v1/saved-books` | `GET /`, `POST /`, `DELETE /:bookId` | `requireAuth` |
 | `/api/v1/payments` | `GET /:reference` | Confirmation by reference — subscriptions and orders alike |
 
