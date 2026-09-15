@@ -1,16 +1,54 @@
 #!/usr/bin/env bash
-# Regenerates CHANGELOG.md from Conventional Commits before each commit, and
-# stages it if it changed — so it's part of the commit you're about to make
-# rather than needing a separate amend step afterward.
+# Runs before every commit. Two jobs, in this order:
 #
-# Note: this reads `git log` as of HEAD, which doesn't include the commit
-# you're currently making (it doesn't exist yet at pre-commit time) — so
-# CHANGELOG.md always reflects everything up to and including the *previous*
-# commit. That's expected, not a bug.
+#   1. Gate the commit on the test suites.
+#   2. Regenerate CHANGELOG.md and stage it.
+#
+# Tests run first deliberately: there is no point regenerating a changelog for a
+# commit that is about to be rejected.
+#
+# To commit without this — a WIP commit on a branch, say — use `git commit
+# --no-verify`. That is a deliberate, visible choice; the default is that the
+# suite has to pass.
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 
+echo "pre-commit: running unit tests…"
+if ! npm run --silent test; then
+  echo ""
+  echo "✗ Unit tests failed. Commit aborted."
+  echo "  Fix them, or use 'git commit --no-verify' if you know what you are doing."
+  exit 1
+fi
+
+# The endpoint contract suite needs Postgres and Redis. A hook that hard-fails
+# when they are not running is a hook people disable within a week, so a missing
+# database is a loud warning rather than a rejection — while a database that IS
+# reachable and a suite that fails against it is a hard stop.
+#
+# This is the suite that catches schema drift: a column added to the Drizzle
+# schema without a migration typechecks, passes every unit test, and 500s every
+# endpoint that reads that table. Skipping it is a real gap, so it says so.
+echo "pre-commit: checking for a database…"
+if npm run --silent test:endpoints; then
+  echo "✓ Endpoint contract suite passed."
+else
+  status=$?
+  if node scripts/db-reachable.mjs 2>/dev/null; then
+    echo ""
+    echo "✗ Endpoint contract suite failed against a reachable database. Commit aborted."
+    echo "  This is the suite that catches a schema change with no migration behind it."
+    exit "$status"
+  fi
+
+  echo ""
+  echo "⚠  SKIPPED the endpoint contract suite — could not reach the database."
+  echo "   Schema drift and endpoint 5xx are NOT being checked for this commit."
+  echo "   Start Postgres and Redis and run 'npm run test:endpoints' before pushing."
+fi
+
+echo "pre-commit: regenerating changelog…"
 npm run --silent changelog
 
 if ! git diff --quiet -- CHANGELOG.md; then

@@ -18,7 +18,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "admin:create": "tsx scripts/create-admin.ts",
-    "seed:demo": "tsx scripts/seed-demo.ts"
+    "seed:demo": "tsx scripts/seed-demo.ts",
+    "test:endpoints": "vitest run --config vitest.endpoints.config.ts",
+    "test:all": "npm run test && npm run test:endpoints"
   },
   "dependencies": {
     "@bull-board/api": "^7.1.5",

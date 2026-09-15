@@ -1,0 +1,1 @@
+ALTER TABLE "books" ADD COLUMN "select_guide_rating" integer;
