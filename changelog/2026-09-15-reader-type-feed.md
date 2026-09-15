@@ -28,9 +28,16 @@ testable before there are real cohorts to hit.
 }
 ```
 
-Requires sign-in. **Not** Plus-gated: the likes feeding it are a Plus feature,
-but seeing what a cohort reads is discovery — and this is exactly the rail that
-shows a free reader what members are reading.
+**Public — no auth required**, and not Plus-gated. The likes feeding it are a
+Plus feature, but seeing what a cohort reads is discovery, and this is the rail
+that shows someone what Kinkané readers are reading before they have an account.
+
+Sending a token personalises it: the caller's own reader type picks the cohort,
+their own likes stop counting toward it, and their shelf and swiped-away books
+are filtered out. Signed out none of those are knowable, so `readerType` becomes
+the only way to select a cohort and the list comes back unfiltered. A visitor
+therefore sees *more* books than a member of the same cohort would, not fewer —
+the filtering is a personalisation, not a restriction.
 
 **It returns `200` with an empty array in two cases**: the caller has no reader
 type, and nobody else shares theirs. Neither is an error. Both mean the same
@@ -134,6 +141,26 @@ return — on every request, never inside a cache.
 Also out of scope: exposing the liker count, following quiz retakes between
 cohorts, and any per-viewer caching.
 
+## A note on making this public
+
+The endpoint reads every cohort member's shelf regardless of that shelf's
+visibility setting, and it is now readable without an account. Those two facts
+together deserve stating plainly.
+
+What protects it is unchanged, and is the same thing that protected it before:
+the response is an anonymous aggregate. It returns books and nothing else — no
+names, no avatars, and not even the liker count that drives the ordering. No
+identity is derivable from a list of books.
+
+What did change is reach. Previously the eight cohorts were enumerable by anyone
+with an account; now they are enumerable by anyone at all. The residual risk is
+the same in kind and wider in audience: in a cohort with exactly one member, the
+rail *is* that member's shelf. That was already true for any signed-in reader,
+and it is now true for the public. It stays acceptable only while the response
+carries no identities and no counts — which the tests enforce — and it is the
+reason a liker count must not be added here without first filtering on shelf
+visibility.
+
 ## A note on the reader-type override
 
 `readerType` lets any signed-in reader read any of the eight cohorts, not just
@@ -160,6 +187,13 @@ The invariants that break *silently* are asserted in
 style of `feed-prices.test.ts`) — privacy, single-count-per-supporter, work-level
 scoring, the null-safe author join, the pagination tiebreak, and the absence of
 caching.
+
+The public path was exercised against a seeded two-user cohort: an anonymous
+caller naming a cohort gets it, an anonymous caller naming nothing gets an empty
+list, an anonymous caller naming an unpopulated cohort gets an empty list, a
+signed-in member is cohorted without naming anything, their own like and their
+own shelved book are both excluded where an anonymous caller sees them, and
+paging stays coherent on the anonymous path.
 
 The override was exercised separately against a seeded three-user fixture: a
 caller with no reader type reading a cohort by name, the override actually

@@ -24,6 +24,7 @@ import { dedupeByTitle, dedupeByTitleAndSubtitle } from '../lib/dedupe';
 import {
   buildHasAuthorCondition,
   buildWorkExclusionCondition,
+  EMPTY_EXCLUSIONS,
   filterExcludedWorks,
   getUserExclusions,
 } from '../lib/exclusions';
@@ -3652,7 +3653,7 @@ export const booksService = {
    * book twice. The underlying aggregate is indexed and bounded by the cohort.
    */
   async likedByReaderType(
-    userId: number,
+    userId: number | undefined,
     limit: number,
     offset: number,
     readerType?: ReaderType,
@@ -3668,22 +3669,33 @@ export const booksService = {
     // string would be a caller-supplied value steering the query.
     const cohortType =
       readerType ??
-      (
-        await db
-          .select({ readerType: users.readerType })
-          .from(users)
-          .where(eq(users.id, userId))
-          .limit(1)
-      )[0]?.readerType;
+      (userId === undefined
+        ? undefined
+        : (
+            await db
+              .select({ readerType: users.readerType })
+              .from(users)
+              .where(eq(users.id, userId))
+              .limit(1)
+          )[0]?.readerType);
 
-    // No reader type, no cohort. Either onboarding never ran, or Gemini failed
-    // to infer one — fetchAndInferReaderType swallows that failure by design and
-    // leaves the column null rather than blocking a signup over a nice-to-have.
-    // Unreachable when readerType was passed, which is the point of the override:
-    // a caller with no type of their own can still see a cohort.
+    // No reader type, no cohort. For a signed-in reader that means onboarding
+    // never ran, or Gemini failed to infer one — fetchAndInferReaderType swallows
+    // that failure by design and leaves the column null rather than blocking a
+    // signup over a nice-to-have. For a signed-out visitor it simply means they
+    // did not name a cohort, which is the only way they can pick one.
     if (!cohortType) return { books: [], total: 0 };
 
-    const exclusions = await getUserExclusions(userId);
+    // A signed-out visitor has no shelf to exclude and no likes of their own to
+    // discount, so both of those narrowings simply do not apply. They see the
+    // cohort's books unfiltered — which is more than a signed-in member of the
+    // same cohort sees, not less, and is the honest consequence of not knowing
+    // who is asking.
+    const exclusions = userId === undefined ? EMPTY_EXCLUSIONS : await getUserExclusions(userId);
+
+    // Only a signed-in caller can be excluded from their own cohort. Rendered as
+    // a fragment so the statement below has no branch in it.
+    const selfFilter = userId === undefined ? sql`` : sql`AND ${users.id} <> ${userId}`;
 
     // Spread into the statement as ready-made fragments so the SQL below has no
     // conditional branches in it — an empty fragment renders as nothing.
@@ -3701,7 +3713,7 @@ export const booksService = {
         FROM ${userBooks}
         JOIN ${users} ON ${users.id} = ${userBooks.userId}
         WHERE ${users.readerType} = ${cohortType}
-          AND ${users.id} <> ${userId}
+          ${selfFilter}
           AND (
             ${userBooks.liked}
             OR ${userBooks.status} = 'read'

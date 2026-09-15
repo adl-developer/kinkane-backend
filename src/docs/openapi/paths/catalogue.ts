@@ -357,6 +357,7 @@ export const cataloguePaths = {
   '/api/v1/explore/reader-type': {
     get: {
       tags: [DISCOVERY],
+      ...publicEndpoint,
       summary: 'Books your reader type loved',
       description: [
         'The "Readers like you loved" rail. Books that other readers sharing the caller’s reader type have responded well to, most-supported first.',
@@ -375,7 +376,7 @@ export const cataloguePaths = {
         '',
         '**Anonymous aggregate.** It returns books and nothing else — no liker names, no avatars, not even a count. That is precisely why it can read every cohort member’s shelf regardless of their shelf visibility setting, and why a count will not be added to this response.',
         '',
-        'Requires sign-in, but **not Kinkané Plus** — the likes behind it are a Plus feature, but seeing what a cohort reads is discovery, and this is the rail that shows a free reader what members are reading.',
+        '**Public — no auth required, and not Plus-gated.** Send a token and the rail personalises itself: the caller’s own reader type picks the cohort, their likes stop counting toward it, and their shelf and swiped-away books are filtered out. Signed out none of that is knowable, so `readerType` becomes the only way to pick a cohort and the list comes back unfiltered — a visitor sees *more* than a member of the same cohort would, not less.',
       ].join('\n'),
       parameters: [
         param('limit', 'query', { type: 'integer', minimum: 1, maximum: 50, default: 20 },
@@ -390,7 +391,7 @@ export const cataloguePaths = {
             'The Cloud Illusionist',
           ],
         },
-          'Read a cohort other than your own. Omit it and the caller’s own reader type is used. Send the exact value, URL-encoded — `The%20Seeker`. An unrecognised value is a `400`, deliberately: an unknown type returning an empty list would be indistinguishable from a real cohort nobody else is in. Note this is also the only way a reader who has no reader type yet can see anything from this endpoint.',
+          'Read a cohort other than your own. Omit it and the caller’s own reader type is used — **or, signed out, nothing is returned at all**, since there is no caller to read a type from. Send the exact value, URL-encoded — `The%20Seeker`. An unrecognised value is a `400`, deliberately: an unknown type returning an empty list would be indistinguishable from a real cohort nobody else is in. Note this is also the only way a reader who has no reader type yet can see anything from this endpoint.',
           { example: 'The Seeker' }),
       ],
       responses: {
@@ -400,7 +401,8 @@ export const cataloguePaths = {
             pagination: ref('Pagination'),
           })),
         400: resp('ValidationError'),
-        ...authErrors,
+        429: resp('RateLimited'),
+        500: resp('ServerError'),
       },
     },
   },

@@ -62,8 +62,24 @@ describe('reader-type cohort feed', () => {
 
   it('excludes the caller from their own cohort', () => {
     // "Readers like you" means other readers. Without this a book the caller
-    // alone liked appears in a rail claiming other people loved it.
+    // alone liked appears in a rail claiming other people loved it. Applied as a
+    // fragment now the endpoint is public: a signed-out visitor has no identity
+    // to exclude, and `<> undefined` would exclude everyone.
     expect(method).toMatch(/users\.id}\s*<>\s*\${userId}/);
+    expect(method).toContain('userId === undefined ? sql`` :');
+    expect(method).toContain('${selfFilter}');
+  });
+
+  it('is public, and degrades rather than failing when signed out', () => {
+    // The route takes optionalAuth, so userId is genuinely absent for a visitor.
+    // Every per-caller narrowing has to be skipped rather than applied to
+    // undefined — an exclusion query keyed on undefined would either throw or,
+    // worse, quietly filter on nothing recognisable.
+    const routes = readFileSync(join(__dirname, '..', 'routes/explore.routes.ts'), 'utf8');
+    expect(routes).toContain("router.get('/reader-type', optionalAuth");
+    expect(routes).not.toMatch(/router\.get\('\/reader-type', requireAuth/);
+    expect(method).toContain('userId: number | undefined');
+    expect(method).toContain('userId === undefined ? EMPTY_EXCLUSIONS : await getUserExclusions(userId)');
   });
 
   it('counts each supporter once, not once per signal', () => {
@@ -154,6 +170,11 @@ describe('reader-type cohort feed', () => {
     );
     expect(controller).toContain('readerType: z.enum(readerTypeEnum.enumValues).optional()');
     expect(controller).not.toMatch(/readerType:\s*z\.string\(\)/);
+  });
+
+  it('never looks a caller up when there is no caller', () => {
+    // A signed-out visitor must not reach a users lookup keyed on undefined.
+    expect(method).toMatch(/userId === undefined\s*\?\s*undefined/);
   });
 
   it('falls back to the caller’s own reader type when none is passed', () => {

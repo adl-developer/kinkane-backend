@@ -2,7 +2,8 @@
 
 **Audience:** whoever builds the "Readers like you loved" rail in the Kinkané
 apps.
-**Status:** on `main` as of 2026-09-15. Not yet deployed to staging.
+**Status:** committed 2026-09-15 on `feat/configurable-recommendation-weights`.
+Not yet merged or deployed to staging.
 
 This document is self-contained. Field-by-field contracts live in the OpenAPI
 spec at `GET /openapi.json` (Swagger UI on the same host). **Where this document
@@ -33,9 +34,23 @@ GET /api/v1/explore/reader-type?limit=20&offset=0
 Authorization: Bearer <access token>
 ```
 
-Sign-in required. **Kinkané Plus is not required** — the likes behind the rail
-come from a Plus feature, but this is the rail that shows a free reader what
-members are reading, so gating it would defeat its purpose.
+**No sign-in required, and no Kinkané Plus.** The likes behind the rail come
+from a Plus feature, but this is the rail that shows someone what Kinkané readers
+are reading before they have an account, so gating it would defeat its purpose.
+
+**Send a token anyway whenever you have one.** The rail personalises itself when
+it knows who is asking:
+
+| | Signed in | Signed out |
+| --- | --- | --- |
+| Which cohort | Your own reader type, or `readerType` if you send it | `readerType` only — **omit it and you get an empty list** |
+| Your own likes | Don't count toward the ranking | n/a |
+| Your shelf and swiped-away books | Filtered out | **Not** filtered — you may see books the reader already owns |
+
+A signed-out visitor therefore sees *more* books than a signed-in member of the
+same cohort, not fewer. If this rail appears on any screen a signed-in reader can
+reach, send the token — otherwise they will be shown books already on their
+shelf.
 
 | Param | Range | Default | Notes |
 | --- | --- | --- | --- |
@@ -76,7 +91,9 @@ list and search endpoint returns, with one exception — see §5.
 **`200` with `"books": []` comes back in two situations:**
 
 1. The reader has no reader type yet — they have not finished onboarding, or
-   the profile could not be inferred. Both happen in production.
+   the profile could not be inferred. Both happen in production. **A signed-out
+   visitor who did not send `readerType` is this case too**, and it is the normal
+   signed-out state.
 2. Nobody else shares their reader type. On a small user base this is common,
    and on a brand-new install it is the default.
 
@@ -149,9 +166,11 @@ The Open Door        The Seeker           The Book-ist        The Story Circler
 The Mirror Within    The Echo Collector   The High Summiter   The Cloud Illusionist
 ```
 
-This exists for two reasons: it is how the rail can be built and demoed before
-there are real groups to read, and it is the only way a reader who has not
-finished onboarding can see anything here at all.
+This matters more than it looks. It is how the rail can be built and demoed
+before there are real groups to read, it is the only way a reader who has not
+finished onboarding can see anything here — and **signed out it is the only way
+to select a cohort at all**, since there is no account to read a reader type
+from.
 
 **An unrecognised value is a `400`, deliberately.** A typo returning an empty
 list would be indistinguishable from a group nobody else is in, and you would
@@ -162,10 +181,15 @@ spend an afternoon on it.
 | Code | When |
 | --- | --- |
 | `400` | `limit`/`offset` out of range, or an unrecognised `readerType`. |
-| `401` | Missing or expired token. |
 | `500` | Genuine server fault — retry is reasonable. |
 
-There is no `403` (it is not Plus-gated) and no `404` (see §4).
+There is no `401` — the endpoint is public, so a missing or expired token is
+treated as signed out rather than rejected. There is no `403` (not Plus-gated)
+and no `404` (see §4).
+
+**Watch that first one.** An expired token does not fail here, it silently
+downgrades to signed-out behaviour. If the rail starts showing a reader books
+they already own, check the token before you check the server.
 
 ## 9. One request, in return
 
@@ -201,4 +225,4 @@ If the product wants retakes to move people, that is a deliberate follow-up.
 
 | Method | Path | Auth | Returns |
 | --- | --- | --- | --- |
-| `GET` | `/api/v1/explore/reader-type` | Bearer | `{ books, pagination }` — books only, no prices |
+| `GET` | `/api/v1/explore/reader-type` | none — Bearer optional | `{ books, pagination }` — books only, no prices |

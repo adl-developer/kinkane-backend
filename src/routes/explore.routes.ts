@@ -119,14 +119,18 @@ router.get('/personalized', requireAuth, requirePlus, (req: Request, res: Respon
  *               offset     — 0+ (default 0)
  *               readerType — optional; one of the 8 reader types
  * Returns 200: { books: [...], pagination: { total, limit, offset, hasMore } }
- * Errors: 400 validation | 401 unauthenticated
+ * Errors: 400 validation
  *
- * requireAuth only, never requirePlus. The likes feeding it are Plus-generated,
- * but seeing what a cohort loved is discovery, not a member benefit — and this
- * is exactly the rail that shows a free reader what Plus members are reading.
+ * Public — no auth required, and never requirePlus. The likes feeding it are
+ * Plus-generated, but seeing what a cohort loved is discovery rather than a
+ * member benefit, and this is exactly the rail that shows someone what Kinkané
+ * readers are reading before they have an account of their own.
+ *
+ * Send a token and the rail personalises itself: the caller's own reader type
+ * selects the cohort, their likes stop counting toward it, and their shelf and
+ * rejections are filtered out. Signed out, none of those are knowable, so the
+ * cohort has to be named with `readerType` and the list comes back unfiltered.
  */
-router.get('/reader-type', requireAuth, (req: Request, res: Response) =>
-  exploreController.getReaderTypeLikes(req as AuthenticatedRequest, res),
-);
+router.get('/reader-type', optionalAuth, exploreController.getReaderTypeLikes);
 
 export default router;

@@ -111,6 +111,11 @@ export const exploreController = {
    * endpoint, which is what lets the query read every shelf regardless of its
    * visibility setting.
    *
+   * Public. A signed-in reader is cohorted by their own reader type and has
+   * their shelf and rejections filtered out; a signed-out visitor has neither,
+   * so `readerType` is the only way they can select a cohort — without it they
+   * get an empty list, the same as any other caller with no cohort to read.
+   *
    * `readerType` overrides which cohort is read; without it the caller's own is
    * used. It is validated against the database enum before it goes anywhere near
    * the query, and an unknown value is a 400 rather than an empty rail — the two
@@ -128,12 +133,15 @@ export const exploreController = {
       return;
     }
 
-    const { user } = req as AuthenticatedRequest;
+    // optionalAuth route — a signed-in reader is cohorted by their own reader
+    // type and gets their shelf and rejections filtered out; a signed-out
+    // visitor has neither, so they must name a cohort with `readerType`.
+    const userId = (req as Partial<AuthenticatedRequest>).user?.id;
     const { limit, offset, readerType } = parsed.data;
 
     try {
       const { books, total } = await booksService.likedByReaderType(
-        user.id,
+        userId,
         limit,
         offset,
         readerType,
