@@ -30,10 +30,13 @@ import {
 } from '../lib/exclusions';
 import {
   generateEmbedding,
+  generateEmbeddings,
   generateExplanations,
   NAME_PLACEHOLDER,
   type BookContext,
 } from '../lib/gemini';
+import { combineWeightedVectors, type WeightedLane } from '../lib/vector';
+import { config } from '../config';
 import { fetchAndInferReaderType } from '../lib/reader-type';
 import { guestService } from './guest.service';
 import { dislikedBooksService } from './disliked-books.service';
@@ -41,10 +44,14 @@ import { preferenceHistoryService } from './preference-history.service';
 import { logger } from '../lib/logger';
 import { redis } from '../lib/redis';
 
+// The four values below are environment-overridable (RECO_TARGET_RESULTS,
+// RECO_FETCH_POOL, RECO_SIMILARITY_MAX, RECO_BACKFILL_MAX). Their defaults and
+// the bounds they are validated against live in config/index.ts; the reasoning
+// for each stays here, next to the code that depends on it.
 // How many results we aim to return to the client. Kept well below the old
 // 250 because each result gets its own synchronous Gemini explanation call —
 // fewer results means fewer explanation chunks and a faster response.
-const TARGET_RESULTS = 100;
+const TARGET_RESULTS = config.recommendations.targetResults;
 // How large a pool the single candidate pass fetches. It covers both tiers —
 // the pool divides itself, since a preference set with few strict matches
 // simply spends more of the pool on backfill. Larger than TARGET_RESULTS so
@@ -54,10 +61,10 @@ const TARGET_RESULTS = 100;
 // the iterative index scan below the LIMIT is what the scan works towards, so
 // the pool size is paid for in latency: measured against the live catalogue,
 // 300 rows come back in ~800ms and 1000 in ~5-18s.
-const FETCH_POOL = 300;
+const FETCH_POOL = config.recommendations.fetchPool;
 // Cosine distance upper bound — books further than this from the preference
 // vector are excluded. Lower = stricter (0 = identical, 1 = orthogonal).
-const SIMILARITY_THRESHOLD = 0.5;
+const SIMILARITY_THRESHOLD = config.recommendations.similarityMax;
 // For narrow/niche preference combinations, fewer than TARGET_RESULTS books
 // fall within SIMILARITY_THRESHOLD out of 1M+ in the catalogue. Rather than
 // return a short list, the search reaches out to this looser cutoff and fills
@@ -73,7 +80,7 @@ const SIMILARITY_THRESHOLD = 0.5;
 // catalogue that cost 2753ms against 739ms for the same query without the
 // floor, and it grows with the catalogue, on the exact path taken when the
 // strict tier already came up short.
-const BACKFILL_SIMILARITY_THRESHOLD = 0.7;
+const BACKFILL_SIMILARITY_THRESHOLD = config.recommendations.backfillMax;
 // The <=> searches below run against the HNSW index, which visits roughly
 // `ef_search` graph nodes and then stops — every condition in baseConditions
 // (sellability, format intent, dislikes, the user's exclusions) is applied to
@@ -93,6 +100,14 @@ const HNSW_ITERATIVE_SCAN = 'strict_order';
 // the only lever is a single wide pass — 1000 is the ceiling this GUC accepts.
 const HNSW_EF_SEARCH_NO_ITERATIVE = 1000;
 const MIN_ITERATIVE_SCAN_VERSION = [0, 8, 0];
+// What the four settings above were before they became environment-overridable.
+// Used only to recognise an untouched environment (see retrievalFingerprint):
+// matching these means the search behaves exactly as it did, so cached entries
+// written by the previous release are still correct and worth keeping.
+const BASELINE_SIMILARITY_MAX = 0.5;
+const BASELINE_BACKFILL_MAX = 0.7;
+const BASELINE_TARGET_RESULTS = 100;
+
 const CACHE_TTL_HOURS = 48;
 // A result set this short is either a genuinely niche preference combination or
 // a bad day for recall, and from here the two are indistinguishable. Caching
@@ -157,6 +172,12 @@ function hashInput(input: RecommendationInput, dislikedBookIds: number[] = []): 
     // rest of their 48-hour TTL. Bump this whenever a prompt change alters the
     // shape of what gets cached, not merely its wording.
     promptVersion: EXPLANATION_PROMPT_VERSION,
+    // Also not a preference. The field weights and distance cutoffs come from
+    // the environment now, and changing either produces a different result set
+    // from identical answers — so they have to retire cached entries the same
+    // way a prompt change does. Without this, tuning a weight would appear to
+    // do nothing for up to 48 hours.
+    retrieval: retrievalFingerprint(),
     feelings: [...input.feelings].sort(),
     bookIds: [...input.bookIds].sort((a, b) => a - b),
     genres: [...input.genres].sort(),
@@ -358,6 +379,189 @@ export function buildPreferenceText(
   }
 
   return parts.join(' ');
+}
+
+// ── Weighted preference vector ────────────────────────────────────────────────
+
+/**
+ * The preference fields that get their own embedding, in the order they are
+ * combined. `tags` is wired up but inert until the quiz collects reader tags —
+ * its weight defaults to 0, so it costs nothing in the meantime.
+ */
+export interface PreferenceFields {
+  feelings: string[];
+  genres: string[];
+  dislikes: Dislikes;
+  tags?: string[];
+}
+
+/**
+ * One natural-language clause per preference field, each embedded separately.
+ *
+ * This is the whole mechanism behind configurable weights. `buildPreferenceText`
+ * still exists and is still the right thing to send to the explanation model —
+ * it reads as a person describing their taste. But as *one* embedding it gave
+ * every field an accidental weight: whatever share of the paragraph its text
+ * happened to occupy. Five liked books carry full titles and author names and
+ * took roughly two thirds of the signal; feelings took a tenth. Splitting the
+ * clauses lets `config.recommendations.weights` decide instead.
+ *
+ * Empty fields produce no lane, so a reader who named no books is not searched
+ * against an empty-string embedding.
+ */
+function buildPreferenceLanes(
+  input: PreferenceFields,
+  likedBooks: { title: string; authors: string[] }[],
+): { field: string; text: string; weight: number; sign: 1 | -1 }[] {
+  const weights = config.recommendations.weights;
+  const lanes: { field: string; text: string; weight: number; sign: 1 | -1 }[] = [];
+
+  if (input.feelings.length > 0) {
+    lanes.push({
+      field: 'feelings',
+      text: `I want to feel: ${input.feelings.join(', ')}.`,
+      weight: weights.feelings,
+      sign: 1,
+    });
+  }
+
+  if (input.genres.length > 0) {
+    lanes.push({
+      field: 'genres',
+      text: `Preferred genres: ${input.genres.join(', ')}.`,
+      weight: weights.genres,
+      sign: 1,
+    });
+  }
+
+  if (likedBooks.length > 0) {
+    const titles = likedBooks
+      .map((b) => (b.authors.length ? `"${b.title}" by ${b.authors.join(', ')}` : `"${b.title}"`))
+      .join('; ');
+    lanes.push({
+      field: 'books',
+      text: `Books I have enjoyed: ${titles}.`,
+      weight: weights.books,
+      sign: 1,
+    });
+  }
+
+  if (input.tags?.length) {
+    lanes.push({
+      field: 'tags',
+      text: `Themes and tags I am looking for: ${input.tags.join(', ')}.`,
+      weight: weights.tags,
+      sign: 1,
+    });
+  }
+
+  const allDislikes = flattenDislikes(input.dislikes);
+  if (allDislikes.length > 0) {
+    // Phrased as a plain description of the thing, not as an avoidance — the
+    // minus sign carries the "away from" and the words should carry only the
+    // subject. "I want to avoid gore" embeds close to "gore" either way, so
+    // saying it positively and subtracting the lane is the honest version of
+    // what the maths is doing.
+    lanes.push({
+      field: 'dislikes',
+      text: `Books about: ${allDislikes.join(', ')}.`,
+      weight: weights.dislikes,
+      sign: -1,
+    });
+  }
+
+  return lanes;
+}
+
+/**
+ * A fingerprint of everything that changes what a search returns without
+ * changing the reader's answers.
+ *
+ * Results are cached for 48 hours against a hash of the preferences, so a
+ * weight or threshold change would otherwise be invisible until every existing
+ * entry expired — the classic "I tuned it and nothing happened" failure. Same
+ * role `promptVersion` plays for the explanation text.
+ */
+function retrievalFingerprint(): string | undefined {
+  const { weightingEnabled, weights, similarityMax, backfillMax, targetResults } =
+    config.recommendations;
+
+  // An environment that has touched none of this gets no fingerprint at all,
+  // not a fingerprint of the defaults. JSON.stringify drops an undefined value,
+  // so the cache key stays byte-identical to the one this pipeline produced
+  // before weighting existed and a deploy keeps its warm cache instead of
+  // recomputing 48 hours of entries for no behavioural difference.
+  const isBaseline =
+    !weightingEnabled &&
+    similarityMax === BASELINE_SIMILARITY_MAX &&
+    backfillMax === BASELINE_BACKFILL_MAX &&
+    targetResults === BASELINE_TARGET_RESULTS;
+
+  if (isBaseline) return undefined;
+
+  return [
+    weightingEnabled ? 'w' : 'legacy',
+    weights.feelings,
+    weights.genres,
+    weights.books,
+    weights.dislikes,
+    weights.tags,
+    similarityMax,
+    backfillMax,
+    targetResults,
+  ].join(':');
+}
+
+/**
+ * Embeds each preference field separately and combines them under the
+ * configured weights (see lib/vector.ts for the maths).
+ *
+ * Falls back to embedding the whole paragraph as one vector when the weighted
+ * combination cannot produce a direction — every weight set to 0, or lanes
+ * that cancel out. That is a misconfiguration rather than a user error, and a
+ * reader asking for recommendations should still get recommendations while
+ * somebody fixes the environment.
+ */
+export async function generatePreferenceVector(
+  input: PreferenceFields,
+  likedBooks: { id: number; title: string; authors: string[] }[],
+): Promise<number[]> {
+  // Switched off: build the vector the way the pipeline always did, from one
+  // embedding of the combined paragraph. Not equivalent to setting every weight
+  // to 100 — a centroid of four separately embedded fields points somewhere
+  // slightly different from one embedding of the same words joined up.
+  if (!config.recommendations.weightingEnabled) {
+    return generateEmbedding(buildPreferenceText(input, likedBooks));
+  }
+
+  const lanes = buildPreferenceLanes(input, likedBooks);
+  // Weight 0 means the field is not part of the search at all, so it never
+  // reaches Gemini — turning a field off makes the request cheaper, not
+  // marginally quieter.
+  const active = lanes.filter((lane) => lane.weight > 0);
+
+  if (active.length > 0) {
+    const vectors = await generateEmbeddings(active.map((lane) => lane.text));
+    const weighted: WeightedLane[] = active.map((lane, i) => ({
+      field: lane.field,
+      vector: vectors[i],
+      weight: lane.weight,
+      sign: lane.sign,
+    }));
+
+    const combined = combineWeightedVectors(weighted);
+    if (combined) return combined;
+
+    logger.warn('Weighted preference lanes produced no usable direction, falling back', {
+      lanes: active.map((l) => `${l.field}:${l.sign > 0 ? '+' : '-'}${l.weight}`),
+    });
+  } else {
+    logger.warn('Every preference lane is disabled or empty, falling back to combined text', {
+      weights: config.recommendations.weights,
+    });
+  }
+
+  return generateEmbedding(buildPreferenceText(input, likedBooks));
 }
 
 /**
@@ -753,9 +957,12 @@ export const recommendationsService = {
     // 2. Look up the books the user says they've enjoyed (for preference context)
     const likedBooks = await fetchLikedBooks(input.bookIds);
 
-    // 3. Build natural-language preference text and embed it
+    // 3. Build the preference text and the weighted search vector.
+    // The paragraph still goes to the explanation model — it reads like a person
+    // describing their taste. The search vector is built per field so the
+    // configured weights apply; see generatePreferenceVector.
     const preferenceText = buildPreferenceText(input, likedBooks);
-    const queryVector = await generateEmbedding(preferenceText);
+    const queryVector = await generatePreferenceVector(input, likedBooks);
     // Passed as a parameterised value; postgres driver sends it as $1, cast to vector
     const vectorLiteral = `[${queryVector.join(',')}]`;
 
@@ -1114,8 +1321,11 @@ async function computeRecommendations(
 
   // Full pipeline — embedding + pgvector + Gemini explanations
   const likedBooks = await fetchLikedBooks(input.bookIds);
+  // The paragraph still goes to the explanation model — it reads like a person
+  // describing their taste. The search vector is built per field so the
+  // configured weights apply; see generatePreferenceVector.
   const preferenceText = buildPreferenceText(input, likedBooks);
-  const queryVector = await generateEmbedding(preferenceText);
+  const queryVector = await generatePreferenceVector(input, likedBooks);
   const vectorLiteral = `[${queryVector.join(',')}]`;
 
   const baseConditions: SQL[] = buildBaseConditions(input, likedBooks, exclusions);
@@ -1249,8 +1459,7 @@ async function regeneratePreferenceEmbedding(
   input: Omit<RecommendationInput, 'displayName'>,
 ): Promise<void> {
   const likedBooks = await fetchLikedBooks(input.bookIds);
-  const preferenceText = buildPreferenceText(input, likedBooks);
-  const embedding = await generateEmbedding(preferenceText);
+  const embedding = await generatePreferenceVector(input, likedBooks);
 
   await db
     .update(userPreferences)

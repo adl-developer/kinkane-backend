@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-09-10
+
+### Features
+
+* let customers track an order with the order number instead of a separate code ([9dee9a6](https://adl.github.com/adl-developer/kinkane-backend/commit/9dee9a630b23333b1ed105e54df2c2a65960ff2d)) — [details](changelog/2026-09-10-track-orders-by-order-number.md)
+
+
 ## 2026-09-08
 
 ### Features

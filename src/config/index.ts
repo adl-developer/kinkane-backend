@@ -89,6 +89,71 @@ const envSchema = z.object({
   // Default: 24 * 3 = 72 hours (3 days). Set to e.g. 168 for a full week.
   GUEST_SESSION_TTL_HOURS: z.coerce.number().int().min(1).default(72),
 
+  // ── Recommendation retrieval ────────────────────────────────────────────────
+  // Master switch for per-field weighting. Off by default so this ships dark:
+  // with it unset the search builds its vector exactly the way it did before
+  // weighting existed — one embedding of the combined preference paragraph —
+  // and the weights below are inert. Mirrors GATING_ENABLED above.
+  //
+  // Off is not the same as every weight at 100. Combining four separately
+  // embedded fields produces a centroid, which is a different vector from one
+  // embedding of the same words joined together, so turning this on changes
+  // what readers get even before anyone tunes a number.
+  RECO_WEIGHTING_ENABLED: z
+    .string()
+    .default('false')
+    .transform((v) => v === 'true'),
+
+  // How much each preference field pulls on the search, 0-100.
+  //
+  // Each field is embedded on its own and the results are combined as a
+  // weighted sum (see lib/vector.ts). Before this existed, a field's influence
+  // was however many characters it contributed to one concatenated paragraph —
+  // so liked books, which carry full titles and author names, drowned out
+  // genres and feelings without anyone choosing that.
+  //
+  // These are RELATIVE, not shares of a budget that must total 100. Every
+  // weight at 50 behaves identically to every weight at 100, because the
+  // combined vector is normalised and cosine distance ignores magnitude. Raise
+  // one field to make it pull harder *relative to the others*.
+  //
+  // 0 removes a field from the search completely — its clause is never even
+  // sent to Gemini, so it costs nothing rather than counting a little.
+  RECO_WEIGHT_GENRES: z.coerce.number().int().min(0).max(100).default(100),
+  RECO_WEIGHT_BOOKS: z.coerce.number().int().min(0).max(100).default(100),
+  RECO_WEIGHT_FEELINGS: z.coerce.number().int().min(0).max(100).default(100),
+  // Applied as a NEGATIVE coefficient: this is how hard the search is pushed
+  // away from what the reader rejected, not towards it. Defaulted below the
+  // others because a dislike is a weaker statement than a preference — it rules
+  // things out rather than describing what someone wants.
+  RECO_WEIGHT_DISLIKES: z.coerce.number().int().min(0).max(100).default(40),
+  // Reader-selected book tags. Defaults to 0 because the field does not exist
+  // yet — the lane is wired up and inert, so enabling tags is an env change
+  // plus a populated input, not a release.
+  RECO_WEIGHT_TAGS: z.coerce.number().int().min(0).max(100).default(0),
+
+  // Cosine distance cutoffs for the candidate search. pgvector's <=> returns
+  // 0 (identical) to 2 (opposite), so both accept that full range.
+  //
+  // Worth re-tuning after changing any weight above. A weighted sum is a
+  // centroid, not the embedding of one coherent sentence: when lanes point in
+  // different directions the combined vector sits further from everything, so
+  // a cutoff calibrated against the old single-paragraph vectors admits fewer
+  // strict matches and pushes more of the list into backfill.
+  RECO_SIMILARITY_MAX: z.coerce.number().min(0).max(2).default(0.5),
+  RECO_BACKFILL_MAX: z.coerce.number().min(0).max(2).default(0.7),
+
+  // How many results the client gets, and how large a pool the candidate pass
+  // fetches to find them. The pool is paid for in latency, not just memory:
+  // measured against the live catalogue, 300 rows return in ~800ms and 1000 in
+  // ~5-18s, because the iterative index scan works towards the LIMIT.
+  RECO_TARGET_RESULTS: z.coerce.number().int().min(1).max(250).default(100),
+  // Capped at 500 deliberately, well below anything pgvector would refuse: the
+  // ceiling exists to stop an environment change re-introducing the 5-18s
+  // search that the 1000-row pool produced. Raising it is a code change, so it
+  // goes through review with those measurements in front of someone.
+  RECO_FETCH_POOL: z.coerce.number().int().min(50).max(500).default(300),
+
   RESEND_API_KEY: z.string().min(1),
   EMAIL_FROM: z.string().email().default('hello@kinkane.app'),
   // Where the Contact Us form delivers. Defaults to the From address so the
@@ -411,6 +476,29 @@ if (!parsed.success) {
 const env = parsed.data;
 
 /**
+ * Cross-field checks zod cannot express field-by-field. These throw at boot
+ * rather than degrading, for the same reason the commerce parsers below do: a
+ * backfill cutoff tighter than the strict one is not a worse search, it is a
+ * search whose second tier can never return a row, and it would look exactly
+ * like a recall problem in production.
+ */
+if (env.RECO_BACKFILL_MAX < env.RECO_SIMILARITY_MAX) {
+  console.error(
+    `Invalid environment variables: RECO_BACKFILL_MAX (${env.RECO_BACKFILL_MAX}) must be >= ` +
+      `RECO_SIMILARITY_MAX (${env.RECO_SIMILARITY_MAX}) — the backfill tier reaches further out, not nearer in.`,
+  );
+  process.exit(1);
+}
+
+if (env.RECO_FETCH_POOL < env.RECO_TARGET_RESULTS) {
+  console.error(
+    `Invalid environment variables: RECO_FETCH_POOL (${env.RECO_FETCH_POOL}) must be >= ` +
+      `RECO_TARGET_RESULTS (${env.RECO_TARGET_RESULTS}) — the pool is deduped down to the target, so it cannot start smaller.`,
+  );
+  process.exit(1);
+}
+
+/**
  * Parsers for the `A,B,C` and `KEY:VALUE,KEY:VALUE` env formats used by the
  * commerce settings.
  *
@@ -547,6 +635,22 @@ export const config = {
   },
   guestSession: {
     ttlHours: env.GUEST_SESSION_TTL_HOURS,
+  },
+  recommendations: {
+    weightingEnabled: env.RECO_WEIGHTING_ENABLED,
+    // 0-100 per field; see the env schema for why these are relative rather
+    // than shares of a budget.
+    weights: {
+      genres: env.RECO_WEIGHT_GENRES,
+      books: env.RECO_WEIGHT_BOOKS,
+      feelings: env.RECO_WEIGHT_FEELINGS,
+      dislikes: env.RECO_WEIGHT_DISLIKES,
+      tags: env.RECO_WEIGHT_TAGS,
+    },
+    similarityMax: env.RECO_SIMILARITY_MAX,
+    backfillMax: env.RECO_BACKFILL_MAX,
+    targetResults: env.RECO_TARGET_RESULTS,
+    fetchPool: env.RECO_FETCH_POOL,
   },
   email: {
     apiKey: env.RESEND_API_KEY,

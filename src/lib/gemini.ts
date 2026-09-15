@@ -30,6 +30,24 @@ export async function generateEmbedding(text: string): Promise<number[]> {
   return values;
 }
 
+/**
+ * Embeds several texts at once, one request each, in parallel.
+ *
+ * Used by the weighted preference vector, which embeds every preference field
+ * on its own so the fields can be combined under configurable weights. The
+ * requests are genuinely concurrent: `geminiConcurrencyLimit` below throttles
+ * explanation chunks, which are large generative calls, and deliberately does
+ * not cover embeddings — a handful of short embed calls is one round-trip of
+ * wall time, not N.
+ *
+ * Rejects if any single embedding fails. A preference vector missing one of
+ * its fields is silently the wrong search, which is worse than an error the
+ * caller can fall back from.
+ */
+export async function generateEmbeddings(texts: string[]): Promise<number[][]> {
+  return Promise.all(texts.map((text) => generateEmbedding(text)));
+}
+
 // ── Explanations ──────────────────────────────────────────────────────────────
 
 /**
