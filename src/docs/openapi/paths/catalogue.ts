@@ -354,6 +354,57 @@ export const cataloguePaths = {
     },
   },
 
+  '/api/v1/explore/reader-type': {
+    get: {
+      tags: [DISCOVERY],
+      summary: 'Books your reader type loved',
+      description: [
+        'The "Readers like you loved" rail. Books that other readers sharing the caller’s reader type have responded well to, most-supported first.',
+        '',
+        '**What counts as responding well**: a cohort member liked the book, finished it, or named it as one they had enjoyed in the onboarding quiz or a retake. Each person counts once per book however many of those apply, and the caller’s own shelf never contributes — "readers like you" means other readers.',
+        '',
+        '**Support is counted per work, not per edition.** A title the cohort loves across a paperback, a hardback and an ebook appears once, ranked on everyone who backed any edition of it.',
+        '',
+        'Books already on the caller’s shelf, and books they have swiped away, are excluded — at work level, so a paperback on the shelf suppresses the hardback too.',
+        '',
+        '**Returns `200` with an empty array when the caller has no reader type, and when nobody else shares theirs.** Neither is an error: both mean there is no rail to draw, and the client hides the section. Reader type is assigned during onboarding and can legitimately be absent.',
+        '',
+        'Matched on the reader type stored at signup. Retaking the quiz records a newly inferred type in the caller’s preference history but does **not** move them between cohorts — so this rail reflects the profile the app shows them, which is the same one.',
+        '',
+        '**Unlike the other feeds here, these rows carry no price or stock.** This is a discovery carousel rather than a shop surface, so there are no `unitPriceMinor`, `compareAtMinor`, `currency` or `inStock` fields on them and no `currency` parameter to send. Titles the shop cannot sell are still excluded, so the rail never advertises something unbuyable.',
+        '',
+        '**Anonymous aggregate.** It returns books and nothing else — no liker names, no avatars, not even a count. That is precisely why it can read every cohort member’s shelf regardless of their shelf visibility setting, and why a count will not be added to this response.',
+        '',
+        'Requires sign-in, but **not Kinkané Plus** — the likes behind it are a Plus feature, but seeing what a cohort reads is discovery, and this is the rail that shows a free reader what members are reading.',
+      ].join('\n'),
+      parameters: [
+        param('limit', 'query', { type: 'integer', minimum: 1, maximum: 50, default: 20 },
+          'Items per page (1–50).'),
+        param('offset', 'query', { type: 'integer', minimum: 0, default: 0 },
+          'Rows to skip. Ordering is deterministic, so paging is stable.'),
+        param('readerType', 'query', {
+          type: 'string',
+          enum: [
+            'The Open Door', 'The Seeker', 'The Book-ist', 'The Story Circler',
+            'The Mirror Within', 'The Echo Collector', 'The High Summiter',
+            'The Cloud Illusionist',
+          ],
+        },
+          'Read a cohort other than your own. Omit it and the caller’s own reader type is used. Send the exact value, URL-encoded — `The%20Seeker`. An unrecognised value is a `400`, deliberately: an unknown type returning an empty list would be indistinguishable from a real cohort nobody else is in. Note this is also the only way a reader who has no reader type yet can see anything from this endpoint.',
+          { example: 'The Seeker' }),
+      ],
+      responses: {
+        200: json('A page of books the cohort loved. Empty when the caller has no reader type, or is the only one with it.',
+          object({
+            books: arrayOf(ref('BookSummary')),
+            pagination: ref('Pagination'),
+          })),
+        400: resp('ValidationError'),
+        ...authErrors,
+      },
+    },
+  },
+
   '/api/v1/explore/personalized': {
     get: {
       tags: [DISCOVERY],

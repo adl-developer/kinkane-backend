@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-09-15
+
+### Features
+
+* allow tuning how much each quiz answer shapes a reader's recommendations ([6a5f86b](https://adl.github.com/adl-developer/kinkane-backend/commit/6a5f86bcf380dca1baebddd85727bc1e2cc8621a)) — [details](changelog/2026-09-15-recommendation-weights.md)
+
+
 ## 2026-09-10
 
 ### Features

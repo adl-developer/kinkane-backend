@@ -9,16 +9,20 @@ import {
   bookPrices,
   bookSubjects,
   genres,
+  userBooks,
   userInteractions,
   userPreferences,
+  users,
   type Book,
   type BookContributor,
+  type ReaderType,
   type Genre,
   type BookSubject,
   type BookPrice,
 } from '../db/schema';
 import { dedupeByTitle, dedupeByTitleAndSubtitle } from '../lib/dedupe';
 import {
+  buildHasAuthorCondition,
   buildWorkExclusionCondition,
   filterExcludedWorks,
   getUserExclusions,
@@ -448,6 +452,91 @@ interface FeedScoringRow extends TrendingBookItem {
 function stripFeedScoring(row: FeedScoringRow): TrendingBookItem {
   const { shortDescription: _shortDescription, availabilityCode: _availabilityCode, genreCount: _genreCount, hasPrice: _hasPrice, ...item } = row;
   return item;
+}
+
+// A row off the reader-type cohort query. Snake_case because it comes back from
+// raw SQL rather than the query builder, and `total` rides on every row — it is
+// a `count(*) OVER ()` window, so each row carries the same value.
+interface ReaderTypeFeedRow {
+  id: number;
+  title: string;
+  subtitle: string | null;
+  cover_url: string | null;
+  isbn13: string | null;
+  product_form: string | null;
+  publication_date: string | null;
+  liker_count: number;
+  total: number;
+}
+
+/**
+ * Turns bare catalogue rows into the card shape the feeds return: contributors,
+ * genres and an excerpt attached, input order preserved.
+ *
+ * Deliberately does **not** attach shop fields. Every other feed in this file is
+ * a shop surface and calls attachShopFields on the way out; the reader-type rail
+ * is a discovery carousel with no Add button, so it carries no price. If that
+ * rail ever gains one, this is a one-line change at the call site rather than a
+ * different query — but it must be attachShopFields on every request, never a
+ * cached price. See the note on TrendingBookItem for why that rule is absolute.
+ */
+async function hydrateBookCards(
+  rows: { id: number; title: string; subtitle: string | null; cover_url: string | null; isbn13: string | null; product_form: string | null; publication_date: string | null }[],
+): Promise<TrendingBookItem[]> {
+  const ids = rows.map((r) => r.id);
+
+  const [contributors, genreRows, excerptMap] = await Promise.all([
+    db
+      .select({
+        bookId: bookContributors.bookId,
+        role: bookContributors.role,
+        personName: bookContributors.personName,
+        sequenceNumber: bookContributors.sequenceNumber,
+      })
+      .from(bookContributors)
+      .where(inArray(bookContributors.bookId, ids))
+      .orderBy(bookContributors.sequenceNumber),
+
+    db
+      .select({ bookId: bookGenres.bookId, name: genres.name, slug: genres.slug })
+      .from(bookGenres)
+      .innerJoin(genres, eq(genres.id, bookGenres.genreId))
+      .where(inArray(bookGenres.bookId, ids)),
+
+    getExcerptsByIsbns(rows.map((r) => r.isbn13)),
+  ]);
+
+  const bookMap = new Map<number, TrendingBookItem>(
+    rows.map((r) => [
+      r.id,
+      {
+        id: r.id,
+        title: r.title,
+        subtitle: r.subtitle,
+        coverUrl: r.cover_url,
+        isbn13: r.isbn13,
+        productForm: r.product_form,
+        productFormLabel: getProductFormLabel(r.product_form),
+        publicationDate: r.publication_date,
+        contributors: [] as TrendingBookItem['contributors'],
+        genres: [] as TrendingBookItem['genres'],
+        excerpt: pickExcerpt(r.isbn13, excerptMap),
+      },
+    ]),
+  );
+
+  for (const c of contributors) {
+    bookMap.get(c.bookId)?.contributors.push({
+      role: c.role,
+      personName: c.personName,
+      sequenceNumber: c.sequenceNumber,
+    });
+  }
+  for (const g of genreRows) {
+    bookMap.get(g.bookId)?.genres.push({ name: g.name, slug: g.slug });
+  }
+
+  return rows.map((r) => bookMap.get(r.id)).filter((b): b is TrendingBookItem => b !== undefined);
 }
 
 /**
@@ -3170,6 +3259,196 @@ export const booksService = {
     // Cached without prices — attachShopFields runs on every read instead.
     await redis.set(cacheKey, JSON.stringify(results), 'EX', PERSONALIZED_TTL);
     return attachShopFields(results, currency);
+  },
+
+  /**
+   * "Readers like you loved" — books the rest of your reader type has embraced.
+   *
+   * Where `personalized` measures the catalogue against one reader's embedding,
+   * this is a straight popularity vote inside a cohort: take everyone sharing
+   * the caller's `users.reader_type`, count who responded well to each book,
+   * rank by that count.
+   *
+   * **Three things count as responding well**, not just the explicit like:
+   *
+   *   - `liked = true` — the deliberate signal, but liking is a Plus feature, so
+   *     on its own the pool is thin enough that a smaller reader type would come
+   *     back nearly empty
+   *   - `status = 'read'` — they finished it
+   *   - `source` of `chosen_from_onboarding` / `chosen_from_quiz` — books they
+   *     named as ones they had enjoyed when the quiz asked
+   *
+   * A user counts **once** per book however many of the three they trip, hence
+   * `count(distinct user_id)` rather than `count(*)`.
+   *
+   * The cohort is every matching user regardless of `shelf_visibility`. That is
+   * defensible only because the output is an anonymous aggregate: this returns
+   * books and nothing else — never who liked them, and not even the count.
+   * **If a future change attaches names, avatars or counts to these rows, this
+   * query has to start filtering on `shelf_visibility` first.** A private shelf
+   * that can be reconstructed from a liker count of one is not private.
+   *
+   * The caller's own rows are excluded from the count, so a book only they have
+   * liked can never appear — "readers like you" means other readers.
+   *
+   * Cohorting is on `users.reader_type` alone. That column is written at signup
+   * and deliberately left untouched by quiz retakes, which record their newly
+   * inferred type in `preference_history` instead (see lib/reader-type.ts) — so
+   * a reader who has retaken the quiz is still grouped by their original type.
+   * A known limitation rather than an oversight: following retakes means a
+   * per-user latest-row lookup over preference history on *both* sides of this
+   * query, and the label the UI prints under the rail comes off the user row too.
+   *
+   * Returns an empty page — never an error — both when the caller has no reader
+   * type and when nobody else shares theirs. To a client those are the same
+   * thing: there is no rail to draw.
+   *
+   * Uncached, unlike the other feeds. It is offset-paginated, so the cache key
+   * would carry the offset and each page would expire independently — that is
+   * how a reader pages from a fresh page 1 into an hour-stale page 2 and sees a
+   * book twice. The underlying aggregate is indexed and bounded by the cohort.
+   */
+  async likedByReaderType(
+    userId: number,
+    limit: number,
+    offset: number,
+    readerType?: ReaderType,
+  ): Promise<{ books: TrendingBookItem[]; total: number }> {
+    // An explicit reader type overrides the caller's own, so any cohort can be
+    // browsed rather than only the one you happen to belong to. The caller is
+    // still excluded from the count and their own exclusions still apply, so the
+    // rows are the same rows the endpoint would ever show them — this widens
+    // which cohort is read, not what may be read about it.
+    //
+    // Only reached with a value the controller has already checked against the
+    // enum: it is interpolated into the cohort predicate, and an unvalidated
+    // string would be a caller-supplied value steering the query.
+    const cohortType =
+      readerType ??
+      (
+        await db
+          .select({ readerType: users.readerType })
+          .from(users)
+          .where(eq(users.id, userId))
+          .limit(1)
+      )[0]?.readerType;
+
+    // No reader type, no cohort. Either onboarding never ran, or Gemini failed
+    // to infer one — fetchAndInferReaderType swallows that failure by design and
+    // leaves the column null rather than blocking a signup over a nice-to-have.
+    // Unreachable when readerType was passed, which is the point of the override:
+    // a caller with no type of their own can still see a cohort.
+    if (!cohortType) return { books: [], total: 0 };
+
+    const exclusions = await getUserExclusions(userId);
+
+    // Spread into the statement as ready-made fragments so the SQL below has no
+    // conditional branches in it — an empty fragment renders as nothing.
+    const idFilter =
+      exclusions.bookIds.length > 0 ? sql`AND ${notInArray(books.id, exclusions.bookIds)}` : sql``;
+    const workExclusion = buildWorkExclusionCondition(exclusions.works);
+    const workFilter = workExclusion ? sql`AND ${workExclusion}` : sql``;
+
+    // One statement rather than a count query plus a page query: `count(*) OVER ()`
+    // carries the total alongside the rows, so the two cannot disagree about a
+    // like that landed between them.
+    const result = await db.execute(sql`
+      WITH cohort AS (
+        SELECT ${userBooks.userId} AS user_id, ${userBooks.bookId} AS book_id
+        FROM ${userBooks}
+        JOIN ${users} ON ${users.id} = ${userBooks.userId}
+        WHERE ${users.readerType} = ${cohortType}
+          AND ${users.id} <> ${userId}
+          AND (
+            ${userBooks.liked}
+            OR ${userBooks.status} = 'read'
+            OR ${userBooks.source} IN ('chosen_from_onboarding', 'chosen_from_quiz')
+          )
+      ),
+      -- One row per (catalogue row, supporter), still ungrouped: both the work
+      -- score and the per-edition score below are counted off this, so they
+      -- cannot be computed over different populations.
+      candidates AS (
+        SELECT ${books.id}              AS id,
+               ${books.title}           AS title,
+               ${books.subtitle}        AS subtitle,
+               ${books.coverUrl}        AS cover_url,
+               ${books.isbn13}          AS isbn13,
+               ${books.productForm}     AS product_form,
+               ${books.publicationDate} AS publication_date,
+               cohort.user_id           AS user_id,
+               -- The work this row is an edition of, in exactly the form
+               -- lib/exclusions.ts normalises to. Identical on purpose: two
+               -- spellings of "the same book" in one codebase is how a filter
+               -- quietly stops matching. lower() is ASCII-only under this
+               -- database's C ctype, so accented titles fold by byte rather than
+               -- by locale — the same behaviour the exclusion filter already has,
+               -- which is the point of copying it rather than improving on it.
+               lower(btrim(${books.title})) AS work_title,
+               (SELECT lower(btrim(bc.person_name))
+                  FROM book_contributors bc
+                 WHERE bc.book_id = ${books.id}
+                   AND bc.role = 'A01'
+                   AND btrim(coalesce(bc.person_name, '')) <> ''
+                 ORDER BY bc.sequence_number
+                 LIMIT 1) AS work_author
+        FROM ${books}
+        JOIN cohort ON cohort.book_id = ${books.id}
+        WHERE ${buildFeedCondition()}
+          AND ${buildHasAuthorCondition()}
+          ${idFilter}
+          ${workFilter}
+      ),
+      -- Support is counted per WORK, not per catalogue row. Ranking the rows and
+      -- collapsing afterwards looks equivalent and is not: a book that ten people
+      -- love across a paperback, a hardback and an ebook scores 4-3-3 as rows,
+      -- and whichever edition survived the collapse then ranks below a book one
+      -- single reader liked. Counting the work first is what makes the rail
+      -- reflect what the cohort actually reads. distinct user_id because one
+      -- person owning two editions is still one person.
+      work_scores AS (
+        SELECT work_title, work_author, COUNT(DISTINCT user_id)::int AS liker_count
+        FROM candidates
+        GROUP BY work_title, work_author
+      ),
+      -- Per-edition support, used only to decide which edition represents the
+      -- work on screen: the one the cohort actually picked up.
+      edition_scores AS (
+        SELECT id, title, subtitle, cover_url, isbn13, product_form, publication_date,
+               work_title, work_author, COUNT(DISTINCT user_id)::int AS edition_likers
+        FROM candidates
+        GROUP BY id, title, subtitle, cover_url, isbn13, product_form,
+                 publication_date, work_title, work_author
+      ),
+      representative AS (
+        SELECT DISTINCT ON (work_title, work_author) *
+        FROM edition_scores
+        ORDER BY work_title, work_author, edition_likers DESC, id
+      )
+      SELECT representative.id, representative.title, representative.subtitle,
+             representative.cover_url, representative.isbn13,
+             representative.product_form, representative.publication_date,
+             work_scores.liker_count,
+             COUNT(*) OVER ()::int AS total
+      FROM representative
+      JOIN work_scores
+        ON work_scores.work_title = representative.work_title
+       -- Not "=": work_author is null for an untagged catalogue row, and a plain
+       -- equality drops every one of those works from the join silently.
+       AND work_scores.work_author IS NOT DISTINCT FROM representative.work_author
+      -- id breaks liker-count ties deterministically. Without it Postgres is free
+      -- to order equally-liked works differently on each query, and offset
+      -- pagination over an unstable sort silently repeats and drops rows.
+      ORDER BY work_scores.liker_count DESC, representative.id
+      LIMIT ${limit} OFFSET ${offset}
+    `);
+
+    // postgres-js hands back a RowList, which is array-like but not an Array —
+    // same cast the other raw-SQL readers in this file use.
+    const rows = result as unknown as ReaderTypeFeedRow[];
+    if (rows.length === 0) return { books: [], total: 0 };
+
+    return { books: await hydrateBookCards(rows), total: Number(rows[0].total) };
   },
 
   /**
