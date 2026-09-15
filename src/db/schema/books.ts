@@ -68,6 +68,10 @@ export const books = pgTable(
     subtitle: varchar('subtitle', { length: 2000 }),
     shortDescription: text('short_description'),
     longDescription: text('long_description'),
+
+    // Gardners' 1-5 "Select Guide Rating" from the ONIX feed (TextType 06).
+    // A buyer's guide score, not a review; present on ~83% of ONIX products.
+    selectGuideRating: integer('select_guide_rating'),
     publisherName: varchar('publisher_name', { length: 500 }),
     imprintName: varchar('imprint_name', { length: 500 }),
     countryOfPublication: varchar('country_of_publication', { length: 2 }),

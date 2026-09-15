@@ -36,6 +36,10 @@ let counts: number[] = [];
 let authorCountError: unknown = null;
 // Lets a test fail a specific broad-tier pool stage, the way the time budget cancels one.
 let poolFailure: (() => unknown) | null = null;
+// Rows to hand back for the split band's resolution query. It returns book ids rather than
+// a count, so it cannot share the `counts` queue — and left unstaged it would consume one,
+// which is how a staged count ends up answering the wrong probe.
+let splitRows: { id: number }[] = [];
 
 function render(query: unknown): string {
   try {
@@ -63,6 +67,11 @@ function execute(query: unknown): Promise<{ count: number }[]> {
   }
   issuedParams.push(params(query));
   issued.push(text);
+  // The split band's resolution query, identified by the run tag its arms carry — nothing
+  // else in the search emits one.
+  if (/run_len/i.test(text)) {
+    return Promise.resolve(splitRows as unknown as { count: number }[]);
+  }
   if (poolFailure && /word_similarity/i.test(text)) {
     const err = poolFailure();
     if (err) return Promise.reject(err);
@@ -167,6 +176,7 @@ beforeEach(() => {
   counts = [];
   authorCountError = null;
   poolFailure = null;
+  splitRows = [];
   cachedRows = null;
   cachedCount = null;
   cacheWrites = [];
@@ -780,3 +790,128 @@ describe('which tier serves a deep page', () => {
     }
   });
 });
+
+/**
+ * The split band — v1's answer to a query that names a book and a person at once.
+ *
+ * Everything worth pinning here is invisible in the returned rows. Whether the band ran at
+ * all, whether its arms stayed bounded, and whether it wrote to the shared count entry are
+ * all cost and stability properties, and every one of them was correct-looking and wrong in
+ * an earlier draft. The rows are the same books either way.
+ */
+describe('the split search band', () => {
+  /** The band's resolution query, identified by the run tag only its arms carry. */
+  const splitProbe = (): string | undefined => issued.find((sql) => /run_len/i.test(sql));
+
+  // The whole latency argument rests on this. A query the cheap tiers can answer must not
+  // pay for the band, and the probes that decide are the ones the search already ran.
+  it('is skipped when the exact band matched anything at all', async () => {
+    counts = [4, 4, 4];
+    await listV1({ q: 'half of a yellow sun adichie' });
+
+    expect(splitProbe(), 'the band ran even though a cheap tier had matched').toBeUndefined();
+  });
+
+  // Single-token typos are what the fuzzy pool legitimately exists for. They produce no
+  // candidate splits, so they must reach it without a wasted round trip on the way.
+  it('is skipped for a query that cannot split', async () => {
+    counts = [0, 0, 0];
+    await listV1({ q: 'xylophonist' });
+
+    expect(splitProbe(), 'a one-word query was handed to the split band').toBeUndefined();
+  });
+
+  // v2 makes the caller name the side it wants, so the query has already been declared all
+  // title or all name. Splitting it would be answering a question the caller did not ask.
+  it('never runs on v2, on either side', async () => {
+    counts = [0, 0, 0];
+    await list({ q: 'half of a yellow sun adichie', searchType: 'title' });
+    expect(splitProbe(), 'a v2 title search ran the split band').toBeUndefined();
+
+    issued = [];
+    counts = [0];
+    await list({ q: 'half of a yellow sun adichie', searchType: 'author' });
+    expect(splitProbe(), 'a v2 author search ran the split band').toBeUndefined();
+  });
+
+  it('runs when nothing matched exactly and the query has more than one word', async () => {
+    counts = [0, 0, 0];
+    splitRows = [{ id: 11 }, { id: 12 }];
+    await listV1({ q: 'half of a yellow sun adichie' });
+
+    expect(splitProbe(), 'the band did not run for a combined query').toBeDefined();
+  });
+
+  // Each arm carries its own LIMIT. One cap over the union would let a popular fragment
+  // produce its whole match set before the merge could discard it — the unbounded-work
+  // shape SEARCH_COUNT_CAP and AUTHOR_MATCH_LIMIT both exist to prevent.
+  it('bounds every name arm independently', async () => {
+    counts = [0, 0, 0];
+    splitRows = [{ id: 11 }];
+    await listV1({ q: 'half of a yellow sun adichie' });
+
+    const probe = splitProbe()!;
+    const arms = probe.match(/from\s+book_contributors\s+bc/gi) ?? [];
+    const limits = probe.match(/limit\s+\$\d+/gi) ?? [];
+    expect(arms.length, 'the band issued no name arms').toBeGreaterThan(1);
+    // One LIMIT per arm, plus the outer cap on the ranked id list.
+    expect(limits.length).toBe(arms.length + 1);
+  });
+
+  // The plain-prefix arm has to keep the exact expression shape idx_book_contributors_name
+  // _lower_pattern is built on. text_pattern_ops matches no other operator, so an ILIKE
+  // here is not a slower equivalent — it is a sequential scan over the contributor table,
+  // which is the cost this band exists to avoid.
+  it('keeps its prefix arm in the shape the pattern index can serve', async () => {
+    counts = [0, 0, 0];
+    splitRows = [{ id: 11 }];
+    await listV1({ q: 'half of a yellow sun adichie' });
+
+    expect(splitProbe()!).toMatch(/lower\(btrim\(regexp_replace\([^)]*\)\)\)\s+LIKE\s+lower\(/i);
+  });
+
+  // Without this, a run like "harry" pulls in every book by every contributor named Harry
+  // and buries the ones the reader asked for. A combined query means both halves matched.
+  it('requires at least one leftover word to appear in the title', async () => {
+    counts = [0, 0, 0];
+    splitRows = [{ id: 11 }];
+    await listV1({ q: 'harry potter rowling' });
+
+    expect(splitProbe()!).toMatch(/>=\s*1/);
+  });
+
+  // The count entry feeds exactBandCount on the next page, where it means "the cheap tiers
+  // matched this much". A split search reached the band precisely because they matched
+  // nothing, so writing its own total there would make page 2 see a non-empty exact band,
+  // drop back to the fuzzy tier, and answer the same query a different way.
+  it('does not write the shared count entry', async () => {
+    counts = [0, 0, 0];
+    splitRows = [{ id: 11 }, { id: 12 }, { id: 13 }];
+    const result = await listV1({ q: 'half of a yellow sun adichie' });
+
+    expect(result.total, 'the band did not count itself').toBe(3);
+    expect(
+      cacheWrites.filter(([key]) => key.startsWith('books:count:')),
+      'a split total was cached where the exact-band probes are read from',
+    ).toEqual([]);
+    expect(
+      cacheWrites.some(([key]) => key.startsWith('books:split:')),
+      'the band was not cached under its own key',
+    ).toBe(true);
+  });
+
+  // A band that resolves empty is not an answer, it is an absence of one. The search must
+  // land where it would have landed without the band rather than returning nothing.
+  it('falls through to the fuzzy tier when it matches nothing', async () => {
+    counts = [0, 0, 0];
+    splitRows = [];
+    await listV1({ q: 'zephyrbook quazzlefrump' });
+
+    expect(splitProbe(), 'the band did not run').toBeDefined();
+    expect(
+      issued.some((sql) => /word_similarity/i.test(sql)),
+      'an empty split band did not fall through to the fuzzy tier',
+    ).toBe(true);
+  });
+});
+
