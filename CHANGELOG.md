@@ -5,6 +5,7 @@
 
 ### Features
 
+* find the book when a search names both the title and the author ([3883799](https://adl.github.com/adl-developer/kinkane-backend/commit/38837999fbb4461f66ae67fce9167127660325b1)) — [details](changelog/2026-09-15-reader-type-feed.md)
 * show readers the books that others with their reading profile loved ([3157830](https://adl.github.com/adl-developer/kinkane-backend/commit/315783091841727e232d570f73ed5506b0c1a038)) — [details](changelog/2026-09-15-reader-type-feed.md)
 * allow tuning how much each quiz answer shapes a reader's recommendations ([6a5f86b](https://adl.github.com/adl-developer/kinkane-backend/commit/6a5f86bcf380dca1baebddd85727bc1e2cc8621a)) — [details](changelog/2026-09-15-recommendation-weights.md)
 
