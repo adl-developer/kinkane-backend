@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { shopCurrency } from './books.controller';
 import { z } from 'zod';
 import { booksService } from '../services/books.service';
+import { readerTypeEnum } from '../db/schema';
 import {
   bestsellersService,
   BESTSELLER_WINDOWS,
@@ -18,6 +19,21 @@ import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 // working and gets what it was asking for anyway.
 const limitSchema = z.object({
   limit: z.coerce.number().int().min(1).max(20).default(10),
+});
+
+// Offset pagination, unlike the limit-only feeds above — this rail is a list the
+// reader can page through rather than a fixed top ten. 50 is the ceiling used by
+// every other paginated list in the API; see the Pagination component.
+const readerTypeSchema = z.object({
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+  offset: z.coerce.number().int().min(0).default(0),
+  // Checked against the database enum rather than accepted as a string. The
+  // value reaches the cohort predicate, so an unvalidated one would be a
+  // caller-supplied string steering the query — and a typo would silently
+  // return an empty rail that looks exactly like a cohort of one.
+  // Sourced from the enum itself so a new reader type is accepted here the day
+  // it is added, instead of being rejected by a list nobody remembered to edit.
+  readerType: z.enum(readerTypeEnum.enumValues).optional(),
 });
 
 const bestsellersSchema = z.object({
@@ -83,6 +99,61 @@ export const exploreController = {
       res.status(200).json({ books });
     } catch (err: unknown) {
       logger.error('Unexpected error fetching trending books', { error: (err as Error).message });
+      res.status(500).json({ error: 'An unexpected error occurred' });
+    }
+  },
+
+  /**
+   * GET /api/v1/explore/reader-type
+   *
+   * Books the caller's reader-type cohort responded well to, most-supported
+   * first. An anonymous aggregate — no liker identities and no counts leave this
+   * endpoint, which is what lets the query read every shelf regardless of its
+   * visibility setting.
+   *
+   * Public. A signed-in reader is cohorted by their own reader type and has
+   * their shelf and rejections filtered out; a signed-out visitor has neither,
+   * so `readerType` is the only way they can select a cohort — without it they
+   * get an empty list, the same as any other caller with no cohort to read.
+   *
+   * `readerType` overrides which cohort is read; without it the caller's own is
+   * used. It is validated against the database enum before it goes anywhere near
+   * the query, and an unknown value is a 400 rather than an empty rail — the two
+   * are indistinguishable to a client otherwise.
+   *
+   * A caller with no reader type, and one whose type nobody else shares, both
+   * get `200` with an empty array. Neither is an error condition: the client
+   * hides the rail either way, and a 404 would only give it a second code path
+   * to arrive at the same rendering.
+   */
+  async getReaderTypeLikes(req: Request, res: Response): Promise<void> {
+    const parsed = readerTypeSchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+
+    // optionalAuth route — a signed-in reader is cohorted by their own reader
+    // type and gets their shelf and rejections filtered out; a signed-out
+    // visitor has neither, so they must name a cohort with `readerType`.
+    const userId = (req as Partial<AuthenticatedRequest>).user?.id;
+    const { limit, offset, readerType } = parsed.data;
+
+    try {
+      const { books, total } = await booksService.likedByReaderType(
+        userId,
+        limit,
+        offset,
+        readerType,
+      );
+      res.status(200).json({
+        books,
+        pagination: { total, limit, offset, hasMore: offset + books.length < total },
+      });
+    } catch (err: unknown) {
+      logger.error('Unexpected error fetching reader-type books', {
+        error: (err as Error).message,
+      });
       res.status(500).json({ error: 'An unexpected error occurred' });
     }
   },

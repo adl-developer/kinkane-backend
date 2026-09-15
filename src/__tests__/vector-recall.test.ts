@@ -171,8 +171,14 @@ describe('HNSW recall', () => {
     // Under iterative scan the LIMIT is what the scan works towards, so the pool
     // is paid for in latency rather than being free headroom. Measured on the
     // live catalogue: 300 rows ~800ms, 1000 rows 5-18s.
-    const pool = SOURCES['recommendations.service.ts'].match(/const FETCH_POOL = (\d+);/);
-    expect(pool).not.toBeNull();
-    expect(Number(pool![1])).toBeLessThanOrEqual(500);
+    // The pool is env-tunable now (RECO_FETCH_POOL), so the guard lives on the
+    // schema rather than a literal in the service: both the default and the
+    // ceiling an operator can reach have to stay cheap.
+    const schema = read('config/index.ts');
+    const bounds = schema.match(/RECO_FETCH_POOL: z\.coerce\.number\(\)\.int\(\)\.min\(\d+\)\.max\((\d+)\)\.default\((\d+)\)/);
+    expect(bounds).not.toBeNull();
+    const [, max, fallback] = bounds!;
+    expect(Number(fallback)).toBeLessThanOrEqual(500);
+    expect(Number(max)).toBeLessThanOrEqual(500);
   });
 });

@@ -10,8 +10,7 @@ import { adminNotificationsService } from './admin/notifications.service';
 import { logger } from '../lib/logger';
 import { touchLastSignIn } from './user-activity.service';
 import { enqueueEmail } from '../lib/email-queue';
-import { generateEmbedding } from '../lib/gemini';
-import { buildPreferenceText } from './recommendations.service';
+import { generatePreferenceVector } from './recommendations.service';
 import { preferenceHistoryService } from './preference-history.service';
 import { dislikedBooksService } from './disliked-books.service';
 import { subscriptionStateService } from './subscriptions/state.service';
@@ -183,12 +182,14 @@ async function generatePreferenceEmbedding(
     }
   }
 
-  const text = buildPreferenceText(
+  // Must build the vector exactly the way the quiz path does. If this writer
+  // used the old single-paragraph embedding while the search used weighted
+  // lanes, a reader's stored vector and their quiz results would disagree from
+  // the moment they registered.
+  const embedding = await generatePreferenceVector(
     { feelings: session.feelings, genres: session.genres, dislikes: session.dislikes },
     likedBooks,
   );
-
-  const embedding = await generateEmbedding(text);
 
   await db
     .update(userPreferences)

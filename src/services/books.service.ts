@@ -9,22 +9,28 @@ import {
   bookPrices,
   bookSubjects,
   genres,
+  userBooks,
   userInteractions,
   userPreferences,
+  users,
   type Book,
   type BookContributor,
+  type ReaderType,
   type Genre,
   type BookSubject,
   type BookPrice,
 } from '../db/schema';
 import { dedupeByTitle, dedupeByTitleAndSubtitle } from '../lib/dedupe';
 import {
+  buildHasAuthorCondition,
   buildWorkExclusionCondition,
+  EMPTY_EXCLUSIONS,
   filterExcludedWorks,
   getUserExclusions,
 } from '../lib/exclusions';
 import { logger } from '../lib/logger';
 import { normalisedNameSql, normaliseNameQuery } from '../lib/contributor-name';
+import { splitCandidates, type SplitCandidate } from '../lib/search-split';
 import { redis } from '../lib/redis';
 import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-excerpts.service';
 import { TRENDING_SCORED_TYPES, trendingScoreSql } from './interactions.service';
@@ -115,6 +121,21 @@ const COUNT_STATEMENT_TIMEOUT_MS = 3000;
 // so it only ever truncates genuinely ambiguous fragments, where the rows past the cap
 // were never going to be shown anyway.
 const AUTHOR_MATCH_LIMIT = 5000;
+// Per-arm ceiling for the split band's name probe — see buildSplitMatchSource.
+//
+// Deliberately well below AUTHOR_MATCH_LIMIT, because this probe issues two arms per
+// candidate split rather than four arms total: at the widest it is twelve arms, and the
+// rows they produce are joined against `books` before anything narrows them. The cap is
+// what keeps that join proportional to the query rather than to how common a name
+// fragment is, and it is generous against the thing it truncates — a run that matches
+// more than this many contributor rows is a fragment like "har", not a name.
+const SPLIT_NAME_LIMIT = 1500;
+// How long a resolved split band survives in Redis.
+//
+// The same length as COUNT_TTL, and for the same reason: this list *is* the split band's
+// count as well as its ranking, so the two must expire together or a page would report a
+// total from one generation against rows from another.
+const SPLIT_TTL = 30 * 60;
 // How many fuzzy candidates the broad tier will rank before picking a page.
 //
 // The broad tier's ranking expression — word_similarity() per row, then a sort — cannot be
@@ -448,6 +469,91 @@ interface FeedScoringRow extends TrendingBookItem {
 function stripFeedScoring(row: FeedScoringRow): TrendingBookItem {
   const { shortDescription: _shortDescription, availabilityCode: _availabilityCode, genreCount: _genreCount, hasPrice: _hasPrice, ...item } = row;
   return item;
+}
+
+// A row off the reader-type cohort query. Snake_case because it comes back from
+// raw SQL rather than the query builder, and `total` rides on every row — it is
+// a `count(*) OVER ()` window, so each row carries the same value.
+interface ReaderTypeFeedRow {
+  id: number;
+  title: string;
+  subtitle: string | null;
+  cover_url: string | null;
+  isbn13: string | null;
+  product_form: string | null;
+  publication_date: string | null;
+  liker_count: number;
+  total: number;
+}
+
+/**
+ * Turns bare catalogue rows into the card shape the feeds return: contributors,
+ * genres and an excerpt attached, input order preserved.
+ *
+ * Deliberately does **not** attach shop fields. Every other feed in this file is
+ * a shop surface and calls attachShopFields on the way out; the reader-type rail
+ * is a discovery carousel with no Add button, so it carries no price. If that
+ * rail ever gains one, this is a one-line change at the call site rather than a
+ * different query — but it must be attachShopFields on every request, never a
+ * cached price. See the note on TrendingBookItem for why that rule is absolute.
+ */
+async function hydrateBookCards(
+  rows: { id: number; title: string; subtitle: string | null; cover_url: string | null; isbn13: string | null; product_form: string | null; publication_date: string | null }[],
+): Promise<TrendingBookItem[]> {
+  const ids = rows.map((r) => r.id);
+
+  const [contributors, genreRows, excerptMap] = await Promise.all([
+    db
+      .select({
+        bookId: bookContributors.bookId,
+        role: bookContributors.role,
+        personName: bookContributors.personName,
+        sequenceNumber: bookContributors.sequenceNumber,
+      })
+      .from(bookContributors)
+      .where(inArray(bookContributors.bookId, ids))
+      .orderBy(bookContributors.sequenceNumber),
+
+    db
+      .select({ bookId: bookGenres.bookId, name: genres.name, slug: genres.slug })
+      .from(bookGenres)
+      .innerJoin(genres, eq(genres.id, bookGenres.genreId))
+      .where(inArray(bookGenres.bookId, ids)),
+
+    getExcerptsByIsbns(rows.map((r) => r.isbn13)),
+  ]);
+
+  const bookMap = new Map<number, TrendingBookItem>(
+    rows.map((r) => [
+      r.id,
+      {
+        id: r.id,
+        title: r.title,
+        subtitle: r.subtitle,
+        coverUrl: r.cover_url,
+        isbn13: r.isbn13,
+        productForm: r.product_form,
+        productFormLabel: getProductFormLabel(r.product_form),
+        publicationDate: r.publication_date,
+        contributors: [] as TrendingBookItem['contributors'],
+        genres: [] as TrendingBookItem['genres'],
+        excerpt: pickExcerpt(r.isbn13, excerptMap),
+      },
+    ]),
+  );
+
+  for (const c of contributors) {
+    bookMap.get(c.bookId)?.contributors.push({
+      role: c.role,
+      personName: c.personName,
+      sequenceNumber: c.sequenceNumber,
+    });
+  }
+  for (const g of genreRows) {
+    bookMap.get(g.bookId)?.genres.push({ name: g.name, slug: g.slug });
+  }
+
+  return rows.map((r) => bookMap.get(r.id)).filter((b): b is TrendingBookItem => b !== undefined);
 }
 
 /**
@@ -1508,6 +1614,271 @@ async function fetchAuthorSearchPage(opts: ListBooksOptions, q: string, pageSize
   return broadRows.slice(opts.offset, branchLimit);
 }
 
+// ---------------------------------------------------------------------------------------
+// The split band: queries that name a book *and* a person in one string.
+// ---------------------------------------------------------------------------------------
+//
+// "half of a yellow sun adichie", "rowling harry potter", "things fall apart achebe". None
+// of these is a title and none is a name, so every cheap tier misses: the title tiers match
+// a prefix of the whole string and the name tiers match a prefix of a person_name, and the
+// whole string is neither. Before this band existed they fell straight through to the fuzzy
+// title pool — the slowest query the search issues (see BROAD_CANDIDATE_POOL) and, for this
+// shape, an answer to a question nobody asked, since it ranks near-misses on a string that
+// was never one title.
+//
+// So this band sits *between* the exact band and the fuzzy one, and it is entered on
+// exactly the condition that used to send a query to the fuzzy pool: nothing matched
+// exactly, by title or by name, anywhere. A query the exact band answers never reaches it
+// and pays nothing. A single-token query produces no candidate splits at all (see
+// splitCandidates) and also pays nothing — which matters, because single-token typos are
+// what the fuzzy pool legitimately exists for and they must not get slower.
+//
+// The split is not guessed. splitCandidates proposes every contiguous way the tokens could
+// divide, and the probe below scores each proposal *per book* against the catalogue, keeping
+// the best. That is what makes "harry potter rowling" work: the run "harry" matches real
+// contributors and so does "rowling", but only under the "rowling" reading do the leftover
+// words "harry potter" appear in that author's titles. Picking one global winner up front
+// would have needed a tie-break rule with no evidence behind it; scoring per book means the
+// evidence decides, and it is the same join either way.
+
+/**
+ * The name side of the split band: one bounded index arm per candidate run, per match shape.
+ *
+ * Two arms per candidate, mirroring the tiers buildAuthorMatchSource already uses and for
+ * the same reasons:
+ *   - a plain-prefix arm on `lower(normalised person_name) LIKE 'run%'`, which
+ *     idx_book_contributors_name_lower_pattern serves as a range scan. This is the arm that
+ *     catches "chimamanda ngozi adichie" and, because the feed stores some names inverted
+ *     ("Achebe, Chinua"), a good share of surname-first rows too.
+ *   - a word-prefix arm on `normalised person_name ILIKE '% run%'`, which the trigram GIN
+ *     serves. This is the arm that catches a bare surname, and it is not optional: most
+ *     readers type "adichie", which is a prefix of nothing.
+ *
+ * Every arm carries its own LIMIT. A single cap over the union would let one popular
+ * fragment produce its whole match set before the merge could discard it, which is the
+ * unbounded-work shape SEARCH_COUNT_CAP and AUTHOR_MATCH_LIMIT both exist to prevent.
+ *
+ * `run` tags each row with which candidate produced it, because the score below has to know
+ * which leftover words to look for — the arms cannot compute that themselves, since they
+ * never see `books`.
+ *
+ * Roles are carried, not filtered. Same rule as the name tiers: A01 ranks above editors and
+ * translators, but an edited volume found by its editor's name is a real result, and about
+ * one book in five has no A01 contributor at all.
+ */
+function buildSplitMatchSource(candidates: SplitCandidate[]): SQL {
+  // Interpolated raw and character-identical to the index definition in db/setup.ts — see
+  // normalisedNameSql. A drift here is a silent sequential scan over book_contributors,
+  // which is precisely the cost this band exists to avoid.
+  const NAME = sql.raw(normalisedNameSql('bc.person_name'));
+
+  const arms: SQL[] = [];
+  candidates.forEach((candidate, index) => {
+    // Normalised on this side because the column is normalised on the other — the feed
+    // ships ~22% of contributor rows with doubled internal spaces, and LIKE is literal.
+    const name = normaliseNameQuery(candidate.name);
+    const run = sql.raw(String(index));
+    const runLength = sql.raw(String(candidate.nameTokens.length));
+
+    arms.push(sql`(
+      SELECT bc.book_id, ${run} AS run, ${runLength} AS run_len, bc.role
+      FROM book_contributors bc
+      WHERE lower(${NAME}) LIKE lower(${name + '%'})
+      LIMIT ${SPLIT_NAME_LIMIT}
+    )`);
+    arms.push(sql`(
+      SELECT bc.book_id, ${run} AS run, ${runLength} AS run_len, bc.role
+      FROM book_contributors bc
+      WHERE bc.person_name IS NOT NULL
+        AND ${NAME} ILIKE ${'% ' + name + '%'}
+      LIMIT ${SPLIT_NAME_LIMIT}
+    )`);
+  });
+
+  return sql`(${sql.join(arms, sql` UNION ALL `)})`;
+}
+
+/**
+ * How many of a candidate's leftover words appear in the book's title.
+ *
+ * A `CASE` over the run tag, because each candidate leaves different words behind. Written
+ * as a sum of per-word tests rather than one combined pattern so that a partial match still
+ * scores: "harry potter rowling" read as name="rowling" leaves "harry" and "potter", and a
+ * book matching both must outrank one matching only "harry".
+ *
+ * Plain `ILIKE '%word%'` with no index behind it, which is affordable only because of where
+ * this is evaluated: the rows it runs against are already the bounded output of the name
+ * arms joined to `books` by primary key, not the catalogue. Anything more clever here would
+ * be optimising the cheap half.
+ */
+function buildSplitTitleHits(candidates: SplitCandidate[]): SQL {
+  const branches = candidates.map((candidate, index) => {
+    const tests = candidate.titleMatchTokens.map(
+      (token) => sql`(CASE WHEN ${books.title} ILIKE ${'%' + token + '%'} THEN 1 ELSE 0 END)`,
+    );
+    return sql`WHEN ${sql.raw(String(index))} THEN (${sql.join(tests, sql` + `)})`;
+  });
+  return sql`(CASE m.run ${sql.join(branches, sql` `)} ELSE 0 END)`;
+}
+
+/** How many leftover words that candidate had, so the hit count can be read as a proportion. */
+function buildSplitTitleNeed(candidates: SplitCandidate[]): SQL {
+  const branches = candidates.map(
+    (candidate, index) =>
+      sql`WHEN ${sql.raw(String(index))} THEN ${sql.raw(String(candidate.titleMatchTokens.length))}`,
+  );
+  // splitCandidates never leaves a candidate with zero title tokens, so the ELSE is
+  // unreachable — it is 1 rather than 0 because it divides.
+  return sql`(CASE m.run ${sql.join(branches, sql` `)} ELSE 1 END)`;
+}
+
+/**
+ * The split band's ranking, as one integer per (book, candidate) pair. Higher is better.
+ *
+ * Packed into a single expression rather than several ordered columns because the whole
+ * point is to take the *best interpretation per book*: `MAX()` over one number keeps a
+ * book's keys from being mixed across two different readings of the query, which is what
+ * `MAX(hits), MAX(run_len)` would silently do.
+ *
+ * The fields, most significant first:
+ *   - the proportion of leftover words found in the title, as thousandths. This dominates
+ *     everything, and it is what resolves an ambiguous split: a reading under which every
+ *     remaining word appears in the title beats one under which half of them do.
+ *   - the length of the name run, so that where two readings match the title equally, the
+ *     one claiming more of the query as a name wins. "chimamanda ngozi adichie" is a more
+ *     specific claim than "chimamanda".
+ *   - whether the contributor is credited A01, as the last tiebreak, keeping an author
+ *     above an editor of the same book.
+ *
+ * The weights do not overlap: the proportion is 0-1000 scaled by 100, and the two tiebreaks
+ * together can never exceed 31.
+ */
+function buildSplitScore(hits: SQL, need: SQL): SQL {
+  return sql`(((${hits}) * 1000 / (${need})) * 100 + s.run_len * 10 + CASE WHEN s.role = 'A01' THEN 1 ELSE 0 END)`;
+}
+
+/**
+ * Resolves the split band to a ranked list of book ids, filtered and capped, and caches it.
+ *
+ * Materialising the whole band rather than one page of it is deliberate, and it buys three
+ * things at once:
+ *
+ *   - **The count.** The list's length *is* the band's total, exact up to SEARCH_COUNT_CAP,
+ *     so this band needs no count probe of its own. That matters because the probes it
+ *     would otherwise reuse all measure the exact band, which for any query reaching here
+ *     is empty by definition — a split search would report "0 results" over a full page.
+ *
+ *   - **Page stability.** Every page slices the same list, so a book cannot appear on two
+ *     pages or on none as the offset advances. The alternative — re-running the ranking per
+ *     page with a wider LIMIT — is the resampling hazard rankAuthorMatches and rankBroadPool
+ *     both document, and this band is more exposed to it than either, because its score ties
+ *     heavily (most books match the same proportion of leftover words).
+ *
+ *   - **The cost, once.** The cap is 1001 ids, so the whole band is a few kilobytes in
+ *     Redis, and every subsequent page of that search is a cache read instead of a query.
+ *
+ * The filters are applied here rather than to the page fetch, so the ids are already the
+ * caller's result set. That is why fetchSplitSearchPage can slice them without re-filtering.
+ *
+ * A timeout returns an empty list, which reads as "this band has nothing" and drops the
+ * search to the fuzzy tier it would have used anyway. Bounded by PROBE_STATEMENT_TIMEOUT_MS
+ * rather than BROAD_TIME_BUDGET_MS: this band is meant to be fast, and a slow one is a
+ * failing index, not a dense neighbourhood to be waited out.
+ */
+async function resolveSplitBandIds(
+  opts: ListBooksOptions,
+  candidates: SplitCandidate[],
+): Promise<number[]> {
+  // Keyed on everything that changes the set, which is the filters (shopBand among them,
+  // since the band ladder scopes each fetch to one) and the query itself. Derived by
+  // removing the page-shaped fields for the same reason countCacheKey is: a filter added
+  // to ListBooksOptions and forgotten here would silently serve one filter's band to
+  // another.
+  const {
+    sort: _sort,
+    sortBy: _sortBy,
+    limit: _limit,
+    offset: _offset,
+    dedupe: _dedupe,
+    cursor: _cursor,
+    currency: _currency,
+    ...keyed
+  } = opts;
+  const cacheKey = `books:split:v1:${createHash('sha256')
+    .update(JSON.stringify(keyed))
+    .digest('hex')}`;
+
+  const cached = await redis.get(cacheKey);
+  if (cached != null) return JSON.parse(cached) as number[];
+
+  const hits = buildSplitTitleHits(candidates);
+  const need = buildSplitTitleNeed(candidates);
+  const filters = buildWhereClause(opts);
+
+  // Two levels, so the leftover-word count is computed once rather than repeated in both
+  // the filter and the ranking. It is the widest expression in the query — one CASE arm per
+  // candidate, each a sum of per-word tests — and writing it twice would double the work and
+  // leave two copies to drift apart.
+  //
+  // The `hits >= 1` filter is the band's definition. Without it a run like "harry" pulls in
+  // every book by every contributor named Harry, which is the name half alone — something
+  // the author branch already covers and the exact band already ruled out — and buries the
+  // books the reader actually asked for underneath them.
+  const ids = await withStatementTimeout(PROBE_STATEMENT_TIMEOUT_MS, async (conn) => {
+    const ranked = await conn.execute<{ id: number }>(sql`
+      SELECT s.id
+      FROM (
+        SELECT ${books.id} AS id,
+               ${books.title} AS title,
+               (${hits}) AS hits,
+               (${need}) AS need,
+               m.run_len,
+               m.role
+        FROM ${books}
+        JOIN ${buildSplitMatchSource(candidates)} m ON m.book_id = ${books.id}
+        WHERE ${filters ?? sql`TRUE`}
+      ) s
+      WHERE s.hits >= 1
+      GROUP BY s.id, s.title
+      ORDER BY MAX(${buildSplitScore(sql`s.hits`, sql`s.need`)}) DESC, lower(s.title), s.id
+      LIMIT ${SEARCH_COUNT_CAP + 1}
+    `);
+    return (ranked as unknown as { id: number }[]).map((row) => Number(row.id));
+  }).catch((err: unknown) => {
+    if (!isStatementTimeout(err)) throw err;
+    logger.warn('Split search band hit its budget — falling through to the fuzzy tier', {
+      q: opts.q,
+    });
+    return [] as number[];
+  });
+
+  await redis.set(cacheKey, JSON.stringify(ids), 'EX', SPLIT_TTL);
+  return ids;
+}
+
+/**
+ * One page of the split band, sliced out of its resolved id list.
+ *
+ * No filtering and no ranking happen here — resolveSplitBandIds did both, which is what
+ * makes this a primary-key fetch and nothing more. The in-memory re-sort is only to undo
+ * the ordering `inArray` discards, exactly as fetchBroadTitleBranch does.
+ *
+ * Returns one row beyond the page so the caller can derive `hasMore` without a second query.
+ */
+async function fetchSplitSearchPage(
+  opts: ListBooksOptions,
+  ids: number[],
+  pageSize: number,
+): Promise<ListRow[]> {
+  const pageIds = ids.slice(opts.offset, opts.offset + pageSize + 1);
+  if (pageIds.length === 0) return [];
+
+  const rows = await db.select(LIST_COLUMNS).from(books).where(inArray(books.id, pageIds));
+  const rank = new Map(pageIds.map((id, i) => [id, i]));
+  rows.sort((a, b) => rank.get(a.id)! - rank.get(b.id)!);
+  return rows;
+}
+
 // The v1 path: one page of search results as two independently-bounded branches — books
 // matched by title, then books matched by their author's name — merged title-first.
 //
@@ -1887,6 +2258,12 @@ export const booksService = {
     // the cost a v2 caller stops paying, since each single side counts itself.
     const isAuthorSearch = opts.searchType === 'author';
     const isBlendedSearch = opts.searchType === undefined;
+    // Pure and free: this proposes how `q` could divide into a title part and a name part,
+    // and is empty for everything that cannot usefully split — a single token, or a query
+    // long enough to be a full title already. An empty list is what keeps this feature off
+    // the path of the searches that never needed it. v1 only: v2 makes the caller name the
+    // side it wants, so a v2 search has already said the query is all title or all name.
+    const splitCands = opts.q && isBlendedSearch ? splitCandidates(opts.q) : [];
     let fastCount = 0;
     let cheapCount = 0;
     let blendedCount = 0;
@@ -1974,7 +2351,7 @@ export const booksService = {
       parseCachedCount(cachedCount).total,
     );
 
-    type SearchTier = 'fast' | 'cheap' | 'broad';
+    type SearchTier = 'fast' | 'cheap' | 'split' | 'broad';
     const pageEnd = opts.offset + opts.limit;
     // The broad tier is now reserved for searches the cheaper tiers can't answer *at all*
     // at this offset (in practice: typos and pure fuzzy matches). Previously any query
@@ -1999,13 +2376,37 @@ export const booksService = {
     // match at all", which fetchAuthorSearchPage decides from the branch's own result. The
     // value here is inert for it, and only kept well-defined so the rowsWhere/rowsOrderBy
     // expressions below stay total.
+    //
+    // The split band sits one rung above the fuzzy one and is entered on exactly the
+    // condition that used to send a query there: the exact band matched nothing at all, by
+    // title or by name. It is deliberately *not* entered when the exact band merely ran out
+    // at this offset — that case keeps the behaviour it has, so a query the cheap tiers
+    // answered on page 1 cannot change its mind about what it is on page 3.
+    //
+    // `exactBandCount === 0` stays a clean signal only because a split search never writes
+    // the shared count entry (see the total below); if it did, its own total would fold back
+    // in here and page 2 would read a non-empty exact band that page 1 never saw.
     const rowsTier: SearchTier = opts.q && !isAuthorSearch
       ? fastCount >= pageEnd
         ? 'fast'
         : exactBandCount > opts.offset
           ? 'cheap'
-          : 'broad'
+          : exactBandCount === 0 && splitCands.length > 0
+            ? 'split'
+            : 'broad'
       : 'broad';
+
+    // Resolved once, ahead of both the page and the total, because they are the same list:
+    // the rows are a slice of it and the count is its length. Awaiting here costs one
+    // bounded, Redis-backed query on a path that was about to run the fuzzy pool instead.
+    //
+    // Not resolved for a shoppable listing, where the band ladder scopes each fetch to one
+    // shop band and so needs a differently-filtered list per band — those are resolved inside
+    // the ladder, and such a search falls back to the row floor for its caption.
+    const splitIds: number[] | null =
+      opts.q && rowsTier === 'split' && !opts.shoppable
+        ? await resolveSplitBandIds(opts, splitCands)
+        : null;
 
     // When a search query is present, relevance ranking takes priority and both
     // sortBy and sort are ignored — a page ordered by title that was *selected*
@@ -2046,13 +2447,27 @@ export const booksService = {
         .digest('hex')}`;
       const cached = await redis.get(key);
       if (cached != null) return parseInt(cached, 10);
-      const count = await countUpTo(
-        buildRowsWhere({ ...opts, shopBand: band }),
-        opts.q ? SEARCH_COUNT_CAP + 1 : SHOP_BAND_COUNT_CAP,
-      );
+      // The split band is a materialised id list, not a predicate over `books`, so it has
+      // no WHERE clause for countUpTo to count. buildRowsWhere would hand back the fuzzy
+      // title condition here — a different and much larger set than the band actually
+      // contains — and the ladder would then plan this page's offset against a boundary
+      // that does not exist. Its own list, resolved for this band's filters, is the count.
+      const count = rowsTier === 'split'
+        ? (await resolveSplitBandIds({ ...opts, shopBand: band }, splitCands)).length
+        : await countUpTo(
+            buildRowsWhere({ ...opts, shopBand: band }),
+            opts.q ? SEARCH_COUNT_CAP + 1 : SHOP_BAND_COUNT_CAP,
+          );
       await redis.set(key, String(count), 'EX', COUNT_TTL);
       return count;
     };
+    // What the search branches are told the tier is. They know three, and 'split' is not one
+    // of them: it is answered above them, out of its own id list. Where it does reach them —
+    // a split band that resolved empty — the right tier is 'broad', which is both what the
+    // search would have used without this band and what buildRowsWhere and rowsOrderBy have
+    // already built for it, since both fall through to the broad expressions for any tier
+    // that is neither 'fast' nor 'cheap'.
+    const branchTier: 'fast' | 'cheap' | 'broad' = rowsTier === 'split' ? 'broad' : rowsTier;
     const rowsOrderBy = opts.q && !isAuthorSearch
       ? rowsTier === 'fast'
         ? buildFastTitlePrefixOrderBy()
@@ -2104,11 +2519,20 @@ export const booksService = {
             if (isAuthorSearch) {
               return fetchAuthorSearchPage({ ...fetchOpts, offset }, fetchOpts.q, pageSize);
             }
+            // The split band, when it resolved to anything. A band that came back empty —
+            // nothing matched a name and a leftover title word together — falls through to
+            // the blended fuzzy page below, which is what this search would have got anyway.
+            if (isBlendedSearch && rowsTier === 'split') {
+              const ids = splitIds ?? (await resolveSplitBandIds(fetchOpts, splitCands));
+              if (ids.length > 0) {
+                return fetchSplitSearchPage({ ...fetchOpts, offset }, ids, pageSize);
+              }
+            }
             if (isBlendedSearch) {
               return fetchBlendedSearchPage(
                 { ...fetchOpts, offset },
                 fetchOpts.q,
-                rowsTier,
+                branchTier,
                 where,
                 rowsOrderBy,
                 pageSize,
@@ -2121,7 +2545,7 @@ export const booksService = {
             return fetchTitleSearchPage(
               { ...fetchOpts, offset },
               fetchOpts.q,
-              rowsTier,
+              branchTier,
               where,
               rowsOrderBy,
               pageSize,
@@ -2340,6 +2764,15 @@ export const booksService = {
           // Searches never run a count query of their own — they reuse the capped tier
           // probes computed above, so a search's count can never be the slow part again.
           if (opts.q) {
+            // A split search counts itself, from the list its rows are sliced out of, and
+            // deliberately does not write that number to the shared count entry. The entry
+            // feeds exactBandCount on the next page, where it stands for "the cheap tiers
+            // matched this much" — and the whole reason this search reached the split band
+            // is that they matched nothing. Caching a split total there would make page 2
+            // read a non-empty exact band, drop back to the fuzzy tier, and answer the same
+            // query a different way. The list has its own entry under SPLIT_TTL, so nothing
+            // is recomputed per page regardless.
+            if (splitIds != null) return Math.min(splitIds.length, SEARCH_COUNT_CAP);
             const total = Math.min(searchMatchCount, SEARCH_COUNT_CAP);
             // A degraded count must not be cached for COUNT_TTL — the next request should get
             // a fresh attempt rather than inherit this lower bound for the next half hour.
@@ -3170,6 +3603,207 @@ export const booksService = {
     // Cached without prices — attachShopFields runs on every read instead.
     await redis.set(cacheKey, JSON.stringify(results), 'EX', PERSONALIZED_TTL);
     return attachShopFields(results, currency);
+  },
+
+  /**
+   * "Readers like you loved" — books the rest of your reader type has embraced.
+   *
+   * Where `personalized` measures the catalogue against one reader's embedding,
+   * this is a straight popularity vote inside a cohort: take everyone sharing
+   * the caller's `users.reader_type`, count who responded well to each book,
+   * rank by that count.
+   *
+   * **Three things count as responding well**, not just the explicit like:
+   *
+   *   - `liked = true` — the deliberate signal, but liking is a Plus feature, so
+   *     on its own the pool is thin enough that a smaller reader type would come
+   *     back nearly empty
+   *   - `status = 'read'` — they finished it
+   *   - `source` of `chosen_from_onboarding` / `chosen_from_quiz` — books they
+   *     named as ones they had enjoyed when the quiz asked
+   *
+   * A user counts **once** per book however many of the three they trip, hence
+   * `count(distinct user_id)` rather than `count(*)`.
+   *
+   * The cohort is every matching user regardless of `shelf_visibility`. That is
+   * defensible only because the output is an anonymous aggregate: this returns
+   * books and nothing else — never who liked them, and not even the count.
+   * **If a future change attaches names, avatars or counts to these rows, this
+   * query has to start filtering on `shelf_visibility` first.** A private shelf
+   * that can be reconstructed from a liker count of one is not private.
+   *
+   * The caller's own rows are excluded from the count, so a book only they have
+   * liked can never appear — "readers like you" means other readers.
+   *
+   * Cohorting is on `users.reader_type` alone. That column is written at signup
+   * and deliberately left untouched by quiz retakes, which record their newly
+   * inferred type in `preference_history` instead (see lib/reader-type.ts) — so
+   * a reader who has retaken the quiz is still grouped by their original type.
+   * A known limitation rather than an oversight: following retakes means a
+   * per-user latest-row lookup over preference history on *both* sides of this
+   * query, and the label the UI prints under the rail comes off the user row too.
+   *
+   * Returns an empty page — never an error — both when the caller has no reader
+   * type and when nobody else shares theirs. To a client those are the same
+   * thing: there is no rail to draw.
+   *
+   * Uncached, unlike the other feeds. It is offset-paginated, so the cache key
+   * would carry the offset and each page would expire independently — that is
+   * how a reader pages from a fresh page 1 into an hour-stale page 2 and sees a
+   * book twice. The underlying aggregate is indexed and bounded by the cohort.
+   */
+  async likedByReaderType(
+    userId: number | undefined,
+    limit: number,
+    offset: number,
+    readerType?: ReaderType,
+  ): Promise<{ books: TrendingBookItem[]; total: number }> {
+    // An explicit reader type overrides the caller's own, so any cohort can be
+    // browsed rather than only the one you happen to belong to. The caller is
+    // still excluded from the count and their own exclusions still apply, so the
+    // rows are the same rows the endpoint would ever show them — this widens
+    // which cohort is read, not what may be read about it.
+    //
+    // Only reached with a value the controller has already checked against the
+    // enum: it is interpolated into the cohort predicate, and an unvalidated
+    // string would be a caller-supplied value steering the query.
+    const cohortType =
+      readerType ??
+      (userId === undefined
+        ? undefined
+        : (
+            await db
+              .select({ readerType: users.readerType })
+              .from(users)
+              .where(eq(users.id, userId))
+              .limit(1)
+          )[0]?.readerType);
+
+    // No reader type, no cohort. For a signed-in reader that means onboarding
+    // never ran, or Gemini failed to infer one — fetchAndInferReaderType swallows
+    // that failure by design and leaves the column null rather than blocking a
+    // signup over a nice-to-have. For a signed-out visitor it simply means they
+    // did not name a cohort, which is the only way they can pick one.
+    if (!cohortType) return { books: [], total: 0 };
+
+    // A signed-out visitor has no shelf to exclude and no likes of their own to
+    // discount, so both of those narrowings simply do not apply. They see the
+    // cohort's books unfiltered — which is more than a signed-in member of the
+    // same cohort sees, not less, and is the honest consequence of not knowing
+    // who is asking.
+    const exclusions = userId === undefined ? EMPTY_EXCLUSIONS : await getUserExclusions(userId);
+
+    // Only a signed-in caller can be excluded from their own cohort. Rendered as
+    // a fragment so the statement below has no branch in it.
+    const selfFilter = userId === undefined ? sql`` : sql`AND ${users.id} <> ${userId}`;
+
+    // Spread into the statement as ready-made fragments so the SQL below has no
+    // conditional branches in it — an empty fragment renders as nothing.
+    const idFilter =
+      exclusions.bookIds.length > 0 ? sql`AND ${notInArray(books.id, exclusions.bookIds)}` : sql``;
+    const workExclusion = buildWorkExclusionCondition(exclusions.works);
+    const workFilter = workExclusion ? sql`AND ${workExclusion}` : sql``;
+
+    // One statement rather than a count query plus a page query: `count(*) OVER ()`
+    // carries the total alongside the rows, so the two cannot disagree about a
+    // like that landed between them.
+    const result = await db.execute(sql`
+      WITH cohort AS (
+        SELECT ${userBooks.userId} AS user_id, ${userBooks.bookId} AS book_id
+        FROM ${userBooks}
+        JOIN ${users} ON ${users.id} = ${userBooks.userId}
+        WHERE ${users.readerType} = ${cohortType}
+          ${selfFilter}
+          AND (
+            ${userBooks.liked}
+            OR ${userBooks.status} = 'read'
+            OR ${userBooks.source} IN ('chosen_from_onboarding', 'chosen_from_quiz')
+          )
+      ),
+      -- One row per (catalogue row, supporter), still ungrouped: both the work
+      -- score and the per-edition score below are counted off this, so they
+      -- cannot be computed over different populations.
+      candidates AS (
+        SELECT ${books.id}              AS id,
+               ${books.title}           AS title,
+               ${books.subtitle}        AS subtitle,
+               ${books.coverUrl}        AS cover_url,
+               ${books.isbn13}          AS isbn13,
+               ${books.productForm}     AS product_form,
+               ${books.publicationDate} AS publication_date,
+               cohort.user_id           AS user_id,
+               -- The work this row is an edition of, in exactly the form
+               -- lib/exclusions.ts normalises to. Identical on purpose: two
+               -- spellings of "the same book" in one codebase is how a filter
+               -- quietly stops matching. lower() is ASCII-only under this
+               -- database's C ctype, so accented titles fold by byte rather than
+               -- by locale — the same behaviour the exclusion filter already has,
+               -- which is the point of copying it rather than improving on it.
+               lower(btrim(${books.title})) AS work_title,
+               (SELECT lower(btrim(bc.person_name))
+                  FROM book_contributors bc
+                 WHERE bc.book_id = ${books.id}
+                   AND bc.role = 'A01'
+                   AND btrim(coalesce(bc.person_name, '')) <> ''
+                 ORDER BY bc.sequence_number
+                 LIMIT 1) AS work_author
+        FROM ${books}
+        JOIN cohort ON cohort.book_id = ${books.id}
+        WHERE ${buildFeedCondition()}
+          AND ${buildHasAuthorCondition()}
+          ${idFilter}
+          ${workFilter}
+      ),
+      -- Support is counted per WORK, not per catalogue row. Ranking the rows and
+      -- collapsing afterwards looks equivalent and is not: a book that ten people
+      -- love across a paperback, a hardback and an ebook scores 4-3-3 as rows,
+      -- and whichever edition survived the collapse then ranks below a book one
+      -- single reader liked. Counting the work first is what makes the rail
+      -- reflect what the cohort actually reads. distinct user_id because one
+      -- person owning two editions is still one person.
+      work_scores AS (
+        SELECT work_title, work_author, COUNT(DISTINCT user_id)::int AS liker_count
+        FROM candidates
+        GROUP BY work_title, work_author
+      ),
+      -- Per-edition support, used only to decide which edition represents the
+      -- work on screen: the one the cohort actually picked up.
+      edition_scores AS (
+        SELECT id, title, subtitle, cover_url, isbn13, product_form, publication_date,
+               work_title, work_author, COUNT(DISTINCT user_id)::int AS edition_likers
+        FROM candidates
+        GROUP BY id, title, subtitle, cover_url, isbn13, product_form,
+                 publication_date, work_title, work_author
+      ),
+      representative AS (
+        SELECT DISTINCT ON (work_title, work_author) *
+        FROM edition_scores
+        ORDER BY work_title, work_author, edition_likers DESC, id
+      )
+      SELECT representative.id, representative.title, representative.subtitle,
+             representative.cover_url, representative.isbn13,
+             representative.product_form, representative.publication_date,
+             work_scores.liker_count,
+             COUNT(*) OVER ()::int AS total
+      FROM representative
+      JOIN work_scores
+        ON work_scores.work_title = representative.work_title
+       -- Not "=": work_author is null for an untagged catalogue row, and a plain
+       -- equality drops every one of those works from the join silently.
+       AND work_scores.work_author IS NOT DISTINCT FROM representative.work_author
+      -- id breaks liker-count ties deterministically. Without it Postgres is free
+      -- to order equally-liked works differently on each query, and offset
+      -- pagination over an unstable sort silently repeats and drops rows.
+      ORDER BY work_scores.liker_count DESC, representative.id
+      LIMIT ${limit} OFFSET ${offset}
+    `);
+
+    // postgres-js hands back a RowList, which is array-like but not an Array —
+    // same cast the other raw-SQL readers in this file use.
+    const rows = result as unknown as ReaderTypeFeedRow[];
+    if (rows.length === 0) return { books: [], total: 0 };
+
+    return { books: await hydrateBookCards(rows), total: Number(rows[0].total) };
   },
 
   /**
