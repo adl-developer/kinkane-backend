@@ -41,10 +41,16 @@ export interface WeightedLane {
   /** The field's embedding, in the same space as the book vectors. */
   vector: number[];
   /**
-   * 0-100, straight from the environment. Relative, not a share of a budget:
-   * every weight at 50 is identical to every weight at 100, because the
-   * combined vector is normalised at the end and cosine distance ignores
-   * magnitude. What matters is the ratio between lanes.
+   * 0-100, straight from the environment, where the five lanes are configured
+   * as percentage shares that must total 100 (see config/index.ts).
+   *
+   * That total is a constraint on the config file, not on this function. What
+   * happens here is a ratio: the combined vector is normalised at the end and
+   * cosine distance ignores magnitude, so a set summing to 50 or 200 would
+   * produce exactly the same search as the equivalent set summing to 100. The
+   * budget exists so the numbers in the environment are the same numbers the
+   * design document argues about. Do not add a normalisation step here to
+   * "enforce" it — there is nothing to enforce.
    */
   weight: number;
   /**

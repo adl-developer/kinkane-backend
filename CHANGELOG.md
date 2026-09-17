@@ -7,6 +7,10 @@
 
 * recommend books based on what readers' favourite books are about, not their titles ([b424953](https://adl.github.com/adl-developer/kinkane-backend/commit/b424953e53994c2d73444e1423e6ec79b2647f62)) — [details](changelog/2026-09-17-favourite-books-titles.md)
 
+### Bug Fixes
+
+* make the genre answer find novels and retune how close matches must be ([f4d24e8](https://adl.github.com/adl-developer/kinkane-backend/commit/f4d24e8bd50847e23cb9789a5ffa49b65c1d17a6)) — [details](changelog/2026-09-17-genre-novels-matches.md)
+
 
 ## 2026-09-15
 

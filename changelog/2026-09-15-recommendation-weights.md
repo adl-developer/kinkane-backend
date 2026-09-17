@@ -24,6 +24,11 @@ RECO_WEIGHT_DISLIKES=40
 RECO_WEIGHT_TAGS=0
 ```
 
+> **Superseded — 2026-09-17.** These values are now percentage shares that
+> must total exactly 100, and the server refuses to start otherwise; the
+> defaults became `29/29/29/13/0`, the same ratios as above. The search itself
+> did not change. See `2026-09-17-weights-percentages.md`.
+
 Raising a weight makes that field pull harder on the search. Setting one to 0
 removes it entirely. The four distance and pool settings the search runs
 against are env-tunable too (`RECO_SIMILARITY_MAX`, `RECO_BACKFILL_MAX`,
@@ -71,6 +76,12 @@ same ordering.
 The weights are relative, not shares of a budget. Every weight at 50 behaves
 identically to every weight at 100, because cosine distance ignores magnitude.
 Only the ratio between fields changes the result.
+
+> **Superseded — 2026-09-17, for the configuration only.** The environment now
+> takes percentage shares totalling 100, so the numbers in the file match the
+> weighting document. The maths above is unchanged and still true: the formula
+> consumes ratios, and a set of shares scaled by any factor searches
+> identically. See `2026-09-17-weights-percentages.md`.
 
 ## Dislikes now work in the right direction
 

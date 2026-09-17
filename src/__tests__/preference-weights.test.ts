@@ -161,6 +161,59 @@ describe('averageUnitVectors', () => {
 });
 
 /**
+ * The weights are configured as percentage shares that must total 100. That is
+ * a contract on the environment, not on the maths — combineWeightedVectors
+ * above is tested on the opposite property, that only the ratio matters. Both
+ * are true at once, and the config comment says so; these pin the config half.
+ */
+describe('weights as a budget', () => {
+  const read = (rel: string) => readFileSync(join(__dirname, '..', rel), 'utf8');
+  const configSource = read('config/index.ts');
+
+  it('refuses to boot on a set that does not total 100', () => {
+    const check = configSource.slice(
+      configSource.indexOf('const WEIGHT_TOTAL'),
+      configSource.indexOf('// A warning rather than an exit'),
+    );
+    expect(check).toContain('const WEIGHT_TOTAL = 100;');
+    expect(check).toContain('weightSum !== WEIGHT_TOTAL');
+    expect(check).toContain('process.exit(1)');
+    // Normalising silently would make the numbers on screen stop being the
+    // numbers in use, which is the failure the budget exists to prevent.
+    expect(check).not.toMatch(/weightSum\s*\/|\/\s*weightSum/);
+  });
+
+  it('counts every lane towards the total, including the negative one', () => {
+    const entries = configSource.slice(
+      configSource.indexOf('const weightEntries'),
+      configSource.indexOf('const weightSum'),
+    );
+    for (const k of ['BOOKS', 'FEELINGS', 'GENRES', 'DISLIKES', 'TAGS']) {
+      expect(entries).toContain(`RECO_WEIGHT_${k}`);
+    }
+  });
+
+  it('ships defaults that are themselves a valid budget', () => {
+    // Otherwise an environment that enables weighting without choosing a split
+    // cannot start at all.
+    const declared = [...configSource.matchAll(/RECO_WEIGHT_\w+: z\.coerce[^\n]*default\((\d+)\)/g)];
+    expect(declared).toHaveLength(5);
+    expect(declared.reduce((a, m) => a + Number(m[1]), 0)).toBe(100);
+  });
+
+  it('keeps every worked split in .env.example totalling 100', () => {
+    const example = readFileSync(join(__dirname, '..', '..', '.env.example'), 'utf8');
+    const splits = [...example.matchAll(
+      /books=(\d+)\s+feelings=(\d+)\s+genres=(\d+)\s+dislikes=(\d+)\s+tags=(\d+)/g,
+    )];
+    expect(splits.length).toBeGreaterThanOrEqual(3);
+    for (const m of splits) {
+      expect(m.slice(1).reduce((a, n) => a + Number(n), 0)).toBe(100);
+    }
+  });
+});
+
+/**
  * Weighting ships dark. An environment that sets none of the RECO_* variables
  * must behave exactly as the pipeline did before any of this existed — same
  * vector, same cache keys, same results. These read the source rather than

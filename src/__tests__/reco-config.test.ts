@@ -96,3 +96,56 @@ describe('cutoffs left at their titles-era values', () => {
     expect(warnings(warn)).not.toContain(STALE);
   });
 });
+
+describe('weights as percentage shares', () => {
+  const split = (books: number, feelings: number, genres: number, dislikes: number, tags: number) => ({
+    RECO_WEIGHT_BOOKS: String(books),
+    RECO_WEIGHT_FEELINGS: String(feelings),
+    RECO_WEIGHT_GENRES: String(genres),
+    RECO_WEIGHT_DISLIKES: String(dislikes),
+    RECO_WEIGHT_TAGS: String(tags),
+  });
+
+  it('starts on a split totalling 100 and uses it as written', async () => {
+    const { config, exitCode } = await boot(split(72, 11, 6, 11, 0));
+    expect(exitCode).toBeUndefined();
+    expect(config!.recommendations.weights).toEqual({ books: 72, feelings: 11, genres: 6, dislikes: 11, tags: 0 });
+  });
+
+  it('refuses to start on a split over 100, saying by how much', async () => {
+    // The previous Taste DNA line, written as relative weights.
+    const { exitCode, error } = await boot(split(100, 15, 8, 15, 0));
+    expect(exitCode).toBe(1);
+    expect(errors(error)).toContain('they total 138');
+    expect(errors(error)).toContain('Adjust by 38 down');
+  });
+
+  it('refuses to start on a split under 100, saying by how much', async () => {
+    const { exitCode, error } = await boot(split(40, 20, 10, 10, 0));
+    expect(exitCode).toBe(1);
+    expect(errors(error)).toContain('they total 80');
+    expect(errors(error)).toContain('Adjust by 20 up');
+  });
+
+  it('does not quietly rescale a split that is merely out of proportion', async () => {
+    // 40/30/20/20 would work as ratios. It is refused anyway: accepted, books
+    // would read as 40% and get 36%.
+    const { exitCode, config } = await boot(split(40, 30, 20, 20, 0));
+    expect(exitCode).toBe(1);
+    expect(config).toBeUndefined();
+  });
+
+  it('counts the dislikes and tags shares towards the total', async () => {
+    expect((await boot(split(90, 0, 0, 10, 0))).exitCode).toBeUndefined();
+    expect((await boot(split(90, 0, 0, 0, 10))).exitCode).toBeUndefined();
+    expect((await boot(split(90, 0, 0, 0, 0))).exitCode).toBe(1);
+  });
+
+  it('ships defaults that are themselves a valid split', async () => {
+    // Otherwise enabling weighting without choosing numbers could not start.
+    const { config, exitCode } = await boot({ RECO_WEIGHTING_ENABLED: 'true' });
+    expect(exitCode).toBeUndefined();
+    const w = config!.recommendations.weights;
+    expect(w.books + w.feelings + w.genres + w.dislikes + w.tags).toBe(100);
+  });
+});
