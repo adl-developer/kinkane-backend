@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-09-17
+
+### Features
+
+* recommend books based on what readers' favourite books are about, not their titles ([b424953](https://adl.github.com/adl-developer/kinkane-backend/commit/b424953e53994c2d73444e1423e6ec79b2647f62)) — [details](changelog/2026-09-17-favourite-books-titles.md)
+
+
 ## 2026-09-15
 
 ### Features

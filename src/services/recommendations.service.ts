@@ -501,9 +501,25 @@ function buildPreferenceLanes(input: PreferenceFields, likedBooks: LikedBook[]):
   }
 
   if (input.genres.length > 0) {
+    // "Preferred genres: romance, crime." reads like a sentence out of a
+    // genre-studies paper, and that is what it found: measured against the
+    // catalogue it returned Phraseology and Style in Subgenres of the Novel
+    // and Cross-Cultural Perspectives on Gangs — literary criticism and
+    // criminology, not novels.
+    //
+    // A bare subject list has the same problem, because a scholarly work's
+    // subject headings look exactly like it. What fixes it is anchoring the
+    // list to a book someone would read: the same words plus "A book to read."
+    // returned The Da Vinci Code, The Godfather and Beach Read, at 0.277
+    // instead of 0.341.
+    //
+    // Deliberately not "Fiction." — it scores a hair better on fiction genres
+    // (0.276) but the vocabulary also carries business, politics, travel and
+    // biography, where it pulls towards academic monographs. The neutral
+    // anchor is within 0.001 on fiction and clearly better on the rest.
     lanes.push({
       field: 'genres',
-      text: `Preferred genres: ${input.genres.join(', ')}.`,
+      text: `${input.genres.join(', ')}. A book to read.`,
       weight: weights.genres,
       sign: 1,
     });

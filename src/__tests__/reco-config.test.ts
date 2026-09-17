@@ -54,3 +54,45 @@ describe('stored-embeddings switch', () => {
     expect((await boot({ RECO_BOOKS_FROM_EMBEDDINGS: 'yes' })).config!.recommendations.booksFromEmbeddings).toBe(false);
   });
 });
+
+describe('cutoffs left at their titles-era values', () => {
+  const STALE = 'RECO_SIMILARITY_MAX is still';
+
+  it('warns when the embeddings lane is on but the strict cutoff was never retuned', async () => {
+    const { config, warn } = await boot({
+      RECO_BOOKS_FROM_EMBEDDINGS: 'true',
+      RECO_SIMILARITY_MAX: '0.5',
+      RECO_BACKFILL_MAX: '0.7',
+    });
+    // A warning, not a refusal — the search still works, the tiers just stop meaning anything.
+    expect(config).toBeDefined();
+    expect(warnings(warn)).toContain(`${STALE} 0.5`);
+  });
+
+  it('warns from 0.4 upwards', async () => {
+    const { warn } = await boot({
+      RECO_BOOKS_FROM_EMBEDDINGS: 'true',
+      RECO_SIMILARITY_MAX: '0.4',
+      RECO_BACKFILL_MAX: '0.5',
+    });
+    expect(warnings(warn)).toContain(STALE);
+  });
+
+  it('stays quiet at retuned cutoffs', async () => {
+    const { warn } = await boot({
+      RECO_BOOKS_FROM_EMBEDDINGS: 'true',
+      RECO_SIMILARITY_MAX: '0.25',
+      RECO_BACKFILL_MAX: '0.32',
+    });
+    expect(warnings(warn)).not.toContain(STALE);
+  });
+
+  it('stays quiet at 0.5 while the titles lane is still in use, since that is what 0.5 was tuned for', async () => {
+    const { warn } = await boot({
+      RECO_BOOKS_FROM_EMBEDDINGS: 'false',
+      RECO_SIMILARITY_MAX: '0.5',
+      RECO_BACKFILL_MAX: '0.7',
+    });
+    expect(warnings(warn)).not.toContain(STALE);
+  });
+});

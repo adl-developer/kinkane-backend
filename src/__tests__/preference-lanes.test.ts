@@ -194,3 +194,19 @@ describe('books lane from stored embeddings', () => {
     expectDirection(vector, D);
   });
 });
+
+describe('genre lane wording', () => {
+  it('anchors the genres to a book someone would read', async () => {
+    // "Preferred genres: romance, crime." found literary criticism and
+    // criminology, not novels. The anchor is what makes the lane find books.
+    const { generatePreferenceVector, generateEmbeddings } = await load({
+      booksFromEmbeddings: true,
+      weights: only('genres'),
+    });
+    generateEmbeddings.mockResolvedValue([B]);
+
+    await generatePreferenceVector(INPUT, []);
+
+    expect(generateEmbeddings).toHaveBeenCalledWith(['romance, crime. A book to read.']);
+  });
+});

@@ -3,8 +3,9 @@
  *
  * Book ids are assigned at ingest, so they differ between databases. A probe
  * that named its books by id would measure whatever books carry those numbers
- * on another database, or fail outright. Everything here picks books at runtime
- * instead, by title and author.
+ * on another database, or fail outright — including the cutoff probe, whose
+ * whole purpose is to be re-run against production. Everything here picks books
+ * at runtime instead, by title and author or by a deterministic sample.
  *
  * Any probe also accepts an explicit id list through an environment variable,
  * for measuring a specific reader on a specific database.
@@ -73,6 +74,40 @@ export async function resolveBooks(refs: BookRef[]): Promise<number[]> {
     );
   }
   return ids;
+}
+
+/**
+ * A deterministic sample of embedded, described books. The same salt returns
+ * the same books on the same catalogue, so a before-and-after comparison
+ * measures the change rather than a different draw.
+ *
+ * Orders by a hash of the id, which scans the table — seconds on a million-row
+ * catalogue. Fine for a probe; not something to copy into a request path.
+ */
+export async function sampleBooks(n: number, salt: string): Promise<number[]> {
+  const rows = (await db.execute(sql`
+    select id from books
+    where embedding is not null
+      and is_removed = false
+      and coalesce(short_description, long_description) is not null
+    order by md5(id::text || ${salt})
+    limit ${n}`)) as unknown as { id: number }[];
+
+  if (rows.length < n) {
+    throw new Error(`Asked for ${n} sample books but this catalogue only has ${rows.length} eligible.`);
+  }
+  return rows.map((r) => r.id);
+}
+
+/** The k books nearest to a given book, the book itself included. */
+export async function nearestBooks(id: number, k: number): Promise<number[]> {
+  const rows = (await db.execute(sql`
+    select b.id from books b,
+      (select embedding from books where id = ${id}) seed
+    where b.embedding is not null and b.is_removed = false
+    order by b.embedding <=> seed.embedding
+    limit ${k}`)) as unknown as { id: number }[];
+  return rows.map((r) => r.id);
 }
 
 /**

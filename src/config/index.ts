@@ -509,6 +509,22 @@ if (env.RECO_BACKFILL_MAX < env.RECO_SIMILARITY_MAX) {
   process.exit(1);
 }
 
+// A warning rather than an exit: the search still works, it just stops being
+// two-tiered. The two cutoffs were tuned against a books lane that embedded
+// TITLES, whose vectors sit far from everything in the catalogue. A centroid of
+// real book embeddings lands in the dense middle instead, so the same 0.5
+// admits almost everything — measured at 99.7% of an 83k catalogue. Nothing
+// breaks, but the strict tier stops excluding anything and a reader whose taste
+// matches nothing still gets a full page of confident-looking results.
+if (env.RECO_BOOKS_FROM_EMBEDDINGS && env.RECO_SIMILARITY_MAX >= 0.4) {
+  console.warn(
+    `RECO_BOOKS_FROM_EMBEDDINGS is on but RECO_SIMILARITY_MAX is still ${env.RECO_SIMILARITY_MAX}. ` +
+      `That cutoff was tuned for the titles lane and admits nearly the whole catalogue against real ` +
+      `book vectors, so the strict tier excludes nothing and the backfill tier can never fire. ` +
+      `Re-measure with scripts/reco-cutoff-probe.ts — around 0.25/0.32 on an 83k catalogue.`,
+  );
+}
+
 if (env.RECO_FETCH_POOL < env.RECO_TARGET_RESULTS) {
   console.error(
     `Invalid environment variables: RECO_FETCH_POOL (${env.RECO_FETCH_POOL}) must be >= ` +

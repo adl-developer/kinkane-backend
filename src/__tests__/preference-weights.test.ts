@@ -197,6 +197,18 @@ describe('shipping dark', () => {
     expect(fn).toContain('Books I have enjoyed:');
   });
 
+  it('keeps the genre clause anchored to a book someone would read', () => {
+    // A bare list of genre names embeds like a scholarly work's subject
+    // headings, and that is what it returned: literary criticism and
+    // criminology rather than novels. The anchor is what makes it find books.
+    const fn = serviceSource.slice(
+      serviceSource.indexOf('function buildPreferenceLanes('),
+      serviceSource.indexOf('function retrievalFingerprint('),
+    );
+    expect(fn).toContain('A book to read.');
+    expect(fn).not.toContain('Preferred genres: ${');
+  });
+
   it('separates the two books lanes in the cache key', () => {
     // An entry written with the titles lane is a different search, not a stale
     // one — serving it after the flag flips would hide the change entirely.
