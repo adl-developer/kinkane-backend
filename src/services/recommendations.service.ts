@@ -35,7 +35,7 @@ import {
   NAME_PLACEHOLDER,
   type BookContext,
 } from '../lib/gemini';
-import { combineWeightedVectors, type WeightedLane } from '../lib/vector';
+import { averageUnitVectors, combineWeightedVectors, type WeightedLane } from '../lib/vector';
 import { config } from '../config';
 import { fetchAndInferReaderType } from '../lib/reader-type';
 import { guestService } from './guest.service';
@@ -260,16 +260,29 @@ function applyReaderName(explanation: string, name: string): string {
 /** Long enough for any real first name, short enough not to eat the card. */
 const MAX_NAME_LENGTH = 40;
 
-/** Fetches the title and primary authors for books the user says they've enjoyed. */
-async function fetchLikedBooks(
-  bookIds: number[],
-): Promise<{ id: number; title: string; authors: string[] }[]> {
+/**
+ * A book the reader named as "Just Right".
+ *
+ * `embedding` is the book's own ingest-time vector, which is what the books
+ * lane searches on when RECO_BOOKS_FROM_EMBEDDINGS is enabled. Null for a book
+ * the embedding backfill has not reached — see buildPreferenceLanes for what
+ * happens then.
+ */
+export interface LikedBook {
+  id: number;
+  title: string;
+  authors: string[];
+  embedding?: number[] | null;
+}
+
+/** Fetches the title, primary authors and stored embedding for books the user says they've enjoyed. */
+async function fetchLikedBooks(bookIds: number[]): Promise<LikedBook[]> {
   if (bookIds.length === 0) return [];
 
   // Run both queries in parallel — they have no dependency on each other
   const [rows, contributors] = await Promise.all([
     db
-      .select({ id: books.id, title: books.title })
+      .select({ id: books.id, title: books.title, embedding: books.embedding })
       .from(books)
       .where(inArray(books.id, bookIds)),
     db
@@ -292,7 +305,12 @@ async function fetchLikedBooks(
     if (c.personName) authorMap.get(c.bookId)!.push(c.personName);
   }
 
-  return rows.map((r) => ({ id: r.id, title: r.title, authors: authorMap.get(r.id) ?? [] }));
+  return rows.map((r) => ({
+    id: r.id,
+    title: r.title,
+    authors: authorMap.get(r.id) ?? [],
+    embedding: r.embedding,
+  }));
 }
 
 /**
@@ -396,6 +414,66 @@ export interface PreferenceFields {
 }
 
 /**
+ * The centre of the books a reader named, in the same space the catalogue is
+ * searched in.
+ *
+ * This is what the doc calls a semantic fingerprint, and it is cheaper than it
+ * sounds: each book's vector already encodes its subjects and its description,
+ * so averaging them asks "what do these books have in common" without a single
+ * call to Gemini. The old lane embedded the titles, which asked a much weaker
+ * question — whether the model happened to recognise the names.
+ *
+ * Books still waiting on the embedding backfill are skipped rather than
+ * blocking the lane; a reader who named five books of which three are embedded
+ * gets a fingerprint of those three. Returns null when none of them are, and
+ * the caller falls back to the titles.
+ */
+function likedBooksCentroid(likedBooks: LikedBook[]): number[] | null {
+  const embedded = likedBooks.filter(
+    (b): b is LikedBook & { embedding: number[] } => Array.isArray(b.embedding),
+  );
+
+  if (embedded.length === 0) {
+    logger.warn('No liked book has an embedding yet, falling back to the titles lane', {
+      bookIds: likedBooks.map((b) => b.id),
+    });
+    return null;
+  }
+
+  if (embedded.length < likedBooks.length) {
+    logger.info('Some liked books are not embedded yet and are absent from the fingerprint', {
+      used: embedded.length,
+      named: likedBooks.length,
+      missing: likedBooks.filter((b) => !Array.isArray(b.embedding)).map((b) => b.id),
+    });
+  }
+
+  const centroid = averageUnitVectors(embedded.map((b) => b.embedding));
+  if (!centroid) {
+    // Only reachable if the stored vectors cancel out or are degenerate —
+    // not something the catalogue should produce, so it is worth hearing about.
+    logger.warn('Liked book embeddings produced no usable direction', {
+      bookIds: embedded.map((b) => b.id),
+    });
+  }
+
+  return centroid;
+}
+
+/**
+ * One lane of the weighted preference vector.
+ *
+ * Most lanes describe the reader in words and are embedded on the way past.
+ * The books lane can instead arrive with its vector already built, from the
+ * stored embeddings of the books themselves — nothing needs embedding because
+ * the catalogue did it at ingest.
+ */
+type PreferenceLane = { field: string; weight: number; sign: 1 | -1 } & (
+  | { text: string; vector?: undefined }
+  | { vector: number[]; text?: undefined }
+);
+
+/**
  * One natural-language clause per preference field, each embedded separately.
  *
  * This is the whole mechanism behind configurable weights. `buildPreferenceText`
@@ -409,12 +487,9 @@ export interface PreferenceFields {
  * Empty fields produce no lane, so a reader who named no books is not searched
  * against an empty-string embedding.
  */
-function buildPreferenceLanes(
-  input: PreferenceFields,
-  likedBooks: { title: string; authors: string[] }[],
-): { field: string; text: string; weight: number; sign: 1 | -1 }[] {
+function buildPreferenceLanes(input: PreferenceFields, likedBooks: LikedBook[]): PreferenceLane[] {
   const weights = config.recommendations.weights;
-  const lanes: { field: string; text: string; weight: number; sign: 1 | -1 }[] = [];
+  const lanes: PreferenceLane[] = [];
 
   if (input.feelings.length > 0) {
     lanes.push({
@@ -426,24 +501,52 @@ function buildPreferenceLanes(
   }
 
   if (input.genres.length > 0) {
+    // "Preferred genres: romance, crime." reads like a sentence out of a
+    // genre-studies paper, and that is what it found: measured against the
+    // catalogue it returned Phraseology and Style in Subgenres of the Novel
+    // and Cross-Cultural Perspectives on Gangs — literary criticism and
+    // criminology, not novels.
+    //
+    // A bare subject list has the same problem, because a scholarly work's
+    // subject headings look exactly like it. What fixes it is anchoring the
+    // list to a book someone would read: the same words plus "A book to read."
+    // returned The Da Vinci Code, The Godfather and Beach Read, at 0.277
+    // instead of 0.341.
+    //
+    // Deliberately not "Fiction." — it scores a hair better on fiction genres
+    // (0.276) but the vocabulary also carries business, politics, travel and
+    // biography, where it pulls towards academic monographs. The neutral
+    // anchor is within 0.001 on fiction and clearly better on the rest.
     lanes.push({
       field: 'genres',
-      text: `Preferred genres: ${input.genres.join(', ')}.`,
+      text: `${input.genres.join(', ')}. A book to read.`,
       weight: weights.genres,
       sign: 1,
     });
   }
 
   if (likedBooks.length > 0) {
-    const titles = likedBooks
-      .map((b) => (b.authors.length ? `"${b.title}" by ${b.authors.join(', ')}` : `"${b.title}"`))
-      .join('; ');
-    lanes.push({
-      field: 'books',
-      text: `Books I have enjoyed: ${titles}.`,
-      weight: weights.books,
-      sign: 1,
-    });
+    const centroid = config.recommendations.booksFromEmbeddings
+      ? likedBooksCentroid(likedBooks)
+      : null;
+
+    if (centroid) {
+      lanes.push({ field: 'books', vector: centroid, weight: weights.books, sign: 1 });
+    } else {
+      // Either the switch is off, or not one of the named books has been
+      // embedded yet. Naming the titles is weak, but it is the signal that
+      // shipped and it is better than dropping the reader's books from their
+      // own search.
+      const titles = likedBooks
+        .map((b) => (b.authors.length ? `"${b.title}" by ${b.authors.join(', ')}` : `"${b.title}"`))
+        .join('; ');
+      lanes.push({
+        field: 'books',
+        text: `Books I have enjoyed: ${titles}.`,
+        weight: weights.books,
+        sign: 1,
+      });
+    }
   }
 
   if (input.tags?.length) {
@@ -483,7 +586,7 @@ function buildPreferenceLanes(
  * role `promptVersion` plays for the explanation text.
  */
 function retrievalFingerprint(): string | undefined {
-  const { weightingEnabled, weights, similarityMax, backfillMax, targetResults } =
+  const { weightingEnabled, booksFromEmbeddings, weights, similarityMax, backfillMax, targetResults } =
     config.recommendations;
 
   // An environment that has touched none of this gets no fingerprint at all,
@@ -493,6 +596,7 @@ function retrievalFingerprint(): string | undefined {
   // recomputing 48 hours of entries for no behavioural difference.
   const isBaseline =
     !weightingEnabled &&
+    !booksFromEmbeddings &&
     similarityMax === BASELINE_SIMILARITY_MAX &&
     backfillMax === BASELINE_BACKFILL_MAX &&
     targetResults === BASELINE_TARGET_RESULTS;
@@ -501,6 +605,9 @@ function retrievalFingerprint(): string | undefined {
 
   return [
     weightingEnabled ? 'w' : 'legacy',
+    // The books lane searches on a different vector under this flag, so an
+    // entry written with it off is a different search, not a stale one.
+    booksFromEmbeddings ? 'bvec' : 'btitle',
     weights.feelings,
     weights.genres,
     weights.books,
@@ -524,7 +631,7 @@ function retrievalFingerprint(): string | undefined {
  */
 export async function generatePreferenceVector(
   input: PreferenceFields,
-  likedBooks: { id: number; title: string; authors: string[] }[],
+  likedBooks: LikedBook[],
 ): Promise<number[]> {
   // Switched off: build the vector the way the pipeline always did, from one
   // embedding of the combined paragraph. Not equivalent to setting every weight
@@ -541,10 +648,18 @@ export async function generatePreferenceVector(
   const active = lanes.filter((lane) => lane.weight > 0);
 
   if (active.length > 0) {
-    const vectors = await generateEmbeddings(active.map((lane) => lane.text));
-    const weighted: WeightedLane[] = active.map((lane, i) => ({
+    // Only the lanes that are still words cost an embedding call. A books lane
+    // built from stored vectors is already in the right space, so on that path
+    // the request to Gemini gets shorter rather than longer.
+    const textLanes = active.filter((lane) => lane.text !== undefined);
+    const embedded = textLanes.length
+      ? await generateEmbeddings(textLanes.map((lane) => lane.text!))
+      : [];
+    const byField = new Map(textLanes.map((lane, i) => [lane.field, embedded[i]]));
+
+    const weighted: WeightedLane[] = active.map((lane) => ({
       field: lane.field,
-      vector: vectors[i],
+      vector: lane.vector ?? byField.get(lane.field)!,
       weight: lane.weight,
       sign: lane.sign,
     }));

@@ -104,7 +104,31 @@ const envSchema = z.object({
     .default('false')
     .transform((v) => v === 'true'),
 
-  // How much each preference field pulls on the search, 0-100.
+  // Builds the liked-books lane from the stored embeddings of those books
+  // instead of from an embedding of their titles.
+  //
+  // The titles version is what shipped: the lane text reads `Books I have
+  // enjoyed: "Title" by Author; ...`, and Gemini embeds that sentence. For a
+  // book the model knows well that lands somewhere sensible; for most of the
+  // catalogue it is an embedding of a proper noun, which carries almost none
+  // of what the book is actually like. Meanwhile every book already has an
+  // embedding built at ingest from its title, subtitle, author, subjects and
+  // description (onix_ingester buildBookText) — the same 768-dimension space
+  // the search runs in, and the thing the lane was always trying to describe.
+  //
+  // Only has an effect when RECO_WEIGHTING_ENABLED is on: without weighting
+  // there are no lanes, just the one combined paragraph.
+  RECO_BOOKS_FROM_EMBEDDINGS: z
+    .string()
+    .default('false')
+    .transform((v) => v === 'true'),
+
+  // What share of the search each preference field gets, as a percentage.
+  //
+  // THESE MUST TOTAL EXACTLY 100. The five values are a budget, not a set of
+  // independent dials: the boot check below refuses to start otherwise, because
+  // a set of percentages that does not add up is a number nobody can read off
+  // the file and trust. Giving one field more means taking it from another.
   //
   // Each field is embedded on its own and the results are combined as a
   // weighted sum (see lib/vector.ts). Before this existed, a field's influence
@@ -112,24 +136,36 @@ const envSchema = z.object({
   // so liked books, which carry full titles and author names, drowned out
   // genres and feelings without anyone choosing that.
   //
-  // These are RELATIVE, not shares of a budget that must total 100. Every
-  // weight at 50 behaves identically to every weight at 100, because the
-  // combined vector is normalised and cosine distance ignores magnitude. Raise
-  // one field to make it pull harder *relative to the others*.
+  // What the maths actually consumes is the RATIO between these numbers; the
+  // combined vector is normalised at the end and cosine distance ignores
+  // magnitude, so 60/20/20 and 30/10/10 would search identically. The total is
+  // pinned at 100 so that what is written here is the same number the design
+  // document argues about, rather than a scaled version of it somebody has to
+  // convert before they can check the two agree. That traceability is the
+  // whole point of the constraint — it buys nothing mathematically.
+  //
+  // Read them as shares of influence only loosely. The lanes overlap (mood and
+  // liked books often point into the same region of the space), so 30% is "this
+  // pulls about half as hard as a 60% lane", not "this decides 30% of the
+  // result".
   //
   // 0 removes a field from the search completely — its clause is never even
   // sent to Gemini, so it costs nothing rather than counting a little.
-  RECO_WEIGHT_GENRES: z.coerce.number().int().min(0).max(100).default(100),
-  RECO_WEIGHT_BOOKS: z.coerce.number().int().min(0).max(100).default(100),
-  RECO_WEIGHT_FEELINGS: z.coerce.number().int().min(0).max(100).default(100),
+  //
+  // The defaults are the previous relative weights (100/100/100/40/0) expressed
+  // as shares, so an environment that enables weighting without choosing a
+  // split gets what it always got: the three positive fields pulling equally,
+  // dislikes pulling less.
+  RECO_WEIGHT_GENRES: z.coerce.number().int().min(0).max(100).default(29),
+  RECO_WEIGHT_BOOKS: z.coerce.number().int().min(0).max(100).default(29),
+  RECO_WEIGHT_FEELINGS: z.coerce.number().int().min(0).max(100).default(29),
   // Applied as a NEGATIVE coefficient: this is how hard the search is pushed
-  // away from what the reader rejected, not towards it. Defaulted below the
-  // others because a dislike is a weaker statement than a preference — it rules
-  // things out rather than describing what someone wants.
-  RECO_WEIGHT_DISLIKES: z.coerce.number().int().min(0).max(100).default(40),
+  // away from what the reader rejected, not towards it. Its share still counts
+  // towards the 100 — it is part of the budget, just pointed the other way.
+  RECO_WEIGHT_DISLIKES: z.coerce.number().int().min(0).max(100).default(13),
   // Reader-selected book tags. Defaults to 0 because the field does not exist
-  // yet — the lane is wired up and inert, so enabling tags is an env change
-  // plus a populated input, not a release.
+  // yet — the lane is wired up and inert. Enabling tags later means taking
+  // share from the other four, since the total is fixed.
   RECO_WEIGHT_TAGS: z.coerce.number().int().min(0).max(100).default(0),
 
   // Cosine distance cutoffs for the candidate search. pgvector's <=> returns
@@ -490,6 +526,56 @@ if (env.RECO_BACKFILL_MAX < env.RECO_SIMILARITY_MAX) {
   process.exit(1);
 }
 
+// The weights are percentages, so they have to behave like percentages. This is
+// an exit rather than a warning because the alternative is a file that reads
+// like a set of shares and is not one: 40/30/20/20 looks like it gives books
+// 40% of the search and actually gives it 36%, and nothing downstream would
+// ever say so. Normalising silently would be worse still — the numbers on the
+// screen would stop being the numbers in use.
+//
+// Note this is a constraint on the file, not on the maths. The combination
+// divides through by the total anyway (see lib/vector.ts), so a set summing to
+// 110 would search fine; it just could not be read off the page and trusted.
+const WEIGHT_TOTAL = 100;
+const weightEntries = {
+  RECO_WEIGHT_BOOKS: env.RECO_WEIGHT_BOOKS,
+  RECO_WEIGHT_FEELINGS: env.RECO_WEIGHT_FEELINGS,
+  RECO_WEIGHT_GENRES: env.RECO_WEIGHT_GENRES,
+  RECO_WEIGHT_DISLIKES: env.RECO_WEIGHT_DISLIKES,
+  RECO_WEIGHT_TAGS: env.RECO_WEIGHT_TAGS,
+};
+const weightSum = Object.values(weightEntries).reduce((a, n) => a + n, 0);
+
+if (weightSum !== WEIGHT_TOTAL) {
+  const listed = Object.entries(weightEntries)
+    .map(([k, v]) => `  ${k}=${v}`)
+    .join('\n');
+  console.error(
+    `Invalid environment variables: the RECO_WEIGHT_* values are percentage shares of one ` +
+      `search and must total exactly ${WEIGHT_TOTAL}, but they total ${weightSum}.\n${listed}\n` +
+      `Adjust by ${weightSum > WEIGHT_TOTAL ? weightSum - WEIGHT_TOTAL : WEIGHT_TOTAL - weightSum} ` +
+      `${weightSum > WEIGHT_TOTAL ? 'down' : 'up'} across the five. Setting a field to 0 removes it ` +
+      `from the search; its share has to go to one of the others.`,
+  );
+  process.exit(1);
+}
+
+// A warning rather than an exit: the search still works, it just stops being
+// two-tiered. The two cutoffs were tuned against a books lane that embedded
+// TITLES, whose vectors sit far from everything in the catalogue. A centroid of
+// real book embeddings lands in the dense middle instead, so the same 0.5
+// admits almost everything — measured at 99.7% of an 83k catalogue. Nothing
+// breaks, but the strict tier stops excluding anything and a reader whose taste
+// matches nothing still gets a full page of confident-looking results.
+if (env.RECO_BOOKS_FROM_EMBEDDINGS && env.RECO_SIMILARITY_MAX >= 0.4) {
+  console.warn(
+    `RECO_BOOKS_FROM_EMBEDDINGS is on but RECO_SIMILARITY_MAX is still ${env.RECO_SIMILARITY_MAX}. ` +
+      `That cutoff was tuned for the titles lane and admits nearly the whole catalogue against real ` +
+      `book vectors, so the strict tier excludes nothing and the backfill tier can never fire. ` +
+      `Re-measure with scripts/reco-cutoff-probe.ts — around 0.25/0.32 on an 83k catalogue.`,
+  );
+}
+
 if (env.RECO_FETCH_POOL < env.RECO_TARGET_RESULTS) {
   console.error(
     `Invalid environment variables: RECO_FETCH_POOL (${env.RECO_FETCH_POOL}) must be >= ` +
@@ -638,6 +724,7 @@ export const config = {
   },
   recommendations: {
     weightingEnabled: env.RECO_WEIGHTING_ENABLED,
+    booksFromEmbeddings: env.RECO_BOOKS_FROM_EMBEDDINGS,
     // 0-100 per field; see the env schema for why these are relative rather
     // than shares of a budget.
     weights: {

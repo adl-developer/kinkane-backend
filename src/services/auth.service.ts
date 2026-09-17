@@ -10,7 +10,7 @@ import { adminNotificationsService } from './admin/notifications.service';
 import { logger } from '../lib/logger';
 import { touchLastSignIn } from './user-activity.service';
 import { enqueueEmail } from '../lib/email-queue';
-import { generatePreferenceVector } from './recommendations.service';
+import { generatePreferenceVector, type LikedBook } from './recommendations.service';
 import { preferenceHistoryService } from './preference-history.service';
 import { dislikedBooksService } from './disliked-books.service';
 import { subscriptionStateService } from './subscriptions/state.service';
@@ -157,11 +157,15 @@ async function generatePreferenceEmbedding(
   userId: number,
   session: { feelings: string[]; bookIds: number[]; genres: string[]; dislikes: import('../db/schema/onboarding').Dislikes },
 ): Promise<void> {
-  const likedBooks: { id: number; title: string; authors: string[] }[] = [];
+  const likedBooks: LikedBook[] = [];
 
   if (session.bookIds.length > 0) {
+    // The embedding comes along for the same reason the title does: the books
+    // lane may be built from these vectors rather than from the titles, and a
+    // writer that fetched only titles would silently build a different vector
+    // from the one the quiz path builds.
     const bookRows = await db
-      .select({ id: books.id, title: books.title })
+      .select({ id: books.id, title: books.title, embedding: books.embedding })
       .from(books)
       .where(inArray(books.id, session.bookIds));
 
@@ -178,7 +182,12 @@ async function generatePreferenceEmbedding(
     }
 
     for (const b of bookRows) {
-      likedBooks.push({ id: b.id, title: b.title, authors: authorMap.get(b.id) ?? [] });
+      likedBooks.push({
+        id: b.id,
+        title: b.title,
+        authors: authorMap.get(b.id) ?? [],
+        embedding: b.embedding,
+      });
     }
   }
 
