@@ -104,6 +104,25 @@ const envSchema = z.object({
     .default('false')
     .transform((v) => v === 'true'),
 
+  // Builds the liked-books lane from the stored embeddings of those books
+  // instead of from an embedding of their titles.
+  //
+  // The titles version is what shipped: the lane text reads `Books I have
+  // enjoyed: "Title" by Author; ...`, and Gemini embeds that sentence. For a
+  // book the model knows well that lands somewhere sensible; for most of the
+  // catalogue it is an embedding of a proper noun, which carries almost none
+  // of what the book is actually like. Meanwhile every book already has an
+  // embedding built at ingest from its title, subtitle, author, subjects and
+  // description (onix_ingester buildBookText) — the same 768-dimension space
+  // the search runs in, and the thing the lane was always trying to describe.
+  //
+  // Only has an effect when RECO_WEIGHTING_ENABLED is on: without weighting
+  // there are no lanes, just the one combined paragraph.
+  RECO_BOOKS_FROM_EMBEDDINGS: z
+    .string()
+    .default('false')
+    .transform((v) => v === 'true'),
+
   // How much each preference field pulls on the search, 0-100.
   //
   // Each field is embedded on its own and the results are combined as a
@@ -638,6 +657,7 @@ export const config = {
   },
   recommendations: {
     weightingEnabled: env.RECO_WEIGHTING_ENABLED,
+    booksFromEmbeddings: env.RECO_BOOKS_FROM_EMBEDDINGS,
     // 0-100 per field; see the env schema for why these are relative rather
     // than shares of a budget.
     weights: {

@@ -108,3 +108,56 @@ export function combineWeightedVectors(lanes: WeightedLane[]): number[] | null {
 
   return normalizeVector(sum);
 }
+
+/**
+ * Averages several book embeddings into one direction — the centroid of a
+ * reader's "Just Right" books.
+ *
+ * Each vector is normalised before it is added, for the same reason lanes are:
+ * a book with a long blurb produces a longer vector than one with a two-line
+ * description, and averaging raw would let the wordier book speak for the
+ * reader's taste. Every book gets one equal vote.
+ *
+ * Returns null when nothing usable was passed, or when the books point in
+ * directions that cancel out. The caller falls back rather than searching on
+ * whatever is left near the origin.
+ *
+ * Note the known limit of a centroid: a reader whose books are genuinely two
+ * different tastes (literary fiction and cosy crime) averages to a point that
+ * is neither, and the nearest books to it may resemble nothing they named.
+ * Splitting multi-modal taste into more than one query is a separate change;
+ * this function deliberately does the simple thing.
+ */
+export function averageUnitVectors(vectors: number[][]): number[] | null {
+  const units: number[][] = [];
+  let dimensions = 0;
+
+  for (const vector of vectors) {
+    const unit = normalizeVector(vector);
+    if (!unit) continue;
+
+    if (dimensions === 0) {
+      dimensions = unit.length;
+    } else if (unit.length !== dimensions) {
+      throw new Error(
+        `Cannot average vectors of ${unit.length} and ${dimensions} dimensions`,
+      );
+    }
+
+    units.push(unit);
+  }
+
+  if (units.length === 0) return null;
+
+  const sum = new Array<number>(dimensions).fill(0);
+  for (const unit of units) {
+    for (let i = 0; i < dimensions; i++) {
+      sum[i] += unit[i];
+    }
+  }
+
+  // Normalised rather than divided by the count: the caller only needs the
+  // direction, and dividing would leave a vector whose length encodes how much
+  // the books agreed with each other — which nothing downstream reads.
+  return normalizeVector(sum);
+}
