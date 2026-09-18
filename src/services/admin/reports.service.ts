@@ -93,6 +93,10 @@ export const adminReportsService = {
         reason: r.reason,
         postId: r.postId,
         targetType: r.targetType,
+        // Whichever target this report is about, named. Lets the queue render a
+        // row without branching on targetType, and without dereferencing a
+        // reportedUser that is null on group reports.
+        targetName: r.reportedUserName ?? r.reportedGroupName ?? null,
         filedAt: r.filedAt,
         resolvedAt: r.resolvedAt,
         // Each is null for the kind of report it does not apply to, and

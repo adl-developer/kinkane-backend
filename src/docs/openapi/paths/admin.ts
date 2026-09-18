@@ -400,9 +400,14 @@ export const adminPaths = {
     get: {
       tags: [TAG],
       summary: 'The moderation queue',
-      description: 'Ordered pending-first, then newest-first: the screen is a worklist, so anything still needing a decision belongs at the top regardless of age. `counts` covers all three statuses whatever filter is applied.',
+      description:
+        'Ordered pending-first, then newest-first: the screen is a worklist, so anything still needing a decision belongs at the top regardless of age. `counts` covers all three statuses whatever filter is applied.\n\n' +
+        'A report is filed against **either a user or a group** — `targetType` says which, and exactly one of `reportedUser` / `reportedGroup` is populated. **`reportedUser` is null on a group report**, so read `targetName` if all you need is a label; it carries whichever target the report is about.\n\n' +
+        '`reportedGroup` is also null once a reported group has been deleted: the complaint outlives its target.\n\n' +
+        '`?targetType=user` restricts the queue to reports about people, which is the pre-groups behaviour of this endpoint — useful as a stopgap for a console that is not yet ready to render group reports.',
       parameters: [
         param('status', 'query', { type: 'string', enum: ['pending', 'resolved', 'dismissed'] }, 'Filter by status. Omit for all.'),
+        param('targetType', 'query', { type: 'string', enum: ['user', 'group'] }, 'Filter by what the report is against. Omit for all.'),
         ...pagingParams,
       ],
       responses: {

@@ -649,6 +649,7 @@ const commerceSchemas = {
       reason: { type: 'string', example: 'Created multiple accounts to abuse the first-order discount.' },
       postId: { type: 'integer', nullable: true, description: 'The post complained about, when there was one. Nulled if that post is later deleted — the report survives it.' },
       targetType: { type: 'string', enum: ['user', 'group'], description: 'What this report is filed against. Exactly one of `reportedUser` / `reportedGroup` is populated.', example: 'user' },
+      targetName: { type: 'string', nullable: true, description: 'The reported user\'s name, or the reported group\'s — whichever this report is about. Lets a row be rendered without branching on `targetType`. Null only if a reported group has since been deleted.', example: 'Kwame Asante' },
       filedAt: { type: 'string', format: 'date-time' },
       resolvedAt: { type: 'string', format: 'date-time', nullable: true },
       reportedUser: {
