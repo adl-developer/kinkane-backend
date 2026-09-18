@@ -119,3 +119,55 @@ describe('mergeNotifications', () => {
     expect(result).toEqual([]);
   });
 });
+
+describe('group invites in the feed', () => {
+  it('keeps a numeric id and a real readAt, unlike the synthesized friend request', () => {
+    // A group invite is a STORED row, so it can be marked read like any other.
+    // The friend-request item is a live view with a string id and readAt always
+    // null. Both shapes share one union, and widening it carelessly is exactly
+    // how a stored type would lose its read state.
+    const read = new Date('2026-07-23T11:00:00Z');
+    const result = mergeNotifications(
+      [notif({ id: 9, type: 'group_invite', readAt: read })],
+      [friendReq({ id: 5 })],
+      20,
+      0,
+    );
+
+    const invite = result.find((r) => r.type === 'group_invite');
+    expect(typeof invite?.id).toBe('number');
+    expect(invite?.readAt).toEqual(read);
+
+    const fr = result.find((r) => r.type === 'friend_request');
+    expect(typeof fr?.id).toBe('string');
+    expect(fr?.readAt).toBeNull();
+  });
+
+  it('carries the denormalised group and inviter details through untouched', () => {
+    // The card renders straight off `data` with no join, so anything dropped
+    // here is a blank row in the feed.
+    const data = {
+      groupId: 12,
+      groupName: 'Books & Friends',
+      groupPhotoUrl: null,
+      inviterId: 44,
+      inviterName: 'Amara Okafor',
+      inviterPhotoUrl: null,
+    };
+    const [item] = mergeNotifications([notif({ id: 9, type: 'group_invite', data })], [], 20, 0);
+    expect(item.data).toMatchObject(data);
+  });
+
+  it('sorts alongside the other kinds rather than being grouped', () => {
+    const result = mergeNotifications(
+      [
+        notif({ id: 1, type: 'post_like', createdAt: new Date('2026-07-23T10:00:00Z') }),
+        notif({ id: 2, type: 'group_invite', createdAt: new Date('2026-07-23T08:00:00Z') }),
+      ],
+      [friendReq({ id: 5, createdAt: new Date('2026-07-23T09:00:00Z') })],
+      20,
+      0,
+    );
+    expect(result.map((r) => r.id)).toEqual([1, 'fr_5', 2]);
+  });
+});

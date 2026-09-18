@@ -404,12 +404,12 @@ const socialSchemas = {
   Notification: {
     type: 'object',
     description:
-      'One item in the notifications feed. The feed merges stored rows (`post_like`, `post_comment`) with a live view over the follow-request table, which is why `id` is only markable-as-read for the stored kinds.',
+      'One item in the notifications feed. The feed merges stored rows (`post_like`, `post_comment`, `group_invite`) with a live view over the follow-request table, which is why `id` is only markable-as-read for the stored kinds.',
     properties: {
       id: { type: 'integer', example: 5521 },
       type: {
         type: 'string',
-        enum: ['post_like', 'post_comment', 'friend_request'],
+        enum: ['post_like', 'post_comment', 'group_invite', 'friend_request'],
         example: 'post_comment',
       },
       actor: { $ref: '#/components/schemas/UserSummary' },

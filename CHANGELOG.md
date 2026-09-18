@@ -5,13 +5,14 @@
 
 ### Features
 
-* let readers join, leave and see who is in a book club ([8bf12b7](https://adl.github.com/adl-developer/kinkane-backend/commit/8bf12b7935f644d87ba563b651b5880a2aac4265)) — [details](changelog/2026-09-18-groups-invites.md)
+* let book club members invite their friends ([bef8c70](https://adl.github.com/adl-developer/kinkane-backend/commit/bef8c7030ed42938fb6de22cc11c5fd2595c4037)) — [details](changelog/2026-09-18-groups-invite-notifications.md)
+* let readers join, leave and see who is in a book club ([8bf12b7](https://adl.github.com/adl-developer/kinkane-backend/commit/8bf12b7935f644d87ba563b651b5880a2aac4265)) — [details](changelog/2026-09-18-groups-invite-notifications.md)
 * let readers search for a book club by name or description ([450f83e](https://adl.github.com/adl-developer/kinkane-backend/commit/450f83ecc66e3cf21c8af1dd6d6d6b5f086d8594)) — [details](changelog/2026-09-18-groups-core.md)
 * let readers create and manage book clubs ([8395414](https://adl.github.com/adl-developer/kinkane-backend/commit/8395414dc6efe4f9c787b7f47e293c2524c9ce06))
 
 ### Bug Fixes
 
-* stop a blank group name and a long photo link from slipping through ([c725dec](https://adl.github.com/adl-developer/kinkane-backend/commit/c725dec577ec31b1c2d4490aba1bcc8cc5f14bf2)) — [details](changelog/2026-09-18-groups-core.md)
+* stop a blank group name and a long photo link from slipping through ([c725dec](https://adl.github.com/adl-developer/kinkane-backend/commit/c725dec577ec31b1c2d4490aba1bcc8cc5f14bf2)) — [details](changelog/2026-09-18-groups-invite-notifications.md)
 
 
 ## 2026-09-17

@@ -5,10 +5,14 @@ import {
   groupMemberships,
   users,
   followRequests,
+  notifications,
   type Group,
   type GroupPrivacy,
   type GroupMembershipStatus,
 } from '../db/schema';
+import { notificationPreferencesService } from './notification-preferences.service';
+import { enqueuePush } from '../lib/push-queue';
+import { logger } from '../lib/logger';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -297,6 +301,75 @@ export function friendOfCondition(viewerId: number): SQL {
  */
 export function buildFriendNameCondition(q: string): SQL {
   return sql`(${users.name} ILIKE ${q + '%'} OR ${users.name} ILIKE ${'% ' + q + '%'})`;
+}
+
+/**
+ * Notifies people who were just invited to a group: a stored in-app row and a
+ * push, per invitee, gated on their own preference.
+ *
+ * Push and in-app only, never email — the same policy the post-like and
+ * post-comment producers follow. An invitation is worth a badge, not an inbox.
+ *
+ * The stored row is a *record of an event*, not a live view of the invitation,
+ * which is why it is an ordinary notification rather than the synthesized shape
+ * friend requests use: accepting or declining later does not delete it, and the
+ * current state is re-read from the group when the card is tapped.
+ *
+ * Details are denormalised into `data` at write time — the same reason
+ * notifyPostLike stores `likerName` — so rendering the card needs no join, and
+ * the card still reads correctly if the group is later renamed or deleted.
+ */
+async function notifyInvitees(
+  groupId: number,
+  inviterId: number,
+  inviteeIds: number[],
+): Promise<void> {
+  const [[group], [inviter]] = await Promise.all([
+    db
+      .select({ name: groups.name, photoUrl: groups.photoUrl })
+      .from(groups)
+      .where(eq(groups.id, groupId))
+      .limit(1),
+    db
+      .select({ name: users.name, photoUrl: users.photoUrl })
+      .from(users)
+      .where(eq(users.id, inviterId))
+      .limit(1),
+  ]);
+
+  if (!group || !inviter) return;
+
+  const allowed = await Promise.all(
+    inviteeIds.map(async (userId) => ({
+      userId,
+      enabled: await notificationPreferencesService.isEnabled(userId, 'groupInvites'),
+    })),
+  );
+  const recipients = allowed.filter((r) => r.enabled).map((r) => r.userId);
+  if (recipients.length === 0) return;
+
+  const data = {
+    groupId,
+    groupName: group.name,
+    groupPhotoUrl: group.photoUrl,
+    inviterId,
+    inviterName: inviter.name,
+    inviterPhotoUrl: inviter.photoUrl,
+  };
+
+  await Promise.all([
+    db.insert(notifications).values(
+      recipients.map((userId) => ({ userId, type: 'group_invite' as const, data })),
+    ),
+    ...recipients.map((userId) =>
+      enqueuePush('group-invite', {
+        userId,
+        groupId,
+        groupName: group.name,
+        inviterName: inviter.name,
+      }),
+    ),
+  ]);
 }
 
 /**
@@ -724,8 +797,19 @@ export const groupsService = {
       }
     }
 
-    // P4 wires the notification here, gated on the invitee's preference and
-    // fired and forgotten. Until then an invitation is only visible in the app.
+    if (invited.length > 0) {
+      // Fire and forget: an invitation is recorded the moment the row exists,
+      // and a notification that fails to enqueue must not undo it or fail the
+      // request. Only genuinely-created rows notify, so a re-invite of someone
+      // already invited stays silent rather than nagging them again.
+      notifyInvitees(groupId, inviterId, invited).catch((err: Error) =>
+        logger.error('Failed to notify group invitees', {
+          groupId,
+          inviterId,
+          error: err.message,
+        }),
+      );
+    }
 
     return { invited, skipped };
   },

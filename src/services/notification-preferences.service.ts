@@ -9,6 +9,7 @@ export interface NotificationPrefsUpdate {
   friendRequests?: boolean;
   comments?: boolean;
   likes?: boolean;
+  groupInvites?: boolean;
 }
 
 /**

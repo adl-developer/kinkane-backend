@@ -16,6 +16,7 @@ export interface PushJobMap {
   };
   'post-like': { userId: number; postId: number; likerName: string; bookTitle: string };
   'new-recommendation': { userId: number; bookId: number; bookTitle: string };
+  'group-invite': { userId: number; groupId: number; groupName: string; inviterName: string };
 }
 
 export type PushJobName = keyof PushJobMap;
@@ -29,6 +30,9 @@ export const PUSH_PRIORITY: Record<PushJobName, number> = {
   'post-comment': 7,
   'post-like': 8,
   'new-recommendation': 7,
+  // Same priority as a follow request: both are one person asking another for
+  // something, and both are stale within the day if they arrive late.
+  'group-invite': 7,
 };
 
 // ── Queue ─────────────────────────────────────────────────────────────────────
