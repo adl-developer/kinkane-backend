@@ -110,12 +110,16 @@ export const adminReportsService = {
             : null,
         reportedGroup:
           r.reportedGroupId !== null ? { id: r.reportedGroupId, name: r.reportedGroupName } : null,
-        // Never actually absent — reporter_id is NOT NULL and the account
-        // cascades — but the left join above types it as nullable.
-        reportedBy:
-          r.reportedById !== null
-            ? { id: r.reportedById, name: r.reportedByName, email: r.reportedByEmail }
-            : null,
+        // Non-null in the payload. reporter_id is NOT NULL and the account
+        // cascades, so a reporter always exists; only the left join above (a
+        // typing accommodation, not a semantic change) makes it look optional.
+        // Narrowing it here keeps one avoidable null out of every consumer —
+        // reportedUser genuinely can be null, and that one is enough.
+        reportedBy: {
+          id: r.reportedById as number,
+          name: r.reportedByName as string,
+          email: r.reportedByEmail as string,
+        },
       })),
       total: Number(total.n),
       counts: byStatus,
