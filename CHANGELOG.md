@@ -5,6 +5,7 @@
 
 ### Features
 
+* let readers report a book club ([a553a8e](https://adl.github.com/adl-developer/kinkane-backend/commit/a553a8e5a3c45b08338eb456a045e95bcd03fff2)) — [details](changelog/2026-09-18-report-a-group.md)
 * show book clubs in search results ([7c59a36](https://adl.github.com/adl-developer/kinkane-backend/commit/7c59a366f3af6df8b97db5ea554b326d57bee99e)) — [details](changelog/2026-09-18-groups-in-community-search.md)
 * tell people when they are invited to a book club ([09a199c](https://adl.github.com/adl-developer/kinkane-backend/commit/09a199c1524f44b52e0d5645b798abc054b18265)) — [details](changelog/2026-09-18-groups-in-community-search.md)
 * let book club members invite their friends ([bef8c70](https://adl.github.com/adl-developer/kinkane-backend/commit/bef8c7030ed42938fb6de22cc11c5fd2595c4037)) — [details](changelog/2026-09-18-groups-in-community-search.md)

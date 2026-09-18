@@ -79,23 +79,40 @@ describe('the friendship condition behind the picker', () => {
   it('matches an accepted follow in either direction', () => {
     // A profile counts friends both ways. Matching only people the viewer
     // follows would hide anyone who followed them first, which is not how
-    // "Invite your friends" reads.
+    // "Invite your friends" reads. The two directions are the two arms of the
+    // union: one keyed on sender_id, one on receiver_id.
     const compiled = sql();
+    expect(compiled).toMatch(/union/i);
     expect(compiled).toMatch(/sender_id/);
     expect(compiled).toMatch(/receiver_id/);
-    expect(compiled.match(/\bor\b/gi)?.length).toBeGreaterThanOrEqual(1);
   });
 
   it('counts only accepted follows', () => {
     // A pending request is not a friendship; inviting off one would let someone
-    // reach a stranger by requesting to follow them first.
-    expect(sql()).toContain('accepted');
+    // reach a stranger by requesting to follow them first. Both arms must say so
+    // — filtering only one would leak half the graph.
+    const compiled = sql();
+    expect(compiled.match(/accepted/g)?.length).toBe(2);
   });
 
-  it('is an EXISTS rather than a join, so it cannot duplicate a row', () => {
-    // A join against follow_requests would return a friend twice when the
-    // follow is mutual, which the picker would render as a duplicate checkbox.
-    expect(sql()).toMatch(/exists/i);
+  it('joins on a key rather than filtering on a two-column OR', () => {
+    // This is the property the query was rewritten for. The obvious form —
+    // EXISTS (sender = v AND receiver = u.id OR receiver = v AND sender = u.id)
+    // — spans two columns, so the planner cannot use it as a join key and
+    // degrades to a join filter, re-testing the viewer's follows against every
+    // candidate user. Split into a union, each arm is an indexed lookup and the
+    // result is an equijoin on users.id, bounded by the viewer's friend count.
+    const compiled = sql();
+    expect(compiled).not.toMatch(/\bor\b/i);
+    expect(compiled).toMatch(/"users"\."id" in/i);
+  });
+
+  it('cannot return a mutual friend twice', () => {
+    // Someone who follows you and is followed back appears in both arms. `IN`
+    // is a semi-join so the outer row is returned once regardless, and the
+    // UNION (not UNION ALL) dedupes the inner set as well.
+    const compiled = sql();
+    expect(compiled).not.toMatch(/union\s+all/i);
   });
 });
 

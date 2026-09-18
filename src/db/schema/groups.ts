@@ -11,7 +11,7 @@ import {
   pgEnum,
   customType,
 } from 'drizzle-orm/pg-core';
-import { sql } from 'drizzle-orm';
+import { sql, desc } from 'drizzle-orm';
 import { users } from './users';
 
 // tsvector type — the column is GENERATED ALWAYS in the migration, never
@@ -87,6 +87,9 @@ export const groups = pgTable(
   },
   (t) => ({
     ownerIdx: index('idx_groups_owner_id').on(t.ownerId),
+    // Browsing is "newest first" with a LIMIT. Without this the planner sorts
+    // every group on each page of the discovery list.
+    createdAtIdx: index('idx_groups_created_at').on(desc(t.createdAt)),
     // The GIN indexes backing search (search_vector, and name for
     // word_similarity) are created by hand in the migration — drizzle-kit
     // cannot emit USING GIN or gin_trgm_ops.
@@ -117,8 +120,12 @@ export const groupMemberships = pgTable(
     // makes a batched insert...onConflictDoNothing() safe, the same role the
     // sender/receiver index plays for follow_requests.
     groupUserUniq: uniqueIndex('idx_group_memberships_group_user').on(t.groupId, t.userId),
-    userStatusIdx: index('idx_group_memberships_user_status').on(t.userId, t.status),
-    groupStatusIdx: index('idx_group_memberships_group_status').on(t.groupId, t.status),
+    // Both carry joined_at as a trailing column so the member list and "your
+    // groups" read straight off the index in order. With only (user_id, status)
+    // and (group_id, status), a club with thousands of members has every one of
+    // them fetched and sorted to return a page of twenty.
+    userStatusIdx: index('idx_group_memberships_user_status').on(t.userId, t.status, desc(t.joinedAt)),
+    groupStatusIdx: index('idx_group_memberships_group_status').on(t.groupId, t.status, t.joinedAt),
     // joined_at is set exactly when the row becomes active, in both directions
     // — so member_count can never be reconciled against a half-written row.
     joinedAtConsistency: check(

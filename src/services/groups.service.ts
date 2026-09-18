@@ -6,11 +6,11 @@ import {
   users,
   followRequests,
   notifications,
+  notificationPreferences,
   type Group,
   type GroupPrivacy,
   type GroupMembershipStatus,
 } from '../db/schema';
-import { notificationPreferencesService } from './notification-preferences.service';
 import { enqueuePush } from '../lib/push-queue';
 import { logger } from '../lib/logger';
 
@@ -278,17 +278,25 @@ export function buildGroupSearchOrderBy(q: string): SQL[] {
  * the narrower reading (only people the viewer follows) would hide someone who
  * followed them first, which is not how "Invite your friends" reads.
  *
+ * Written as `id IN (union of two index scans)` rather than the more obvious
+ * correlated `EXISTS (... sender = v AND receiver = u.id OR receiver = v AND
+ * sender = u.id)`. Both are correct, but the OR spans two different columns, so
+ * the planner cannot use it as a join *key* — it degrades to a join *filter*,
+ * materialising the viewer's follow rows and re-testing them against every
+ * candidate user (visible in EXPLAIN as "Rows Removed by Join Filter"). Split
+ * into a union, each branch is a plain indexed lookup and the result is an
+ * equijoin on users.id, so the work is bounded by how many friends the viewer
+ * has rather than by how many accounts exist.
+ *
  * Exported so the compiled SQL can be asserted on without a database.
  */
 export function friendOfCondition(viewerId: number): SQL {
-  return sql`EXISTS (
-    SELECT 1 FROM ${followRequests}
-    WHERE ${followRequests.status} = 'accepted'
-      AND (
-        (${followRequests.senderId} = ${viewerId} AND ${followRequests.receiverId} = ${users.id})
-        OR
-        (${followRequests.receiverId} = ${viewerId} AND ${followRequests.senderId} = ${users.id})
-      )
+  return sql`${users.id} IN (
+    SELECT ${followRequests.receiverId} FROM ${followRequests}
+      WHERE ${followRequests.senderId} = ${viewerId} AND ${followRequests.status} = 'accepted'
+    UNION
+    SELECT ${followRequests.senderId} FROM ${followRequests}
+      WHERE ${followRequests.receiverId} = ${viewerId} AND ${followRequests.status} = 'accepted'
   )`;
 }
 
@@ -339,13 +347,16 @@ async function notifyInvitees(
 
   if (!group || !inviter) return;
 
-  const allowed = await Promise.all(
-    inviteeIds.map(async (userId) => ({
-      userId,
-      enabled: await notificationPreferencesService.isEnabled(userId, 'groupInvites'),
-    })),
-  );
-  const recipients = allowed.filter((r) => r.enabled).map((r) => r.userId);
+  // One query for the whole batch. Previously this was a lookup per invitee —
+  // up to 50 round trips, several of which would also lazily INSERT a defaults
+  // row. Anyone with no row at all defaults to enabled, which is exactly what
+  // the per-user helper does.
+  const prefs = await db
+    .select({ userId: notificationPreferences.userId, groupInvites: notificationPreferences.groupInvites })
+    .from(notificationPreferences)
+    .where(inArray(notificationPreferences.userId, inviteeIds));
+  const disabled = new Set(prefs.filter((p) => !p.groupInvites).map((p) => p.userId));
+  const recipients = inviteeIds.filter((id) => !disabled.has(id));
   if (recipients.length === 0) return;
 
   const data = {
@@ -408,7 +419,30 @@ async function loadStanding(
   };
 }
 
-function toSummary(row: Group): GroupSummary {
+/**
+ * The columns a group summary needs, named explicitly.
+ *
+ * `select()` with no argument would also fetch `search_vector`, the GENERATED
+ * tsvector, which nothing reads — measured at ~1.5 KB for a group with a
+ * full-length description, so roughly 73 KB per 50-row page fetched and thrown
+ * away. Listing the columns keeps it on the server.
+ */
+const groupSummaryColumns = {
+  id: groups.id,
+  ownerId: groups.ownerId,
+  name: groups.name,
+  description: groups.description,
+  photoUrl: groups.photoUrl,
+  privacy: groups.privacy,
+  memberCount: groups.memberCount,
+  createdAt: groups.createdAt,
+} as const;
+
+type GroupSummaryRow = {
+  [K in keyof typeof groupSummaryColumns]: Group[K & keyof Group];
+};
+
+function toSummary(row: GroupSummaryRow): GroupSummary {
   return {
     id: row.id,
     name: row.name,
@@ -442,7 +476,7 @@ export const groupsService = {
           privacy: input.privacy ?? 'public',
           memberCount: 1,
         })
-        .returning();
+        .returning(groupSummaryColumns);
 
       await tx.insert(groupMemberships).values({
         groupId: group.id,
@@ -463,31 +497,35 @@ export const groupsService = {
    * anything.
    */
   async get(groupId: number, viewerId: number): Promise<{ group: GroupDetail; viewer: ViewerCapabilities }> {
+    // Group, owner and the viewer's membership in one round trip. This used to
+    // be two sequential queries, which both cost an extra hop and meant the
+    // question "what is this viewer to this group" was answered two different
+    // ways in one file — here and in loadStanding. One shape, one place to
+    // change when the membership rules move.
     const [row] = await db
       .select({
-        group: groups,
+        ...groupSummaryColumns,
         ownerName: users.name,
         ownerPhotoUrl: users.photoUrl,
+        viewerStatus: groupMemberships.status,
       })
       .from(groups)
       .innerJoin(users, eq(users.id, groups.ownerId))
+      .leftJoin(
+        groupMemberships,
+        and(eq(groupMemberships.groupId, groups.id), eq(groupMemberships.userId, viewerId)),
+      )
       .where(eq(groups.id, groupId))
       .limit(1);
 
     if (!row) throw notFound();
 
-    const [membership] = await db
-      .select({ status: groupMemberships.status })
-      .from(groupMemberships)
-      .where(and(eq(groupMemberships.groupId, groupId), eq(groupMemberships.userId, viewerId)))
-      .limit(1);
-
     return {
       group: {
-        ...toSummary(row.group),
-        owner: { id: row.group.ownerId, name: row.ownerName, photoUrl: row.ownerPhotoUrl },
+        ...toSummary(row),
+        owner: { id: row.ownerId, name: row.ownerName, photoUrl: row.ownerPhotoUrl },
       },
-      viewer: groupViewerCapabilities(row.group, membership?.status ?? null, viewerId),
+      viewer: groupViewerCapabilities(row, row.viewerStatus ?? null, viewerId),
     };
   },
 
@@ -504,7 +542,7 @@ export const groupsService = {
 
     const [rows, [counted]] = await Promise.all([
       db
-        .select({ group: groups })
+        .select(groupSummaryColumns)
         .from(groupMemberships)
         .innerJoin(groups, eq(groups.id, groupMemberships.groupId))
         .where(membershipFilter)
@@ -517,7 +555,7 @@ export const groupsService = {
         .where(membershipFilter),
     ]);
 
-    return { groups: rows.map((r) => toSummary(r.group)), total: counted?.count ?? 0 };
+    return { groups: rows.map(toSummary), total: counted?.count ?? 0 };
   },
 
   /**
@@ -542,7 +580,7 @@ export const groupsService = {
     const orderBy = term ? buildGroupSearchOrderBy(term) : [desc(groups.createdAt)];
 
     const [rows, [counted]] = await Promise.all([
-      db.select().from(groups).where(where).orderBy(...orderBy).limit(limit).offset(offset),
+      db.select(groupSummaryColumns).from(groups).where(where).orderBy(...orderBy).limit(limit).offset(offset),
       db.select({ count: sql<number>`count(*)::int` }).from(groups).where(where),
     ]);
 
@@ -568,7 +606,7 @@ export const groupsService = {
         updatedAt: new Date(),
       })
       .where(and(eq(groups.id, groupId), eq(groups.ownerId, ownerId)))
-      .returning();
+      .returning(groupSummaryColumns);
 
     if (!updated) throw notFound();
     return toSummary(updated);
@@ -790,10 +828,14 @@ export const groupsService = {
         );
       const statusByUser = new Map(existing.map((e) => [e.userId, e.status]));
       for (const id of notCreated) {
-        skipped.push({
-          userId: id,
-          reason: statusByUser.get(id) === 'invited' ? 'already_invited' : 'already_member',
-        });
+        // Exhaustive over the status rather than "invited or else member".
+        // 'requested' is reserved and unreachable today, but once
+        // request-to-join exists, reporting such a person as an existing member
+        // would both mislead the inviter and leave the picker hiding them.
+        const status = statusByUser.get(id);
+        const reason: InviteSkipReason =
+          status === 'invited' || status === 'requested' ? 'already_invited' : 'already_member';
+        skipped.push({ userId: id, reason });
       }
     }
 
