@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-09-18
+
+### Features
+
+* let readers create and manage book clubs ([8395414](https://adl.github.com/adl-developer/kinkane-backend/commit/8395414dc6efe4f9c787b7f47e293c2524c9ce06)) — [details](changelog/2026-09-18-groups-core.md)
+
+
 ## 2026-09-17
 
 ### Features

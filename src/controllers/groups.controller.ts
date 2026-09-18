@@ -4,37 +4,12 @@ import { AuthenticatedRequest } from '../middleware/auth.middleware';
 import { groupsService } from '../services/groups.service';
 import { authService } from '../services/auth.service';
 import { parseId } from '../lib/route-helpers';
-import { isCloudinaryUrl, cloudinaryUrlMessage } from '../lib/cloudinary-url';
-
-const photoUrlSchema = z
-  .string()
-  .url()
-  .refine(isCloudinaryUrl, { message: cloudinaryUrlMessage('photoUrl') });
+import { createGroupSchema, updateGroupSchema } from '../lib/group-input';
 
 const paginationSchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).default(20),
   offset: z.coerce.number().int().min(0).default(0),
 });
-
-const createGroupSchema = z.object({
-  name: z.string().min(1).max(100).trim(),
-  description: z.string().max(2000).nullable().optional(),
-  photoUrl: photoUrlSchema.nullable().optional(),
-  privacy: z.enum(['public', 'private']).default('public'),
-});
-
-// Every field optional, but at least one required — a PATCH that changes
-// nothing is a client bug worth surfacing rather than a silent 200.
-const updateGroupSchema = z
-  .object({
-    name: z.string().min(1).max(100).trim().optional(),
-    description: z.string().max(2000).nullable().optional(),
-    photoUrl: photoUrlSchema.nullable().optional(),
-    privacy: z.enum(['public', 'private']).optional(),
-  })
-  .refine((d) => Object.values(d).some((v) => v !== undefined), {
-    message: 'At least one of name, description, photoUrl or privacy must be provided',
-  });
 
 /**
  * Deleting a group asks the owner to re-prove who they are, like deleting an
