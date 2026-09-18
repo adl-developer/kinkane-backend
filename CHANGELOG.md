@@ -5,12 +5,12 @@
 
 ### Features
 
-* let readers report a book club ([a553a8e](https://adl.github.com/adl-developer/kinkane-backend/commit/a553a8e5a3c45b08338eb456a045e95bcd03fff2)) — [details](changelog/2026-09-18-report-a-group.md)
-* show book clubs in search results ([7c59a36](https://adl.github.com/adl-developer/kinkane-backend/commit/7c59a366f3af6df8b97db5ea554b326d57bee99e)) — [details](changelog/2026-09-18-groups-in-community-search.md)
-* tell people when they are invited to a book club ([09a199c](https://adl.github.com/adl-developer/kinkane-backend/commit/09a199c1524f44b52e0d5645b798abc054b18265)) — [details](changelog/2026-09-18-groups-in-community-search.md)
-* let book club members invite their friends ([bef8c70](https://adl.github.com/adl-developer/kinkane-backend/commit/bef8c7030ed42938fb6de22cc11c5fd2595c4037)) — [details](changelog/2026-09-18-groups-in-community-search.md)
-* let readers join, leave and see who is in a book club ([8bf12b7](https://adl.github.com/adl-developer/kinkane-backend/commit/8bf12b7935f644d87ba563b651b5880a2aac4265)) — [details](changelog/2026-09-18-groups-in-community-search.md)
-* let readers search for a book club by name or description ([450f83e](https://adl.github.com/adl-developer/kinkane-backend/commit/450f83ecc66e3cf21c8af1dd6d6d6b5f086d8594)) — [details](changelog/2026-09-18-report-a-group.md)
+* let readers report a book club ([f02d098](https://adl.github.com/adl-developer/kinkane-backend/commit/f02d098df7623461ef296d37a20523729831e393)) — [details](changelog/2026-09-18-report-a-group.md)
+* show book clubs in search results ([0b4e737](https://adl.github.com/adl-developer/kinkane-backend/commit/0b4e737d46b10dd0c2443857f267a30544cf4dc3)) — [details](changelog/2026-09-18-groups-in-community-search.md)
+* tell people when they are invited to a book club ([ac99e62](https://adl.github.com/adl-developer/kinkane-backend/commit/ac99e6272732602fd768403618ac50ce4ab49b3a)) — [details](changelog/2026-09-18-groups-in-community-search.md)
+* let book club members invite their friends ([086ea3f](https://adl.github.com/adl-developer/kinkane-backend/commit/086ea3f324f56571db66ab14a1a3c3d515bf1d98)) — [details](changelog/2026-09-18-groups-in-community-search.md)
+* let readers join, leave and see who is in a book club ([278d04f](https://adl.github.com/adl-developer/kinkane-backend/commit/278d04f1baec5a593d4e6ac89fbf5ad0a60dfb69)) — [details](changelog/2026-09-18-groups-in-community-search.md)
+* let readers search for a book club by name or description ([4e700d2](https://adl.github.com/adl-developer/kinkane-backend/commit/4e700d2d920d3dffe8c9b7829ae13b954a2e0bcb)) — [details](changelog/2026-09-18-report-a-group.md)
 * let readers create and manage book clubs ([8395414](https://adl.github.com/adl-developer/kinkane-backend/commit/8395414dc6efe4f9c787b7f47e293c2524c9ce06)) — [details](changelog/2026-09-18-report-a-group.md)
 
 ### Bug Fixes
