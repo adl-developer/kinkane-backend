@@ -1,9 +1,10 @@
-import { and, desc, eq, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   groups,
   groupMemberships,
   users,
+  followRequests,
   type Group,
   type GroupPrivacy,
   type GroupMembershipStatus,
@@ -60,7 +61,21 @@ export interface GroupMember {
 }
 
 /** A membership action a viewer can attempt against a group. */
-export type MembershipAction = 'view_members' | 'join' | 'leave';
+export type MembershipAction =
+  | 'view_members'
+  | 'join'
+  | 'leave'
+  | 'invite'
+  | 'accept_invite'
+  | 'decline_invite';
+
+/** Why a requested invitee was not invited. Reported per user rather than failing the batch. */
+export type InviteSkipReason = 'self' | 'already_member' | 'already_invited' | 'not_a_friend';
+
+export interface InviteResult {
+  invited: number[];
+  skipped: { userId: number; reason: InviteSkipReason }[];
+}
 
 /** The viewer's standing, as the decision function needs it. */
 export interface ViewerStanding {
@@ -135,6 +150,20 @@ export function decideMembershipAction(
       }
       if (status !== 'active') return deny(404, 'You are not a member of this group');
       return ALLOW;
+
+    case 'invite':
+      // Any member can invite, not only the owner: the design puts
+      // "+ Invite friends" on the plain-member view, and a private group would
+      // otherwise depend entirely on its owner to grow. An invitee cannot
+      // invite onward until they have accepted.
+      return isMember ? ALLOW : deny(403, 'Only members can invite people to this group');
+
+    case 'accept_invite':
+    case 'decline_invite':
+      // 404 rather than 403: with no invitation there is nothing to act on, and
+      // the answer must not differ between "never invited" and "already
+      // handled" — otherwise it reports whether an invitation once existed.
+      return status === 'invited' ? ALLOW : deny(404, 'You have no invitation to this group');
   }
 }
 
@@ -235,6 +264,39 @@ export function buildGroupSearchOrderBy(q: string): SQL[] {
     sql`word_similarity(${q}, ${groups.name}) DESC`,
     sql`ts_rank(${groups.searchVector}, plainto_tsquery('simple', ${q})) DESC`,
   ];
+}
+
+/**
+ * Matches users who are friends of `viewerId` — an accepted follow in *either*
+ * direction.
+ *
+ * Bidirectional on purpose: it matches the friend count shown on a profile, and
+ * the narrower reading (only people the viewer follows) would hide someone who
+ * followed them first, which is not how "Invite your friends" reads.
+ *
+ * Exported so the compiled SQL can be asserted on without a database.
+ */
+export function friendOfCondition(viewerId: number): SQL {
+  return sql`EXISTS (
+    SELECT 1 FROM ${followRequests}
+    WHERE ${followRequests.status} = 'accepted'
+      AND (
+        (${followRequests.senderId} = ${viewerId} AND ${followRequests.receiverId} = ${users.id})
+        OR
+        (${followRequests.receiverId} = ${viewerId} AND ${followRequests.senderId} = ${users.id})
+      )
+  )`;
+}
+
+/**
+ * Name matching for the friend picker's search box.
+ *
+ * Only the two prefix tiers, not the full four used for discovery: this searches
+ * a list the viewer already knows, usually a few dozen names, where typing "th"
+ * should narrow to people called Theo rather than fuzzily rank strangers.
+ */
+export function buildFriendNameCondition(q: string): SQL {
+  return sql`(${users.name} ILIKE ${q + '%'} OR ${users.name} ILIKE ${'% ' + q + '%'})`;
 }
 
 /**
@@ -525,6 +587,267 @@ export const groupsService = {
         .returning({ memberCount: groups.memberCount });
 
       return { memberCount: updated?.memberCount ?? 0 };
+    });
+  },
+
+  /**
+   * The caller's friends who could still be invited to this group.
+   *
+   * Excluding anyone with an existing membership row is what keeps the picker
+   * honest — a checkbox next to someone who joined ten minutes ago is a
+   * guaranteed "skipped" on submit.
+   *
+   * "Friend" means an accepted follow in *either* direction, matching the count
+   * shown on a profile. The narrower reading (only people you follow) would hide
+   * someone who followed you first, which is not how the screen reads.
+   */
+  async listInvitableFriends(
+    groupId: number,
+    viewerId: number,
+    limit: number,
+    offset: number,
+    q?: string,
+  ): Promise<{ friends: { id: number; name: string; photoUrl: string | null }[]; total: number }> {
+    const standing = await loadStanding(groupId, viewerId);
+    const decision = decideMembershipAction('invite', standing);
+    if (!decision.allowed) {
+      throw Object.assign(new Error(decision.message), { statusCode: decision.statusCode });
+    }
+
+    const term = q?.trim();
+    const where = and(
+      friendOfCondition(viewerId),
+      sql`NOT EXISTS (
+        SELECT 1 FROM ${groupMemberships}
+        WHERE ${groupMemberships.groupId} = ${groupId}
+          AND ${groupMemberships.userId} = ${users.id}
+      )`,
+      term ? buildFriendNameCondition(term) : undefined,
+    );
+
+    const [rows, [counted]] = await Promise.all([
+      db
+        .select({ id: users.id, name: users.name, photoUrl: users.photoUrl })
+        .from(users)
+        .where(where)
+        .orderBy(users.name)
+        .limit(limit)
+        .offset(offset),
+      db.select({ count: sql<number>`count(*)::int` }).from(users).where(where),
+    ]);
+
+    return { friends: rows, total: counted?.count ?? 0 };
+  },
+
+  /**
+   * Invites friends to a group.
+   *
+   * Partial success by design: the picker can offer three people and one of them
+   * may have joined in the meantime, so unusable ids come back in `skipped` with
+   * a reason rather than failing the whole batch and losing the other two.
+   *
+   * The insert is a single statement with ON CONFLICT DO NOTHING, and the rows
+   * it returns are the ones genuinely created — which is also the concurrency
+   * answer: two people inviting the same friend at once produce one invitation,
+   * and only one of them is told they created it.
+   */
+  async invite(groupId: number, inviterId: number, userIds: number[]): Promise<InviteResult> {
+    const standing = await loadStanding(groupId, inviterId);
+    const decision = decideMembershipAction('invite', standing);
+    if (!decision.allowed) {
+      throw Object.assign(new Error(decision.message), { statusCode: decision.statusCode });
+    }
+
+    const requested = [...new Set(userIds)];
+    const skipped: InviteResult['skipped'] = [];
+
+    const candidates = requested.filter((id) => {
+      if (id === inviterId) {
+        skipped.push({ userId: id, reason: 'self' });
+        return false;
+      }
+      return true;
+    });
+
+    if (candidates.length === 0) return { invited: [], skipped };
+
+    // Friendship is enforced here even though the picker only ever offers
+    // friends: a non-friend id means a stale client or someone probing, and
+    // neither should be able to push an invitation at a stranger.
+    const friends = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(and(friendOfCondition(inviterId), inArray(users.id, candidates)));
+    const friendIds = new Set(friends.map((f) => f.id));
+
+    const invitable = candidates.filter((id) => {
+      if (!friendIds.has(id)) {
+        skipped.push({ userId: id, reason: 'not_a_friend' });
+        return false;
+      }
+      return true;
+    });
+
+    if (invitable.length === 0) return { invited: [], skipped };
+
+    const inserted = await db
+      .insert(groupMemberships)
+      .values(
+        invitable.map((userId) => ({
+          groupId,
+          userId,
+          status: 'invited' as const,
+          invitedBy: inviterId,
+        })),
+      )
+      .onConflictDoNothing()
+      .returning({ userId: groupMemberships.userId });
+
+    const invited = inserted.map((r) => r.userId);
+
+    // Anything requested but not created already had a row. One follow-up read
+    // turns that into a reason the client can show.
+    const notCreated = invitable.filter((id) => !invited.includes(id));
+    if (notCreated.length > 0) {
+      const existing = await db
+        .select({ userId: groupMemberships.userId, status: groupMemberships.status })
+        .from(groupMemberships)
+        .where(
+          and(eq(groupMemberships.groupId, groupId), inArray(groupMemberships.userId, notCreated)),
+        );
+      const statusByUser = new Map(existing.map((e) => [e.userId, e.status]));
+      for (const id of notCreated) {
+        skipped.push({
+          userId: id,
+          reason: statusByUser.get(id) === 'invited' ? 'already_invited' : 'already_member',
+        });
+      }
+    }
+
+    // P4 wires the notification here, gated on the invitee's preference and
+    // fired and forgotten. Until then an invitation is only visible in the app.
+
+    return { invited, skipped };
+  },
+
+  /**
+   * Accepts an invitation, turning it into membership.
+   *
+   * The `status = 'invited'` predicate on the UPDATE is the concurrency guard:
+   * two taps both run, but only the first matches a row, so the count moves once.
+   */
+  async acceptInvite(groupId: number, userId: number): Promise<{ memberCount: number }> {
+    const standing = await loadStanding(groupId, userId);
+    const decision = decideMembershipAction('accept_invite', standing);
+    if (!decision.allowed) {
+      throw Object.assign(new Error(decision.message), { statusCode: decision.statusCode });
+    }
+
+    return db.transaction(async (tx) => {
+      const updated = await tx
+        .update(groupMemberships)
+        .set({ status: 'active', joinedAt: new Date(), updatedAt: new Date() })
+        .where(
+          and(
+            eq(groupMemberships.groupId, groupId),
+            eq(groupMemberships.userId, userId),
+            eq(groupMemberships.status, 'invited'),
+          ),
+        )
+        .returning({ id: groupMemberships.id });
+
+      if (updated.length === 0) {
+        throw Object.assign(new Error('You have no invitation to this group'), { statusCode: 404 });
+      }
+
+      const [group] = await tx
+        .update(groups)
+        .set({ memberCount: sql`${groups.memberCount} + 1` })
+        .where(eq(groups.id, groupId))
+        .returning({ memberCount: groups.memberCount });
+
+      return { memberCount: group?.memberCount ?? 0 };
+    });
+  },
+
+  /**
+   * Declines an invitation by deleting the row.
+   *
+   * Deliberately not a `declined` status, unlike follow requests: nothing in the
+   * design reads a declined state, and keeping the row would make every
+   * re-invitation an update-or-insert against the unique index instead of a
+   * plain insert. Re-inviting someone who declined is therefore allowed, and the
+   * invite rate limiter is what stops that becoming a nuisance.
+   */
+  async declineInvite(groupId: number, userId: number): Promise<void> {
+    const standing = await loadStanding(groupId, userId);
+    const decision = decideMembershipAction('decline_invite', standing);
+    if (!decision.allowed) {
+      throw Object.assign(new Error(decision.message), { statusCode: decision.statusCode });
+    }
+
+    const deleted = await db
+      .delete(groupMemberships)
+      .where(
+        and(
+          eq(groupMemberships.groupId, groupId),
+          eq(groupMemberships.userId, userId),
+          eq(groupMemberships.status, 'invited'),
+        ),
+      )
+      .returning({ id: groupMemberships.id });
+
+    if (deleted.length === 0) {
+      throw Object.assign(new Error('You have no invitation to this group'), { statusCode: 404 });
+    }
+    // No counter change — an invitation was never counted.
+  },
+
+  /**
+   * Owner removes someone, whether they joined or are still invited.
+   *
+   * One endpoint covers both because the owner is doing the same thing either
+   * way: severing that person's link to the group. The counter only moves if the
+   * row being removed was an actual membership.
+   *
+   * Removing a member has nothing to do with the follow graph — it must never
+   * unfollow anyone, whatever the confirmation dialog in the design says.
+   */
+  async removeMember(groupId: number, ownerId: number, targetUserId: number): Promise<void> {
+    const [group] = await db
+      .select({ id: groups.id })
+      .from(groups)
+      .where(and(eq(groups.id, groupId), eq(groups.ownerId, ownerId)))
+      .limit(1);
+
+    // Ownership folded into the lookup, so a non-owner cannot tell a group they
+    // do not own from one that does not exist.
+    if (!group) throw notFound();
+
+    if (targetUserId === ownerId) {
+      throw Object.assign(new Error('The owner cannot be removed from their own group'), {
+        statusCode: 400,
+      });
+    }
+
+    await db.transaction(async (tx) => {
+      const deleted = await tx
+        .delete(groupMemberships)
+        .where(
+          and(eq(groupMemberships.groupId, groupId), eq(groupMemberships.userId, targetUserId)),
+        )
+        .returning({ status: groupMemberships.status });
+
+      if (deleted.length === 0) {
+        throw Object.assign(new Error('That person is not in this group'), { statusCode: 404 });
+      }
+
+      if (deleted[0].status === 'active') {
+        await tx
+          .update(groups)
+          .set({ memberCount: sql`GREATEST(${groups.memberCount} - 1, 0)` })
+          .where(eq(groups.id, groupId));
+      }
     });
   },
 

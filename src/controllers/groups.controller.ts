@@ -17,6 +17,13 @@ const listGroupsSchema = paginationSchema.extend({
   q: z.string().min(1).max(200).trim().optional(),
 });
 
+// Capped at 50 so one request cannot fan out indefinitely. The rate limiter
+// counts requests rather than invitees, so without this the ceiling would be
+// 30 requests times however many ids fit in a 50kb body.
+const inviteSchema = z.object({
+  userIds: z.array(z.number().int().positive()).min(1).max(50),
+});
+
 /**
  * Deleting a group asks the owner to re-prove who they are, like deleting an
  * account does. A password OR a fresh provider id token is accepted, because
@@ -105,6 +112,50 @@ export const groupsController = {
   async leave(req: AuthenticatedRequest, res: Response): Promise<void> {
     const groupId = parseId(req.params.groupId, 'group ID');
     await groupsService.leave(groupId, req.user.id);
+    res.status(200).json({ success: true });
+  },
+
+  async listInvitableFriends(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const groupId = parseId(req.params.groupId, 'group ID');
+    const parsed = listGroupsSchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+    const { limit, offset, q } = parsed.data;
+    const result = await groupsService.listInvitableFriends(groupId, req.user.id, limit, offset, q);
+    res.status(200).json({ ...result, ...(q !== undefined && { q }), limit, offset });
+  },
+
+  async invite(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const groupId = parseId(req.params.groupId, 'group ID');
+    const parsed = inviteSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+    const result = await groupsService.invite(groupId, req.user.id, parsed.data.userIds);
+    // 201 even when every id was skipped: the request was understood and acted
+    // on, and `skipped` is the answer. A 4xx would suggest the client is broken.
+    res.status(201).json(result);
+  },
+
+  async acceptInvite(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const groupId = parseId(req.params.groupId, 'group ID');
+    const result = await groupsService.acceptInvite(groupId, req.user.id);
+    res.status(200).json({ success: true, ...result });
+  },
+
+  async declineInvite(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const groupId = parseId(req.params.groupId, 'group ID');
+    await groupsService.declineInvite(groupId, req.user.id);
+    res.status(200).json({ success: true });
+  },
+
+  async removeMember(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const groupId = parseId(req.params.groupId, 'group ID');
+    const userId = parseId(req.params.userId, 'user ID');
+    await groupsService.removeMember(groupId, req.user.id, userId);
     res.status(200).json({ success: true });
   },
 

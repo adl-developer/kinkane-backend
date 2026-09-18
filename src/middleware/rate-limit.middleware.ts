@@ -237,3 +237,17 @@ export const groupCreateLimiter = rateLimit({
   keyGenerator: byUser,
   store: new RedisStore({ prefix: 'rl:group-create:', sendCommand }),
 });
+
+// Group invites: 30 requests per hour per user. Same reasoning as
+// followRequestLimiter — an invitation puts a notification in someone else's
+// app — but note this counts *requests*, not people invited, which is why the
+// endpoint also caps a single batch at 50 ids. Together that is the ceiling.
+export const groupInviteLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: json429,
+  keyGenerator: byUser,
+  store: new RedisStore({ prefix: 'rl:group-invite:', sendCommand }),
+});

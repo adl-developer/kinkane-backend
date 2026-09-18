@@ -171,6 +171,130 @@ export const groupPaths = {
     },
   },
 
+  '/api/v1/groups/{groupId}/invitable-friends': {
+    get: {
+      tags: [GROUPS],
+      summary: 'Friends you could still invite',
+      description:
+        'Backs the friend picker. Returns the caller\'s friends **minus anyone who already has a membership or a pending invitation** for this group — a checkbox next to someone who joined ten minutes ago is a guaranteed rejection on submit.\n\n' +
+        '"Friend" means an accepted follow in **either** direction, matching the friend count on a profile. Optional `q` narrows by name, on a prefix or word prefix only — this filters a list the caller already knows, so it does not fuzzy-match the way group discovery does.\n\n' +
+        'Members only, including the owner. An invitee who has not accepted gets a 403.',
+      parameters: [
+        groupIdParam,
+        param('q', 'query', { type: 'string', minLength: 1, maxLength: 200 }, 'Narrow by name.', { example: 'theo' }),
+        ...pagination(50),
+      ],
+      responses: {
+        200: json('A page of invitable friends.',
+          object({
+            friends: arrayOf(object({
+              id: { type: 'integer', example: 4412 },
+              name: { type: 'string', example: 'Theodore Stevens' },
+              photoUrl: { type: 'string', nullable: true },
+            })),
+            total: { type: 'integer', example: 12 },
+            limit: { type: 'integer', example: 20 },
+            offset: { type: 'integer', example: 0 },
+          })),
+        403: json('You are not a member of this group.', object({ error: { type: 'string' } })),
+        404: json('No such group.', object({ error: { type: 'string' } })),
+        ...authErrors,
+      },
+    },
+  },
+
+  '/api/v1/groups/{groupId}/invites': {
+    post: {
+      tags: [GROUPS],
+      summary: 'Invite friends to a group',
+      description:
+        '**Any member can invite, not only the owner** — the design puts "+ Invite friends" on the plain-member view, and a private group would otherwise depend entirely on its owner to grow. An invitee who has not accepted yet cannot invite onward.\n\n' +
+        '**Partial success by design.** Ids that cannot be invited come back in `skipped` with a reason rather than failing the batch — the picker may offer three people and one of them may have joined in between. A request where *every* id is skipped is still a 201: it was understood and acted on.\n\n' +
+        'Skip reasons: `self`, `not_a_friend`, `already_member`, `already_invited`. Friendship is enforced server-side even though the picker only offers friends — a non-friend id means a stale client or someone probing.\n\n' +
+        'Rate limited to 30 **requests** per hour, and a single request carries at most 50 ids. Together those are the ceiling.',
+      parameters: [groupIdParam],
+      requestBody: body(object({
+        userIds: {
+          type: 'array',
+          items: { type: 'integer' },
+          minItems: 1,
+          maxItems: 50,
+          example: [4412, 4413, 4414],
+        },
+      }, ['userIds'])),
+      responses: {
+        201: json('Processed. Check `skipped` — this is a 201 even if nothing was invited.',
+          object({
+            invited: arrayOf({ type: 'integer' }, 'Ids genuinely invited by this request.'),
+            skipped: arrayOf(object({
+              userId: { type: 'integer', example: 4415 },
+              reason: { type: 'string', enum: ['self', 'not_a_friend', 'already_member', 'already_invited'] },
+            })),
+          })),
+        400: json('Invalid body.', object({ error: { type: 'object' } })),
+        403: json('You are not a member of this group.', object({ error: { type: 'string' } })),
+        404: json('No such group.', object({ error: { type: 'string' } })),
+        ...authErrors,
+      },
+    },
+  },
+
+  '/api/v1/groups/{groupId}/invites/accept': {
+    post: {
+      tags: [GROUPS],
+      summary: 'Accept an invitation',
+      description:
+        'Turns your invitation into membership and returns the group\'s new member count. This is how anyone joins a private group.\n\n' +
+        'Accepting twice is a **404**, as is accepting with no invitation — the response deliberately does not distinguish "never invited" from "already handled", so it cannot be used to discover whether an invitation once existed.',
+      parameters: [groupIdParam],
+      responses: {
+        200: json('Joined.', object({
+          success: { type: 'boolean', example: true },
+          memberCount: { type: 'integer', example: 35 },
+        })),
+        404: json('No such group, or no invitation outstanding.', object({ error: { type: 'string' } })),
+        ...authErrors,
+      },
+    },
+  },
+
+  '/api/v1/groups/{groupId}/invites/decline': {
+    post: {
+      tags: [GROUPS],
+      summary: 'Decline an invitation',
+      description:
+        'Removes the invitation. The member count does not move — an invitation was never counted.\n\n' +
+        'Declining **deletes** the invitation rather than marking it declined, which is a deliberate difference from follow requests. Nothing in the design reads a declined state, and keeping the row would make every future re-invitation an update rather than a plain insert. **You can therefore be re-invited after declining**; the invite rate limit is what stops that becoming a nuisance.',
+      parameters: [groupIdParam],
+      responses: {
+        200: successResponse,
+        404: json('No such group, or no invitation outstanding.', object({ error: { type: 'string' } })),
+        ...authErrors,
+      },
+    },
+  },
+
+  '/api/v1/groups/{groupId}/members/{userId}': {
+    delete: {
+      tags: [GROUPS],
+      summary: 'Remove someone from a group',
+      description:
+        'Owner only. Covers **both** removing a member and withdrawing a pending invitation — the owner is severing the same link either way, and the count only moves if the row was an actual membership.\n\n' +
+        '**This never touches the follow graph.** Group membership is independent of following, so removing someone must not unfollow them, whatever the confirmation dialog says.\n\n' +
+        'A non-owner gets **404, not 403**, because ownership is part of the lookup. The owner cannot remove themselves — that is a 400 pointing at deleting the group.',
+      parameters: [
+        groupIdParam,
+        param('userId', 'path', { type: 'integer' }, 'The person to remove.', { example: 4412 }),
+      ],
+      responses: {
+        200: successResponse,
+        400: json('You cannot remove yourself as owner.', object({ error: { type: 'string' } })),
+        404: json('No such group, not yours, or that person is not in it.', object({ error: { type: 'string' } })),
+        ...authErrors,
+      },
+    },
+  },
+
   '/api/v1/groups/{groupId}': {
     get: {
       tags: [GROUPS],

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.middleware';
 import { requirePlus } from '../middleware/require-plus.middleware';
-import { groupCreateLimiter } from '../middleware/rate-limit.middleware';
+import { groupCreateLimiter, groupInviteLimiter } from '../middleware/rate-limit.middleware';
 import { groupsController } from '../controllers/groups.controller';
 import { wrapHttp } from '../lib/route-helpers';
 
@@ -30,5 +30,15 @@ router.post('/:groupId/join', wrapHttp(groupsController.join));
 // "membership" rather than "leave" so the path names the thing being removed,
 // and so withdrawing an invitation can reuse it later.
 router.delete('/:groupId/membership', wrapHttp(groupsController.leave));
+
+// Invitations. Any member can invite, not just the owner — the design puts
+// "+ Invite friends" on the plain-member view.
+router.get('/:groupId/invitable-friends', wrapHttp(groupsController.listInvitableFriends));
+router.post('/:groupId/invites', groupInviteLimiter, wrapHttp(groupsController.invite));
+router.post('/:groupId/invites/accept', wrapHttp(groupsController.acceptInvite));
+router.post('/:groupId/invites/decline', wrapHttp(groupsController.declineInvite));
+// Owner-only. Covers both removing a member and withdrawing a pending
+// invitation — the owner is severing the same link either way.
+router.delete('/:groupId/members/:userId', wrapHttp(groupsController.removeMember));
 
 export default router;
