@@ -6,6 +6,7 @@ import { cataloguePaths } from './paths/catalogue';
 import { onboardingPaths } from './paths/onboarding';
 import { libraryPaths } from './paths/library';
 import { socialPaths } from './paths/social';
+import { groupPaths } from './paths/groups';
 import { accountPaths } from './paths/account';
 import { commercePaths } from './paths/commerce';
 import { billingPaths } from './paths/billing';
@@ -191,6 +192,7 @@ export function buildOpenApiDocument(req: Request): Record<string, unknown> {
       ...onboardingPaths,
       ...libraryPaths,
       ...socialPaths,
+      ...groupPaths,
       ...accountPaths,
       ...commercePaths,
       ...billingPaths,

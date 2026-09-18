@@ -1,0 +1,120 @@
+import { Response } from 'express';
+import { z } from 'zod';
+import { AuthenticatedRequest } from '../middleware/auth.middleware';
+import { groupsService } from '../services/groups.service';
+import { authService } from '../services/auth.service';
+import { parseId } from '../lib/route-helpers';
+import { isCloudinaryUrl, cloudinaryUrlMessage } from '../lib/cloudinary-url';
+
+const photoUrlSchema = z
+  .string()
+  .url()
+  .refine(isCloudinaryUrl, { message: cloudinaryUrlMessage('photoUrl') });
+
+const paginationSchema = z.object({
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
+const createGroupSchema = z.object({
+  name: z.string().min(1).max(100).trim(),
+  description: z.string().max(2000).nullable().optional(),
+  photoUrl: photoUrlSchema.nullable().optional(),
+  privacy: z.enum(['public', 'private']).default('public'),
+});
+
+// Every field optional, but at least one required — a PATCH that changes
+// nothing is a client bug worth surfacing rather than a silent 200.
+const updateGroupSchema = z
+  .object({
+    name: z.string().min(1).max(100).trim().optional(),
+    description: z.string().max(2000).nullable().optional(),
+    photoUrl: photoUrlSchema.nullable().optional(),
+    privacy: z.enum(['public', 'private']).optional(),
+  })
+  .refine((d) => Object.values(d).some((v) => v !== undefined), {
+    message: 'At least one of name, description, photoUrl or privacy must be provided',
+  });
+
+/**
+ * Deleting a group asks the owner to re-prove who they are, like deleting an
+ * account does. A password OR a fresh provider id token is accepted, because
+ * social-login accounts have no password hash at all — `verifyOwnership`
+ * handles both and is the same call the Change Plan flow makes.
+ */
+const deleteGroupSchema = z
+  .object({
+    password: z.string().min(1).optional(),
+    idToken: z.string().min(1).optional(),
+  })
+  .refine((d) => d.password !== undefined || d.idToken !== undefined, {
+    message: 'A password or a fresh sign-in is required',
+  });
+
+export const groupsController = {
+  async create(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const parsed = createGroupSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+    const group = await groupsService.create(req.user.id, parsed.data);
+    res.status(201).json({ group });
+  },
+
+  async list(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const parsed = paginationSchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+    const { limit, offset } = parsed.data;
+    const result = await groupsService.list(limit, offset);
+    res.status(200).json({ ...result, limit, offset });
+  },
+
+  async listMine(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const parsed = paginationSchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+    const { limit, offset } = parsed.data;
+    const result = await groupsService.listForUser(req.user.id, limit, offset);
+    res.status(200).json({ ...result, limit, offset });
+  },
+
+  async get(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const groupId = parseId(req.params.groupId, 'group ID');
+    const result = await groupsService.get(groupId, req.user.id);
+    res.status(200).json(result);
+  },
+
+  async update(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const groupId = parseId(req.params.groupId, 'group ID');
+    const parsed = updateGroupSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+    const group = await groupsService.update(groupId, req.user.id, parsed.data);
+    res.status(200).json({ group });
+  },
+
+  async remove(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const groupId = parseId(req.params.groupId, 'group ID');
+    const parsed = deleteGroupSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+    // Ownership of the *account* is verified before the group is touched, so a
+    // wrong credential can never reach the delete.
+    await authService.verifyOwnership(req.user.id, {
+      password: parsed.data.password,
+      idToken: parsed.data.idToken,
+    });
+    await groupsService.remove(groupId, req.user.id);
+    res.status(200).json({ success: true });
+  },
+};

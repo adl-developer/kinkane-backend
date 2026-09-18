@@ -1,0 +1,144 @@
+import {
+  json, body, object, param, arrayOf, pagination, authErrors, plusErrors, successResponse,
+} from '../helpers';
+
+const GROUPS = 'Groups';
+
+const groupIdParam = param('groupId', 'path', { type: 'integer' }, 'Group id.', { example: 12 });
+
+/**
+ * Stated once here and referenced from the operations below, because it is the
+ * rule reviewers and client developers most often get backwards: a private
+ * group is *unjoinable*, not *secret*.
+ */
+const PRIVACY_NOTE =
+  'A private group is **unjoinable, not secret**. Anyone signed in can see its name, image, description, owner and creation date — that is what the "you need an invite" screen renders. Only the member list and the ability to join are withheld, via the `viewer` block.';
+
+const groupSchema = object({
+  id: { type: 'integer', example: 12 },
+  name: { type: 'string', example: 'Books & Friends' },
+  description: { type: 'string', nullable: true, example: 'A cozy gathering of history enthusiasts.' },
+  photoUrl: { type: 'string', nullable: true, example: 'https://res.cloudinary.com/kinkane/image/upload/v1/g.jpg' },
+  privacy: { type: 'string', enum: ['public', 'private'], example: 'public' },
+  memberCount: { type: 'integer', description: 'Includes the owner.', example: 34 },
+  createdAt: { type: 'string', format: 'date-time' },
+});
+
+const viewerSchema = object({
+  membership: {
+    type: 'string',
+    enum: ['owner', 'member', 'invited', 'none'],
+    description: 'What the caller is to this group.',
+    example: 'none',
+  },
+  canSeeMembers: { type: 'boolean', description: 'False for a non-member of a private group.', example: true },
+  canInvite: { type: 'boolean', description: 'True for any member, not only the owner.', example: false },
+  canEdit: { type: 'boolean', description: 'Owner only.', example: false },
+  canJoin: { type: 'boolean', description: 'Public groups only, and only when not already involved.', example: true },
+});
+
+function groupListResponse(description: string) {
+  return json(description,
+    object({
+      groups: arrayOf(groupSchema),
+      total: { type: 'integer', example: 7 },
+      limit: { type: 'integer', example: 20 },
+      offset: { type: 'integer', example: 0 },
+    }));
+}
+
+export const groupPaths = {
+  '/api/v1/groups': {
+    post: {
+      tags: [GROUPS],
+      summary: 'Create a group',
+      description:
+        'Creates a book club and makes the caller its owner and first member, so `memberCount` starts at 1.\n\n**Requires Kinkané Plus.** Founding a group is the "create durable content others consume" side of the gate, matching post and comment creation. Joining, inviting and browsing are free.\n\nRate limited to 10 per day per user.',
+      requestBody: body(object({
+        name: { type: 'string', minLength: 1, maxLength: 100, example: 'Books & Friends' },
+        description: { type: 'string', maxLength: 2000, nullable: true },
+        photoUrl: {
+          type: 'string',
+          nullable: true,
+          description: 'Must already be uploaded to our Cloudinary account; pass the resulting URL.',
+        },
+        privacy: { type: 'string', enum: ['public', 'private'], default: 'public' },
+      }, ['name'])),
+      responses: {
+        201: json('Created.', object({ group: groupSchema })),
+        400: json('Invalid body.', object({ error: { type: 'object' } })),
+        ...plusErrors,
+      },
+    },
+    get: {
+      tags: [GROUPS],
+      summary: 'Browse groups',
+      description: `Discovery list, newest first.\n\n${PRIVACY_NOTE}`,
+      parameters: pagination(50),
+      responses: { 200: groupListResponse('A page of groups.'), ...authErrors },
+    },
+  },
+
+  '/api/v1/groups/mine': {
+    get: {
+      tags: [GROUPS],
+      summary: 'Groups you belong to',
+      description: 'Owned and joined groups, most recently joined first. Powers the "Your groups" section of the profile. Pending invitations are not included.',
+      parameters: pagination(50),
+      responses: { 200: groupListResponse('A page of your groups.'), ...authErrors },
+    },
+  },
+
+  '/api/v1/groups/{groupId}': {
+    get: {
+      tags: [GROUPS],
+      summary: 'One group, plus what you may do with it',
+      description: `Returns the group and a \`viewer\` block describing the caller's relationship and permissions. The app picks which of the four detail layouts to draw from \`viewer\` rather than re-deriving the privacy rules.\n\n${PRIVACY_NOTE}`,
+      parameters: [groupIdParam],
+      responses: {
+        200: json('The group and the caller’s capabilities.',
+          object({ group: groupSchema, viewer: viewerSchema })),
+        404: json('No such group.', object({ error: { type: 'string', example: 'Group not found' } })),
+        ...authErrors,
+      },
+    },
+    patch: {
+      tags: [GROUPS],
+      summary: 'Edit a group',
+      description:
+        'Owner only. Serves both the Edit Group screen and the standalone Privacy Settings screen — the latter sends `privacy` on its own.\n\nAt least one field must be present. A non-owner gets **404, not 403**, so the response cannot be used to confirm that a group exists and belongs to someone else.',
+      parameters: [groupIdParam],
+      requestBody: body(object({
+        name: { type: 'string', minLength: 1, maxLength: 100 },
+        description: { type: 'string', maxLength: 2000, nullable: true },
+        photoUrl: { type: 'string', nullable: true },
+        privacy: { type: 'string', enum: ['public', 'private'] },
+      })),
+      responses: {
+        200: json('Updated.', object({ group: groupSchema })),
+        400: json('Invalid body, or no fields given.', object({ error: { type: 'object' } })),
+        404: json('No such group, or not yours.', object({ error: { type: 'string' } })),
+        ...authErrors,
+      },
+    },
+    delete: {
+      tags: [GROUPS],
+      summary: 'Delete a group',
+      description:
+        'Owner only, and permanent — memberships go with it.\n\nThe caller must re-prove who they are, as with deleting an account: send **either** `password` **or** a fresh provider `idToken`. Social-login accounts have no password at all, so the client should offer "Confirm with Google/Apple" and send `idToken` for those. The credential is checked before the group is touched.',
+      parameters: [groupIdParam],
+      requestBody: body(object({
+        password: { type: 'string', description: 'For accounts that have one.' },
+        idToken: { type: 'string', description: 'A freshly issued provider token, for social-login accounts.' },
+      }), { description: 'Exactly one of `password` or `idToken`.' }),
+      responses: {
+        200: successResponse,
+        400: json('Neither credential supplied.', object({ error: { type: 'object' } })),
+        401: json('Wrong password, or a stale sign-in token.', object({ error: { type: 'string' } })),
+        404: json('No such group, or not yours.', object({ error: { type: 'string' } })),
+        429: { $ref: '#/components/responses/RateLimited' },
+        500: { $ref: '#/components/responses/ServerError' },
+      },
+    },
+  },
+};

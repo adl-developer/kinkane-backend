@@ -223,3 +223,17 @@ export const followRequestLimiter = rateLimit({
   keyGenerator: byUser,
   store: new RedisStore({ prefix: 'rl:follow-request:', sendCommand }),
 });
+
+// Group creation: 10 per day per user. A group is durable, discoverable
+// content that shows up in other people's search results, so the concern is
+// bulk-creating clutter rather than any per-request cost. Ten is far above any
+// honest use and far below what a script would want.
+export const groupCreateLimiter = rateLimit({
+  windowMs: 24 * 60 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: json429,
+  keyGenerator: byUser,
+  store: new RedisStore({ prefix: 'rl:group-create:', sendCommand }),
+});
