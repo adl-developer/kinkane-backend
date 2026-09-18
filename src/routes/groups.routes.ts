@@ -23,4 +23,12 @@ router.get('/:groupId', wrapHttp(groupsController.get));
 router.patch('/:groupId', wrapHttp(groupsController.update));
 router.delete('/:groupId', wrapHttp(groupsController.remove));
 
+// Membership. Joining is not gated: a Plus member's group has to be joinable by
+// the friends they invite, or the feature is pointless. Only creating is gated.
+router.get('/:groupId/members', wrapHttp(groupsController.listMembers));
+router.post('/:groupId/join', wrapHttp(groupsController.join));
+// "membership" rather than "leave" so the path names the thing being removed,
+// and so withdrawing an invitation can reuse it later.
+router.delete('/:groupId/membership', wrapHttp(groupsController.leave));
+
 export default router;

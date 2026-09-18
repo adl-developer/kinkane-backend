@@ -51,10 +51,91 @@ export interface CreateGroupInput {
 
 export type UpdateGroupInput = Partial<CreateGroupInput>;
 
+export interface GroupMember {
+  id: number;
+  name: string;
+  photoUrl: string | null;
+  isOwner: boolean;
+  joinedAt: Date | null;
+}
+
+/** A membership action a viewer can attempt against a group. */
+export type MembershipAction = 'view_members' | 'join' | 'leave';
+
+/** The viewer's standing, as the decision function needs it. */
+export interface ViewerStanding {
+  privacy: GroupPrivacy;
+  isOwner: boolean;
+  status: GroupMembershipStatus | null;
+}
+
+/** Allowed, or the status code and message to fail with. */
+export type MembershipDecision =
+  | { allowed: true }
+  | { allowed: false; statusCode: number; message: string };
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function notFound(): Error {
   return Object.assign(new Error('Group not found'), { statusCode: 404 });
+}
+
+const ALLOW: MembershipDecision = { allowed: true };
+const deny = (statusCode: number, message: string): MembershipDecision => ({
+  allowed: false,
+  statusCode,
+  message,
+});
+
+/**
+ * The membership rules, in one pure function.
+ *
+ * Every one of these is a rule someone will otherwise re-derive slightly
+ * differently in a controller, so they live here and are pinned by unit test.
+ *
+ * On the choice of status codes: a membership-gated read against a group the
+ * viewer can already see is a 403, not a 404, because a private group's
+ * existence is not secret — the design deliberately shows non-members its name,
+ * owner and description. Only owner-scoped *mutations* 404, and those never
+ * reach this function: ownership is folded into their WHERE clause instead.
+ */
+export function decideMembershipAction(
+  action: MembershipAction,
+  { privacy, isOwner, status }: ViewerStanding,
+): MembershipDecision {
+  const isMember = isOwner || status === 'active';
+
+  switch (action) {
+    case 'view_members':
+      // The member list is the part of a private group that is actually private.
+      // An invitee to a public group is at least as entitled as a passer-by, so
+      // this turns on membership and privacy only — never on the invite.
+      return isMember || privacy === 'public'
+        ? ALLOW
+        : deny(403, 'Only members can see who is in a private group');
+
+    case 'join':
+      // Ordered so the most specific answer wins: telling an existing member
+      // that the group is private would be nonsense.
+      if (isMember) return deny(409, 'You are already a member of this group');
+      if (status === 'invited') {
+        return deny(409, 'You have been invited to this group — accept the invitation instead');
+      }
+      if (privacy === 'private') {
+        return deny(403, 'This group is private — you need an invitation to join');
+      }
+      return ALLOW;
+
+    case 'leave':
+      // The owner leaving would orphan the group, and nothing in the design
+      // offers to hand it over, so this is a dead end by choice rather than an
+      // oversight. 400 rather than 403: it is not a permission problem.
+      if (isOwner) {
+        return deny(400, 'The group owner cannot leave — delete the group instead');
+      }
+      if (status !== 'active') return deny(404, 'You are not a member of this group');
+      return ALLOW;
+  }
 }
 
 /**
@@ -154,6 +235,42 @@ export function buildGroupSearchOrderBy(q: string): SQL[] {
     sql`word_similarity(${q}, ${groups.name}) DESC`,
     sql`ts_rank(${groups.searchVector}, plainto_tsquery('simple', ${q})) DESC`,
   ];
+}
+
+/**
+ * Loads the group's privacy and owner plus the viewer's membership row, in one
+ * round trip, for the membership endpoints to decide on.
+ *
+ * 404s a missing group here so the three callers do not each repeat it, and so
+ * "no such group" is answered before any membership rule runs — otherwise a
+ * join against a deleted group would report it as private.
+ */
+async function loadStanding(
+  groupId: number,
+  viewerId: number,
+): Promise<ViewerStanding & { ownerId: number }> {
+  const [row] = await db
+    .select({
+      ownerId: groups.ownerId,
+      privacy: groups.privacy,
+      status: groupMemberships.status,
+    })
+    .from(groups)
+    .leftJoin(
+      groupMemberships,
+      and(eq(groupMemberships.groupId, groups.id), eq(groupMemberships.userId, viewerId)),
+    )
+    .where(eq(groups.id, groupId))
+    .limit(1);
+
+  if (!row) throw notFound();
+
+  return {
+    ownerId: row.ownerId,
+    privacy: row.privacy,
+    isOwner: row.ownerId === viewerId,
+    status: row.status ?? null,
+  };
 }
 
 function toSummary(row: Group): GroupSummary {
@@ -320,6 +437,130 @@ export const groupsService = {
 
     if (!updated) throw notFound();
     return toSummary(updated);
+  },
+
+  /**
+   * The people in a group, oldest first — so the owner, who joins at creation,
+   * heads the list.
+   *
+   * `total` comes from counting memberships rather than reading
+   * `groups.member_count`: this is the one place the two can be compared, and a
+   * list that disagreed with its own total would be the first visible symptom
+   * of counter drift.
+   */
+  async listMembers(
+    groupId: number,
+    viewerId: number,
+    limit: number,
+    offset: number,
+  ): Promise<{ members: GroupMember[]; total: number }> {
+    const standing = await loadStanding(groupId, viewerId);
+    const decision = decideMembershipAction('view_members', standing);
+    if (!decision.allowed) {
+      throw Object.assign(new Error(decision.message), { statusCode: decision.statusCode });
+    }
+
+    const activeMembers = and(
+      eq(groupMemberships.groupId, groupId),
+      eq(groupMemberships.status, 'active'),
+    );
+
+    const [rows, [counted]] = await Promise.all([
+      db
+        .select({
+          id: users.id,
+          name: users.name,
+          photoUrl: users.photoUrl,
+          joinedAt: groupMemberships.joinedAt,
+        })
+        .from(groupMemberships)
+        .innerJoin(users, eq(users.id, groupMemberships.userId))
+        .where(activeMembers)
+        .orderBy(groupMemberships.joinedAt)
+        .limit(limit)
+        .offset(offset),
+      db.select({ count: sql<number>`count(*)::int` }).from(groupMemberships).where(activeMembers),
+    ]);
+
+    return {
+      members: rows.map((r) => ({ ...r, isOwner: r.id === standing.ownerId })),
+      total: counted?.count ?? 0,
+    };
+  },
+
+  /**
+   * Joins a public group.
+   *
+   * The insert and the counter move together in one transaction, and the unique
+   * (group, user) index is what makes a double tap safe: the second insert
+   * conflicts, returns nothing, and never reaches the increment. Without that,
+   * two taps would leave one membership and a count of two.
+   */
+  async join(groupId: number, userId: number): Promise<{ memberCount: number }> {
+    const standing = await loadStanding(groupId, userId);
+    const decision = decideMembershipAction('join', standing);
+    if (!decision.allowed) {
+      throw Object.assign(new Error(decision.message), { statusCode: decision.statusCode });
+    }
+
+    return db.transaction(async (tx) => {
+      const inserted = await tx
+        .insert(groupMemberships)
+        .values({ groupId, userId, status: 'active', joinedAt: new Date() })
+        .onConflictDoNothing()
+        .returning({ id: groupMemberships.id });
+
+      if (inserted.length === 0) {
+        // Lost the race with another tap — the membership exists either way, so
+        // this is the same answer the guard above would have given.
+        throw Object.assign(new Error('You are already a member of this group'), {
+          statusCode: 409,
+        });
+      }
+
+      const [updated] = await tx
+        .update(groups)
+        .set({ memberCount: sql`${groups.memberCount} + 1` })
+        .where(eq(groups.id, groupId))
+        .returning({ memberCount: groups.memberCount });
+
+      return { memberCount: updated?.memberCount ?? 0 };
+    });
+  },
+
+  /** Leaves a group. The owner cannot; they delete it instead. */
+  async leave(groupId: number, userId: number): Promise<void> {
+    const standing = await loadStanding(groupId, userId);
+    const decision = decideMembershipAction('leave', standing);
+    if (!decision.allowed) {
+      throw Object.assign(new Error(decision.message), { statusCode: decision.statusCode });
+    }
+
+    await db.transaction(async (tx) => {
+      const deleted = await tx
+        .delete(groupMemberships)
+        .where(
+          and(
+            eq(groupMemberships.groupId, groupId),
+            eq(groupMemberships.userId, userId),
+            eq(groupMemberships.status, 'active'),
+          ),
+        )
+        .returning({ id: groupMemberships.id });
+
+      if (deleted.length === 0) {
+        throw Object.assign(new Error('You are not a member of this group'), { statusCode: 404 });
+      }
+
+      // GREATEST rather than a bare decrement: if the counter has drifted to 0
+      // while a membership still exists, a plain `- 1` would violate the
+      // non-negative CHECK and trap the member in a group they are trying to
+      // leave. Drift is a data problem to repair, not a reason to refuse.
+      await tx
+        .update(groups)
+        .set({ memberCount: sql`GREATEST(${groups.memberCount} - 1, 0)` })
+        .where(eq(groups.id, groupId));
+    });
   },
 
   /**

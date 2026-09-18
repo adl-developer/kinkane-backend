@@ -101,6 +101,76 @@ export const groupPaths = {
     },
   },
 
+  '/api/v1/groups/{groupId}/members': {
+    get: {
+      tags: [GROUPS],
+      summary: 'Who is in a group',
+      description:
+        'Oldest first, so the owner — who joins when the group is created — heads the list. Each entry carries `isOwner`.\n\n' +
+        'Open to anyone on a public group. On a private group it is **members only**, and a non-member gets **403, not 404**: the group itself is not secret, only its roster. An invitee who has not accepted yet counts as a non-member here.\n\n' +
+        '`total` counts memberships directly rather than reading the group\'s stored `memberCount`, so a disagreement between this and the group payload would be the first visible sign of counter drift.',
+      parameters: [groupIdParam, ...pagination(50)],
+      responses: {
+        200: json('A page of members.',
+          object({
+            members: arrayOf(object({
+              id: { type: 'integer', example: 4412 },
+              name: { type: 'string', example: 'Theodore Stevens' },
+              photoUrl: { type: 'string', nullable: true },
+              isOwner: { type: 'boolean', example: false },
+              joinedAt: { type: 'string', format: 'date-time', nullable: true },
+            })),
+            total: { type: 'integer', example: 34 },
+            limit: { type: 'integer', example: 20 },
+            offset: { type: 'integer', example: 0 },
+          })),
+        403: json('Private group, and you are not a member.', object({ error: { type: 'string' } })),
+        404: json('No such group.', object({ error: { type: 'string' } })),
+        ...authErrors,
+      },
+    },
+  },
+
+  '/api/v1/groups/{groupId}/join': {
+    post: {
+      tags: [GROUPS],
+      summary: 'Join a public group',
+      description:
+        'Public groups only — **no Kinkané Plus needed**. Only *creating* a group is gated; joining one you were pointed at must stay free, or an invitation would be useless to the friend receiving it.\n\n' +
+        'Returns the group\'s new member count. Joining twice is a **409**, and concurrent taps settle to a single membership and a single increment — the membership row and the counter move in one transaction, guarded by the unique (group, user) index.\n\n' +
+        'An invitee gets a 409 telling them to accept the invitation instead, rather than joining over it and losing who invited them.',
+      parameters: [groupIdParam],
+      responses: {
+        201: json('Joined.', object({
+          success: { type: 'boolean', example: true },
+          memberCount: { type: 'integer', description: 'The group\'s count after joining.', example: 35 },
+        })),
+        403: json('The group is private — an invitation is required.', object({ error: { type: 'string' } })),
+        404: json('No such group.', object({ error: { type: 'string' } })),
+        409: json('Already a member, or already invited.', object({ error: { type: 'string' } })),
+        ...authErrors,
+      },
+    },
+  },
+
+  '/api/v1/groups/{groupId}/membership': {
+    delete: {
+      tags: [GROUPS],
+      summary: 'Leave a group',
+      description:
+        'Removes your own membership and decrements the group\'s count, in one transaction.\n\n' +
+        '**The owner cannot leave** — they get a 400 pointing them at deleting the group instead. There is no ownership transfer in this version, so an owner leaving would orphan the group.\n\n' +
+        'Someone who was never a member, or who has an unaccepted invitation, gets a 404: declining an invitation is a different action, not a departure.',
+      parameters: [groupIdParam],
+      responses: {
+        200: successResponse,
+        400: json('You own this group.', object({ error: { type: 'string' } })),
+        404: json('No such group, or you are not a member.', object({ error: { type: 'string' } })),
+        ...authErrors,
+      },
+    },
+  },
+
   '/api/v1/groups/{groupId}': {
     get: {
       tags: [GROUPS],

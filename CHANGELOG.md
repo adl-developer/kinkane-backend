@@ -5,7 +5,8 @@
 
 ### Features
 
-* let readers create and manage book clubs ([8395414](https://adl.github.com/adl-developer/kinkane-backend/commit/8395414dc6efe4f9c787b7f47e293c2524c9ce06)) — [details](changelog/2026-09-18-groups-core.md)
+* let readers search for a book club by name or description ([450f83e](https://adl.github.com/adl-developer/kinkane-backend/commit/450f83ecc66e3cf21c8af1dd6d6d6b5f086d8594)) — [details](changelog/2026-09-18-groups-core.md)
+* let readers create and manage book clubs ([8395414](https://adl.github.com/adl-developer/kinkane-backend/commit/8395414dc6efe4f9c787b7f47e293c2524c9ce06))
 
 ### Bug Fixes
 

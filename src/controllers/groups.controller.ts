@@ -84,6 +84,30 @@ export const groupsController = {
     res.status(200).json({ group });
   },
 
+  async listMembers(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const groupId = parseId(req.params.groupId, 'group ID');
+    const parsed = paginationSchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+    const { limit, offset } = parsed.data;
+    const result = await groupsService.listMembers(groupId, req.user.id, limit, offset);
+    res.status(200).json({ ...result, limit, offset });
+  },
+
+  async join(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const groupId = parseId(req.params.groupId, 'group ID');
+    const result = await groupsService.join(groupId, req.user.id);
+    res.status(201).json({ success: true, ...result });
+  },
+
+  async leave(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const groupId = parseId(req.params.groupId, 'group ID');
+    await groupsService.leave(groupId, req.user.id);
+    res.status(200).json({ success: true });
+  },
+
   async remove(req: AuthenticatedRequest, res: Response): Promise<void> {
     const groupId = parseId(req.params.groupId, 'group ID');
     const parsed = deleteGroupSchema.safeParse(req.body);
