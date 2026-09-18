@@ -7,6 +7,10 @@
 
 * let readers create and manage book clubs ([8395414](https://adl.github.com/adl-developer/kinkane-backend/commit/8395414dc6efe4f9c787b7f47e293c2524c9ce06)) — [details](changelog/2026-09-18-groups-core.md)
 
+### Bug Fixes
+
+* stop a blank group name and a long photo link from slipping through ([c725dec](https://adl.github.com/adl-developer/kinkane-backend/commit/c725dec577ec31b1c2d4490aba1bcc8cc5f14bf2)) — [details](changelog/2026-09-18-groups-core.md)
+
 
 ## 2026-09-17
 

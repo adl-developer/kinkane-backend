@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   groups,
@@ -94,6 +94,66 @@ export function groupViewerCapabilities(
     canEdit: isOwner,
     canJoin: !isMember && membership !== 'invited' && group.privacy === 'public',
   };
+}
+
+/**
+ * Matches a group by name or description, in four widening tiers.
+ *
+ * Deliberately the same shape as `buildUserSearchCondition` in
+ * community-search.service.ts, down to the 0.3 threshold and the three-character
+ * floor on full text: when the Community "Groups" tab and the Explore
+ * Books|Authors|Groups toggle are wired up, groups have to rank the way users
+ * and posts already do, or the same query gives noticeably different results
+ * depending on which tab you are looking at.
+ *
+ * Tiers, in order: exact prefix, word prefix, trigram similarity, full text.
+ * `word_similarity` is backed by the gin_trgm_ops index on `name`, and the full
+ * text arm by the GIN index on the generated `search_vector` — without those two
+ * this degrades to a sequential scan over every group.
+ *
+ * Full text is skipped below three characters because `plainto_tsquery` on one
+ * or two letters matches almost nothing useful while still costing an index
+ * probe; the prefix tiers are what make short queries feel instant.
+ *
+ * Exported so the compiled SQL can be asserted on without a database, the way
+ * author-search.test.ts does.
+ */
+export function buildGroupSearchCondition(q: string): SQL {
+  const prefix = q + '%';
+  const wordPrefix = '% ' + q + '%';
+  const fts = q.length >= 3
+    ? sql` OR ${groups.searchVector} @@ plainto_tsquery('simple', ${q})`
+    : sql``;
+
+  return sql`(
+    ${groups.name} ILIKE ${prefix}
+    OR ${groups.name} ILIKE ${wordPrefix}
+    OR word_similarity(${q}, ${groups.name}) > 0.3
+    ${fts}
+  )`;
+}
+
+/**
+ * Ranks the matches from `buildGroupSearchCondition`.
+ *
+ * The CASE must keep one branch per tier in that condition, in the same order —
+ * if the two drift apart, rows still match but come back in an order that looks
+ * arbitrary, which is far harder to notice than a missing result.
+ */
+export function buildGroupSearchOrderBy(q: string): SQL[] {
+  const prefix = q + '%';
+  const wordPrefix = '% ' + q + '%';
+
+  return [
+    sql`CASE
+      WHEN ${groups.name} ILIKE ${prefix}     THEN 0
+      WHEN ${groups.name} ILIKE ${wordPrefix} THEN 1
+      WHEN word_similarity(${q}, ${groups.name}) > 0.3 THEN 2
+      ELSE 3
+    END`,
+    sql`word_similarity(${q}, ${groups.name}) DESC`,
+    sql`ts_rank(${groups.searchVector}, plainto_tsquery('simple', ${q})) DESC`,
+  ];
 }
 
 function toSummary(row: Group): GroupSummary {
@@ -208,11 +268,30 @@ export const groupsService = {
     return { groups: rows.map((r) => toSummary(r.group)), total: counted?.count ?? 0 };
   },
 
-  /** Discovery list, newest first. Private groups are included — they are unjoinable, not secret. */
-  async list(limit: number, offset: number): Promise<{ groups: GroupSummary[]; total: number }> {
+  /**
+   * Discovery list. Newest first when browsing, best match first when searching.
+   *
+   * Private groups are included either way — they are unjoinable, not secret,
+   * and hiding them here would make the "you need an invite" screen unreachable
+   * for anyone who had not already been sent a link.
+   *
+   * `total` is the count of everything matching the same condition, not the page,
+   * so the client can paginate against it.
+   */
+  async list(
+    limit: number,
+    offset: number,
+    q?: string,
+  ): Promise<{ groups: GroupSummary[]; total: number }> {
+    // A query of only whitespace is a browse, not a search — matching every
+    // group against '%' would rank arbitrarily and read as broken.
+    const term = q?.trim();
+    const where = term ? buildGroupSearchCondition(term) : undefined;
+    const orderBy = term ? buildGroupSearchOrderBy(term) : [desc(groups.createdAt)];
+
     const [rows, [counted]] = await Promise.all([
-      db.select().from(groups).orderBy(desc(groups.createdAt)).limit(limit).offset(offset),
-      db.select({ count: sql<number>`count(*)::int` }).from(groups),
+      db.select().from(groups).where(where).orderBy(...orderBy).limit(limit).offset(offset),
+      db.select({ count: sql<number>`count(*)::int` }).from(groups).where(where),
     ]);
 
     return { groups: rows.map(toSummary), total: counted?.count ?? 0 };

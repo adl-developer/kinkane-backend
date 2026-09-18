@@ -72,10 +72,22 @@ export const groupPaths = {
     },
     get: {
       tags: [GROUPS],
-      summary: 'Browse groups',
-      description: `Discovery list, newest first.\n\n${PRIVACY_NOTE}`,
-      parameters: pagination(50),
-      responses: { 200: groupListResponse('A page of groups.'), ...authErrors },
+      summary: 'Browse or search groups',
+      description:
+        'Without `q`, a discovery list newest first. With `q`, groups matching by name or description, best match first.\n\n' +
+        'Matching widens in four tiers — name prefix, word prefix within the name, trigram similarity, then full text across name and description. Full text only joins in from three characters onward. This is deliberately the same formula user and post search use, so results rank consistently wherever they appear side by side.\n\n' +
+        'A `q` of only whitespace is treated as a browse rather than matching everything.\n\n' +
+        `${PRIVACY_NOTE}`,
+      parameters: [
+        param('q', 'query', { type: 'string', minLength: 1, maxLength: 200 },
+          'Optional search term, matched against name and description.', { example: 'midnight' }),
+        ...pagination(50),
+      ],
+      responses: {
+        200: groupListResponse('A page of groups. `q` is echoed back when one was given, so a search response is distinguishable from a browse.'),
+        400: json('Invalid query.', object({ error: { type: 'object' } })),
+        ...authErrors,
+      },
     },
   },
 

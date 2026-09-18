@@ -11,6 +11,12 @@ const paginationSchema = z.object({
   offset: z.coerce.number().int().min(0).default(0),
 });
 
+// `q` is optional: omitted, the list is a browse. Bounds and trimming match the
+// community search schema so the two behave the same way on the same input.
+const listGroupsSchema = paginationSchema.extend({
+  q: z.string().min(1).max(200).trim().optional(),
+});
+
 /**
  * Deleting a group asks the owner to re-prove who they are, like deleting an
  * account does. A password OR a fresh provider id token is accepted, because
@@ -38,14 +44,16 @@ export const groupsController = {
   },
 
   async list(req: AuthenticatedRequest, res: Response): Promise<void> {
-    const parsed = paginationSchema.safeParse(req.query);
+    const parsed = listGroupsSchema.safeParse(req.query);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.flatten().fieldErrors });
       return;
     }
-    const { limit, offset } = parsed.data;
-    const result = await groupsService.list(limit, offset);
-    res.status(200).json({ ...result, limit, offset });
+    const { limit, offset, q } = parsed.data;
+    const result = await groupsService.list(limit, offset, q);
+    // `q` is echoed back like `filter` is on community search, so a client
+    // rendering results can tell a search response from a browse response.
+    res.status(200).json({ ...result, ...(q !== undefined && { q }), limit, offset });
   },
 
   async listMine(req: AuthenticatedRequest, res: Response): Promise<void> {
