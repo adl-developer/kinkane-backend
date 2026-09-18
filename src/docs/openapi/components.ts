@@ -648,15 +648,27 @@ const commerceSchemas = {
       status: { type: 'string', enum: ['pending', 'resolved', 'dismissed'], example: 'pending' },
       reason: { type: 'string', example: 'Created multiple accounts to abuse the first-order discount.' },
       postId: { type: 'integer', nullable: true, description: 'The post complained about, when there was one. Nulled if that post is later deleted — the report survives it.' },
+      targetType: { type: 'string', enum: ['user', 'group'], description: 'What this report is filed against. Exactly one of `reportedUser` / `reportedGroup` is populated.', example: 'user' },
       filedAt: { type: 'string', format: 'date-time' },
       resolvedAt: { type: 'string', format: 'date-time', nullable: true },
       reportedUser: {
         type: 'object',
+        nullable: true,
+        description: 'Null on a group report.',
         properties: {
           id: { type: 'integer' },
           name: { type: 'string' },
           email: { type: 'string', format: 'email' },
           blacklisted: { type: 'boolean' },
+        },
+      },
+      reportedGroup: {
+        type: 'object',
+        nullable: true,
+        description: 'Null on a user report, and also null once a reported group has been deleted — the complaint outlives its target.',
+        properties: {
+          id: { type: 'integer' },
+          name: { type: 'string' },
         },
       },
       reportedBy: {
