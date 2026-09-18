@@ -83,6 +83,12 @@ beforeAll(async () => {
   params[':bookId'] = params[':id'];
   params[':isbn'] = (await firstId('books', 'isbn13')) ?? '9780000000000';
   params[':slug'] = (await firstId('genres', 'slug')) ?? 'fiction';
+  // Without a real id here every /groups/:groupId route is only ever exercised
+  // on its 404 path, which would hide a broken join in the detail query.
+  params[':groupId'] = (await firstId('groups')) ?? '999999999';
+  // Covers /groups/:groupId/members/:userId and /users/:userId/*; without it
+  // those routes are only ever exercised against an id that cannot exist.
+  params[':userId'] = (await firstId('users')) ?? '999999999';
 }, 60_000);
 
 afterAll(async () => {

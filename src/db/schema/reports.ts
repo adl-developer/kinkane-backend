@@ -13,6 +13,7 @@ import {
 import { sql } from 'drizzle-orm';
 import { users } from './users';
 import { posts } from './community';
+import { groups } from './groups';
 
 /**
  * Where a report ended up. `pending` is the moderation queue; the other two are
@@ -21,6 +22,16 @@ import { posts } from './community';
  * and Drizzle evaluates them at module load.
  */
 export const reportStatusEnum = pgEnum('report_status', ['pending', 'resolved', 'dismissed']);
+
+/**
+ * What a report is filed against.
+ *
+ * Added when groups became reportable. A discriminator rather than a second
+ * nullable id with no flag: the shape CHECK below can then state exactly which
+ * columns each kind must and must not carry, and the moderation queue can
+ * filter by kind without inferring it from which column happens to be null.
+ */
+export const reportTargetTypeEnum = pgEnum('report_target_type', ['user', 'group']);
 
 // A report is kept even if the post it was filed against is later deleted —
 // postId is nulled out rather than cascading the report away.
@@ -31,9 +42,15 @@ export const userReports = pgTable(
     reporterId: integer('reporter_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
-    reportedUserId: integer('reported_user_id')
-      .notNull()
-      .references(() => users.id, { onDelete: 'cascade' }),
+    // Defaulted so rows written before groups were reportable — and any caller
+    // that still omits it — remain correct without a backfill.
+    targetType: reportTargetTypeEnum('target_type').notNull().default('user'),
+    // Nullable since a group report has no individual to attach. The shape
+    // CHECK is what keeps it present for every user report.
+    reportedUserId: integer('reported_user_id').references(() => users.id, { onDelete: 'cascade' }),
+    // SET NULL, not cascade: deleting a reported group must not erase the
+    // complaint about it, the same way postId keeps the report when a post goes.
+    reportedGroupId: integer('reported_group_id').references(() => groups.id, { onDelete: 'set null' }),
     postId: integer('post_id').references(() => posts.id, { onDelete: 'set null' }),
     reason: text('reason').notNull(),
     // Customer-facing-ish identity for the moderation queue: the console shows
@@ -53,6 +70,20 @@ export const userReports = pgTable(
     reportedUserIdIdx: index('idx_user_reports_reported_user_id').on(t.reportedUserId),
     reporterIdIdx: index('idx_user_reports_reporter_id').on(t.reporterId),
     postIdIdx: index('idx_user_reports_post_id').on(t.postId),
+    reportedGroupIdIdx: index('idx_user_reports_reported_group_id').on(t.reportedGroupId),
+    targetTypeIdx: index('idx_user_reports_target_type').on(t.targetType),
+    // A user report must name a user and no group; a group report must name no
+    // user. It deliberately does NOT require reported_group_id to be present:
+    // ON DELETE SET NULL nulls that column when a reported group is deleted,
+    // and demanding NOT NULL would make deleting a reported group fail on this
+    // constraint.
+    targetShape: check(
+      'user_reports_target_shape',
+      sql`(${t.targetType} = 'user' AND ${t.reportedUserId} IS NOT NULL AND ${t.reportedGroupId} IS NULL)
+          OR (${t.targetType} = 'group' AND ${t.reportedUserId} IS NULL)`,
+    ),
+    // Unchanged by the nullable reported_user_id: a CHECK fails only on FALSE,
+    // and `42 != NULL` is NULL, which passes. Group reports are unaffected.
     notSelfReportCheck: check('user_reports_not_self_check', sql`${t.reporterId} != ${t.reportedUserId}`),
   }),
 );

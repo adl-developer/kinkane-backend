@@ -42,7 +42,7 @@ const listPostsSchema = paginationSchema.extend({
 
 const searchSchema = paginationSchema.extend({
   q: z.string().min(1).max(200).trim(),
-  filter: z.enum(['all', 'users', 'posts']).default('all'),
+  filter: z.enum(['all', 'users', 'posts', 'groups']).default('all'),
 });
 
 export const communityController = {

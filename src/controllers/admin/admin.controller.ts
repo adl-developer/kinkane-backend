@@ -52,6 +52,11 @@ const customersQuerySchema = pageSchema.extend({
 
 const reportsQuerySchema = pageSchema.extend({
   status: z.enum(['pending', 'resolved', 'dismissed']).optional(),
+  // Narrows the queue to one kind of target. Also the escape hatch for a console
+  // written before groups were reportable: `?targetType=user` returns exactly
+  // the rows, and exactly the shape, it saw before — every row with a
+  // `reportedUser` attached.
+  targetType: z.enum(['user', 'group']).optional(),
 });
 
 const blacklistSchema = z.object({

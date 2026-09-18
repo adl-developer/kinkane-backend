@@ -1,0 +1,1 @@
+ALTER TABLE "notification_preferences" ADD COLUMN "group_invites" boolean DEFAULT true NOT NULL;

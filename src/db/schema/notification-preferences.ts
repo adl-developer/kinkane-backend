@@ -30,6 +30,10 @@ export const notificationPreferences = pgTable('notification_preferences', {
   friendRequests: boolean('friend_requests').notNull().default(true),
   comments: boolean('comments').notNull().default(true),
   likes: boolean('likes').notNull().default(true),
+  // A group invitation is a person asking you to join something, not us
+  // marketing at you — so it sits with friendRequests, outside the promotional
+  // group, and keeps arriving after a one-click unsubscribe.
+  groupInvites: boolean('group_invites').notNull().default(true),
   lastRecommendationSentAt: timestamp('last_recommendation_sent_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),

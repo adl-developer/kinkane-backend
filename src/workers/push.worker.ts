@@ -57,6 +57,15 @@ async function processPushJob(job: Job): Promise<void> {
       });
       break;
     }
+    case 'group-invite': {
+      const { userId, groupId, groupName, inviterName } = job.data as PushJobMap['group-invite'];
+      await sendPush(userId, {
+        title: 'You have been invited to a group',
+        body: `${inviterName} invited you to join ${groupName}.`,
+        data: { type: 'group_invite', groupId: String(groupId) },
+      });
+      break;
+    }
     default: {
       // Exhaustiveness check — TypeScript will catch unhandled job names at compile time
       const unhandled: never = name;

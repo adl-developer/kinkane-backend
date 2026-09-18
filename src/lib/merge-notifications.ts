@@ -12,7 +12,7 @@ export interface FriendRequestRow {
 export type NotificationItem =
   | {
       id: number;
-      type: 'post_like' | 'post_comment';
+      type: 'post_like' | 'post_comment' | 'group_invite';
       createdAt: Date;
       readAt: Date | null;
       data: Record<string, unknown>;
@@ -46,7 +46,7 @@ export function mergeNotifications(
     ...notifRows.map(
       (row): NotificationItem => ({
         id: row.id,
-        type: row.type as 'post_like' | 'post_comment',
+        type: row.type as 'post_like' | 'post_comment' | 'group_invite',
         createdAt: row.createdAt,
         readAt: row.readAt,
         data: row.data as Record<string, unknown>,

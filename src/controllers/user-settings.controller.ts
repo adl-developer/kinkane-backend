@@ -2,15 +2,13 @@ import { Response } from 'express';
 import { z } from 'zod';
 import { AuthenticatedRequest } from '../middleware/auth.middleware';
 import { userSettingsService } from '../services/user-settings.service';
-import { config } from '../config';
 import { phoneSchema } from '../lib/phone';
+import { isCloudinaryUrl, cloudinaryUrlMessage } from '../lib/cloudinary-url';
 import { logger } from '../lib/logger';
 
 const shelfVisibilitySchema = z.object({
   visibility: z.enum(['public', 'friends', 'private']),
 });
-
-const CLOUDINARY_HOSTNAME = 'res.cloudinary.com';
 
 const updateProfileSchema = z
   .object({
@@ -18,19 +16,8 @@ const updateProfileSchema = z
     photoUrl: z
       .string()
       .url()
-      .refine(
-        (url) => {
-          const parsed = new URL(url);
-          // Must be from our Cloudinary account — validate both the hostname and
-          // that the path starts with /<our-cloud-name>/ so users can't hotlink
-          // arbitrary content from other Cloudinary accounts.
-          return (
-            parsed.hostname === CLOUDINARY_HOSTNAME &&
-            parsed.pathname.startsWith(`/${config.cloudinary.cloudName}/`)
-          );
-        },
-        { message: `photoUrl must be a ${CLOUDINARY_HOSTNAME}/<cloud-name>/ URL` },
-      )
+      // Must be from our own Cloudinary account — see the note in lib/cloudinary-url.
+      .refine(isCloudinaryUrl, { message: cloudinaryUrlMessage('photoUrl') })
       .nullable()
       .optional(),
     // Nullable so the profile screen can clear a number as well as set one.

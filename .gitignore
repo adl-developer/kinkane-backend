@@ -2,9 +2,12 @@
 node_modules/
 
 # Environment variables
+# Every .env variant except the template. The narrow list this replaces did not
+# cover an ad-hoc copy like `.env.bak`, which is exactly how a file full of live
+# credentials once reached a commit.
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 
 # TypeScript build output
 dist/

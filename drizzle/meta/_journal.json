@@ -442,6 +442,34 @@
       "when": 1789504625615,
       "tag": "0062_books_select_guide_rating",
       "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1789693914163,
+      "tag": "0063_groups",
+      "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1789707998212,
+      "tag": "0064_notification_prefs_group_invites",
+      "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "7",
+      "when": 1789708371681,
+      "tag": "0065_reports_target_type",
+      "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1789711999580,
+      "tag": "0066_group_and_follow_indexes",
+      "breakpoints": true
     }
   ]
 }

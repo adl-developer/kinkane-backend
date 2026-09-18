@@ -205,8 +205,14 @@ export const followRequests = pgTable(
   },
   (t) => ({
     senderReceiverUniq: uniqueIndex('idx_follow_requests_sender_receiver').on(t.senderId, t.receiverId),
-    receiverIdx: index('idx_follow_requests_receiver_id').on(t.receiverId),
-    senderIdx: index('idx_follow_requests_sender_id').on(t.senderId),
+    // Status trails each key so "my accepted follows" is a single index
+    // condition. Without it the status test is applied as a filter after the
+    // heap fetch, which is what the group invite picker walks on every open.
+    // Named differently from the single-column indexes they replace, so the
+    // replacements can be built before the originals are dropped rather than
+    // leaving follow lookups unindexed in between.
+    receiverIdx: index('idx_follow_requests_receiver_status').on(t.receiverId, t.status),
+    senderIdx: index('idx_follow_requests_sender_status').on(t.senderId, t.status),
   }),
 );
 

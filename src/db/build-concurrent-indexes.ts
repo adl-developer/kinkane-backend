@@ -79,9 +79,29 @@ const SUPERSEDED_INDEXES = [
   // and still cost every write to books.
   'idx_books_title_sortable',
   'idx_books_title_sortable_desc',
+  // Superseded by the (key, status) composites below: every reader of this
+  // table filters on status = 'accepted', which these leave as a post-fetch
+  // filter rather than an index condition.
+  'idx_follow_requests_sender_id',
+  'idx_follow_requests_receiver_id',
 ];
 
 const INDEXES: ConcurrentIndex[] = [
+  {
+    // follow_requests is the live social graph — small next to books, but its
+    // writers are user-facing (following, accepting) and this runs on every
+    // deploy, so it takes the concurrent path like everything else here.
+    name: 'idx_follow_requests_sender_status',
+    table: 'follow_requests',
+    migration: '0066_group_and_follow_indexes',
+    sql: `CREATE INDEX CONCURRENTLY IF NOT EXISTS "idx_follow_requests_sender_status" ON "follow_requests" USING btree ("sender_id","status")`,
+  },
+  {
+    name: 'idx_follow_requests_receiver_status',
+    table: 'follow_requests',
+    migration: '0066_group_and_follow_indexes',
+    sql: `CREATE INDEX CONCURRENTLY IF NOT EXISTS "idx_follow_requests_receiver_status" ON "follow_requests" USING btree ("receiver_id","status")`,
+  },
   {
     name: 'idx_books_title_band',
     table: 'books',

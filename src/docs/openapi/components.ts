@@ -404,12 +404,12 @@ const socialSchemas = {
   Notification: {
     type: 'object',
     description:
-      'One item in the notifications feed. The feed merges stored rows (`post_like`, `post_comment`) with a live view over the follow-request table, which is why `id` is only markable-as-read for the stored kinds.',
+      'One item in the notifications feed. The feed merges stored rows (`post_like`, `post_comment`, `group_invite`) with a live view over the follow-request table, which is why `id` is only markable-as-read for the stored kinds.',
     properties: {
       id: { type: 'integer', example: 5521 },
       type: {
         type: 'string',
-        enum: ['post_like', 'post_comment', 'friend_request'],
+        enum: ['post_like', 'post_comment', 'group_invite', 'friend_request'],
         example: 'post_comment',
       },
       actor: { $ref: '#/components/schemas/UserSummary' },
@@ -648,15 +648,28 @@ const commerceSchemas = {
       status: { type: 'string', enum: ['pending', 'resolved', 'dismissed'], example: 'pending' },
       reason: { type: 'string', example: 'Created multiple accounts to abuse the first-order discount.' },
       postId: { type: 'integer', nullable: true, description: 'The post complained about, when there was one. Nulled if that post is later deleted — the report survives it.' },
+      targetType: { type: 'string', enum: ['user', 'group'], description: 'What this report is filed against. Exactly one of `reportedUser` / `reportedGroup` is populated.', example: 'user' },
+      targetName: { type: 'string', nullable: true, description: 'The reported user\'s name, or the reported group\'s — whichever this report is about. Lets a row be rendered without branching on `targetType`. Null only if a reported group has since been deleted.', example: 'Kwame Asante' },
       filedAt: { type: 'string', format: 'date-time' },
       resolvedAt: { type: 'string', format: 'date-time', nullable: true },
       reportedUser: {
         type: 'object',
+        nullable: true,
+        description: 'Null on a group report.',
         properties: {
           id: { type: 'integer' },
           name: { type: 'string' },
           email: { type: 'string', format: 'email' },
           blacklisted: { type: 'boolean' },
+        },
+      },
+      reportedGroup: {
+        type: 'object',
+        nullable: true,
+        description: 'Null on a user report, and also null once a reported group has been deleted — the complaint outlives its target.',
+        properties: {
+          id: { type: 'integer' },
+          name: { type: 'string' },
         },
       },
       reportedBy: {

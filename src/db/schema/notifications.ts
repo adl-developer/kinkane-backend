@@ -5,7 +5,7 @@ import { users } from './users';
 // are not stored here — they're a live view over `follow_requests` (see
 // notifications.service.ts) since that table is already the source of truth
 // for pending/accepted/declined state.
-export const notificationTypes = ['post_like', 'post_comment'] as const;
+export const notificationTypes = ['post_like', 'post_comment', 'group_invite'] as const;
 export type NotificationType = (typeof notificationTypes)[number];
 
 export const notifications = pgTable(

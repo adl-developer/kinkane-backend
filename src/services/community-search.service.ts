@@ -1,6 +1,7 @@
 import { eq, and, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
-import { users, posts, books, postLikes, comments } from '../db/schema';
+import { users, posts, books, postLikes, comments, groups } from '../db/schema';
+import { buildGroupSearchCondition, buildGroupSearchOrderBy } from './groups.service';
 import { enrichPosts } from './community.service';
 import type { PostItem } from './community.service';
 import { getExcerptsByIsbns, pickExcerpt } from './book-excerpts.service';
@@ -13,12 +14,23 @@ export interface UserResult {
   photoUrl: string | null;
 }
 
-export type SearchFilter = 'all' | 'users' | 'posts';
+export type SearchFilter = 'all' | 'users' | 'posts' | 'groups';
+
+/** A group as the Community "Groups" tab and the Explore toggle draw it. */
+export interface GroupResult {
+  id: number;
+  name: string;
+  description: string | null;
+  photoUrl: string | null;
+  privacy: 'public' | 'private';
+  memberCount: number;
+}
 
 export interface SearchResult {
   users: UserResult[];
   posts: PostItem[];
-  total: { users: number; posts: number };
+  groups: GroupResult[];
+  total: { users: number; posts: number; groups: number };
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -163,6 +175,45 @@ async function searchPosts(
   return { results: enriched, total: countRow?.count ?? 0 };
 }
 
+/**
+ * Groups matching `q`, using the same four-tier formula as users and posts.
+ *
+ * The builders live in groups.service.ts rather than here: they are also used by
+ * GET /groups?q, and one definition is what keeps the Community tab and the
+ * Explore toggle ranking identically.
+ *
+ * Private groups are included on purpose — they are unjoinable, not secret, and
+ * hiding them would make the "you need an invite" screen unreachable for anyone
+ * who had not already been sent a link.
+ */
+async function searchGroups(
+  q: string,
+  limit: number,
+  offset: number,
+): Promise<{ results: GroupResult[]; total: number }> {
+  const where = buildGroupSearchCondition(q);
+
+  const [results, [counted]] = await Promise.all([
+    db
+      .select({
+        id: groups.id,
+        name: groups.name,
+        description: groups.description,
+        photoUrl: groups.photoUrl,
+        privacy: groups.privacy,
+        memberCount: groups.memberCount,
+      })
+      .from(groups)
+      .where(where)
+      .orderBy(...buildGroupSearchOrderBy(q))
+      .limit(limit)
+      .offset(offset),
+    db.select({ count: sql<number>`count(*)::int` }).from(groups).where(where),
+  ]);
+
+  return { results, total: counted?.count ?? 0 };
+}
+
 export const communitySearchService = {
   async search(
     q: string,
@@ -173,16 +224,21 @@ export const communitySearchService = {
   ): Promise<SearchResult> {
     const includeUsers = filter === 'all' || filter === 'users';
     const includePosts = filter === 'all' || filter === 'posts';
+    const includeGroups = filter === 'all' || filter === 'groups';
 
-    const [userResults, postResults] = await Promise.all([
+    // Joined into the existing Promise.all rather than awaited after it, so
+    // filter='all' costs one more parallel query rather than a serial hop.
+    const [userResults, postResults, groupResults] = await Promise.all([
       includeUsers ? searchUsers(q, limit, offset) : Promise.resolve({ results: [], total: 0 }),
       includePosts ? searchPosts(q, requesterId, limit, offset) : Promise.resolve({ results: [], total: 0 }),
+      includeGroups ? searchGroups(q, limit, offset) : Promise.resolve({ results: [], total: 0 }),
     ]);
 
     return {
       users: userResults.results,
       posts: postResults.results,
-      total: { users: userResults.total, posts: postResults.total },
+      groups: groupResults.results,
+      total: { users: userResults.total, posts: postResults.total, groups: groupResults.total },
     };
   },
 };
