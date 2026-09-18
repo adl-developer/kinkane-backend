@@ -306,14 +306,14 @@ export const socialPaths = {
   '/api/v1/community/search': {
     get: {
       tags: [COMMUNITY],
-      summary: 'Search people and posts',
+      summary: 'Search people, posts and groups',
       description:
-        'One query across both users and posts. `filter` narrows it; with `all`, both arrays come back and only the requested slice of each is populated. Results are scoped to what the caller is allowed to see.',
+        'One query across users, posts and groups. `filter` narrows it; with `all`, every array comes back and only the requested slice of each is populated. Results are scoped to what the caller is allowed to see.\n\n`filter=groups` backs both the Community "Groups" tab and the Explore `Books | Authors | Groups` toggle. Groups rank by the same four-tier formula as people and posts, so the same query orders consistently wherever results appear side by side.\n\n**Private groups are included.** They are unjoinable, not secret — hiding them would make the "you need an invite to join" screen unreachable for anyone not already sent a link.',
       parameters: [
         param('q', 'query', { type: 'string', minLength: 1, maxLength: 200 },
           'The search text. Trimmed; must be at least 1 character after trimming.',
           { required: true, example: 'evaristo' }),
-        param('filter', 'query', { type: 'string', enum: ['all', 'users', 'posts'], default: 'all' },
+        param('filter', 'query', { type: 'string', enum: ['all', 'users', 'posts', 'groups'], default: 'all' },
           'Which kinds of result to include.'),
         param('limit', 'query', { type: 'integer', minimum: 1, maximum: 50, default: 20 }, 'Items per page (1–50).'),
         param('offset', 'query', { type: 'integer', minimum: 0, default: 0 }, 'Items to skip.'),
@@ -323,7 +323,15 @@ export const socialPaths = {
           object({
             users: arrayOf(ref('UserSummary')),
             posts: arrayOf(ref('Post')),
-            total: { type: 'integer', example: 12 },
+            groups: arrayOf(object({
+              id: { type: 'integer', example: 12 },
+              name: { type: 'string', example: 'The Midnight Book Club' },
+              description: { type: 'string', nullable: true },
+              photoUrl: { type: 'string', nullable: true },
+              privacy: { type: 'string', enum: ['public', 'private'], example: 'public' },
+              memberCount: { type: 'integer', example: 34 },
+            })),
+            total: { type: 'object', description: 'Per-kind totals: `{ users, posts, groups }`.' },
             filter: { type: 'string', example: 'all' },
             limit: { type: 'integer', example: 20 },
             offset: { type: 'integer', example: 0 },
