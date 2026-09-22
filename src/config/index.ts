@@ -183,7 +183,7 @@ const envSchema = z.object({
   // fetches to find them. The pool is paid for in latency, not just memory:
   // measured against the live catalogue, 300 rows return in ~800ms and 1000 in
   // ~5-18s, because the iterative index scan works towards the LIMIT.
-  RECO_TARGET_RESULTS: z.coerce.number().int().min(1).max(250).default(100),
+  RECO_TARGET_RESULTS: z.coerce.number().int().min(1).max(250).default(50),
   // Capped at 500 deliberately, well below anything pgvector would refuse: the
   // ceiling exists to stop an environment change re-introducing the 5-18s
   // search that the 1000-row pool produced. Raising it is a code change, so it

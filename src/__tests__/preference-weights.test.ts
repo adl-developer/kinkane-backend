@@ -295,9 +295,13 @@ describe('shipping dark', () => {
     expect(fn).toContain('!weightingEnabled');
   });
 
-  it('pins the baseline constants to the values that shipped before weighting', () => {
+  it('pins the baseline constants to the configured defaults', () => {
+    // These must track the RECO_* defaults in config/index.ts. If they drift,
+    // an environment that has touched nothing stops matching the baseline,
+    // gets a fingerprint, and every deploy flushes 48 hours of cached entries.
+    // The target moved from 100 to 50 deliberately, with its default.
     expect(serviceSource).toContain('const BASELINE_SIMILARITY_MAX = 0.5;');
     expect(serviceSource).toContain('const BASELINE_BACKFILL_MAX = 0.7;');
-    expect(serviceSource).toContain('const BASELINE_TARGET_RESULTS = 100;');
+    expect(serviceSource).toContain('const BASELINE_TARGET_RESULTS = 50;');
   });
 });
