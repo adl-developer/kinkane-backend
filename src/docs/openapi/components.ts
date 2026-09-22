@@ -138,7 +138,12 @@ const bookSchemas = {
       isbn13: { type: 'string', nullable: true, example: '9780241988268' },
       publicationDate: { type: 'string', format: 'date', nullable: true, example: '2019-05-02' },
       contributors: { type: 'array', items: { $ref: '#/components/schemas/Contributor' } },
-      genres: { type: 'array', items: { $ref: '#/components/schemas/Genre' } },
+      genres: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/Genre' },
+        description:
+          'Top-level genre names only: a stored heading like "Literary studies: poetry and poets" is shown as "Literary studies", and a name that several of the book\'s genres share appears once. `slug` is the original genre\'s, unchanged, so passing it to `?genre=` filters exactly as before. `GET /genres` still lists the full names.',
+      },
       unitPriceMinor: {
         type: 'integer',
         description: 'The live sellable price, in `currency`. Present only with `shoppable=true`. **This — not the `prices` array — is what the shop charges.** That array is ONIX edition metadata and disagrees with the supplier feed on part of the catalogue, so rendering it shows a price the basket will not honour. It is also what `priceMin`/`priceMax` filter on, so a filtered page can display the number it was filtered by.',

@@ -48,6 +48,7 @@ import {
 import { SHOP_CURRENCY, toPresentment } from './commerce/pricing';
 import { config } from '../config';
 import { getProductFormLabel } from '../lib/product-form';
+import { addDisplayGenre, toDisplayGenres } from '../lib/genre-display';
 
 const BOOK_DETAIL_TTL    = 60 * 60;    // 1 hour
 const LIST_TTL           = 5 * 60;     // 5 minutes
@@ -560,7 +561,8 @@ async function hydrateBookCards(
     });
   }
   for (const g of genreRows) {
-    bookMap.get(g.bookId)?.genres.push({ name: g.name, slug: g.slug });
+    const entry = bookMap.get(g.bookId);
+    if (entry) addDisplayGenre(entry.genres, g);
   }
 
   return rows.map((r) => bookMap.get(r.id)).filter((b): b is TrendingBookItem => b !== undefined);
@@ -1279,7 +1281,8 @@ async function attachRelationsToList(
     map.get(c.bookId)?.contributors.push({ role: c.role, personName: c.personName, sequenceNumber: c.sequenceNumber });
   }
   for (const g of genreRows) {
-    map.get(g.bookId)?.genres.push({ name: g.name, slug: g.slug });
+    const entry = map.get(g.bookId);
+    if (entry) addDisplayGenre(entry.genres, g);
   }
   for (const p of priceRows) {
     map.get(p.bookId)?.prices.push({ priceType: p.priceType, priceAmount: p.priceAmount, currencyCode: p.currencyCode });
@@ -3333,7 +3336,10 @@ export const booksService = {
     const detail = await loadBookDetail(id);
     if (!detail) return null;
     const [withQuantity] = await attachAvailableQuantity([detail]);
-    return withQuantity;
+    // Re-applied on the way out so a detail cached before genres were shortened
+    // is corrected too, without renaming the cache key that other code deletes
+    // to refresh a book page. Idempotent: a shortened list comes back unchanged.
+    return { ...withQuantity, genres: toDisplayGenres(withQuantity.genres) };
   },
 
   /**
@@ -3474,7 +3480,7 @@ export const booksService = {
     for (const g of genreRows) {
       const entry = bookMap.get(g.bookId);
       if (entry) {
-        entry.genres.push({ name: g.name, slug: g.slug });
+        addDisplayGenre(entry.genres, g);
         entry.genreCount++;
       }
     }
@@ -3605,7 +3611,7 @@ export const booksService = {
     for (const g of genreRows) {
       const entry = bookMap.get(g.bookId);
       if (entry) {
-        entry.genres.push({ name: g.name, slug: g.slug });
+        addDisplayGenre(entry.genres, g);
         entry.genreCount++;
       }
     }
@@ -4030,7 +4036,7 @@ export const booksService = {
     for (const g of genreRows) {
       const entry = bookMap.get(g.bookId);
       if (entry) {
-        entry.genres.push({ name: g.name, slug: g.slug });
+        addDisplayGenre(entry.genres, g);
         entry.genreCount++;
       }
     }
@@ -4138,7 +4144,7 @@ async function loadBookDetail(id: number): Promise<BookDetail | null> {
     createdAt: book.createdAt,
     updatedAt: book.updatedAt,
     contributors,
-    genres: genreRows,
+    genres: toDisplayGenres(genreRows),
     prices: priceRows,
     subjects,
     excerpt: pickExcerpt(book.isbn13, excerptMap),

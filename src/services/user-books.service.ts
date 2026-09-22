@@ -19,6 +19,7 @@ import { bustUserExclusions } from '../lib/exclusions';
 import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-excerpts.service';
 import { interactionsService, type InteractionType } from './interactions.service';
 import { getProductFormLabel } from '../lib/product-form';
+import { addDisplayGenre } from '../lib/genre-display';
 
 /**
  * Reading statuses that are also trending signals. Every value the API accepts is
@@ -147,7 +148,8 @@ async function attachRelations(bookIds: number[]): Promise<Map<number, {
     map.get(c.bookId)?.contributors.push({ role: c.role, personName: c.personName, sequenceNumber: c.sequenceNumber });
   }
   for (const g of genreRows) {
-    map.get(g.bookId)?.genres.push({ name: g.name, slug: g.slug });
+    const entry = map.get(g.bookId);
+    if (entry) addDisplayGenre(entry.genres, g);
   }
   for (const p of priceRows) {
     map.get(p.bookId)?.prices.push({ priceType: p.priceType, priceAmount: p.priceAmount, currencyCode: p.currencyCode });
