@@ -21,7 +21,7 @@ const bookIdParam = param('id', 'path', { type: 'integer' },
 // looks like a behaviour difference.
 const listFilterParams = [
   param('genre', 'query', { type: 'string', maxLength: 300 },
-    'Genre name or slug. Comma-separate for several.', { example: 'literary-fiction' }),
+    'A genre `slug` from `GET /genres` or a book\'s `genres`. These are top-level slugs and match every genre under that top level — `literary_studies` covers "Literary studies: general", "Literary studies: poetry and poets" and the rest. An older full slug such as `literary_studies_general` still matches just that one genre. One slug per request; an unknown slug returns no books.', { example: 'literary_studies' }),
   param('availability', 'query', { type: 'string', minLength: 2, maxLength: 2 },
     'ONIX availability code — `21` in stock, `31` out of stock.', { example: '21' }),
   param('productForm', 'query', { type: 'string', maxLength: 10 },
@@ -277,9 +277,9 @@ export const cataloguePaths = {
       ...publicEndpoint,
       summary: 'List all genres',
       description:
-        'The complete genre list — id, name and slug. Small and stable; cache it client-side rather than fetching per screen.\n\nNote these are the *catalogue* genres. The onboarding quiz uses its own fixed 21-value vocabulary, which is documented on `POST /recommendations` and is not this list.',
+        'Every top-level genre, once each — the same `{ name, slug }` pairs that book responses carry. Stored genres are Thema headings whose hierarchy is written into the name ("Literary studies: poetry and poets"); this list shows only the part before the first colon, so several stored genres collapse into one entry. Pass `slug` to `?genre=` on `GET /books` to filter by the whole top level.\n\n`id` is the first stored genre of that top level and names that one genre, not the family — filter on `slug`, not `id`.\n\nSmall and stable; cache it client-side rather than fetching per screen.\n\nNote these are the *catalogue* genres. The onboarding quiz uses its own fixed 21-value vocabulary, which is documented on `POST /recommendations` and is not this list.',
       responses: {
-        200: json('Every genre.', object({ genres: arrayOf(ref('Genre')) })),
+        200: json('Every top-level genre, in name order.', object({ genres: arrayOf(ref('Genre')) })),
         429: resp('RateLimited'),
         500: resp('ServerError'),
       },
