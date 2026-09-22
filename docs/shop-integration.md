@@ -391,6 +391,24 @@ would mislabel a large part of the shop as unbuyable.
 
 `supplyToOrder` appears on cart lines, `POST /cart/price` lines, and saved books.
 
+## How many can be bought: `availableQuantity`
+
+Every book response — each row of `GET /books` (with or without `shoppable`),
+`GET /books/:id`, and every discovery feed — carries `availableQuantity`: how
+many copies one customer can put in the basket right now. Use it to cap the
+quantity stepper and to show "only 3 left".
+
+| Book | `availableQuantity` |
+|---|---|
+| In stock | Its stock, capped at the per-line maximum (10 by default) |
+| Supplied to order (`GXC`, `M/D`) | The per-line maximum — no shelf, but always orderable |
+| Out of stock, no price, or cannot be supplied | `0` |
+
+It follows the same rules as the cart, so any quantity up to it will be
+accepted, with one exception: rights restrictions depend on the delivery
+country and are only checked at add-to-cart. It is always capped and never the
+supplier's raw stock figure.
+
 ## Out of stock is a state to render, not a reason to hide
 
 A book that is out of stock **stays in every response** and is flagged rather

@@ -26,7 +26,11 @@ import { logger } from '../../lib/logger';
 import { normalizeCountry } from './pricing';
 // Shared with the catalogue's `shoppable` filter so browse and checkout can
 // never disagree about which report codes mean "cannot be supplied".
-import { UNSUPPLIABLE_REPORT_CODE_SET, isSupplyToOrder } from '../../lib/shoppable';
+import {
+  UNSUPPLIABLE_REPORT_CODE_SET,
+  availableQuantityFor,
+  isSupplyToOrder,
+} from '../../lib/shoppable';
 
 export type UnbuyableReason =
   | 'not_found'
@@ -400,6 +404,34 @@ export const availabilityService = {
         unitPriceGbpPence: onSale ? sale! : rrpPence,
         compareAtGbpPence: onSale ? rrpPence : null,
       });
+    }
+    return map;
+  },
+
+  /**
+   * `availableQuantity` for a page of ISBNs — see availableQuantityFor for what
+   * the number means. One batched query, same bargain as inStockByIsbns.
+   *
+   * An ISBN with no stock row is simply absent from the map; callers read that
+   * as 0, since a book Gardners knows nothing about cannot be ordered.
+   */
+  async availableQuantityByIsbns(isbns: (string | null)[]): Promise<Map<string, number>> {
+    const map = new Map<string, number>();
+    const unique = [...new Set(isbns.filter((isbn): isbn is string => isbn !== null))];
+    if (unique.length === 0) return map;
+
+    const rows = await db
+      .select({
+        isbn13: gardnersStock.isbn13,
+        rrpGbp: gardnersStock.rrpGbp,
+        stockQty: gardnersStock.stockQty,
+        reportCode: gardnersStock.reportCode,
+      })
+      .from(gardnersStock)
+      .where(inArray(gardnersStock.isbn13, unique));
+
+    for (const row of rows) {
+      map.set(row.isbn13, availableQuantityFor(row, config.commerce.cart.maxQuantityPerLine));
     }
     return map;
   },

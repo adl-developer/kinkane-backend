@@ -5,6 +5,7 @@
 
 ### Features
 
+* let the moderation queue be filtered by what was reported ([83a8946](https://adl.github.com/adl-developer/kinkane-backend/commit/83a89464b51dd3bdfb314ee2f6b0a22acb7280d2)) — [details](changelog/2026-09-18-moderation-queue-both-targets.md)
 * let readers report a book club ([f02d098](https://adl.github.com/adl-developer/kinkane-backend/commit/f02d098df7623461ef296d37a20523729831e393)) — [details](changelog/2026-09-18-moderation-queue-both-targets.md)
 * show book clubs in search results ([0b4e737](https://adl.github.com/adl-developer/kinkane-backend/commit/0b4e737d46b10dd0c2443857f267a30544cf4dc3)) — [details](changelog/2026-09-18-groups-in-community-search.md)
 * tell people when they are invited to a book club ([ac99e62](https://adl.github.com/adl-developer/kinkane-backend/commit/ac99e6272732602fd768403618ac50ce4ab49b3a)) — [details](changelog/2026-09-18-groups-in-community-search.md)

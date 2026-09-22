@@ -160,6 +160,13 @@ const bookSchemas = {
         description:
           'Present on `GET /books?shoppable=true` for rows with `shoppable: true`. Whether the supplier currently has stock. `false` means list it with an out-of-stock badge, not hide it. Absent on unsellable rows and on every other endpoint — do not treat a missing value as out of stock.',
       },
+      availableQuantity: {
+        type: 'integer',
+        minimum: 0,
+        example: 3,
+        description:
+          'How many copies one customer can buy right now. Present on every row of `GET /books` (with or without `shoppable`), on `GET /books/:id`, and on every discovery feed. Use it to cap the quantity stepper and for "only N left". It follows the cart\'s own rules, so the basket will accept any quantity up to it: in-stock titles give their stock, capped at the per-line maximum (10 by default); extended-catalogue and print-on-demand titles give the per-line maximum even though they have no shelf stock; anything that cannot be bought (no price, cannot be supplied, out of stock, not stocked by the supplier) gives `0`. Always capped, never the supplier\'s raw stock. Rights restrictions depend on the delivery country and are still checked at add-to-cart.',
+      },
       shoppable: {
         type: 'boolean',
         example: true,

@@ -391,6 +391,14 @@ export interface BookListItem {
   compareAtMinor?: number | null;
   /** ISO-4217 for the two fields above. */
   currency?: string;
+  /**
+   * How many copies one customer may buy right now — see availableQuantityFor
+   * in lib/shoppable. Always present on `GET /books` and `GET /books/:id`,
+   * whatever `shoppable` says; 0 means it cannot be bought at the moment.
+   * Optional only because internal builders of this shape (listByIds, saved
+   * books) do not attach it themselves.
+   */
+  availableQuantity?: number;
 }
 
 // Which side of the catalogue a typeahead query is matched against. 'all' (the default)
@@ -454,6 +462,8 @@ export interface TrendingBookItem {
   compareAtMinor?: number | null;
   currency?: string;
   inStock?: boolean;
+  /** See BookListItem.availableQuantity. */
+  availableQuantity?: number;
 }
 
 // TrendingBookItem plus the fields dedupeByTitle needs to pick the best of several
@@ -2859,7 +2869,9 @@ export const booksService = {
       // report a lower bound by construction.
       total > probedTotal;
     return {
-      books: page.rows,
+      // Attached here, after the rows cache, rather than alongside inStock inside
+      // it: a quantity stepper is the one number on the card that must be live.
+      books: await attachAvailableQuantity(page.rows),
       total,
       hasMore: page.hasMore,
       totalIsApproximate,
@@ -3223,101 +3235,16 @@ export const booksService = {
       .filter((book): book is BookListItem => book !== null);
   },
 
+  /**
+   * The book page. The detail itself is cached for BOOK_DETAIL_TTL;
+   * `availableQuantity` is put on after the cache on every request, for the
+   * same reason feeds attach their prices late — stock moves hourly.
+   */
   async getById(id: number): Promise<BookDetail | null> {
-    const cacheKey = `book:detail:${id}`;
-    const cached = await redis.get(cacheKey);
-    if (cached) {
-      const detail = JSON.parse(cached) as BookDetail;
-      detail.createdAt = new Date(detail.createdAt);
-      detail.updatedAt = new Date(detail.updatedAt);
-      return detail;
-    }
-
-    const [book] = await db.select().from(books).where(eq(books.id, id)).limit(1);
-    if (!book) return null;
-
-    const [contributors, genreRows, priceRows, subjects, excerptMap, otherEditionRows] = await Promise.all([
-      db
-        .select({
-          role: bookContributors.role,
-          personName: bookContributors.personName,
-          sequenceNumber: bookContributors.sequenceNumber,
-        })
-        .from(bookContributors)
-        .where(eq(bookContributors.bookId, id))
-        .orderBy(bookContributors.sequenceNumber),
-
-      db
-        .select({ name: genres.name, slug: genres.slug })
-        .from(bookGenres)
-        .innerJoin(genres, eq(genres.id, bookGenres.genreId))
-        .where(eq(bookGenres.bookId, id)),
-
-      db
-        .select({
-          priceType: bookPrices.priceType,
-          priceAmount: bookPrices.priceAmount,
-          currencyCode: bookPrices.currencyCode,
-        })
-        .from(bookPrices)
-        .where(eq(bookPrices.bookId, id)),
-
-      db
-        .select({
-          schemeIdentifier: bookSubjects.schemeIdentifier,
-          subjectCode: bookSubjects.subjectCode,
-          subjectHeadingText: bookSubjects.subjectHeadingText,
-          isMainSubject: bookSubjects.isMainSubject,
-        })
-        .from(bookSubjects)
-        .where(eq(bookSubjects.bookId, id)),
-
-      getExcerptsByIsbns([book.isbn13]),
-
-      fetchOtherEditions(id, book.title),
-    ]);
-
-    const detail: BookDetail = {
-      id: book.id,
-      isbn13: book.isbn13,
-      recordReference: book.recordReference,
-      title: book.title,
-      subtitle: book.subtitle,
-      shortDescription: book.shortDescription,
-      longDescription: book.longDescription,
-      publisherName: book.publisherName,
-      imprintName: book.imprintName,
-      productForm: book.productForm,
-      productFormLabel: getProductFormLabel(book.productForm),
-      publicationDate: book.publicationDate,
-      publishingStatus: book.publishingStatus,
-      availabilityCode: book.availabilityCode,
-      editionNumber: book.editionNumber,
-      pageCount: book.pageCount,
-      heightMm: book.heightMm,
-      widthMm: book.widthMm,
-      thicknessMm: book.thicknessMm,
-      weightGr: book.weightGr,
-      countryOfManufacture: book.countryOfManufacture,
-      countryOfPublication: book.countryOfPublication,
-      returnsCode: book.returnsCode,
-      orderTime: book.orderTime,
-      coverUrl: book.coverUrl,
-      createdAt: book.createdAt,
-      updatedAt: book.updatedAt,
-      contributors,
-      genres: genreRows,
-      prices: priceRows,
-      subjects,
-      excerpt: pickExcerpt(book.isbn13, excerptMap),
-      otherEditions: otherEditionRows.map((row) => ({
-        ...row,
-        productFormLabel: getProductFormLabel(row.productForm),
-      })),
-    };
-
-    await redis.set(cacheKey, JSON.stringify(detail), 'EX', BOOK_DETAIL_TTL);
-    return detail;
+    const detail = await loadBookDetail(id);
+    if (!detail) return null;
+    const [withQuantity] = await attachAvailableQuantity([detail]);
+    return withQuantity;
   },
 
   /**
@@ -3803,7 +3730,12 @@ export const booksService = {
     const rows = result as unknown as ReaderTypeFeedRow[];
     if (rows.length === 0) return { books: [], total: 0 };
 
-    return { books: await hydrateBookCards(rows), total: Number(rows[0].total) };
+    // No price on this rail (see the docs), but the quantity is on every book
+    // response, so a card here reads the same as a card anywhere else.
+    return {
+      books: await attachAvailableQuantity(await hydrateBookCards(rows)),
+      total: Number(rows[0].total),
+    };
   },
 
   /**
@@ -4028,6 +3960,107 @@ export const booksService = {
 };
 
 /**
+ * Builds (or reads from cache) everything on the book page except the live
+ * shop fields — booksService.getById is the only caller and adds those.
+ */
+async function loadBookDetail(id: number): Promise<BookDetail | null> {
+  const cacheKey = `book:detail:${id}`;
+  const cached = await redis.get(cacheKey);
+  if (cached) {
+    const detail = JSON.parse(cached) as BookDetail;
+    detail.createdAt = new Date(detail.createdAt);
+    detail.updatedAt = new Date(detail.updatedAt);
+    return detail;
+  }
+
+  const [book] = await db.select().from(books).where(eq(books.id, id)).limit(1);
+  if (!book) return null;
+
+  const [contributors, genreRows, priceRows, subjects, excerptMap, otherEditionRows] = await Promise.all([
+    db
+      .select({
+        role: bookContributors.role,
+        personName: bookContributors.personName,
+        sequenceNumber: bookContributors.sequenceNumber,
+      })
+      .from(bookContributors)
+      .where(eq(bookContributors.bookId, id))
+      .orderBy(bookContributors.sequenceNumber),
+
+    db
+      .select({ name: genres.name, slug: genres.slug })
+      .from(bookGenres)
+      .innerJoin(genres, eq(genres.id, bookGenres.genreId))
+      .where(eq(bookGenres.bookId, id)),
+
+    db
+      .select({
+        priceType: bookPrices.priceType,
+        priceAmount: bookPrices.priceAmount,
+        currencyCode: bookPrices.currencyCode,
+      })
+      .from(bookPrices)
+      .where(eq(bookPrices.bookId, id)),
+
+    db
+      .select({
+        schemeIdentifier: bookSubjects.schemeIdentifier,
+        subjectCode: bookSubjects.subjectCode,
+        subjectHeadingText: bookSubjects.subjectHeadingText,
+        isMainSubject: bookSubjects.isMainSubject,
+      })
+      .from(bookSubjects)
+      .where(eq(bookSubjects.bookId, id)),
+
+    getExcerptsByIsbns([book.isbn13]),
+
+    fetchOtherEditions(id, book.title),
+  ]);
+
+  const detail: BookDetail = {
+    id: book.id,
+    isbn13: book.isbn13,
+    recordReference: book.recordReference,
+    title: book.title,
+    subtitle: book.subtitle,
+    shortDescription: book.shortDescription,
+    longDescription: book.longDescription,
+    publisherName: book.publisherName,
+    imprintName: book.imprintName,
+    productForm: book.productForm,
+    productFormLabel: getProductFormLabel(book.productForm),
+    publicationDate: book.publicationDate,
+    publishingStatus: book.publishingStatus,
+    availabilityCode: book.availabilityCode,
+    editionNumber: book.editionNumber,
+    pageCount: book.pageCount,
+    heightMm: book.heightMm,
+    widthMm: book.widthMm,
+    thicknessMm: book.thicknessMm,
+    weightGr: book.weightGr,
+    countryOfManufacture: book.countryOfManufacture,
+    countryOfPublication: book.countryOfPublication,
+    returnsCode: book.returnsCode,
+    orderTime: book.orderTime,
+    coverUrl: book.coverUrl,
+    createdAt: book.createdAt,
+    updatedAt: book.updatedAt,
+    contributors,
+    genres: genreRows,
+    prices: priceRows,
+    subjects,
+    excerpt: pickExcerpt(book.isbn13, excerptMap),
+    otherEditions: otherEditionRows.map((row) => ({
+      ...row,
+      productFormLabel: getProductFormLabel(row.productForm),
+    })),
+  };
+
+  await redis.set(cacheKey, JSON.stringify(detail), 'EX', BOOK_DETAIL_TTL);
+  return detail;
+}
+
+/**
  * Drops books the viewer has rejected from an already-built list, then trims
  * to `limit`. Filtering happens here rather than in SQL because the list is a
  * per-book cache entry shared across users — see booksService.similar.
@@ -4065,19 +4098,21 @@ export async function attachShopFields<T extends { isbn13: string | null }>(
   if (items.length === 0) return items;
 
   const isbns = items.map((i) => i.isbn13);
-  const [priceByIsbn, stockByIsbn] = await Promise.all([
+  const [priceByIsbn, stockByIsbn, quantityByIsbn] = await Promise.all([
     availabilityService.livePricesByIsbns(isbns),
     availabilityService.inStockByIsbns(isbns),
+    availabilityService.availableQuantityByIsbns(isbns),
   ]);
 
   const code = (currency ?? config.commerce.currency.default).toUpperCase();
 
   return items.map((item): T => {
-    if (!item.isbn13) return item;
+    if (!item.isbn13) return { ...item, availableQuantity: 0 };
     const live = priceByIsbn.get(item.isbn13);
     return {
       ...item,
       inStock: stockByIsbn.get(item.isbn13) ?? false,
+      availableQuantity: quantityByIsbn.get(item.isbn13) ?? 0,
       ...(live
         ? {
             unitPriceMinor: toPresentment(live.unitPriceGbpPence, code),
@@ -4088,6 +4123,25 @@ export async function attachShopFields<T extends { isbn13: string | null }>(
         : {}),
     };
   });
+}
+
+/**
+ * Puts `availableQuantity` on every row — the catalogue's sibling of
+ * attachShopFields, which does the same for feeds. Unconditional: a book with
+ * no ISBN or no stock row gets 0 rather than no field, so a client never has to
+ * guess what a missing value means.
+ */
+async function attachAvailableQuantity<T extends { isbn13: string | null }>(
+  items: T[],
+): Promise<(T & { availableQuantity: number })[]> {
+  if (items.length === 0) return [];
+  const quantityByIsbn = await availabilityService.availableQuantityByIsbns(
+    items.map((item) => item.isbn13),
+  );
+  return items.map((item) => ({
+    ...item,
+    availableQuantity: item.isbn13 ? (quantityByIsbn.get(item.isbn13) ?? 0) : 0,
+  }));
 }
 
 async function applyUserExclusions(
