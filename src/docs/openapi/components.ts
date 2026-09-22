@@ -170,7 +170,7 @@ const bookSchemas = {
         minimum: 0,
         example: 3,
         description:
-          'How many copies one customer can buy right now. Present on every row of `GET /books` (with or without `shoppable`), on `GET /books/:id`, and on every discovery feed. Use it to cap the quantity stepper and for "only N left". It follows the cart\'s own rules, so the basket will accept any quantity up to it: in-stock titles give their stock, capped at the per-line maximum (10 by default); extended-catalogue and print-on-demand titles give the per-line maximum even though they have no shelf stock; anything that cannot be bought (no price, cannot be supplied, out of stock, not stocked by the supplier) gives `0`. Always capped, never the supplier\'s raw stock. Rights restrictions depend on the delivery country and are still checked at add-to-cart.',
+          'How many copies one customer can buy right now. Present on every row of `GET /books` (with or without `shoppable`), on `GET /books/:id` and its `otherEditions`, on every discovery feed, on reading shelves and on saved books. Use it to cap the quantity stepper and for "only N left", and treat it as the answer to "can this be added": `shoppable: true, inStock: false` includes titles that are simply out of stock, which carry `0` here. A withdrawn title is always `0`. It follows the cart\'s own rules, so the basket will accept any quantity up to it: in-stock titles give their stock, capped at the per-line maximum (10 by default); extended-catalogue and print-on-demand titles give the per-line maximum even though they have no shelf stock; anything that cannot be bought (no price, cannot be supplied, out of stock, not stocked by the supplier) gives `0`. Always capped, never the supplier\'s raw stock. Rights restrictions depend on the delivery country and are still checked at add-to-cart.',
       },
       shoppable: {
         type: 'boolean',
@@ -487,7 +487,7 @@ const commerceSchemas = {
       currency: {
         type: 'string',
         description:
-          'Resolved from the caller’s country, overridable with `?currency=`. Every `*Minor` field on this response is in this currency.',
+          'Always `GBP`: prices are passed through exactly as Gardners supplies them. Every `*Minor` field on this response is in pence. A `?currency=` parameter is accepted and ignored.',
         example: 'GBP',
       },
       lines: { type: 'array', items: { $ref: '#/components/schemas/CartLine' } },

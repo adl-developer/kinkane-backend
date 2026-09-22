@@ -66,7 +66,10 @@ describe('discovery feeds', () => {
     // client that did not know to pass it got a carousel of cards it had no
     // price for. Every one of these feeds is a shop surface, so the only early
     // return left is the empty list.
-    const helper = source.slice(source.indexOf('async function attachShopFields'));
+    // Just the function body — the file continues past it, and later code has
+    // every right to mention shoppability.
+    const start = source.indexOf('async function attachShopFields');
+    const helper = source.slice(start, source.indexOf('\n}\n', start));
     expect(helper).toContain('if (items.length === 0) return items;');
     expect(helper).not.toContain('shoppable');
   });

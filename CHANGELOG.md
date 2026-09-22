@@ -5,6 +5,7 @@
 
 ### Features
 
+* show only the top-level genre name on books ([adbed6b](https://adl.github.com/adl-developer/kinkane-backend/commit/adbed6b9b8b51462fb9361f473ff910dfd58dee9)) — [details](changelog/2026-09-22-top-level-genre-names.md)
 * show one edition per title, paperback first, across the book listings ([f395bf8](https://adl.github.com/adl-developer/kinkane-backend/commit/f395bf8254e7b613481acfd23821d4c6dd435350)) — [details](changelog/2026-09-22-paperback-first-editions.md)
 * show and charge every price in pounds, exactly as Gardners supplies it ([58ee3a0](https://adl.github.com/adl-developer/kinkane-backend/commit/58ee3a0b8cf6b1a404cec662aa233b1775d32255)) — [details](changelog/2026-09-22-book-available-quantity.md)
 * show how many copies of a book can be bought on every book response ([43f6410](https://adl.github.com/adl-developer/kinkane-backend/commit/43f6410eae3065bf4f997a8f3b6f1b6a5ebc3af0)) — [details](changelog/2026-09-22-book-available-quantity.md)

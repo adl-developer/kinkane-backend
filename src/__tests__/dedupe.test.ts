@@ -160,14 +160,17 @@ describe('dedupeByTitleAndSubtitle', () => {
 });
 
 // Every /books endpoint shows one edition per title, and which one is a product rule:
-// a buyable edition first, then paperback, then hardback, then any other format — and
-// only then the content rules above.
+// stock tier first (on the shelf > order-in > cannot be bought), then paperback >
+// hardback > any other format — and only then the content rules above.
 describe('edition format preference', () => {
+  const IN_STOCK = 0;
+  const TO_ORDER = 1;
+  const UNAVAILABLE = 2;
   const ed = (id: number, productForm: string | null, overrides: Partial<Row> = {}): Row => ({
     id,
     title: 'Dune',
     subtitle: null,
-    ...complete({ productForm, buyable: true }),
+    ...complete({ productForm, stockTier: IN_STOCK }),
     ...overrides,
   });
 
@@ -187,17 +190,34 @@ describe('edition format preference', () => {
   });
 
   it('prefers the paperback even over a hardback with a cover and a complete record', () => {
-    const rows = [ed(1, 'BB'), ed(2, 'BC', bare({ productForm: 'BC', buyable: true }))];
+    const rows = [ed(1, 'BB'), ed(2, 'BC', bare({ productForm: 'BC', stockTier: IN_STOCK }))];
     expect(dedupeByTitle(rows).map((r) => r.id)).toEqual([2]);
   });
 
-  it('prefers a buyable hardback over a paperback that cannot be bought', () => {
-    const rows = [ed(1, 'BC', { buyable: false }), ed(2, 'BB')];
+  it('prefers an in-stock hardback over a paperback that cannot be bought', () => {
+    const rows = [ed(1, 'BC', { stockTier: UNAVAILABLE }), ed(2, 'BB')];
+    expect(dedupeByTitle(rows).map((r) => r.id)).toEqual([2]);
+  });
+
+  // The shop lists in-stock books first; leading that section with an order-in
+  // paperback while the hardback is on the shelf is what this rule prevents.
+  it('prefers an in-stock hardback over an order-in paperback', () => {
+    const rows = [ed(1, 'BC', { stockTier: TO_ORDER }), ed(2, 'BB')];
+    expect(dedupeByTitle(rows).map((r) => r.id)).toEqual([2]);
+  });
+
+  it('prefers an order-in hardback over a paperback that cannot be bought', () => {
+    const rows = [ed(1, 'BC', { stockTier: UNAVAILABLE }), ed(2, 'BB', { stockTier: TO_ORDER })];
+    expect(dedupeByTitle(rows).map((r) => r.id)).toEqual([2]);
+  });
+
+  it('prefers the paperback among order-in editions', () => {
+    const rows = [ed(1, 'BB', { stockTier: TO_ORDER }), ed(2, 'BC', { stockTier: TO_ORDER })];
     expect(dedupeByTitle(rows).map((r) => r.id)).toEqual([2]);
   });
 
   it('still prefers the paperback when no edition can be bought', () => {
-    const rows = [ed(1, 'BB', { buyable: false }), ed(2, 'BC', { buyable: false })];
+    const rows = [ed(1, 'BB', { stockTier: UNAVAILABLE }), ed(2, 'BC', { stockTier: UNAVAILABLE })];
     expect(dedupeByTitle(rows).map((r) => r.id)).toEqual([2]);
   });
 

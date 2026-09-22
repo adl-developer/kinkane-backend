@@ -114,6 +114,26 @@ export function availableQuantityFor(
 }
 
 /**
+ * Which stock tier an edition is in, for choosing which edition of a title to
+ * show: 0 on the shelf now, 1 orderable but not stocked (extended catalogue,
+ * print on demand), 2 cannot be bought at the moment. Lower is better.
+ *
+ * Split out from availableQuantityFor because that number cannot tell the first
+ * two apart — a supply-to-order title reports the full per-line cap — and the
+ * shop must not lead with an order-in paperback while the hardback is on the shelf.
+ */
+export const STOCK_TIER = { IN_STOCK: 0, TO_ORDER: 1, UNAVAILABLE: 2 } as const;
+export type StockTier = (typeof STOCK_TIER)[keyof typeof STOCK_TIER];
+
+export function stockTierFor(
+  stock: { rrpGbp: string | null; stockQty: number | null; reportCode: string | null } | undefined,
+  maxPerLine: number,
+): StockTier {
+  if (availableQuantityFor(stock, maxPerLine) <= 0) return STOCK_TIER.UNAVAILABLE;
+  return isSupplyToOrder(stock!.reportCode) ? STOCK_TIER.TO_ORDER : STOCK_TIER.IN_STOCK;
+}
+
+/**
  * Restricts a catalogue query to books the e-commerce section can legitimately
  * list.
  *

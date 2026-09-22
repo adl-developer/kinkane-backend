@@ -14,9 +14,10 @@ import { isbnFromQuery } from '../lib/isbn';
 // string coerces to true), so accepted values are explicit — see refreshQuerySchema in
 // recommendations.controller.ts for the same pattern.
 //
-// On by default: every /books endpoint shows one edition per title — a buyable one first,
-// then paperback, then hardback, then any other format (see lib/dedupe). Send
-// ?dedupe=false to get every edition, e.g. an "other formats" view.
+// On by default: every /books endpoint shows one edition per title — on the shelf first,
+// then order-in, then unavailable; within that, paperback, then hardback, then any other
+// format (see lib/dedupe). Send ?dedupe=false to get every edition, e.g. an "other
+// formats" view. Clients should paginate with `cursor`, not `offset`, on this path.
 const dedupeParam = z.enum(['true', 'false']).default('true').transform((v) => v === 'true');
 
 const suggestionsSchema = z.object({
@@ -65,13 +66,12 @@ const listSchemaBase = z.object({
   // a range that scans everything.
   yearMin: z.coerce.number().int().min(1450).max(2200).optional(),
   yearMax: z.coerce.number().int().min(1450).max(2200).optional(),
-  // Price bounds in **major units** of `currency` — 0 to 100 means $0-$100,
-  // matching the filter UI. Converted to GBP pence before it reaches the query.
+  // Price bounds in pounds — 0 to 100 means £0-£100, matching the filter UI.
+  // Multiplied into GBP pence before it reaches the query; nothing is converted.
   priceMin: z.coerce.number().min(0).max(100_000).optional(),
   priceMax: z.coerce.number().min(0).max(100_000).optional(),
-  // Which currency the price bounds are expressed in. Defaults to the currency
-  // this request would be quoted in, so a client that shows dollars and filters
-  // in dollars needs to send nothing.
+  // Accepted from older clients and ignored: the shop sells in GBP only, so the
+  // bounds are always pounds (see SHOP_CURRENCY in services/commerce/pricing).
   currency: z.string().length(3).optional(),
   sortBy: z.enum(['title', 'newest']).optional(),
   sort: z.enum(['asc', 'desc']).optional(),

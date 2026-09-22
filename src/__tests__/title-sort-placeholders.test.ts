@@ -102,8 +102,10 @@ describe('band ordering in a title-ordered page', () => {
     // Two titles differing only in decoration collate equal on the stripped
     // key; without a deterministic third key their relative order is whatever
     // the plan happens to produce, and a row can repeat or vanish across pages.
+    // Then the id, so editions sharing one exact title are ordered too — the
+    // one-edition-per-title cursor relies on the order being total.
     const sql = orderBy({ sortBy: 'title', sort: 'asc' }).toLowerCase();
-    expect(sql.endsWith('"books"."title" asc')).toBe(true);
+    expect(sql.endsWith('"books"."title" asc, "books"."id" asc')).toBe(true);
   });
 
   it('ranks NULL with the placeholders and not above them', () => {

@@ -20,6 +20,7 @@ import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-ex
 import { interactionsService, type InteractionType } from './interactions.service';
 import { getProductFormLabel } from '../lib/product-form';
 import { addDisplayGenre } from '../lib/genre-display';
+import { availabilityService } from './commerce/availability.service';
 
 /**
  * Reading statuses that are also trending signals. Every value the API accepts is
@@ -60,6 +61,8 @@ export interface UserBookItem {
   genres: Pick<Genre, 'name' | 'slug'>[];
   prices: Pick<BookPrice, 'priceType' | 'priceAmount' | 'currencyCode'>[];
   excerpt: BookExcerptInfo | null;
+  /** How many copies can be bought right now — see availableQuantityFor in lib/shoppable. */
+  availableQuantity: number;
 }
 
 export interface UserBookStatus {
@@ -131,7 +134,10 @@ async function attachRelations(bookIds: number[]): Promise<Map<number, {
       .select({ bookId: bookGenres.bookId, name: genres.name, slug: genres.slug })
       .from(bookGenres)
       .innerJoin(genres, eq(genres.id, bookGenres.genreId))
-      .where(inArray(bookGenres.bookId, bookIds)),
+      .where(inArray(bookGenres.bookId, bookIds))
+      // Fixed order so that when several genres share a display name the same
+      // one's slug is kept on every read (see lib/genre-display).
+      .orderBy(genres.id),
 
     db
       .select({
@@ -223,9 +229,10 @@ export const userBooksService = {
         .where(where),
     ]);
 
-    const [relations, excerptMap] = await Promise.all([
+    const [relations, excerptMap, quantityByIsbn] = await Promise.all([
       attachRelations(rows.map((r) => r.bookId)),
       getExcerptsByIsbns(rows.map((r) => r.isbn13)),
+      availabilityService.availableQuantityByIsbns(rows.map((r) => r.isbn13)),
     ]);
 
     return {
@@ -234,6 +241,7 @@ export const userBooksService = {
         productFormLabel: getProductFormLabel(r.productForm),
         ...relations.get(r.bookId)!,
         excerpt: pickExcerpt(r.isbn13, excerptMap),
+        availableQuantity: r.isbn13 ? (quantityByIsbn.get(r.isbn13) ?? 0) : 0,
       })),
       total: countRow?.count ?? 0,
     };

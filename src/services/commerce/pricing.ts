@@ -1,5 +1,5 @@
 /**
- * Pricing rules: currency resolution, FX, shipping and tax.
+ * Pricing rules: the shop currency (GBP, never converted), shipping and tax.
  *
  * Everything in this file is a **pure function of (amount, country, config)**.
  * No database, no Redis, no request object. That is deliberate: these are the
@@ -118,7 +118,7 @@ export function toPresentment(gbpPence: number, currency: string): number {
   return Math.round(gbpPence);
 }
 
-/** The inverse, for price-filter bounds. Also unchanged: the customer types pence. */
+/** The inverse, for price-filter bounds — already in GBP pence by the time they arrive, so unchanged. */
 export function fromPresentment(minor: number, currency: string): number {
   assertShopCurrency(currency);
   return Math.round(minor);
@@ -507,13 +507,12 @@ export interface OrderQuote {
 }
 
 /**
- * Prices a whole basket for a destination and currency.
+ * Prices a whole basket for a destination, in GBP.
  *
- * The total is summed from the already-converted components rather than
- * converted from the GBP total. Those differ by a penny or two thanks to
- * per-component rounding, and the version that must be internally consistent is
- * the one the customer sees: a receipt whose lines do not add up to its total
- * is the kind of thing people photograph and post.
+ * The total is summed from the presented components rather than taken from the
+ * GBP total. With no conversion the two are the same number; summing the parts
+ * keeps the guarantee that matters if that ever changes — a receipt whose lines
+ * do not add up to its total is the kind of thing people photograph and post.
  */
 export function quoteOrder(options: {
   lines: QuoteLine[];
@@ -586,10 +585,8 @@ export function quoteOrder(options: {
     : subtotalGbpPence - discountGbpPence + shipping.gbpPence + tax.gbpPence;
 
   const subtotalMinor = lines.reduce((sum, line) => sum + line.lineTotalMinor, 0);
-  // toPresentment rounds up, which on a *discount* rounds in the customer's
-  // favour by at most one minor unit. That is the right direction to err, and
-  // it keeps one conversion helper rather than a second that rounds the other
-  // way for the one case where up means down.
+  // The discount is whole pence already (rounded above), and toPresentment
+  // passes GBP pence through unchanged, so this is the same figure as above.
   const discountMinor = discountGbpPence > 0 ? toPresentment(discountGbpPence, currency) : 0;
   const shippingMinor = toPresentment(shipping.gbpPence, currency);
   const taxMinor = toPresentment(tax.gbpPence, currency);

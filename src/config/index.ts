@@ -340,8 +340,8 @@ const envSchema = z.object({
 
   // Country resolution is NOT configured here — commerce reads it from
   // geoService, which owns GEO_COUNTRY_HEADER and MAXMIND_DB_PATH above.
-  // Currency display and referral scoring must agree about where a request
-  // comes from; two independent header lookups would eventually disagree.
+  // Commerce no longer uses it for currency (always GBP); it is still read for
+  // referral scoring, and one header lookup keeps the two from disagreeing.
 
   // No currency settings: the shop sells in GBP, exactly as Gardners quotes it.
   // See SHOP_CURRENCY in services/commerce/pricing.

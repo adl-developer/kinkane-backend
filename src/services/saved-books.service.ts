@@ -12,6 +12,7 @@ import { db } from '../db';
 import { savedBooks, books, bookContributors } from '../db/schema';
 import { availabilityService } from './commerce/availability.service';
 import { resolveCurrency, toPresentment } from './commerce/pricing';
+import { config } from '../config';
 
 export interface SavedBookView {
   bookId: number;
@@ -26,6 +27,12 @@ export interface SavedBookView {
   inStock: boolean;
   /** Not stocked, but orderable — show "available to order", not out of stock. */
   supplyToOrder: boolean;
+  /**
+   * How many copies can go in the basket right now, for this viewer's
+   * destination — the cart's own ceiling, so market restrictions are included
+   * here, unlike the catalogue's figure. 0 whenever `unavailable`.
+   */
+  availableQuantity: number;
   unavailable: boolean;
   unavailableReason: string | null;
 }
@@ -117,6 +124,9 @@ export const savedBooksService = {
               : null,
           inStock: (live?.stockQty ?? 0) > 0,
           supplyToOrder: live?.supplyToOrder ?? false,
+          availableQuantity: live
+            ? Math.min(live.orderableQuantity, config.commerce.cart.maxQuantityPerLine)
+            : 0,
           unavailable: !live,
           unavailableReason: reason,
         };

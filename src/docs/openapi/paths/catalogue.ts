@@ -51,7 +51,7 @@ const listFilterParams = [
   param('offset', 'query', { type: 'integer', minimum: 0, default: 0 },
     'Items to skip. **Ignored when `dedupe=true`** — use `cursor` there instead.'),
   param('dedupe', 'query', { type: 'string', enum: ['true', 'false'], default: 'true' },
-    'One edition per title, **on by default**. The edition shown is a buyable edition first, then paperback, then hardback, then any other format; among equals, the one with a cover, then the most complete record, then the newest. Send `false` to list every edition (e.g. an "other formats" view).'),
+    'One edition per title, **on by default**. The edition shown is chosen by stock first (on the shelf, then order-in, then unavailable), then format (paperback, then hardback, then anything else); among equals, the one with a cover, then the most complete record, then the newest. Send `false` to list every edition (e.g. an "other formats" view).'),
   param('shoppable', 'query', { type: 'string', enum: ['true', 'false'], default: 'false' },
     '**Orders the page the way a shop has to — it does not filter.** Three bands, in this order: (1) in stock, (2) orderable but unstocked — the extended catalogue and print-on-demand titles, which never have a shelf, (3) unsellable: no ISBN13, no live price, or an unsuppliable supplier report code. Nothing is excluded, so `shoppable=true` and `shoppable=false` return the same books in a different order.\n\n**Also adds `shoppable`, `inStock`, `unitPriceMinor`, `compareAtMinor` and `currency` to every row.** `shoppable: false` marks the third band — never give those rows an Add button, and they carry no price or stock fields at all, since an unsellable book with a supplier price behind it is not an offer. `shoppable: true, inStock: false` is the second band: orderable, with a longer lead time. Ignore the `prices` array on a shop surface; it is ONIX edition metadata and disagrees with the supplier feed on part of the catalogue.\n\nRanking rather than filtering because a catalogue that changes size with a query parameter cannot be paged through consistently, and stock in particular moves hourly — a book disappearing mid-browse reads as a bug. `priceMin`/`priceMax` are unaffected and still filter, since a price range is a request for a shelf rather than an ordering.\n\nNot a guarantee of sellability either way: rights restrictions depend on a destination country this endpoint has none of, so they are enforced at add-to-cart instead.'),
   param('cursor', 'query', { type: 'string', maxLength: 4096 },
@@ -88,7 +88,7 @@ const listResponses = {
 const listPaginationNotes = [
   '**Pagination has two modes, and they are not interchangeable:**',
   '',
-  '- *Default (`dedupe=true`)* — one edition per title: a buyable edition first, then paperback, then hardback, then any other format. **Use `cursor`, not `offset`.** Two raw editions of one book can straddle a page boundary, so naive offset pagination on this path can show the same title twice. Pass the response’s `nextCursor` back on the next request; `null` means you have reached the end. `totalIsApproximate` is always true here, because the row count no longer matches the item count.',
+  '- *Default (`dedupe=true`)* — one edition per title, chosen by stock first (on the shelf, then order-in, then unavailable), then paperback, then hardback, then any other format. **Use `cursor`, not `offset`** — this is the default path now, so a client paging with `offset` will see some titles twice. Two raw editions of one book can straddle a page boundary, so naive offset pagination on this path can show the same title twice. Pass the response’s `nextCursor` back on the next request; `null` means you have reached the end. `totalIsApproximate` is always true here, because the row count no longer matches the item count.',
   '- *Every edition (`dedupe=false`)* — ordinary `limit`/`offset`. `total` is exact when browsing, and capped for searches (watch `totalIsApproximate`). Paginate on `hasMore`.',
 ];
 
@@ -162,7 +162,7 @@ export const cataloguePaths = {
         param('type', 'query', { type: 'string', enum: ['all', 'title', 'author'], default: 'all' },
           'Restrict matching to one side. `all` matches both title and author name.'),
         param('dedupe', 'query', { type: 'string', enum: ['true', 'false'], default: 'true' },
-          'One suggestion per title, **on by default**: a buyable edition first, then paperback, then hardback, then any other format. Send `false` to see every edition.'),
+          'One suggestion per title, **on by default**: stock first (on the shelf, then order-in, then unavailable), then paperback, then hardback, then any other format. Send `false` to see every edition.'),
       ],
       responses: {
         200: json('Ranked suggestions.', object({ books: arrayOf(ref('BookSummary')) })),
