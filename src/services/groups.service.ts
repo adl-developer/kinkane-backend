@@ -271,6 +271,45 @@ export function buildGroupSearchOrderBy(q: string): SQL[] {
 }
 
 /**
+ * Restricts a "groups this person belongs to" listing to the ones `viewerId` is
+ * entitled to know about.
+ *
+ * Reading someone else's group list is the member list read sideways. "Is Theo
+ * in this club" is exactly the question `GET /groups/:id/members` answers, and
+ * there a private group's roster is members-only. Without this filter, walking
+ * profiles would rebuild the roster of every private group one name at a time —
+ * so the same rule is applied here: a private group appears on someone else's
+ * profile only when the viewer is in it too.
+ *
+ * Public groups need no membership check. Their roster is already open to
+ * anyone signed in, so naming their members here reveals nothing `/members`
+ * would not.
+ * That is what keeps this endpoint from being a new visibility rule: it can
+ * never show more than the member list already shows.
+ *
+ * An *invitation* does not count, only an active membership — the same line
+ * `decideMembershipAction('view_members')` draws, where an invitee to a private
+ * group is refused the roster like any other non-member.
+ *
+ * Written as `id IN (subquery)` rather than a correlated EXISTS, for the reason
+ * spelled out on `friendOfCondition`: the viewer's own memberships are a small
+ * set read straight off idx_group_memberships_user_status, which the planner
+ * can gather once instead of re-probing for every candidate row.
+ *
+ * Exported so the compiled SQL can be asserted on without a database.
+ */
+export function visibleGroupCondition(viewerId: number): SQL {
+  return sql`(
+    ${groups.privacy} = 'public'
+    OR ${groups.id} IN (
+      SELECT ${groupMemberships.groupId} FROM ${groupMemberships}
+        WHERE ${groupMemberships.userId} = ${viewerId}
+          AND ${groupMemberships.status} = 'active'
+    )
+  )`;
+}
+
+/**
  * Matches users who are friends of `viewerId` — an accepted follow in *either*
  * direction.
  *
@@ -529,15 +568,45 @@ export const groupsService = {
     };
   },
 
-  /** Groups the user belongs to — owned or joined. Powers "Your groups". */
+  /**
+   * Groups a user belongs to — owned or joined, most recently joined first.
+   *
+   * Serves both "Your groups" on your own profile and the same section on
+   * someone else's. `viewerId` is who is looking; omitted, it is the user
+   * themselves. Pending invitations are excluded either way: an invitation is
+   * not a membership, and this list is a statement about where someone is.
+   *
+   * On someone else's profile the list is filtered — see
+   * `visibleGroupCondition` for why, and `total` counts the filtered set, so
+   * the number matches what can actually be paged through.
+   */
   async listForUser(
     userId: number,
     limit: number,
     offset: number,
+    viewerId: number = userId,
   ): Promise<{ groups: GroupSummary[]; total: number }> {
+    const isSelf = viewerId === userId;
+
+    if (!isSelf) {
+      const [target] = await db
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.id, userId))
+        .limit(1);
+      // 404 rather than an empty page: "this reader has not joined anything"
+      // and "there is no such reader" are different answers, and returning the
+      // first for the second would have the profile render as a real but empty
+      // one — the same distinction the shelf and follower lists draw.
+      if (!target) throw Object.assign(new Error('User not found'), { statusCode: 404 });
+    }
+
     const membershipFilter = and(
       eq(groupMemberships.userId, userId),
       eq(groupMemberships.status, 'active'),
+      // Skipped entirely for your own list: every group you are in satisfies it
+      // by definition, so it could only cost a subquery and never change a row.
+      ...(isSelf ? [] : [visibleGroupCondition(viewerId)]),
     );
 
     const [rows, [counted]] = await Promise.all([
@@ -549,9 +618,13 @@ export const groupsService = {
         .orderBy(desc(groupMemberships.joinedAt))
         .limit(limit)
         .offset(offset),
+      // Joined here too, where the plain count needed no join before: the
+      // visibility filter reads groups.privacy, and the two queries have to
+      // apply the same condition or `total` would over-count what is returned.
       db
         .select({ count: sql<number>`count(*)::int` })
         .from(groupMemberships)
+        .innerJoin(groups, eq(groups.id, groupMemberships.groupId))
         .where(membershipFilter),
     ]);
 
