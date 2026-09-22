@@ -51,6 +51,7 @@ import { SHOP_CURRENCY, toPresentment } from './commerce/pricing';
 import { config } from '../config';
 import { getProductFormLabel } from '../lib/product-form';
 import { addDisplayGenre, toDisplayGenres } from '../lib/genre-display';
+import { genresService } from './genres.service';
 
 const BOOK_DETAIL_TTL    = 60 * 60;    // 1 hour
 const LIST_TTL           = 5 * 60;     // 5 minutes
@@ -208,7 +209,18 @@ export interface ListBooksOptions {
    * v2 request can reach the blended one.
    */
   searchType?: BookSearchType;
+  /**
+   * A genre slug as the client sent it — a top-level family slug from
+   * `GET /genres` or a book's genres, or an older stored full slug. list()
+   * resolves it into `genreIds` before anything reads it; filters use only that.
+   */
   genre?: string;
+  /**
+   * The stored genre ids `genre` stands for (see genresService.idsForSlug). Set by
+   * list(), never by a caller. Carried in opts rather than resolved inside the
+   * WHERE so every cache key hashed from opts changes when a family gains a genre.
+   */
+  genreIds?: number[];
   availability?: string;
   productForm?: string;
   publishingStatus?: string;
@@ -1190,13 +1202,16 @@ function buildWhereClause(opts: ListBooksOptions, searchCondition?: SQL): SQL | 
     conditions.push(searchCondition);
   }
 
-  if (opts.genre) {
+  if (opts.genreIds) {
+    // An unknown slug resolves to no ids, and filters to no books, as it did when
+    // this matched the slug directly.
     conditions.push(
-      sql`${books.id} IN (
-        SELECT bg.book_id FROM book_genres bg
-        JOIN genres g ON g.id = bg.genre_id
-        WHERE g.slug = ${opts.genre}
-      )`,
+      opts.genreIds.length === 0
+        ? sql`false`
+        : sql`${books.id} IN (
+            SELECT bg.book_id FROM book_genres bg
+            WHERE bg.genre_id IN (${sql.join(opts.genreIds.map((id) => sql`${id}`), sql`, `)})
+          )`,
     );
   }
 
@@ -2279,6 +2294,15 @@ export const booksService = {
      */
     nextCursor: string | null;
   }> {
+    // A genre is a family of stored genres now, so the slug is resolved to ids once
+    // here, before the cache keys below hash opts. The slug itself is dropped: every
+    // filter path reads genreIds, and keeping both would split one filter across two
+    // keys whenever an old full slug and its family resolve to the same ids.
+    if (opts.genre !== undefined) {
+      const { genre, ...rest } = opts;
+      opts = { ...rest, genreIds: await genresService.idsForSlug(genre) };
+    }
+
     // v2: the cached row payload changed shape (now { rows, hasMore }) and the cached
     // count is now capped for searches — bumping the prefix retires incompatible entries
     // rather than letting them deserialize into the wrong shape.

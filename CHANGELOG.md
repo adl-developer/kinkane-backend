@@ -10,6 +10,10 @@
 * show and charge every price in pounds, exactly as Gardners supplies it ([58ee3a0](https://adl.github.com/adl-developer/kinkane-backend/commit/58ee3a0b8cf6b1a404cec662aa233b1775d32255)) — [details](changelog/2026-09-22-book-available-quantity.md)
 * show how many copies of a book can be bought on every book response ([43f6410](https://adl.github.com/adl-developer/kinkane-backend/commit/43f6410eae3065bf4f997a8f3b6f1b6a5ebc3af0)) — [details](changelog/2026-09-22-book-available-quantity.md)
 
+### Bug Fixes
+
+* stop book listings skipping or repeating titles, and lead with in-stock editions ([01b3c71](https://adl.github.com/adl-developer/kinkane-backend/commit/01b3c7126ca986e572cf993332b0a9284726e26a)) — [details](changelog/2026-09-22-book-listing-review-fixes.md)
+
 
 ## 2026-09-18
 

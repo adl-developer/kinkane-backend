@@ -117,8 +117,8 @@ const bookSchemas = {
     type: 'object',
     properties: {
       id: { type: 'integer', example: 7 },
-      name: { type: 'string', example: 'Literary Fiction' },
-      slug: { type: 'string', example: 'literary-fiction' },
+      name: { type: 'string', example: 'Literary studies', description: 'Top-level name only — the part of the stored heading before the first colon.' },
+      slug: { type: 'string', example: 'literary_studies', description: 'Top-level slug. Passed to `?genre=`, it matches every genre under that top level.' },
     },
   },
 
@@ -142,7 +142,7 @@ const bookSchemas = {
         type: 'array',
         items: { $ref: '#/components/schemas/Genre' },
         description:
-          'Top-level genre names only: a stored heading like "Literary studies: poetry and poets" is shown as "Literary studies", and a name that several of the book\'s genres share appears once. `slug` is the original genre\'s, unchanged, so passing it to `?genre=` filters exactly as before. `GET /genres` still lists the full names.',
+          'Top-level genre names only: a stored heading like "Literary studies: poetry and poets" is shown as "Literary studies", and a top level that several of the book\'s genres share appears once. `slug` is the top-level slug, the same one `GET /genres` lists, so passing it to `?genre=` filters by the whole top level.',
       },
       unitPriceMinor: {
         type: 'integer',
