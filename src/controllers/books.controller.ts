@@ -13,7 +13,11 @@ import { isbnFromQuery } from '../lib/isbn';
 // z.coerce.boolean() would treat the literal string "false" as truthy (any non-empty
 // string coerces to true), so accepted values are explicit — see refreshQuerySchema in
 // recommendations.controller.ts for the same pattern.
-const dedupeParam = z.enum(['true', 'false']).default('false').transform((v) => v === 'true');
+//
+// On by default: every /books endpoint shows one edition per title — a buyable one first,
+// then paperback, then hardback, then any other format (see lib/dedupe). Send
+// ?dedupe=false to get every edition, e.g. an "other formats" view.
+const dedupeParam = z.enum(['true', 'false']).default('true').transform((v) => v === 'true');
 
 const suggestionsSchema = z.object({
   q: z.string().min(1, 'Query must not be empty').max(100),
@@ -21,9 +25,7 @@ const suggestionsSchema = z.object({
   // Defaults to matching both title and author. The single-sided values stay accepted so
   // existing callers that pass type=title or type=author keep their current behaviour.
   type: z.enum(['all', 'title', 'author']).default('all'),
-  // Opt-in: collapses same-titled editions down to the best one (cover > complete dataset >
-  // newest publication date > has a price). Off by default so the web app can show every
-  // edition; the mobile app passes ?dedupe=true.
+  // Collapses same-titled editions down to one, paperback first — see dedupeParam above.
   dedupe: dedupeParam,
 });
 
@@ -75,7 +77,7 @@ const listSchemaBase = z.object({
   sort: z.enum(['asc', 'desc']).optional(),
   limit: z.coerce.number().int().min(1).max(50).default(20),
   offset: z.coerce.number().int().min(0).default(0),
-  // Opt-in: collapses same-titled editions down to the best one — see dedupeParam above.
+  // One edition per title by default, paperback first — see dedupeParam above.
   dedupe: dedupeParam,
   /**
    * Opt-in: orders the results the way a shop has to, rather than narrowing

@@ -158,3 +158,70 @@ describe('dedupeByTitleAndSubtitle', () => {
     expect(dedupeByTitleAndSubtitle([])).toEqual([]);
   });
 });
+
+// Every /books endpoint shows one edition per title, and which one is a product rule:
+// a buyable edition first, then paperback, then hardback, then any other format — and
+// only then the content rules above.
+describe('edition format preference', () => {
+  const ed = (id: number, productForm: string | null, overrides: Partial<Row> = {}): Row => ({
+    id,
+    title: 'Dune',
+    subtitle: null,
+    ...complete({ productForm, buyable: true }),
+    ...overrides,
+  });
+
+  it('shows the paperback when paperback, hardback and other formats all exist', () => {
+    const rows = [ed(1, 'AB'), ed(2, 'BB'), ed(3, 'BC')];
+    expect(dedupeByTitle(rows).map((r) => r.id)).toEqual([3]);
+  });
+
+  it('falls back to the hardback when there is no paperback', () => {
+    const rows = [ed(1, 'EA'), ed(2, 'BB'), ed(3, 'AB')];
+    expect(dedupeByTitle(rows).map((r) => r.id)).toEqual([2]);
+  });
+
+  it('uses any other format when there is neither', () => {
+    const rows = [ed(1, 'EA'), ed(2, 'AB')];
+    expect(dedupeByTitle(rows).map((r) => r.id)).toEqual([1]);
+  });
+
+  it('prefers the paperback even over a hardback with a cover and a complete record', () => {
+    const rows = [ed(1, 'BB'), ed(2, 'BC', bare({ productForm: 'BC', buyable: true }))];
+    expect(dedupeByTitle(rows).map((r) => r.id)).toEqual([2]);
+  });
+
+  it('prefers a buyable hardback over a paperback that cannot be bought', () => {
+    const rows = [ed(1, 'BC', { buyable: false }), ed(2, 'BB')];
+    expect(dedupeByTitle(rows).map((r) => r.id)).toEqual([2]);
+  });
+
+  it('still prefers the paperback when no edition can be bought', () => {
+    const rows = [ed(1, 'BB', { buyable: false }), ed(2, 'BC', { buyable: false })];
+    expect(dedupeByTitle(rows).map((r) => r.id)).toEqual([2]);
+  });
+
+  it('breaks a tie between two paperbacks on the existing content rules', () => {
+    const rows = [
+      ed(1, 'BC', { coverUrl: null }),
+      ed(2, 'BC', { publicationDate: '2019-01-01' }),
+      ed(3, 'BC', { publicationDate: '2023-01-01' }),
+    ];
+    expect(dedupeByTitle(rows).map((r) => r.id)).toEqual([3]);
+  });
+
+  it('reads the ONIX code case- and whitespace-insensitively', () => {
+    const rows = [ed(1, 'BB'), ed(2, ' bc ')];
+    expect(dedupeByTitle(rows).map((r) => r.id)).toEqual([2]);
+  });
+
+  // The recommendation engine shares this picker but supplies neither field; its
+  // ordering must not change underneath it.
+  it('leaves the old ordering alone for callers that pass no format or stock', () => {
+    const rows: Row[] = [
+      { id: 1, title: 'Dune', subtitle: null, ...bare() },
+      { id: 2, title: 'Dune', subtitle: null, ...complete() },
+    ];
+    expect(dedupeByTitle(rows).map((r) => r.id)).toEqual([2]);
+  });
+});
