@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-09-22
+
+### Features
+
+* show press review quotes on book pages ([73a34ef](https://adl.github.com/adl-developer/kinkane-backend/commit/73a34ef64cc91bf14d8f89acff94dc7f90a0423e)) — [details](changelog/2026-09-22-nielsen-book-reviews.md)
+
+
 ## 2026-09-18
 
 ### Features
