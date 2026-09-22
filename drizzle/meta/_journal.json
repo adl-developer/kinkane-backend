@@ -470,6 +470,13 @@
       "when": 1789711999580,
       "tag": "0066_group_and_follow_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1790016139717,
+      "tag": "0067_chilly_the_phantom",
+      "breakpoints": true
     }
   ]
 }

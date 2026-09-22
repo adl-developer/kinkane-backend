@@ -33,6 +33,12 @@ import { normalisedNameSql, normaliseNameQuery } from '../lib/contributor-name';
 import { splitCandidates, type SplitCandidate } from '../lib/search-split';
 import { redis } from '../lib/redis';
 import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-excerpts.service';
+import {
+  getReviewsByIsbns,
+  pickReview,
+  bookReviewsService,
+  type BookReviewInfo,
+} from './book-reviews.service';
 import { TRENDING_SCORED_TYPES, trendingScoreSql } from './interactions.service';
 import { availabilityService } from './commerce/availability.service';
 import {
@@ -572,6 +578,13 @@ export interface EditionSummary {
 }
 
 export interface BookDetail extends BookListItem {
+  /**
+   * Review quotes from Nielsen, as supplied: escaped-then-decoded HTML with
+   * the outlet names embedded in the prose rather than as separate fields.
+   * Renders the same way longDescription does, and needs the same treatment
+   * by the client.
+   */
+  review: BookReviewInfo | null;
   shortDescription: string | null;
   longDescription: string | null;
   editionNumber: number | null;
@@ -3236,7 +3249,7 @@ export const booksService = {
     const [book] = await db.select().from(books).where(eq(books.id, id)).limit(1);
     if (!book) return null;
 
-    const [contributors, genreRows, priceRows, subjects, excerptMap, otherEditionRows] = await Promise.all([
+    const [contributors, genreRows, priceRows, subjects, excerptMap, reviewMap, otherEditionRows] = await Promise.all([
       db
         .select({
           role: bookContributors.role,
@@ -3274,6 +3287,8 @@ export const booksService = {
 
       getExcerptsByIsbns([book.isbn13]),
 
+      getReviewsByIsbns([book.isbn13]),
+
       fetchOtherEditions(id, book.title),
     ]);
 
@@ -3310,6 +3325,7 @@ export const booksService = {
       prices: priceRows,
       subjects,
       excerpt: pickExcerpt(book.isbn13, excerptMap),
+      review: pickReview(book.isbn13, reviewMap),
       otherEditions: otherEditionRows.map((row) => ({
         ...row,
         productFormLabel: getProductFormLabel(row.productForm),
@@ -3317,6 +3333,15 @@ export const booksService = {
     };
 
     await redis.set(cacheKey, JSON.stringify(detail), 'EX', BOOK_DETAIL_TTL);
+
+    // Fired after the cache is written, never awaited. A successful lookup
+    // deletes this key so the next request picks the review up — doing it
+    // before the set would let that delete land first and cache the
+    // review-less copy for the full hour instead.
+    if (!detail.review) {
+      void bookReviewsService.fetchOnDemand(book.isbn13, book.id);
+    }
+
     return detail;
   },
 

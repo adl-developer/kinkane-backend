@@ -500,6 +500,37 @@ const envSchema = z.object({
   // Where Stripe returns the buyer after a one-time order checkout.
   STRIPE_ORDER_SUCCESS_URL: z.string().url().optional(),
   STRIPE_ORDER_CANCEL_URL: z.string().url().optional(),
+
+  // NielsenIQ BookData Online — review quotes, keyed by ISBN.
+  //
+  // Master switch, off by default: the account is metered by the record and
+  // the batch job will happily spend the day's allowance the moment it is
+  // deployed, so turning this on should be a deliberate act.
+  NIELSEN_REVIEWS_ENABLED: z
+    .string()
+    .default('false')
+    .transform((v) => v === 'true'),
+  NIELSEN_CLIENT_ID: z.string().min(1).optional(),
+  NIELSEN_PASSWORD: z.string().min(1).optional(),
+  // The developer guide prints this as http:// — the service redirects to
+  // https and the credentials ride in the query string, so default to https.
+  NIELSEN_BASE_URL: z
+    .string()
+    .url()
+    .default('https://ws.nielsenbookdataonline.com/BDOLRest/RESTwebServices/BDOLrequest'),
+  // Selects which territory's variant of the descriptive fields is returned
+  // (INT, UK, AU, NZ, SA, US, IN). It does not filter which editions match.
+  NIELSEN_TERRITORY: z.string().default('UK'),
+  NIELSEN_REVIEWS_CRON: z.string().default('0 1 * * *'),
+  // The two halves of the daily record allowance. They must add up to no more
+  // than the account limit (1,000 on the trial) — keeping a little headroom is
+  // sensible, since Nielsen publishes no usage figures to reconcile against.
+  NIELSEN_DAILY_BATCH_BUDGET: z.coerce.number().int().min(0).default(900),
+  NIELSEN_DAILY_ONDEMAND_BUDGET: z.coerce.number().int().min(0).default(100),
+  NIELSEN_REQUEST_DELAY_MS: z.coerce.number().int().min(0).default(250),
+  // How long before a book Nielsen had no review for is worth asking about
+  // again. Reviews are often filed well after publication.
+  NIELSEN_MISS_RECHECK_DAYS: z.coerce.number().int().min(1).default(90),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -833,6 +864,21 @@ export const config = {
     },
     orderSuccessUrl: env.STRIPE_ORDER_SUCCESS_URL ?? `${env.APP_URL}/cart?checkout=success`,
     orderCancelUrl: env.STRIPE_ORDER_CANCEL_URL ?? `${env.APP_URL}/cart?checkout=cancelled`,
+  },
+  nielsen: {
+    // Credentials are part of the switch: without them every lookup would
+    // fail, so treat an unconfigured account as "feature off" rather than
+    // letting the cron wake up and error its way through a batch.
+    enabled: env.NIELSEN_REVIEWS_ENABLED && !!env.NIELSEN_CLIENT_ID && !!env.NIELSEN_PASSWORD,
+    clientId: env.NIELSEN_CLIENT_ID,
+    password: env.NIELSEN_PASSWORD,
+    baseUrl: env.NIELSEN_BASE_URL,
+    territory: env.NIELSEN_TERRITORY,
+    cronSchedule: env.NIELSEN_REVIEWS_CRON,
+    dailyBatchBudget: env.NIELSEN_DAILY_BATCH_BUDGET,
+    dailyOnDemandBudget: env.NIELSEN_DAILY_ONDEMAND_BUDGET,
+    requestDelayMs: env.NIELSEN_REQUEST_DELAY_MS,
+    missRecheckDays: env.NIELSEN_MISS_RECHECK_DAYS,
   },
 } as const;
 
