@@ -1,6 +1,6 @@
 import { and, eq, inArray, isNull, isNotNull, lt, or, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { books, bookReviews, nielsenApiUsage } from '../db/schema';
+import { books, bookReviews, nielsenApiUsage, type ReviewSource } from '../db/schema';
 import { config } from '../config';
 import { logger } from '../lib/logger';
 import { redis } from '../lib/redis';
@@ -8,8 +8,18 @@ import { fetchReviewByIsbn, NielsenLimitExceededError } from '../lib/nielsen';
 
 export interface BookReviewInfo {
   reviewHtml: string;
+  /** Which service supplied the quote: 'nielsen' or 'bds'. */
+  source: ReviewSource;
   sourceField: string | null;
 }
+
+/**
+ * When more than one source has a review for a book, the first in this list
+ * wins. Nielsen first: it was here first and its quotes were checked by hand
+ * when the feature shipped. BDS fills the gaps. They are not merged — both
+ * carry publisher-supplied quotes, so showing both would mostly repeat them.
+ */
+const SOURCE_PREFERENCE: readonly ReviewSource[] = ['nielsen', 'bds'];
 
 export type BudgetKind = 'batch' | 'onDemand';
 
@@ -71,21 +81,21 @@ async function markLimitHit(): Promise<void> {
   logger.warn('Nielsen daily limit reached — pausing lookups until tomorrow');
 }
 
-/** Writes the outcome of a lookup, including a miss, so we stop re-asking. */
-async function storeResult(
-  isbn13: string,
-  result: { reviewHtml: string; sourceField: string } | null,
+/**
+ * Writes the outcome of a lookup, including a miss, so we stop re-asking.
+ * Exported for the BDS enrichment service, which records its reviews here too.
+ */
+export async function storeReviewResults(
+  source: ReviewSource,
+  results: { isbn13: string; reviewHtml: string | null; sourceField: string | null }[],
 ): Promise<void> {
+  if (results.length === 0) return;
+  const checkedAt = new Date();
   await db
     .insert(bookReviews)
-    .values({
-      isbn13,
-      reviewHtml: result?.reviewHtml ?? null,
-      sourceField: result?.sourceField ?? null,
-      checkedAt: new Date(),
-    })
+    .values(results.map((r) => ({ ...r, source, checkedAt })))
     .onConflictDoUpdate({
-      target: bookReviews.isbn13,
+      target: [bookReviews.isbn13, bookReviews.source],
       set: {
         reviewHtml: sql`excluded.review_html`,
         sourceField: sql`excluded.source_field`,
@@ -105,7 +115,9 @@ async function lookupAndStore(isbn13: string, kind: BudgetKind): Promise<boolean
 
   try {
     const result = await fetchReviewByIsbn(isbn13);
-    await storeResult(isbn13, result);
+    await storeReviewResults('nielsen', [
+      { isbn13, reviewHtml: result?.reviewHtml ?? null, sourceField: result?.sourceField ?? null },
+    ]);
     return result !== null;
   } catch (err) {
     if (err instanceof NielsenLimitExceededError) {
@@ -119,7 +131,8 @@ async function lookupAndStore(isbn13: string, kind: BudgetKind): Promise<boolean
 /**
  * Batch-looks-up stored reviews for a set of ISBNs. Filters out nulls so
  * callers can pass `isbn13` columns directly, and omits misses — a row with
- * no review text is bookkeeping, not something to hand to the client.
+ * no review text is bookkeeping, not something to hand to the client. Where
+ * several sources have one, SOURCE_PREFERENCE picks.
  */
 export async function getReviewsByIsbns(
   isbns: (string | null)[],
@@ -132,16 +145,22 @@ export async function getReviewsByIsbns(
   const rows = await db
     .select({
       isbn13: bookReviews.isbn13,
+      source: bookReviews.source,
       reviewHtml: bookReviews.reviewHtml,
       sourceField: bookReviews.sourceField,
     })
     .from(bookReviews)
     .where(and(inArray(bookReviews.isbn13, uniqueIsbns), isNotNull(bookReviews.reviewHtml)));
 
+  const rank = (s: ReviewSource) => {
+    const i = SOURCE_PREFERENCE.indexOf(s);
+    return i === -1 ? SOURCE_PREFERENCE.length : i;
+  };
   for (const row of rows) {
-    if (row.reviewHtml) {
-      map.set(row.isbn13, { reviewHtml: row.reviewHtml, sourceField: row.sourceField });
-    }
+    if (!row.reviewHtml) continue;
+    const current = map.get(row.isbn13);
+    if (current && rank(current.source) <= rank(row.source)) continue;
+    map.set(row.isbn13, { reviewHtml: row.reviewHtml, source: row.source, sourceField: row.sourceField });
   }
 
   return map;
@@ -172,7 +191,7 @@ export const bookReviewsService = {
       const [existing] = await db
         .select({ id: bookReviews.id })
         .from(bookReviews)
-        .where(eq(bookReviews.isbn13, isbn13))
+        .where(and(eq(bookReviews.isbn13, isbn13), eq(bookReviews.source, 'nielsen')))
         .limit(1);
 
       // Already asked — whether we got a review or not, don't ask again here.
@@ -214,7 +233,7 @@ export const bookReviewsService = {
     const candidates = await db
       .select({ isbn13: books.isbn13 })
       .from(books)
-      .leftJoin(bookReviews, eq(bookReviews.isbn13, books.isbn13))
+      .leftJoin(bookReviews, and(eq(bookReviews.isbn13, books.isbn13), eq(bookReviews.source, 'nielsen')))
       .where(
         and(
           isNotNull(books.isbn13),

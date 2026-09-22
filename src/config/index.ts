@@ -531,6 +531,36 @@ const envSchema = z.object({
   // How long before a book Nielsen had no review for is worth asking about
   // again. Reviews are often filed well after publication.
   NIELSEN_MISS_RECHECK_DAYS: z.coerce.number().int().min(1).default(90),
+
+  // ── BDS (Bibliographic Data Services) — author bios + review quotes ─────────
+  //
+  // Off by default for the same reason as Nielsen: turning on a paid data
+  // source should be a deliberate act, and the licence terms (display rights,
+  // storage, termination) were still open when this was built.
+  BDS_ENRICHMENT_ENABLED: z
+    .string()
+    .default('false')
+    .transform((v) => v === 'true'),
+  // ACS user account issued by BDS. The API trades these for a bearer token
+  // valid for a year, so they are used about once a year, not per request.
+  BDS_USERNAME: z.string().min(1).optional(),
+  BDS_PASSWORD: z.string().min(1).optional(),
+  BDS_BASE_URL: z.string().url().default('https://elastic.bdslive.com/bds/include/xmla-api.php'),
+  BDS_ENRICHMENT_CRON: z.string().default('30 2 * * *'),
+  // ISBNs per API call. BDS quote 100 as the ceiling; lower it only if they
+  // ask us to.
+  BDS_BATCH_SIZE: z.coerce.number().int().min(1).max(100).default(100),
+  // How many ISBNs the nightly sweep looks up. BDS publish no quota, so this is
+  // politeness plus a cap on how long one night's run can take: 20,000 is 200
+  // calls, a couple of minutes at the default delay.
+  BDS_NIGHTLY_ISBN_LIMIT: z.coerce.number().int().min(0).default(20_000),
+  BDS_REQUEST_DELAY_MS: z.coerce.number().int().min(0).default(500),
+  // How long an empty answer is trusted before the book is asked about again.
+  // Bios and quotes are often added after publication.
+  BDS_MISS_RECHECK_DAYS: z.coerce.number().int().min(1).default(60),
+  // The daily "what changed at BDS" pass pages through every record BDS
+  // updated yesterday, not just ours, so it is capped. See runDailyDelta.
+  BDS_DELTA_MAX_PAGES: z.coerce.number().int().min(0).default(100),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -879,6 +909,20 @@ export const config = {
     dailyOnDemandBudget: env.NIELSEN_DAILY_ONDEMAND_BUDGET,
     requestDelayMs: env.NIELSEN_REQUEST_DELAY_MS,
     missRecheckDays: env.NIELSEN_MISS_RECHECK_DAYS,
+  },
+  bds: {
+    // As with Nielsen, missing credentials mean "feature off", not a cron that
+    // wakes up nightly to fail.
+    enabled: env.BDS_ENRICHMENT_ENABLED && !!env.BDS_USERNAME && !!env.BDS_PASSWORD,
+    username: env.BDS_USERNAME,
+    password: env.BDS_PASSWORD,
+    baseUrl: env.BDS_BASE_URL,
+    cronSchedule: env.BDS_ENRICHMENT_CRON,
+    batchSize: env.BDS_BATCH_SIZE,
+    nightlyIsbnLimit: env.BDS_NIGHTLY_ISBN_LIMIT,
+    requestDelayMs: env.BDS_REQUEST_DELAY_MS,
+    missRecheckDays: env.BDS_MISS_RECHECK_DAYS,
+    deltaMaxPages: env.BDS_DELTA_MAX_PAGES,
   },
 } as const;
 

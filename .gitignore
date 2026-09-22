@@ -30,3 +30,6 @@ Thumbs.db
 .claude/
 *.swp
 *.swo
+
+# BDS probe output — licensed third-party text, never commit
+probe-output/
