@@ -151,8 +151,8 @@ const bookSchemas = {
       },
       currency: {
         type: 'string',
-        description: 'ISO-4217 for the two fields above. Resolved from the request, or the `currency` parameter.',
-        example: 'USD',
+        description: 'Always `GBP`: prices are passed through exactly as Gardners supplies them, never converted.',
+        example: 'GBP',
       },
       inStock: {
         type: 'boolean',
@@ -483,7 +483,7 @@ const commerceSchemas = {
         type: 'string',
         description:
           'Resolved from the caller’s country, overridable with `?currency=`. Every `*Minor` field on this response is in this currency.',
-        example: 'USD',
+        example: 'GBP',
       },
       lines: { type: 'array', items: { $ref: '#/components/schemas/CartLine' } },
       subtotalMinor: { type: 'integer', example: 2598 },
@@ -576,7 +576,7 @@ const commerceSchemas = {
         description: 'Which admin tab this row belongs to.',
         example: 'processing',
       },
-      currency: { type: 'string', example: 'USD' },
+      currency: { type: 'string', example: 'GBP' },
       subtotalMinor: { type: 'integer', example: 7448 },
       discountMinor: { type: 'integer', example: 1117 },
       shippingMinor: { type: 'integer', example: 0 },
@@ -764,7 +764,7 @@ const commerceSchemas = {
       },
       dispatchedAt: { type: 'string', format: 'date-time', nullable: true, example: null },
       deliveredAt: { type: 'string', format: 'date-time', nullable: true, example: null },
-      currency: { type: 'string', example: 'USD' },
+      currency: { type: 'string', example: 'GBP' },
       subtotalMinor: { type: 'integer', example: 2598 },
       discountMinor: {
         type: 'integer',

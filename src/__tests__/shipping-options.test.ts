@@ -194,15 +194,15 @@ describe('shippingOptionsService.list', () => {
     expect(guessed.weightEstimated).toBe(true);
   });
 
-  it('converts prices into the buyer’s currency', async () => {
+  it('quotes shipping in GBP pence, unconverted, even overseas', async () => {
     const { shippingOptionsService } = await load();
 
     const { options } = await shippingOptionsService.list({
-      countryCode: 'GH', items: [book()], subtotalGbpPence: 1500, currency: 'USD',
+      countryCode: 'GH', items: [book()], subtotalGbpPence: 1500, currency: 'GBP',
     });
 
     expect(options[0].priceGbpPence).toBe(915);
-    expect(options[0].priceMinor).toBe(Math.ceil(915 * 1.25));
+    expect(options[0].priceMinor).toBe(915);
   });
 
   it('offers nothing for an empty basket or an unknown country', async () => {

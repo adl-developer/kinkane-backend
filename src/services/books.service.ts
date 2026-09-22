@@ -45,7 +45,7 @@ import {
   SHOP_BAND_ORDER,
   type ShopBand,
 } from '../lib/shoppable';
-import { toPresentment } from './commerce/pricing';
+import { SHOP_CURRENCY, toPresentment } from './commerce/pricing';
 import { config } from '../config';
 import { getProductFormLabel } from '../lib/product-form';
 
@@ -1062,7 +1062,7 @@ function priceFields(
   currency: string | undefined,
 ): { unitPriceMinor: number; compareAtMinor: number | null; currency: string } | Record<string, never> {
   if (!live) return {};
-  const code = (currency ?? config.commerce.currency.default).toUpperCase();
+  const code = SHOP_CURRENCY;
   return {
     unitPriceMinor: toPresentment(live.unitPriceGbpPence, code),
     compareAtMinor:
@@ -4104,7 +4104,7 @@ export async function attachShopFields<T extends { isbn13: string | null }>(
     availabilityService.availableQuantityByIsbns(isbns),
   ]);
 
-  const code = (currency ?? config.commerce.currency.default).toUpperCase();
+  const code = SHOP_CURRENCY;
 
   return items.map((item): T => {
     if (!item.isbn13) return { ...item, availableQuantity: 0 };

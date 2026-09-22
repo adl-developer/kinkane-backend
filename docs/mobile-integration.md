@@ -367,7 +367,7 @@ Every book in a `shoppable=true` response now carries the live sellable price:
   "title": "Wandering Stars",
   "unitPriceMinor": 2899,     // what the shop charges, in `currency`
   "compareAtMinor": null,     // pre-markdown price when on sale; null otherwise
-  "currency": "USD",
+  "currency": "GBP",
   "inStock": true,
   "prices": [ … ]             // ONIX metadata — DO NOT render this on a shop screen
 }

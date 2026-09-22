@@ -228,21 +228,15 @@ If they skip it nothing breaks; the token keeps working for tracking.
 
 ## Currency
 
-`currency` is optional on `/cart/price`, `/cart/checkout` and `GET /cart`, and
-it works identically whether or not the caller is signed in. When omitted the
-server resolves it in three steps:
+**Everything is in GBP, exactly as Gardners supplies it.** There is no
+currency conversion: every price, discount, shipping charge and total is
+Gardners' pound figure, in pence, for every customer wherever they are, and
+Stripe charges in GBP.
 
-1. The `currency` you sent — **only if it is one of the supported currencies**
-2. Otherwise, the currency mapped to the destination country
-3. Otherwise, `DEFAULT_CURRENCY`
-
-Currently: supported is `USD, GBP, EUR`; the country map covers `GB → GBP` and
-the eurozone; the default is **USD**. So an order shipping to Ghana with no
-`currency` is priced in USD, not GHS.
-
-> **An unsupported currency is ignored, not rejected.** Sending
-> `"currency": "GHS"` returns `200` priced in something else. Always read
-> `currency` back off the response rather than assuming your override took.
+`currency` is still accepted on `/cart/price`, `/cart/checkout`, `GET /cart`
+and `GET /books` so older clients keep working, but it is ignored. Every
+response says `"currency": "GBP"`. Divide `*Minor` amounts by 100 to show
+pounds.
 
 ## Buying while signed in
 

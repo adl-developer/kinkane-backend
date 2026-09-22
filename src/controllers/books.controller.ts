@@ -6,7 +6,7 @@ import { userBooksService } from '../services/user-books.service';
 import { interactionsService } from '../services/interactions.service';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 import { config } from '../config';
-import { fromPresentment, resolveCurrency, resolveRequestCountry } from '../services/commerce/pricing';
+import { fromPresentment, resolveCurrency } from '../services/commerce/pricing';
 import { minorUnitsPerMajor } from '../lib/money';
 import { isbnFromQuery } from '../lib/isbn';
 
@@ -186,8 +186,9 @@ const basketRecsSchema = z.object({
  * which is what a feed with no prices on it looked like. Recommendations are
  * always priced now, so there is always a currency to resolve.
  */
-export async function shopCurrency(req: Request): Promise<string> {
-  return resolveCurrency({ countryCode: await resolveRequestCountry(req) });
+export async function shopCurrency(_req: Request): Promise<string> {
+  // GBP for everyone now (see SHOP_CURRENCY) — no geo lookup needed to decide it.
+  return resolveCurrency();
 }
 
 /**
@@ -252,18 +253,17 @@ async function runList(
     // request working when someone drops the flag.
     const cursor = parsed.data.dedupe ? decodeDedupeCursor(parsed.data.cursor) : null;
 
-    const { priceMin, priceMax, currency, ...rest } = asIsbnLookup(parsed.data);
+    // currency is still accepted from older clients but ignored — GBP only.
+    const { priceMin, priceMax, currency: _currency, ...rest } = asIsbnLookup(parsed.data);
 
-    // Bounds arrive in the customer's currency and the catalogue stores GBP
-    // pence, so they are converted once here rather than per row. The
-    // currency is resolved the same way the cart resolves it, so the numbers
-    // being filtered on are the numbers the shop displayed.
+    // Bounds arrive in pounds and the catalogue stores GBP pence; the shop
+    // sells in GBP only, so this is a unit change, never a currency conversion.
     // Resolved for every shoppable request, not only filtered ones: it is
     // both the currency the bounds are read in and the currency prices come
     // back in, so a client filters and displays in the same units.
     const resolved =
       rest.shoppable || priceMin !== undefined || priceMax !== undefined
-        ? resolveCurrency({ requested: currency, countryCode: await resolveRequestCountry(req) })
+        ? resolveCurrency()
         : undefined;
 
     let priceMinGbpPence: number | undefined;
