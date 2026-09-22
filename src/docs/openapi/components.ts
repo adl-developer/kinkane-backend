@@ -138,7 +138,12 @@ const bookSchemas = {
       isbn13: { type: 'string', nullable: true, example: '9780241988268' },
       publicationDate: { type: 'string', format: 'date', nullable: true, example: '2019-05-02' },
       contributors: { type: 'array', items: { $ref: '#/components/schemas/Contributor' } },
-      genres: { type: 'array', items: { $ref: '#/components/schemas/Genre' } },
+      genres: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/Genre' },
+        description:
+          'Top-level genre names only: a stored heading like "Literary studies: poetry and poets" is shown as "Literary studies", and a name that several of the book\'s genres share appears once. `slug` is the original genre\'s, unchanged, so passing it to `?genre=` filters exactly as before. `GET /genres` still lists the full names.',
+      },
       unitPriceMinor: {
         type: 'integer',
         description: 'The live sellable price, in `currency`. Present only with `shoppable=true`. **This — not the `prices` array — is what the shop charges.** That array is ONIX edition metadata and disagrees with the supplier feed on part of the catalogue, so rendering it shows a price the basket will not honour. It is also what `priceMin`/`priceMax` filter on, so a filtered page can display the number it was filtered by.',
@@ -151,14 +156,21 @@ const bookSchemas = {
       },
       currency: {
         type: 'string',
-        description: 'ISO-4217 for the two fields above. Resolved from the request, or the `currency` parameter.',
-        example: 'USD',
+        description: 'Always `GBP`: prices are passed through exactly as Gardners supplies them, never converted.',
+        example: 'GBP',
       },
       inStock: {
         type: 'boolean',
         example: true,
         description:
           'Present on `GET /books?shoppable=true` for rows with `shoppable: true`. Whether the supplier currently has stock. `false` means list it with an out-of-stock badge, not hide it. Absent on unsellable rows and on every other endpoint — do not treat a missing value as out of stock.',
+      },
+      availableQuantity: {
+        type: 'integer',
+        minimum: 0,
+        example: 3,
+        description:
+          'How many copies one customer can buy right now. Present on every row of `GET /books` (with or without `shoppable`), on `GET /books/:id` and its `otherEditions`, on every discovery feed, on reading shelves and on saved books. Use it to cap the quantity stepper and for "only N left", and treat it as the answer to "can this be added": `shoppable: true, inStock: false` includes titles that are simply out of stock, which carry `0` here. A withdrawn title is always `0`. It follows the cart\'s own rules, so the basket will accept any quantity up to it: in-stock titles give their stock, capped at the per-line maximum (10 by default); extended-catalogue and print-on-demand titles give the per-line maximum even though they have no shelf stock; anything that cannot be bought (no price, cannot be supplied, out of stock, not stocked by the supplier) gives `0`. Always capped, never the supplier\'s raw stock. Rights restrictions depend on the delivery country and are still checked at add-to-cart.',
       },
       shoppable: {
         type: 'boolean',
@@ -475,8 +487,8 @@ const commerceSchemas = {
       currency: {
         type: 'string',
         description:
-          'Resolved from the caller’s country, overridable with `?currency=`. Every `*Minor` field on this response is in this currency.',
-        example: 'USD',
+          'Always `GBP`: prices are passed through exactly as Gardners supplies them. Every `*Minor` field on this response is in pence. A `?currency=` parameter is accepted and ignored.',
+        example: 'GBP',
       },
       lines: { type: 'array', items: { $ref: '#/components/schemas/CartLine' } },
       subtotalMinor: { type: 'integer', example: 2598 },
@@ -569,7 +581,7 @@ const commerceSchemas = {
         description: 'Which admin tab this row belongs to.',
         example: 'processing',
       },
-      currency: { type: 'string', example: 'USD' },
+      currency: { type: 'string', example: 'GBP' },
       subtotalMinor: { type: 'integer', example: 7448 },
       discountMinor: { type: 'integer', example: 1117 },
       shippingMinor: { type: 'integer', example: 0 },
@@ -757,7 +769,7 @@ const commerceSchemas = {
       },
       dispatchedAt: { type: 'string', format: 'date-time', nullable: true, example: null },
       deliveredAt: { type: 'string', format: 'date-time', nullable: true, example: null },
-      currency: { type: 'string', example: 'USD' },
+      currency: { type: 'string', example: 'GBP' },
       subtotalMinor: { type: 'integer', example: 2598 },
       discountMinor: {
         type: 'integer',

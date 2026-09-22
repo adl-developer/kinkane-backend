@@ -47,15 +47,18 @@ describe('discovery feeds', () => {
     expect(source).not.toMatch(/redis\.set\([^)]*attachShopFields/);
   });
 
-  it('resolves currency per request rather than caching it', () => {
-    // One cached pool is shared by every viewer, so a visitor in Lagos and one
-    // in Berlin must not see each other's money.
+  it('quotes every viewer of a shared cached pool in GBP', () => {
+    // One cached pool is shared by every viewer. It used to be quoted in each
+    // viewer's own currency; the shop now sells in GBP only, exactly as
+    // Gardners prices it, so the feed's currency comes from the shop constant
+    // and never from anything per-viewer that could leak through the cache.
     const controller = readFileSync(
       join(__dirname, '..', 'controllers/books.controller.ts'),
       'utf8',
     );
     expect(controller).toContain('export async function shopCurrency');
-    expect(controller).toContain('resolveRequestCountry(req)');
+    expect(controller).toMatch(/shopCurrency\([^)]*\)[^{]*\{\s*(\/\/[^\n]*\n\s*)*return resolveCurrency\(\);/);
+    expect(source).not.toContain('config.commerce.currency');
   });
 
   it('puts the fields on every feed row, with no flag gating them', () => {
@@ -63,7 +66,10 @@ describe('discovery feeds', () => {
     // client that did not know to pass it got a carousel of cards it had no
     // price for. Every one of these feeds is a shop surface, so the only early
     // return left is the empty list.
-    const helper = source.slice(source.indexOf('async function attachShopFields'));
+    // Just the function body — the file continues past it, and later code has
+    // every right to mention shoppability.
+    const start = source.indexOf('async function attachShopFields');
+    const helper = source.slice(start, source.indexOf('\n}\n', start));
     expect(helper).toContain('if (items.length === 0) return items;');
     expect(helper).not.toContain('shoppable');
   });

@@ -13,6 +13,30 @@ export interface DedupeCandidate {
   availabilityCode: string | null;
   publicationDate: string | null;
   hasPrice: boolean;
+  /**
+   * ONIX List 150 product form — 'BC' paperback, 'BB' hardback — and the stock
+   * tier from lib/shoppable's stockTierFor: 0 on the shelf, 1 order-in, 2 cannot
+   * be bought. Optional so callers that don't rank by them (the recommendation
+   * engine) keep their old ordering: two rows that both leave them out compare
+   * equal on both.
+   */
+  productForm?: string | null;
+  stockTier?: number;
+}
+
+/**
+ * Which format a title is shown in when it exists in several: paperback, then
+ * hardback, then anything else (ebook, audio, board book, …). Lower wins.
+ */
+export function formatRank(productForm: string | null | undefined): number {
+  switch (productForm?.trim().toUpperCase()) {
+    case 'BC':
+      return 0;
+    case 'BB':
+      return 1;
+    default:
+      return 2;
+  }
 }
 
 function isComplete(c: DedupeCandidate): boolean {
@@ -32,11 +56,24 @@ function publicationTime(date: string | null): number {
 }
 
 // True if `candidate` should replace `kept` as the representative edition for their shared
-// title. Falls through the priority list in order — cover, then dataset completeness, then
-// publication recency, then price — and stops at the first criterion that distinguishes
-// them. A full tie leaves `kept` in place, which is what makes the picker stable (the
-// earlier-ranked/higher-relevance row wins ties, same as the old first-occurrence rule).
+// title. Falls through the priority list in order — stock tier (on the shelf > order-in >
+// cannot be bought), then format (paperback > hardback > other), then cover, then dataset
+// completeness, then publication recency, then price — and stops at the first criterion
+// that distinguishes them.
+//
+// Stock comes before format so a title is never led by an out-of-stock or order-in paperback
+// while its hardback is on the shelf; within one tier, the paperback is the default. A full tie leaves `kept` in place, which is what makes the
+// picker stable (the earlier-ranked/higher-relevance row wins ties, same as the old
+// first-occurrence rule).
 function isBetterEdition(candidate: DedupeCandidate, kept: DedupeCandidate): boolean {
+  if (candidate.stockTier !== kept.stockTier) {
+    return (candidate.stockTier ?? Infinity) < (kept.stockTier ?? Infinity);
+  }
+
+  const candidateFormat = formatRank(candidate.productForm);
+  const keptFormat = formatRank(kept.productForm);
+  if (candidateFormat !== keptFormat) return candidateFormat < keptFormat;
+
   const candidateHasCover = candidate.coverUrl !== null;
   const keptHasCover = kept.coverUrl !== null;
   if (candidateHasCover !== keptHasCover) return candidateHasCover;
@@ -73,9 +110,10 @@ function pickBestByKey<T extends DedupeCandidate>(rows: T[], keyOf: (row: T) => 
 /**
  * Collapses rows that share a title down to the single best edition, preserving the
  * position of each title's first occurrence (so overall relevance/rank ordering survives).
- * "Best" is decided in priority order: has a cover > has a complete dataset (description,
- * >=1 genre, available to order) > most recent publication date > has a price. Ties keep
- * whichever edition was already kept.
+ * "Best" is decided in priority order: on the shelf > order-in > cannot be bought, then
+ * paperback > hardback > any other format, then has a cover > has a complete dataset
+ * (description, >=1 genre, available to order) > most recent publication date > has a
+ * price. Ties keep whichever edition was already kept.
  */
 export function dedupeByTitle<T extends DedupeCandidate>(rows: T[]): T[] {
   return pickBestByKey(rows, (r) => r.title.trim().toLowerCase());

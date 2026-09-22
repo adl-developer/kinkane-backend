@@ -8,9 +8,8 @@ import { phoneSchema } from '../lib/phone';
 import { config } from '../config';
 
 const viewSchema = z.object({
-  // Lets a client override the currency the cart is priced in — a user in a
-  // country whose currency we don't support may still prefer GBP to the USD
-  // default. Ignored if unsupported (see resolveCurrency).
+  // Accepted from older clients and ignored: the cart is always priced in GBP,
+  // exactly as Gardners supplies it (see resolveCurrency).
   currency: z.string().length(3).optional(),
 });
 

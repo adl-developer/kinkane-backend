@@ -6,14 +6,19 @@ import { userBooksService } from '../services/user-books.service';
 import { interactionsService } from '../services/interactions.service';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 import { config } from '../config';
-import { fromPresentment, resolveCurrency, resolveRequestCountry } from '../services/commerce/pricing';
+import { fromPresentment, resolveCurrency } from '../services/commerce/pricing';
 import { minorUnitsPerMajor } from '../lib/money';
 import { isbnFromQuery } from '../lib/isbn';
 
 // z.coerce.boolean() would treat the literal string "false" as truthy (any non-empty
 // string coerces to true), so accepted values are explicit — see refreshQuerySchema in
 // recommendations.controller.ts for the same pattern.
-const dedupeParam = z.enum(['true', 'false']).default('false').transform((v) => v === 'true');
+//
+// On by default: every /books endpoint shows one edition per title — on the shelf first,
+// then order-in, then unavailable; within that, paperback, then hardback, then any other
+// format (see lib/dedupe). Send ?dedupe=false to get every edition, e.g. an "other
+// formats" view. Clients should paginate with `cursor`, not `offset`, on this path.
+const dedupeParam = z.enum(['true', 'false']).default('true').transform((v) => v === 'true');
 
 const suggestionsSchema = z.object({
   q: z.string().min(1, 'Query must not be empty').max(100),
@@ -21,9 +26,7 @@ const suggestionsSchema = z.object({
   // Defaults to matching both title and author. The single-sided values stay accepted so
   // existing callers that pass type=title or type=author keep their current behaviour.
   type: z.enum(['all', 'title', 'author']).default('all'),
-  // Opt-in: collapses same-titled editions down to the best one (cover > complete dataset >
-  // newest publication date > has a price). Off by default so the web app can show every
-  // edition; the mobile app passes ?dedupe=true.
+  // Collapses same-titled editions down to one, paperback first — see dedupeParam above.
   dedupe: dedupeParam,
 });
 
@@ -63,19 +66,18 @@ const listSchemaBase = z.object({
   // a range that scans everything.
   yearMin: z.coerce.number().int().min(1450).max(2200).optional(),
   yearMax: z.coerce.number().int().min(1450).max(2200).optional(),
-  // Price bounds in **major units** of `currency` — 0 to 100 means $0-$100,
-  // matching the filter UI. Converted to GBP pence before it reaches the query.
+  // Price bounds in pounds — 0 to 100 means £0-£100, matching the filter UI.
+  // Multiplied into GBP pence before it reaches the query; nothing is converted.
   priceMin: z.coerce.number().min(0).max(100_000).optional(),
   priceMax: z.coerce.number().min(0).max(100_000).optional(),
-  // Which currency the price bounds are expressed in. Defaults to the currency
-  // this request would be quoted in, so a client that shows dollars and filters
-  // in dollars needs to send nothing.
+  // Accepted from older clients and ignored: the shop sells in GBP only, so the
+  // bounds are always pounds (see SHOP_CURRENCY in services/commerce/pricing).
   currency: z.string().length(3).optional(),
   sortBy: z.enum(['title', 'newest']).optional(),
   sort: z.enum(['asc', 'desc']).optional(),
   limit: z.coerce.number().int().min(1).max(50).default(20),
   offset: z.coerce.number().int().min(0).default(0),
-  // Opt-in: collapses same-titled editions down to the best one — see dedupeParam above.
+  // One edition per title by default, paperback first — see dedupeParam above.
   dedupe: dedupeParam,
   /**
    * Opt-in: orders the results the way a shop has to, rather than narrowing
@@ -186,8 +188,9 @@ const basketRecsSchema = z.object({
  * which is what a feed with no prices on it looked like. Recommendations are
  * always priced now, so there is always a currency to resolve.
  */
-export async function shopCurrency(req: Request): Promise<string> {
-  return resolveCurrency({ countryCode: await resolveRequestCountry(req) });
+export async function shopCurrency(_req: Request): Promise<string> {
+  // GBP for everyone now (see SHOP_CURRENCY) — no geo lookup needed to decide it.
+  return resolveCurrency();
 }
 
 /**
@@ -252,18 +255,17 @@ async function runList(
     // request working when someone drops the flag.
     const cursor = parsed.data.dedupe ? decodeDedupeCursor(parsed.data.cursor) : null;
 
-    const { priceMin, priceMax, currency, ...rest } = asIsbnLookup(parsed.data);
+    // currency is still accepted from older clients but ignored — GBP only.
+    const { priceMin, priceMax, currency: _currency, ...rest } = asIsbnLookup(parsed.data);
 
-    // Bounds arrive in the customer's currency and the catalogue stores GBP
-    // pence, so they are converted once here rather than per row. The
-    // currency is resolved the same way the cart resolves it, so the numbers
-    // being filtered on are the numbers the shop displayed.
+    // Bounds arrive in pounds and the catalogue stores GBP pence; the shop
+    // sells in GBP only, so this is a unit change, never a currency conversion.
     // Resolved for every shoppable request, not only filtered ones: it is
     // both the currency the bounds are read in and the currency prices come
     // back in, so a client filters and displays in the same units.
     const resolved =
       rest.shoppable || priceMin !== undefined || priceMax !== undefined
-        ? resolveCurrency({ requested: currency, countryCode: await resolveRequestCountry(req) })
+        ? resolveCurrency()
         : undefined;
 
     let priceMinGbpPence: number | undefined;

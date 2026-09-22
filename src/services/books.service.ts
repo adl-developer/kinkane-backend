@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { eq, ne, sql, and, ilike, inArray, asc, desc, gt, notInArray, type SQL } from 'drizzle-orm';
+import { eq, ne, sql, and, or, ilike, inArray, asc, desc, gt, lte, notInArray, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import { db } from '../db';
 import {
@@ -43,11 +43,14 @@ import {
   isSellableBand,
   SHOP_BAND,
   SHOP_BAND_ORDER,
+  STOCK_TIER,
   type ShopBand,
+  type StockTier,
 } from '../lib/shoppable';
-import { toPresentment } from './commerce/pricing';
+import { SHOP_CURRENCY, toPresentment } from './commerce/pricing';
 import { config } from '../config';
 import { getProductFormLabel } from '../lib/product-form';
+import { addDisplayGenre, toDisplayGenres } from '../lib/genre-display';
 
 const BOOK_DETAIL_TTL    = 60 * 60;    // 1 hour
 const LIST_TTL           = 5 * 60;     // 5 minutes
@@ -391,6 +394,14 @@ export interface BookListItem {
   compareAtMinor?: number | null;
   /** ISO-4217 for the two fields above. */
   currency?: string;
+  /**
+   * How many copies one customer may buy right now — see availableQuantityFor
+   * in lib/shoppable. Always present on `GET /books` and `GET /books/:id`,
+   * whatever `shoppable` says; 0 means it cannot be bought at the moment.
+   * Optional only because internal builders of this shape (listByIds, saved
+   * books) do not attach it themselves.
+   */
+  availableQuantity?: number;
 }
 
 // Which side of the catalogue a typeahead query is matched against. 'all' (the default)
@@ -454,6 +465,8 @@ export interface TrendingBookItem {
   compareAtMinor?: number | null;
   currency?: string;
   inStock?: boolean;
+  /** See BookListItem.availableQuantity. */
+  availableQuantity?: number;
 }
 
 // TrendingBookItem plus the fields dedupeByTitle needs to pick the best of several
@@ -466,8 +479,8 @@ interface FeedScoringRow extends TrendingBookItem {
   hasPrice: boolean;
 }
 
-function stripFeedScoring(row: FeedScoringRow): TrendingBookItem {
-  const { shortDescription: _shortDescription, availabilityCode: _availabilityCode, genreCount: _genreCount, hasPrice: _hasPrice, ...item } = row;
+function stripFeedScoring(row: FeedScoringRow & { stockTier?: number }): TrendingBookItem {
+  const { shortDescription: _shortDescription, availabilityCode: _availabilityCode, genreCount: _genreCount, hasPrice: _hasPrice, stockTier: _stockTier, ...item } = row;
   return item;
 }
 
@@ -518,7 +531,10 @@ async function hydrateBookCards(
       .select({ bookId: bookGenres.bookId, name: genres.name, slug: genres.slug })
       .from(bookGenres)
       .innerJoin(genres, eq(genres.id, bookGenres.genreId))
-      .where(inArray(bookGenres.bookId, ids)),
+      .where(inArray(bookGenres.bookId, ids))
+      // Fixed order so that when several genres share a display name the same
+      // one's slug is kept on every read (see lib/genre-display).
+      .orderBy(genres.id),
 
     getExcerptsByIsbns(rows.map((r) => r.isbn13)),
   ]);
@@ -550,7 +566,8 @@ async function hydrateBookCards(
     });
   }
   for (const g of genreRows) {
-    bookMap.get(g.bookId)?.genres.push({ name: g.name, slug: g.slug });
+    const entry = bookMap.get(g.bookId);
+    if (entry) addDisplayGenre(entry.genres, g);
   }
 
   return rows.map((r) => bookMap.get(r.id)).filter((b): b is TrendingBookItem => b !== undefined);
@@ -569,6 +586,8 @@ export interface EditionSummary {
   productFormLabel: string | null;
   coverUrl: string | null;
   publicationDate: string | null;
+  /** Live, put on after the book-page cache — see booksService.getById. */
+  availableQuantity?: number;
 }
 
 export interface BookDetail extends BookListItem {
@@ -1052,7 +1071,7 @@ function priceFields(
   currency: string | undefined,
 ): { unitPriceMinor: number; compareAtMinor: number | null; currency: string } | Record<string, never> {
   if (!live) return {};
-  const code = (currency ?? config.commerce.currency.default).toUpperCase();
+  const code = SHOP_CURRENCY;
   return {
     unitPriceMinor: toPresentment(live.unitPriceGbpPence, code),
     compareAtMinor:
@@ -1125,9 +1144,18 @@ export function buildSortOrderBy(opts: ListBooksOptions): (SQL | PgColumn)[] {
   // the title must not float the sunk bands to the top. That asymmetry is also
   // why it takes two indexes rather than one read backwards — see
   // 0061_books_title_sortable_rank_v2.sql.
+  // `books.id` last on the title and newest orders makes them total: without it,
+  // editions sharing a title or a publication date come back in whatever order
+  // the scan happens to produce, so two requests for adjacent pages can disagree
+  // about which side of the boundary a row is on. Ties there are small (one
+  // title's editions, one day's releases), so the incremental sort is cheap.
+  //
+  // Deliberately not added to the default updatedAt order: bulk loads stamp a
+  // whole batch with one timestamp, so its tie groups can be a large share of
+  // the catalogue, and sorting one per page needs an (updated_at, id) index first.
   const byTitle = (): SQL[] => {
     const dir = opts.sort === 'desc' ? sql`DESC` : sql`ASC`;
-    return [TITLE_SORT_RANK, sql`${TITLE_SORTED_ON} ${dir}`, sql`${books.title} ${dir}`];
+    return [TITLE_SORT_RANK, sql`${TITLE_SORTED_ON} ${dir}`, sql`${books.title} ${dir}`, sql`${books.id} ${dir}`];
   };
 
   switch (opts.sortBy) {
@@ -1136,6 +1164,7 @@ export function buildSortOrderBy(opts: ListBooksOptions): (SQL | PgColumn)[] {
     case 'newest':
       return [
         sql`${books.publicationDate} ${opts.sort === 'asc' ? sql`ASC` : sql`DESC`} NULLS LAST`,
+        sql`${books.id} ${opts.sort === 'asc' ? sql`ASC` : sql`DESC`}`,
       ];
     default:
       return opts.sort ? byTitle() : [books.updatedAt];
@@ -1252,7 +1281,10 @@ async function attachRelationsToList(
       })
       .from(bookGenres)
       .innerJoin(genres, eq(genres.id, bookGenres.genreId))
-      .where(inArray(bookGenres.bookId, ids)),
+      .where(inArray(bookGenres.bookId, ids))
+      // Fixed order so that when several genres share a display name the same
+      // one's slug is kept on every read (see lib/genre-display).
+      .orderBy(genres.id),
 
     db
       .select({
@@ -1269,7 +1301,8 @@ async function attachRelationsToList(
     map.get(c.bookId)?.contributors.push({ role: c.role, personName: c.personName, sequenceNumber: c.sequenceNumber });
   }
   for (const g of genreRows) {
-    map.get(g.bookId)?.genres.push({ name: g.name, slug: g.slug });
+    const entry = map.get(g.bookId);
+    if (entry) addDisplayGenre(entry.genres, g);
   }
   for (const p of priceRows) {
     map.get(p.bookId)?.prices.push({ priceType: p.priceType, priceAmount: p.priceAmount, currencyCode: p.currencyCode });
@@ -2123,6 +2156,107 @@ async function fetchOtherEditions(
     .limit(OTHER_EDITIONS_LIMIT);
 }
 
+/**
+ * Most sibling editions considered per title on one `GET /books` page — see
+ * fetchSiblingEditions. A classic can have hundreds; the best-stocked few are all
+ * the picker needs, and a per-title cap stops one of them crowding every other
+ * title on the page out of a shared limit.
+ */
+const SIBLING_EDITIONS_PER_TITLE = 10;
+
+/**
+ * The other editions of the titles on one `GET /books` page, so the edition
+ * picker (lib/dedupe) chooses among all of them rather than only the ones that
+ * happened to land in the page's scan window.
+ *
+ * Without this, one-edition-per-title only holds when a title's editions sit
+ * next to each other in the ordering. They do in a title sort, but not by
+ * publication date or shop band: a hardback and its paperback are typically
+ * published months apart, and measured on the local catalogue the page showed
+ * the wrong edition for about one title in ten.
+ *
+ * A sibling must:
+ *  - have exactly the same title (served by idx_books_title);
+ *  - share a contributor with a page row of that title, compared the way
+ *    fetchOtherEditions compares them — normalised, in either stored name order
+ *    ("Achebe, Chinua" matches "Chinua Achebe"), generic names ignored;
+ *  - pass `where`: the request's own filters, and for a search the same match
+ *    the page rows had to pass (see the caller). So a filtered-out edition cannot
+ *    come back in through the swap, and an author search cannot swap a book in
+ *    on a co-contributor the query never named.
+ *
+ * Within each title the in-stock, then paperback, then hardback editions are
+ * kept first, so the cap never drops the edition the picker would have chosen.
+ * Each sibling comes back with its shop band, since the page's shop fields are
+ * keyed on the band a row was selected by and a sibling was not selected by any.
+ */
+async function fetchSiblingEditions(
+  pageRows: ListRow[],
+  where: SQL | undefined,
+): Promise<{ row: ListRow; band: ShopBand }[]> {
+  if (pageRows.length === 0) return [];
+
+  const pageIds = pageRows.map((r) => r.id);
+  const titles = [...new Set(pageRows.map((r) => r.title))];
+  const norm = (column: string) => sql.raw(normalisedNameSql(column));
+  const notGeneric = (nameExpr: SQL) =>
+    sql`upper(${nameExpr}) NOT IN (${sql.join(
+      GENERIC_CONTRIBUTOR_NAMES.map((n) => sql`${n}`),
+      sql`, `,
+    )})`;
+  // One of the sibling's names, in either stored order, equal to one of the page
+  // row's names in either order.
+  const sharesName = (siblingColumn: string) => sql`(
+    sib_c.${sql.raw(siblingColumn)} IS NOT NULL
+    AND ${notGeneric(norm(`sib_c.${siblingColumn}`))}
+    AND ${norm(`sib_c.${siblingColumn}`)} IN (${norm('page_c.person_name')}, ${norm('page_c.person_name_inverted')})
+  )`;
+
+  const band = sql<number>`CASE
+    WHEN ${buildShopBandCondition(SHOP_BAND.IN_STOCK)} THEN ${SHOP_BAND.IN_STOCK}
+    WHEN ${buildShopBandCondition(SHOP_BAND.TO_ORDER)} THEN ${SHOP_BAND.TO_ORDER}
+    ELSE ${SHOP_BAND.UNSELLABLE}
+  END`;
+  const format = sql`CASE upper(btrim(${books.productForm})) WHEN 'BC' THEN 0 WHEN 'BB' THEN 1 ELSE 2 END`;
+
+  const ranked = db
+    .select({
+      id: books.id,
+      band: band.as('sibling_band'),
+      rank: sql<number>`row_number() OVER (PARTITION BY ${books.title} ORDER BY ${band}, ${format}, ${books.id})`.as(
+        'sibling_rank',
+      ),
+    })
+    .from(books)
+    .where(
+      and(
+        inArray(books.title, titles),
+        notInArray(books.id, pageIds),
+        where,
+        sql`EXISTS (
+          SELECT 1
+            FROM book_contributors sib_c
+            JOIN book_contributors page_c ON page_c.book_id IN (${sql.join(pageIds.map((id) => sql`${id}`), sql`, `)})
+            JOIN books page_b ON page_b.id = page_c.book_id AND page_b.title = ${books.title}
+           WHERE sib_c.book_id = ${books.id}
+             AND (${sharesName('person_name')} OR ${sharesName('person_name_inverted')})
+        )`,
+      ),
+    )
+    .as('ranked_siblings');
+
+  const rows = await db
+    .select({ ...LIST_COLUMNS, band: ranked.band })
+    .from(books)
+    .innerJoin(ranked, eq(ranked.id, books.id))
+    .where(lte(ranked.rank, SIBLING_EDITIONS_PER_TITLE));
+
+  return rows.map(({ band: siblingBand, ...row }) => ({
+    row: row as ListRow,
+    band: Number(siblingBand) as ShopBand,
+  }));
+}
+
 // ── Public service ────────────────────────────────────────────────────────────
 
 export const booksService = {
@@ -2173,7 +2307,8 @@ export const booksService = {
     // never sets `searchType`; v2 always defaults it to 'title'. If either ever passed
     // `searchType: undefined` explicitly it would still hash as absent, which is the
     // blended page — hence v2's controller defaulting rather than forwarding an optional.
-    const rowsCacheKey = `books:list:v7:${createHash('sha256').update(JSON.stringify(opts)).digest('hex')}`;
+    // v8: the edition picker now prefers in-stock, then order-in editions, then paperback > hardback > other, so v7 pages could hold the wrong edition of a title.
+    const rowsCacheKey = `books:list:v8:${createHash('sha256').update(JSON.stringify(opts)).digest('hex')}`;
     // Keyed only on the fields that affect the count (not limit/offset/sort) so every
     // page of the same filter — and every sort direction — shares one cached total.
     //
@@ -2420,18 +2555,35 @@ export const booksService = {
     // shop's band ladder below re-runs it once per band — same tier, same ordering, one
     // extra predicate. `buildRowsWhere(opts)` (no band) is the whole filtered set, which
     // is what the count at the bottom must keep measuring.
+    const titleConditionForTier = (q: string) =>
+      rowsTier === 'fast'
+        ? buildFastTitlePrefixCondition(q)
+        : rowsTier === 'cheap'
+          ? buildTitlePrefixCondition(q)
+          : buildSearchCondition(q);
     const buildRowsWhere = (o: ListBooksOptions) =>
-      o.q && !isAuthorSearch
-        ? buildWhereClause(
-            o,
-            rowsTier === 'fast'
-              ? buildFastTitlePrefixCondition(o.q)
-              : rowsTier === 'cheap'
-                ? buildTitlePrefixCondition(o.q)
-                : buildSearchCondition(o.q),
-          )
-        : buildWhereClause(o);
+      o.q && !isAuthorSearch ? buildWhereClause(o, titleConditionForTier(o.q)) : buildWhereClause(o);
     const rowsWhere = buildRowsWhere(opts);
+
+    // What a sibling edition must satisfy to stand in for a page row (see
+    // fetchSiblingEditions): the request's filters, minus the shop band — the band
+    // is a ranking, and a sibling from another band is exactly what it may swap in
+    // — plus, for a search, the match the page rows passed. A title match is safe
+    // as it is, since a sibling has the identical title. A name match is not: the
+    // sibling must match the query's name itself, not merely share *some*
+    // contributor with a row that did, or an author search could swap in a book on
+    // a co-contributor nobody searched for. The cheap name tier is used; a row that
+    // only matched fuzzily simply gets no siblings, which is the safe direction.
+    const siblingWhere: SQL | undefined = !opts.q
+      ? buildWhereClause({ ...opts, shopBand: undefined })
+      : isAuthorSearch
+        ? buildWhereClause({ ...opts, shopBand: undefined }, buildAuthorMatchCondition(opts.q, 'cheap'))
+        : isBlendedSearch
+          ? buildWhereClause(
+              { ...opts, shopBand: undefined },
+              or(titleConditionForTier(opts.q), buildAuthorMatchCondition(opts.q, 'cheap')),
+            )
+          : buildRowsWhere({ ...opts, shopBand: undefined });
 
     // How many rows are in one band, for the offset arithmetic in planShopBands.
     //
@@ -2628,6 +2780,15 @@ export const booksService = {
           const rawHasMore = fetched.length > overfetchLimit;
           const rawRows = rawHasMore ? fetched.slice(0, overfetchLimit) : fetched;
 
+          // With one edition per title, the picker has to see every edition of each
+          // title on the page, not only those inside this scan window — see
+          // fetchSiblingEditions. They only ever replace a page row of the same
+          // title, never add a new position, and they do not advance the cursor:
+          // pagination still runs on rawRows.
+          const siblings = opts.dedupe ? await fetchSiblingEditions(rawRows, siblingWhere) : [];
+          for (const sibling of siblings) bandByRow.set(sibling.row.id, sibling.band);
+          const poolRows: ListRow[] = [...rawRows, ...siblings.map((sibling) => sibling.row)];
+
           // The shop fields are looked up for the sellable bands only. An unsellable
           // book can still have a supplier price and even stock behind it — an
           // unsuppliable report code does not erase either — and reporting them
@@ -2635,22 +2796,22 @@ export const booksService = {
           // a row with no Add button. Neither is a fact the caller can act on, and
           // both read as an offer.
           const sellableIsbns = opts.shoppable
-            ? rawRows
+            ? poolRows
                 .filter((r) => isSellableBand(bandByRow.get(r.id) ?? SHOP_BAND.UNSELLABLE))
                 .map((r) => r.isbn13)
             : [];
 
           const [relations, excerptMap, descriptionById, stockByIsbn, priceByIsbn] = await Promise.all([
-            attachRelationsToList(rawRows),
-            getExcerptsByIsbns(rawRows.map((r) => r.isbn13)),
+            attachRelationsToList(poolRows),
+            getExcerptsByIsbns(poolRows.map((r) => r.isbn13)),
             // Only needed for dedupe scoring — BookListItem never exposes it, and
             // fetching it for every plain page would undo the "keep payloads small"
             // reason LIST_COLUMNS leaves it out.
-            opts.dedupe && rawRows.length > 0
+            opts.dedupe && poolRows.length > 0
               ? db
                   .select({ id: books.id, shortDescription: books.shortDescription })
                   .from(books)
-                  .where(inArray(books.id, rawRows.map((r) => r.id)))
+                  .where(inArray(books.id, poolRows.map((r) => r.id)))
                   .then((rows) => new Map(rows.map((r) => [r.id, r.shortDescription])))
               : Promise.resolve(new Map<number, string | null>()),
             // Only the shop needs the badge, so only the shop pays for the lookup.
@@ -2670,7 +2831,7 @@ export const booksService = {
                   new Map<string, { unitPriceGbpPence: number; compareAtGbpPence: number | null }>(),
                 ),
           ]);
-          const enriched = rawRows.map((r) => ({
+          const enriched = poolRows.map((r) => ({
             ...r,
             productFormLabel: getProductFormLabel(r.productForm),
             ...relations.get(r.id)!,
@@ -2706,27 +2867,44 @@ export const booksService = {
             const carryOverFiltered = enriched.filter(
               (r) => !carryOverTitles.has(r.title.trim().toLowerCase()),
             );
-            const scored = carryOverFiltered.map((r) => ({
-              ...r,
-              shortDescription: descriptionById.get(r.id) ?? null,
-              genreCount: r.genres.length,
-              hasPrice: r.prices.length > 0,
-            }));
+            const scored = await withStockTier(
+              carryOverFiltered.map((r) => ({
+                ...r,
+                shortDescription: descriptionById.get(r.id) ?? null,
+                genreCount: r.genres.length,
+                hasPrice: r.prices.length > 0,
+              })),
+            );
             const deduped = dedupeByTitle(scored);
             hasMore = hasMore || deduped.length > opts.limit;
-            result = deduped.slice(0, opts.limit).map(({ shortDescription: _shortDescription, genreCount: _genreCount, hasPrice: _hasPrice, ...item }) => item);
+            result = deduped.slice(0, opts.limit).map(({ shortDescription: _shortDescription, genreCount: _genreCount, hasPrice: _hasPrice, stockTier: _stockTier, ...item }) => item);
 
             if (hasMore) {
-              // Advance past everything we scanned and carry the returned
-              // titles forward — those two guarantees together mean any raw
-              // edition of a title on this page that lives past the page
-              // boundary is filtered as a duplicate on the next request.
-              const returnedKeys = result.map((r) => r.title.trim().toLowerCase());
+              // Resume at the first scanned row of a title this page did *not*
+              // show. The window holds more distinct titles than one page, and
+              // advancing past all of it used to skip every title after the
+              // first `limit` for good — measured at 17 of 37 on a newest-first
+              // page. Rows before that point are either shown or carried over,
+              // and the returned titles ride forward in the tail, so a later
+              // edition of anything shown here is filtered on the next request.
+              const titleKey = (r: { title: string }) => r.title.trim().toLowerCase();
+              const returnedKeys = result.map(titleKey);
+              const shown = new Set(returnedKeys);
+              let resumeAt = rawRows.findIndex(
+                (r) => !shown.has(titleKey(r)) && !carryOverTitles.has(titleKey(r)),
+              );
+              // -1 means every scanned row was shown or carried over. 0 cannot
+              // happen with a non-empty page — the first row's title is always
+              // shown — but guarding it keeps the cursor from ever standing still.
+              if (resumeAt <= 0) resumeAt = rawRows.length;
+              // Oldest first, newest last, so the slice keeps the titles most
+              // likely to reappear next. The old order kept the oldest and
+              // dropped the newest, which let a title repeat on the very next page.
               const nextTail = Array.from(
-                new Set([...returnedKeys, ...(opts.cursor?.t ?? [])]),
+                new Set([...(opts.cursor?.t ?? []), ...returnedKeys]),
               ).slice(-CURSOR_TAIL_TITLES);
               nextCursor = encodeDedupeCursor({
-                o: effectiveOffset + rawRows.length,
+                o: effectiveOffset + resumeAt,
                 t: nextTail,
               });
             }
@@ -2859,7 +3037,9 @@ export const booksService = {
       // report a lower bound by construction.
       total > probedTotal;
     return {
-      books: page.rows,
+      // Attached here, after the rows cache, rather than alongside inStock inside
+      // it: a quantity stepper is the one number on the card that must be live.
+      books: await attachAvailableQuantity(page.rows),
       total,
       hasMore: page.hasMore,
       totalIsApproximate,
@@ -2870,7 +3050,8 @@ export const booksService = {
   async suggestions(q: string, limit: number, type: SuggestionType = 'all', dedupe = false): Promise<SuggestionItem[]> {
     // v3: results now depend on `dedupe` too (added below) — v2 entries predate the flag
     // and were always deduped, so they'd be wrongly served as the non-deduped default.
-    const cacheKey = `suggestions:v3:${type}:${dedupe}:${createHash('sha256').update(`${q}:${limit}`).digest('hex')}`;
+    // v4: the edition picker now prefers in-stock, then order-in editions, then paperback > hardback > other.
+    const cacheKey = `suggestions:v4:${type}:${dedupe}:${createHash('sha256').update(`${q}:${limit}`).digest('hex')}`;
     const cached = await redis.get(cacheKey);
     if (cached) return JSON.parse(cached) as SuggestionItem[];
 
@@ -3034,9 +3215,9 @@ export const booksService = {
         hasPrice: priceIds.has(r.id),
       });
 
-      const dedupedTitle = dedupeByTitleAndSubtitle(titlePool.map(withScoring));
+      const dedupedTitle = dedupeByTitleAndSubtitle(await withStockTier(titlePool.map(withScoring)));
       const titleIds = new Set(dedupedTitle.map((r) => r.id));
-      const dedupedAuthor = dedupeByTitleAndSubtitle(authorPool.map(withScoring)).filter((r) => !titleIds.has(r.id));
+      const dedupedAuthor = dedupeByTitleAndSubtitle(await withStockTier(authorPool.map(withScoring))).filter((r) => !titleIds.has(r.id));
       titleRows = dedupedTitle;
       authorRows = dedupedAuthor;
     } else {
@@ -3091,7 +3272,19 @@ export const booksService = {
 
     const excerptMap = await getExcerptsByIsbns(rows.map((r) => r.isbn13));
 
-    const results = rows.map(({ shortDescription: _shortDescription, availabilityCode: _availabilityCode, publicationDate: _publicationDate, ...r }) => ({
+    // The dedupe path hands back its scoring rows (genreCount, hasPrice, the
+    // stock-derived stockTier) typed as SuggestionRow, so they are stripped here
+    // by name — otherwise they would ride into the public payload and its cache.
+    type ScoredSuggestionRow = SuggestionRow & { genreCount?: number; hasPrice?: boolean; stockTier?: number };
+    const results = (rows as ScoredSuggestionRow[]).map(({
+      shortDescription: _shortDescription,
+      availabilityCode: _availabilityCode,
+      publicationDate: _publicationDate,
+      genreCount: _genreCount,
+      hasPrice: _hasPrice,
+      stockTier: _stockTier,
+      ...r
+    }) => ({
       ...r,
       productFormLabel: getProductFormLabel(r.productForm),
       authors: authorMap.get(r.id) ?? [],
@@ -3223,101 +3416,24 @@ export const booksService = {
       .filter((book): book is BookListItem => book !== null);
   },
 
+  /**
+   * The book page. The detail itself is cached for BOOK_DETAIL_TTL;
+   * `availableQuantity` is put on after the cache on every request, for the
+   * same reason feeds attach their prices late — stock moves hourly.
+   */
   async getById(id: number): Promise<BookDetail | null> {
-    const cacheKey = `book:detail:${id}`;
-    const cached = await redis.get(cacheKey);
-    if (cached) {
-      const detail = JSON.parse(cached) as BookDetail;
-      detail.createdAt = new Date(detail.createdAt);
-      detail.updatedAt = new Date(detail.updatedAt);
-      return detail;
-    }
-
-    const [book] = await db.select().from(books).where(eq(books.id, id)).limit(1);
-    if (!book) return null;
-
-    const [contributors, genreRows, priceRows, subjects, excerptMap, otherEditionRows] = await Promise.all([
-      db
-        .select({
-          role: bookContributors.role,
-          personName: bookContributors.personName,
-          sequenceNumber: bookContributors.sequenceNumber,
-        })
-        .from(bookContributors)
-        .where(eq(bookContributors.bookId, id))
-        .orderBy(bookContributors.sequenceNumber),
-
-      db
-        .select({ name: genres.name, slug: genres.slug })
-        .from(bookGenres)
-        .innerJoin(genres, eq(genres.id, bookGenres.genreId))
-        .where(eq(bookGenres.bookId, id)),
-
-      db
-        .select({
-          priceType: bookPrices.priceType,
-          priceAmount: bookPrices.priceAmount,
-          currencyCode: bookPrices.currencyCode,
-        })
-        .from(bookPrices)
-        .where(eq(bookPrices.bookId, id)),
-
-      db
-        .select({
-          schemeIdentifier: bookSubjects.schemeIdentifier,
-          subjectCode: bookSubjects.subjectCode,
-          subjectHeadingText: bookSubjects.subjectHeadingText,
-          isMainSubject: bookSubjects.isMainSubject,
-        })
-        .from(bookSubjects)
-        .where(eq(bookSubjects.bookId, id)),
-
-      getExcerptsByIsbns([book.isbn13]),
-
-      fetchOtherEditions(id, book.title),
-    ]);
-
-    const detail: BookDetail = {
-      id: book.id,
-      isbn13: book.isbn13,
-      recordReference: book.recordReference,
-      title: book.title,
-      subtitle: book.subtitle,
-      shortDescription: book.shortDescription,
-      longDescription: book.longDescription,
-      publisherName: book.publisherName,
-      imprintName: book.imprintName,
-      productForm: book.productForm,
-      productFormLabel: getProductFormLabel(book.productForm),
-      publicationDate: book.publicationDate,
-      publishingStatus: book.publishingStatus,
-      availabilityCode: book.availabilityCode,
-      editionNumber: book.editionNumber,
-      pageCount: book.pageCount,
-      heightMm: book.heightMm,
-      widthMm: book.widthMm,
-      thicknessMm: book.thicknessMm,
-      weightGr: book.weightGr,
-      countryOfManufacture: book.countryOfManufacture,
-      countryOfPublication: book.countryOfPublication,
-      returnsCode: book.returnsCode,
-      orderTime: book.orderTime,
-      coverUrl: book.coverUrl,
-      createdAt: book.createdAt,
-      updatedAt: book.updatedAt,
-      contributors,
-      genres: genreRows,
-      prices: priceRows,
-      subjects,
-      excerpt: pickExcerpt(book.isbn13, excerptMap),
-      otherEditions: otherEditionRows.map((row) => ({
-        ...row,
-        productFormLabel: getProductFormLabel(row.productForm),
-      })),
+    const detail = await loadBookDetail(id);
+    if (!detail) return null;
+    const [withQuantity] = await attachAvailableQuantity([detail]);
+    // Re-applied on the way out so a detail cached before genres were shortened
+    // is corrected too, without renaming the cache key that other code deletes
+    // to refresh a book page. Idempotent: a shortened list comes back unchanged.
+    return {
+      ...withQuantity,
+      genres: toDisplayGenres(withQuantity.genres),
+      // An "other formats" picker needs the same live figure as the book itself.
+      otherEditions: await attachAvailableQuantity(withQuantity.otherEditions),
     };
-
-    await redis.set(cacheKey, JSON.stringify(detail), 'EX', BOOK_DETAIL_TTL);
-    return detail;
   },
 
   /**
@@ -3341,7 +3457,8 @@ export const booksService = {
     // shoppable; v3 made the value a pool of cacheTarget items so per-viewer
     // filtering has spare rows to eat; v2 reweighted scores per interaction
     // type; v1 was the flat unweighted ranking.)
-    const cacheKey = `trending:v5:${limit}`;
+    // v6: the edition picker now prefers in-stock, then order-in editions, then paperback > hardback > other.
+    const cacheKey = `trending:v6:${limit}`;
     const cached = await redis.get(cacheKey);
     if (cached) {
       return attachShopFields(
@@ -3437,7 +3554,10 @@ export const booksService = {
         })
         .from(bookGenres)
         .innerJoin(genres, eq(genres.id, bookGenres.genreId))
-        .where(inArray(bookGenres.bookId, bookIds)),
+        .where(inArray(bookGenres.bookId, bookIds))
+        // Fixed order so that when several genres share a display name the same
+        // one's slug is kept on every read (see lib/genre-display).
+        .orderBy(genres.id),
 
       db
         .selectDistinct({ bookId: bookPrices.bookId })
@@ -3457,7 +3577,7 @@ export const booksService = {
     for (const g of genreRows) {
       const entry = bookMap.get(g.bookId);
       if (entry) {
-        entry.genres.push({ name: g.name, slug: g.slug });
+        addDisplayGenre(entry.genres, g);
         entry.genreCount++;
       }
     }
@@ -3468,7 +3588,7 @@ export const booksService = {
 
     // Preserve the score-ordered sequence from bookIds
     const ordered = bookIds.map((id) => bookMap.get(id)).filter((b): b is FeedScoringRow => b !== undefined);
-    const pool = dedupeByTitle(ordered).slice(0, cacheTarget).map(stripFeedScoring);
+    const pool = dedupeByTitle(await withStockTier(ordered)).slice(0, cacheTarget).map(stripFeedScoring);
 
     // The pool is shared across all viewers; each one gets their own filtered
     // view of it.
@@ -3485,7 +3605,8 @@ export const booksService = {
     // v3: sellable/withdrawn filtering is now unconditional here too, so the
     // pool is identical for shop and non-shop callers — `shoppable` is out of
     // the key, and the bump drops the pre-fix pools that were never filtered.
-    const cacheKey = `personalized:v3:${userId}:${limit}`;
+    // v4: the edition picker now prefers in-stock, then order-in editions, then paperback > hardback > other.
+    const cacheKey = `personalized:v4:${userId}:${limit}`;
     const cached = await redis.get(cacheKey);
     if (cached) {
       return attachShopFields(JSON.parse(cached) as TrendingBookItem[], currency);
@@ -3570,7 +3691,10 @@ export const booksService = {
         .select({ bookId: bookGenres.bookId, name: genres.name, slug: genres.slug })
         .from(bookGenres)
         .innerJoin(genres, eq(genres.id, bookGenres.genreId))
-        .where(inArray(bookGenres.bookId, ids)),
+        .where(inArray(bookGenres.bookId, ids))
+        // Fixed order so that when several genres share a display name the same
+        // one's slug is kept on every read (see lib/genre-display).
+        .orderBy(genres.id),
 
       db.selectDistinct({ bookId: bookPrices.bookId }).from(bookPrices).where(inArray(bookPrices.bookId, ids)),
 
@@ -3587,7 +3711,7 @@ export const booksService = {
     for (const g of genreRows) {
       const entry = bookMap.get(g.bookId);
       if (entry) {
-        entry.genres.push({ name: g.name, slug: g.slug });
+        addDisplayGenre(entry.genres, g);
         entry.genreCount++;
       }
     }
@@ -3598,7 +3722,7 @@ export const booksService = {
 
     // Preserve cosine similarity order from rows
     const ordered = rows.map((r) => bookMap.get(r.id)).filter((b): b is FeedScoringRow => b !== undefined);
-    const results = dedupeByTitle(ordered).slice(0, limit).map(stripFeedScoring);
+    const results = dedupeByTitle(await withStockTier(ordered)).slice(0, limit).map(stripFeedScoring);
 
     // Cached without prices — attachShopFields runs on every read instead.
     await redis.set(cacheKey, JSON.stringify(results), 'EX', PERSONALIZED_TTL);
@@ -3803,7 +3927,12 @@ export const booksService = {
     const rows = result as unknown as ReaderTypeFeedRow[];
     if (rows.length === 0) return { books: [], total: 0 };
 
-    return { books: await hydrateBookCards(rows), total: Number(rows[0].total) };
+    // No price on this rail (see the docs), but the quantity is on every book
+    // response, so a card here reads the same as a card anywhere else.
+    return {
+      books: await attachAvailableQuantity(await hydrateBookCards(rows)),
+      total: Number(rows[0].total),
+    };
   },
 
   /**
@@ -3916,7 +4045,8 @@ export const booksService = {
     // and the bump drops the pre-fix `:all` pools that still held unsellable
     // books. (v3 keyed on shoppable; v2 made the value a pool of cacheTarget
     // items so per-user filtering has spare rows to eat.)
-    const cacheKey = `similar:v4:${bookId}:${limit}`;
+    // v5: the edition picker now prefers in-stock, then order-in editions, then paperback > hardback > other.
+    const cacheKey = `similar:v5:${bookId}:${limit}`;
     const cached = await redis.get(cacheKey);
     if (cached) {
       return attachShopFields(
@@ -3989,7 +4119,10 @@ export const booksService = {
         .select({ bookId: bookGenres.bookId, name: genres.name, slug: genres.slug })
         .from(bookGenres)
         .innerJoin(genres, eq(genres.id, bookGenres.genreId))
-        .where(inArray(bookGenres.bookId, ids)),
+        .where(inArray(bookGenres.bookId, ids))
+        // Fixed order so that when several genres share a display name the same
+        // one's slug is kept on every read (see lib/genre-display).
+        .orderBy(genres.id),
 
       db.selectDistinct({ bookId: bookPrices.bookId }).from(bookPrices).where(inArray(bookPrices.bookId, ids)),
 
@@ -4006,7 +4139,7 @@ export const booksService = {
     for (const g of genreRows) {
       const entry = bookMap.get(g.bookId);
       if (entry) {
-        entry.genres.push({ name: g.name, slug: g.slug });
+        addDisplayGenre(entry.genres, g);
         entry.genreCount++;
       }
     }
@@ -4017,7 +4150,7 @@ export const booksService = {
 
     // Preserve cosine similarity order from rows
     const ordered = rows.map((r) => bookMap.get(r.id)).filter((b): b is FeedScoringRow => b !== undefined);
-    const pool = dedupeByTitle(ordered).slice(0, cacheTarget).map(stripFeedScoring);
+    const pool = dedupeByTitle(await withStockTier(ordered)).slice(0, cacheTarget).map(stripFeedScoring);
 
     // The pool is what gets cached and shared across users; the caller gets
     // their own filtered view of it.
@@ -4026,6 +4159,110 @@ export const booksService = {
     return attachShopFields(await applyUserExclusions(pool, userId, limit), currency);
   },
 };
+
+/**
+ * Builds (or reads from cache) everything on the book page except the live
+ * shop fields — booksService.getById is the only caller and adds those.
+ */
+async function loadBookDetail(id: number): Promise<BookDetail | null> {
+  const cacheKey = `book:detail:${id}`;
+  const cached = await redis.get(cacheKey);
+  if (cached) {
+    const detail = JSON.parse(cached) as BookDetail;
+    detail.createdAt = new Date(detail.createdAt);
+    detail.updatedAt = new Date(detail.updatedAt);
+    return detail;
+  }
+
+  const [book] = await db.select().from(books).where(eq(books.id, id)).limit(1);
+  if (!book) return null;
+
+  const [contributors, genreRows, priceRows, subjects, excerptMap, otherEditionRows] = await Promise.all([
+    db
+      .select({
+        role: bookContributors.role,
+        personName: bookContributors.personName,
+        sequenceNumber: bookContributors.sequenceNumber,
+      })
+      .from(bookContributors)
+      .where(eq(bookContributors.bookId, id))
+      .orderBy(bookContributors.sequenceNumber),
+
+    db
+      .select({ name: genres.name, slug: genres.slug })
+      .from(bookGenres)
+      .innerJoin(genres, eq(genres.id, bookGenres.genreId))
+      .where(eq(bookGenres.bookId, id))
+      // Fixed order so that when several genres share a display name the same
+      // one's slug is kept on every read (see lib/genre-display).
+      .orderBy(genres.id),
+
+    db
+      .select({
+        priceType: bookPrices.priceType,
+        priceAmount: bookPrices.priceAmount,
+        currencyCode: bookPrices.currencyCode,
+      })
+      .from(bookPrices)
+      .where(eq(bookPrices.bookId, id)),
+
+    db
+      .select({
+        schemeIdentifier: bookSubjects.schemeIdentifier,
+        subjectCode: bookSubjects.subjectCode,
+        subjectHeadingText: bookSubjects.subjectHeadingText,
+        isMainSubject: bookSubjects.isMainSubject,
+      })
+      .from(bookSubjects)
+      .where(eq(bookSubjects.bookId, id)),
+
+    getExcerptsByIsbns([book.isbn13]),
+
+    fetchOtherEditions(id, book.title),
+  ]);
+
+  const detail: BookDetail = {
+    id: book.id,
+    isbn13: book.isbn13,
+    recordReference: book.recordReference,
+    title: book.title,
+    subtitle: book.subtitle,
+    shortDescription: book.shortDescription,
+    longDescription: book.longDescription,
+    publisherName: book.publisherName,
+    imprintName: book.imprintName,
+    productForm: book.productForm,
+    productFormLabel: getProductFormLabel(book.productForm),
+    publicationDate: book.publicationDate,
+    publishingStatus: book.publishingStatus,
+    availabilityCode: book.availabilityCode,
+    editionNumber: book.editionNumber,
+    pageCount: book.pageCount,
+    heightMm: book.heightMm,
+    widthMm: book.widthMm,
+    thicknessMm: book.thicknessMm,
+    weightGr: book.weightGr,
+    countryOfManufacture: book.countryOfManufacture,
+    countryOfPublication: book.countryOfPublication,
+    returnsCode: book.returnsCode,
+    orderTime: book.orderTime,
+    coverUrl: book.coverUrl,
+    createdAt: book.createdAt,
+    updatedAt: book.updatedAt,
+    contributors,
+    genres: toDisplayGenres(genreRows),
+    prices: priceRows,
+    subjects,
+    excerpt: pickExcerpt(book.isbn13, excerptMap),
+    otherEditions: otherEditionRows.map((row) => ({
+      ...row,
+      productFormLabel: getProductFormLabel(row.productForm),
+    })),
+  };
+
+  await redis.set(cacheKey, JSON.stringify(detail), 'EX', BOOK_DETAIL_TTL);
+  return detail;
+}
 
 /**
  * Drops books the viewer has rejected from an already-built list, then trims
@@ -4065,19 +4302,21 @@ export async function attachShopFields<T extends { isbn13: string | null }>(
   if (items.length === 0) return items;
 
   const isbns = items.map((i) => i.isbn13);
-  const [priceByIsbn, stockByIsbn] = await Promise.all([
+  const [priceByIsbn, stockByIsbn, quantityByIsbn] = await Promise.all([
     availabilityService.livePricesByIsbns(isbns),
     availabilityService.inStockByIsbns(isbns),
+    availabilityService.availableQuantityByIsbns(isbns),
   ]);
 
-  const code = (currency ?? config.commerce.currency.default).toUpperCase();
+  const code = SHOP_CURRENCY;
 
   return items.map((item): T => {
-    if (!item.isbn13) return item;
+    if (!item.isbn13) return { ...item, availableQuantity: 0 };
     const live = priceByIsbn.get(item.isbn13);
     return {
       ...item,
       inStock: stockByIsbn.get(item.isbn13) ?? false,
+      availableQuantity: quantityByIsbn.get(item.isbn13) ?? 0,
       ...(live
         ? {
             unitPriceMinor: toPresentment(live.unitPriceGbpPence, code),
@@ -4088,6 +4327,41 @@ export async function attachShopFields<T extends { isbn13: string | null }>(
         : {}),
     };
   });
+}
+
+/**
+ * Puts `availableQuantity` on every row — the catalogue's sibling of
+ * attachShopFields, which does the same for feeds. Unconditional: a book with
+ * no ISBN or no stock row gets 0 rather than no field, so a client never has to
+ * guess what a missing value means.
+ */
+async function attachAvailableQuantity<T extends { isbn13: string | null }>(
+  items: T[],
+): Promise<(T & { availableQuantity: number })[]> {
+  if (items.length === 0) return [];
+  const quantityByIsbn = await availabilityService.availableQuantityByIsbns(
+    items.map((item) => item.isbn13),
+  );
+  return items.map((item) => ({
+    ...item,
+    availableQuantity: item.isbn13 ? (quantityByIsbn.get(item.isbn13) ?? 0) : 0,
+  }));
+}
+
+/**
+ * Tags each row with its stock tier — on the shelf, order-in, or cannot be
+ * bought (lib/shoppable's stockTierFor) — for the edition picker in lib/dedupe,
+ * which ranks on it before format (paperback > hardback > other).
+ */
+async function withStockTier<T extends { isbn13: string | null }>(
+  rows: T[],
+): Promise<(T & { stockTier: StockTier })[]> {
+  if (rows.length === 0) return [];
+  const tierByIsbn = await availabilityService.stockTierByIsbns(rows.map((r) => r.isbn13));
+  return rows.map((row) => ({
+    ...row,
+    stockTier: row.isbn13 ? (tierByIsbn.get(row.isbn13) ?? STOCK_TIER.UNAVAILABLE) : STOCK_TIER.UNAVAILABLE,
+  }));
 }
 
 async function applyUserExclusions(

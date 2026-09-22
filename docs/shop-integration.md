@@ -228,21 +228,15 @@ If they skip it nothing breaks; the token keeps working for tracking.
 
 ## Currency
 
-`currency` is optional on `/cart/price`, `/cart/checkout` and `GET /cart`, and
-it works identically whether or not the caller is signed in. When omitted the
-server resolves it in three steps:
+**Everything is in GBP, exactly as Gardners supplies it.** There is no
+currency conversion: every price, discount, shipping charge and total is
+Gardners' pound figure, in pence, for every customer wherever they are, and
+Stripe charges in GBP.
 
-1. The `currency` you sent — **only if it is one of the supported currencies**
-2. Otherwise, the currency mapped to the destination country
-3. Otherwise, `DEFAULT_CURRENCY`
-
-Currently: supported is `USD, GBP, EUR`; the country map covers `GB → GBP` and
-the eurozone; the default is **USD**. So an order shipping to Ghana with no
-`currency` is priced in USD, not GHS.
-
-> **An unsupported currency is ignored, not rejected.** Sending
-> `"currency": "GHS"` returns `200` priced in something else. Always read
-> `currency` back off the response rather than assuming your override took.
+`currency` is still accepted on `/cart/price`, `/cart/checkout`, `GET /cart`
+and `GET /books` so older clients keep working, but it is ignored. Every
+response says `"currency": "GBP"`. Divide `*Minor` amounts by 100 to show
+pounds.
 
 ## Buying while signed in
 
@@ -390,6 +384,45 @@ simply the absence of `unavailable`. Showing an out-of-stock badge on these
 would mislabel a large part of the shop as unbuyable.
 
 `supplyToOrder` appears on cart lines, `POST /cart/price` lines, and saved books.
+
+## How many can be bought: `availableQuantity`
+
+Every book response carries `availableQuantity`: how many copies one customer
+can put in the basket right now. That is each row of `GET /books` (with or
+without `shoppable`), `GET /books/:id` and each of its `otherEditions`, every
+discovery feed, the reading shelves (`/user-books`) and saved books. Use it to
+cap the quantity stepper and to show "only 3 left".
+
+**It is the number to trust for the Add button.** `shoppable: true` with
+`inStock: false` covers both order-in titles (which are buyable) and ordinary
+titles that are simply out of stock right now (which are not); only
+`availableQuantity` tells them apart. `0` means no Add button, whatever the
+other flags say. A withdrawn title is always `0`.
+
+| Book | `availableQuantity` |
+|---|---|
+| In stock | Its stock, capped at the per-line maximum (10 by default) |
+| Supplied to order (`GXC`, `M/D`) | The per-line maximum — no shelf, but always orderable |
+| Out of stock, no price, or cannot be supplied | `0` |
+
+It follows the same rules as the cart, so any quantity up to it will be
+accepted, with one exception: rights restrictions depend on the delivery
+country and are only checked at add-to-cart. Saved books are the exception to
+the exception — they are priced for the viewer's destination, so their figure
+already includes restrictions. It is always capped and never the supplier's
+raw stock figure.
+
+## One edition per title, and paging with `cursor`
+
+`GET /books` and `GET /books/search` show one edition per title by default:
+on the shelf first, then order-in, then unavailable; within that paperback,
+then hardback, then any other format. Send `dedupe=false` for every edition.
+
+**Page with `cursor`, not `offset`.** Each response carries `nextCursor`; pass it
+back as `?cursor=` for the next page, and stop when it is `null`. Offset paging
+on this path can show a title on two pages. The web app previously relied on
+the old default (every edition, plain offsets) — it needs to either switch to
+`cursor` or send `dedupe=false`.
 
 ## Out of stock is a state to render, not a reason to hide
 

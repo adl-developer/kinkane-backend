@@ -1,5 +1,5 @@
 /**
- * Pricing rules: currency resolution, FX, shipping and tax.
+ * Pricing rules: the shop currency (GBP, never converted), shipping and tax.
  *
  * Everything in this file is a **pure function of (amount, country, config)**.
  * No database, no Redis, no request object. That is deliberate: these are the
@@ -15,7 +15,7 @@
 import type { Request } from 'express';
 import { config } from '../../config';
 import { geoService } from '../geo.service';
-import { convertFromGbpPence, percentOf, toGbpPenceFromMinor, toStripeAmount } from '../../lib/money';
+import { percentOf } from '../../lib/money';
 import { normalizeCountryCode } from '../../lib/country';
 import type { Parcel } from './parcel';
 import type { RateBand, RateCard } from './shipping-rates.service';
@@ -74,79 +74,63 @@ export async function resolveRequestCountry(req: Request): Promise<string | null
 
 // ── Currency ──────────────────────────────────────────────────────────────────
 
+/**
+ * The only currency the shop sells in.
+ *
+ * Gardners quotes GBP and only GBP, and prices are passed on exactly as
+ * received — no exchange rate, no buffer, no rounding. Every customer, wherever
+ * they are, sees and pays the Gardners figure in pounds. There used to be a
+ * static FX table here (USD/EUR with a 3% buffer); it was removed so that the
+ * price on the shelf is always the supplier's own number.
+ */
+export const SHOP_CURRENCY = 'GBP';
+
 export function isSupportedCurrency(currency: string): boolean {
-  return config.commerce.currency.supported.includes(currency.toUpperCase());
+  return currency.toUpperCase() === SHOP_CURRENCY;
 }
 
 /**
- * Which currency to present prices in.
+ * Which currency to present prices in: always GBP.
  *
- * Order: explicit request → country mapping → DEFAULT_CURRENCY. An unsupported
- * explicit choice is ignored rather than rejected — a stale client sending a
- * currency we have stopped supporting should see a priced cart, not an error.
+ * Keeps its old signature so callers that still pass a requested currency or a
+ * country need no change — both are ignored. A client sending `currency=USD`
+ * gets GBP back, and the `currency` field on every response says so.
  */
-export function resolveCurrency(options: {
+export function resolveCurrency(_options?: {
   requested?: string | null;
   countryCode?: string | null;
 }): string {
-  const { currency } = config.commerce;
-
-  const requested = options.requested?.toUpperCase();
-  if (requested && isSupportedCurrency(requested)) return requested;
-
-  const country = normalizeCountry(options.countryCode);
-  if (country) {
-    const mapped = currency.byCountry[country];
-    if (mapped && isSupportedCurrency(mapped)) return mapped;
-  }
-
-  return currency.default;
+  return SHOP_CURRENCY;
 }
 
 /**
- * The GBP→currency rate actually applied, buffer included. GBP is always 1.
- *
- * Throws 503 rather than falling back to an unbuffered or stale rate: a missing
- * rate for a currency we claim to support is a misconfiguration, and guessing
- * would mean charging someone a number nobody chose.
+ * The rate recorded on an order. Always 1: nothing is converted. Anything else
+ * reaching here is a bug, not a missing config entry, so it fails loudly.
  */
 export function fxRateFor(currency: string): number {
-  const code = currency.toUpperCase();
-  if (code === 'GBP') return 1;
+  assertShopCurrency(currency);
+  return 1;
+}
 
-  const rate = config.commerce.currency.fxFromGbp[code];
-  if (!rate || !Number.isFinite(rate) || rate <= 0) {
-    throw Object.assign(new Error(`No exchange rate configured for ${code}`), {
-      statusCode: 503,
-      code: 'FX_UNAVAILABLE',
+/** A GBP pence amount, as the minor units a response or Stripe expects — unchanged. */
+export function toPresentment(gbpPence: number, currency: string): number {
+  assertShopCurrency(currency);
+  return Math.round(gbpPence);
+}
+
+/** The inverse, for price-filter bounds — already in GBP pence by the time they arrive, so unchanged. */
+export function fromPresentment(minor: number, currency: string): number {
+  assertShopCurrency(currency);
+  return Math.round(minor);
+}
+
+function assertShopCurrency(currency: string): void {
+  if (currency.toUpperCase() !== SHOP_CURRENCY) {
+    throw Object.assign(new Error(`Unsupported currency ${currency}: the shop sells in GBP only`), {
+      statusCode: 400,
+      code: 'UNSUPPORTED_CURRENCY',
     });
   }
-
-  return rate;
-}
-
-/** Converts a GBP pence amount into `currency`, applying the configured buffer. */
-export function toPresentment(gbpPence: number, currency: string): number {
-  const code = currency.toUpperCase();
-  return toStripeAmount(
-    convertFromGbpPence(gbpPence, code, fxRateFor(code), config.commerce.currency.bufferPercent),
-    code,
-  );
-}
-
-/**
- * The reverse, for filter bounds only: a price range the customer typed in
- * their own currency, expressed as the GBP pence the catalogue stores.
- *
- * Not usable for charging anything — see toGbpPenceFromMinor. The buffer and
- * the round-up in the forward direction mean the boundary is approximate by up
- * to a penny either way, which is why the filter treats both bounds as
- * inclusive: showing one book a penny outside the range is a better failure
- * than hiding one inside it.
- */
-export function fromPresentment(minor: number, currency: string): number {
-  const code = currency.toUpperCase();
-  return toGbpPenceFromMinor(minor, code, fxRateFor(code), config.commerce.currency.bufferPercent);
 }
 
 // ── Shipping ──────────────────────────────────────────────────────────────────
@@ -523,13 +507,12 @@ export interface OrderQuote {
 }
 
 /**
- * Prices a whole basket for a destination and currency.
+ * Prices a whole basket for a destination, in GBP.
  *
- * The total is summed from the already-converted components rather than
- * converted from the GBP total. Those differ by a penny or two thanks to
- * per-component rounding, and the version that must be internally consistent is
- * the one the customer sees: a receipt whose lines do not add up to its total
- * is the kind of thing people photograph and post.
+ * The total is summed from the presented components rather than taken from the
+ * GBP total. With no conversion the two are the same number; summing the parts
+ * keeps the guarantee that matters if that ever changes — a receipt whose lines
+ * do not add up to its total is the kind of thing people photograph and post.
  */
 export function quoteOrder(options: {
   lines: QuoteLine[];
@@ -602,10 +585,8 @@ export function quoteOrder(options: {
     : subtotalGbpPence - discountGbpPence + shipping.gbpPence + tax.gbpPence;
 
   const subtotalMinor = lines.reduce((sum, line) => sum + line.lineTotalMinor, 0);
-  // toPresentment rounds up, which on a *discount* rounds in the customer's
-  // favour by at most one minor unit. That is the right direction to err, and
-  // it keeps one conversion helper rather than a second that rounds the other
-  // way for the one case where up means down.
+  // The discount is whole pence already (rounded above), and toPresentment
+  // passes GBP pence through unchanged, so this is the same figure as above.
   const discountMinor = discountGbpPence > 0 ? toPresentment(discountGbpPence, currency) : 0;
   const shippingMinor = toPresentment(shipping.gbpPence, currency);
   const taxMinor = toPresentment(tax.gbpPence, currency);

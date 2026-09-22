@@ -13,10 +13,10 @@ const router = Router();
  * prefix match > word prefix > trigram similarity > full-text search fallback.
  * Title matches lead, but author matches keep a reserved share of the list so
  * they can't be crowded out by a query that also happens to match titles.
- * Minimum 1 character. `dedupe=true` collapses same-titled editions down to
- * the best one (see booksService.suggestions) — off by default so every
- * edition stays visible; pass it from clients (e.g. mobile) that want one
- * result per title. Public — no auth required.
+ * Minimum 1 character. One suggestion per title by default — in stock, then
+ * order-in, then unavailable; within that paperback, then hardback, then
+ * anything else (see lib/dedupe); `dedupe=false` shows every edition.
+ * Public — no auth required.
  *
  * NOTE: must be defined before /:id so Express does not treat "search" as an ID.
  */
@@ -61,9 +61,10 @@ router.get('/recommendations', optionalAuth, booksController.basketRecommendatio
  * clients are pointed at it, and changing what a plain `?q=` returns underneath
  * them is what v2 exists to avoid doing twice.
  *
- * `dedupe=true` collapses same-titled editions down to the best one (see
- * dedupeByTitle in lib/dedupe.ts) — off by default so every edition stays
- * visible; when on, totalIsApproximate is always true, since the row count no
+ * One edition per title by default (`dedupe=true`): in stock, then order-in,
+ * then unavailable; within that paperback, then hardback, then anything else
+ * (see dedupeByTitle in lib/dedupe.ts). `dedupe=false` lists every edition. When on,
+ * totalIsApproximate is always true, since the row count no
  * longer matches the deduped item count. Deduped requests should paginate
  * with `cursor` rather than offset — the response carries `nextCursor` which
  * is either an opaque token to pass back or null when the end is reached.

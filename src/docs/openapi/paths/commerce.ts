@@ -18,7 +18,7 @@ const requestedLine = object({
 }, ['bookId', 'quantity']);
 
 const currencyParam = param('currency', 'query', { type: 'string', minLength: 3, maxLength: 3 },
-  'ISO-4217 override for the display currency. Resolved from the caller’s country when omitted. **Silently ignored** if unsupported — check `currency` on the response rather than assuming the override took.',
+  'Ignored. The shop prices and charges in GBP only, exactly as Gardners supplies it, so every response says `GBP`. Accepted so older clients do not break.',
   { example: 'GBP' });
 
 /**
@@ -298,8 +298,8 @@ export const commercePaths = {
         },
         currency: {
           type: 'string', minLength: 3, maxLength: 3,
-          description: 'ISO-4217 override. Falls back to the resolved currency; ignored if unsupported.',
-          example: 'USD',
+          description: 'Ignored — the shop charges in GBP only, exactly as Gardners prices it. Accepted so older clients do not break.',
+          example: 'GBP',
         },
       })),
       responses: {
@@ -308,7 +308,7 @@ export const commercePaths = {
             url: { type: 'string', format: 'uri', description: 'Stripe Checkout URL.', example: 'https://checkout.stripe.com/c/pay/cs_test_a1B2…' },
             orderId: { type: 'integer', example: 1042 },
             sessionId: { type: 'string', example: 'cs_test_a1B2c3D4…' },
-            currency: { type: 'string', example: 'USD' },
+            currency: { type: 'string', example: 'GBP' },
             totalMinor: { type: 'integer', description: 'Total in minor units, discount already applied.', example: 3497 },
             discountMinor: {
               type: 'integer',
@@ -608,7 +608,7 @@ export const commercePaths = {
             },
             paid: { type: 'boolean', description: 'The field to branch on.', example: true },
             amountCents: { type: 'integer', description: 'Minor units.', example: 3497 },
-            currency: { type: 'string', example: 'USD' },
+            currency: { type: 'string', example: 'GBP' },
             orderId: { type: 'integer', nullable: true, description: 'Set when `kind` is `order`.', example: 1042 },
             paidAt: { type: 'string', format: 'date-time', nullable: true, example: '2026-08-01T12:01:14.000Z' },
             reason: {

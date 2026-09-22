@@ -97,35 +97,40 @@ describe('convertFromGbpPence', () => {
   });
 });
 
+// The shop passes Gardners' GBP prices through untouched. These pin that down:
+// a conversion creeping back in would change what every customer is charged.
 describe('resolveCurrency', () => {
-  it('prefers an explicit supported request', async () => {
+  it('is GBP whatever the client asks for or wherever it is', async () => {
     const { resolveCurrency } = await loadPricing(RATES);
-    expect(resolveCurrency({ requested: 'eur', countryCode: 'GB' })).toBe('EUR');
+    expect(resolveCurrency({ requested: 'eur', countryCode: 'DE' })).toBe('GBP');
+    expect(resolveCurrency({ requested: 'USD', countryCode: 'US' })).toBe('GBP');
+    expect(resolveCurrency({ countryCode: 'BR' })).toBe('GBP');
+    expect(resolveCurrency({})).toBe('GBP');
   });
 
-  // A stale client asking for something we've stopped supporting should still
-  // see a priced cart, not an error.
-  it('ignores an unsupported request and falls through to the country', async () => {
+  // Operators may still have the old FX variables set on a deployed service;
+  // they must not bring conversion back.
+  it('ignores leftover currency and FX environment variables', async () => {
     const { resolveCurrency } = await loadPricing({
       ...RATES,
-      CURRENCY_BY_COUNTRY: 'GB:GBP',
+      CURRENCY_BY_COUNTRY: 'US:USD',
     });
-    expect(resolveCurrency({ requested: 'XXX', countryCode: 'GB' })).toBe('GBP');
+    expect(resolveCurrency({ countryCode: 'US' })).toBe('GBP');
+  });
+});
+
+describe('toPresentment / fromPresentment', () => {
+  it('returns the GBP pence amount unchanged', async () => {
+    const { toPresentment, fromPresentment } = await loadPricing(RATES);
+    expect(toPresentment(1299, 'GBP')).toBe(1299);
+    expect(toPresentment(1299, 'gbp')).toBe(1299);
+    expect(fromPresentment(1299, 'GBP')).toBe(1299);
   });
 
-  it('defaults to USD when the country is unknown or unmapped', async () => {
-    const { resolveCurrency } = await loadPricing({ ...RATES, CURRENCY_BY_COUNTRY: 'GB:GBP' });
-    expect(resolveCurrency({ countryCode: 'BR' })).toBe('USD');
-    expect(resolveCurrency({})).toBe('USD');
-  });
-
-  it('does not map a country to a currency it cannot present', async () => {
-    const { resolveCurrency } = await loadPricing({
-      ...RATES,
-      SUPPORTED_CURRENCIES: 'USD,GBP',
-      CURRENCY_BY_COUNTRY: 'DE:EUR',
-    });
-    expect(resolveCurrency({ countryCode: 'DE' })).toBe('USD');
+  it('refuses any other currency rather than converting', async () => {
+    const { toPresentment, fromPresentment } = await loadPricing(RATES);
+    expect(() => toPresentment(1299, 'USD')).toThrow(/GBP only/);
+    expect(() => fromPresentment(1299, 'EUR')).toThrow(/GBP only/);
   });
 });
 
@@ -135,10 +140,9 @@ describe('fxRateFor', () => {
     expect(fxRateFor('GBP')).toBe(1);
   });
 
-  // Guessing here would mean charging someone a number nobody chose.
-  it('throws 503 for a currency with no configured rate', async () => {
-    const { fxRateFor } = await loadPricing({ ...RATES, FX_RATES_FROM_GBP: 'USD:1.25' });
-    expect(() => fxRateFor('EUR')).toThrow(/no exchange rate configured/i);
+  it('refuses any other currency, even one the old FX table had a rate for', async () => {
+    const { fxRateFor } = await loadPricing(RATES);
+    expect(() => fxRateFor('USD')).toThrow(/GBP only/);
   });
 });
 
@@ -301,20 +305,22 @@ describe('quoteOrder', () => {
   // rather than converted from the GBP total.
   it('produces a total that equals the sum of its own presented parts', async () => {
     const { quoteOrder } = await loadPricing(ORDER_ENV);
-    const quote = quoteOrder({ lines, destinationCountry: 'US', currency: 'USD' });
+    const quote = quoteOrder({ lines, destinationCountry: 'US', currency: 'GBP' });
 
     const summedLines = quote.lines.reduce((sum, line) => sum + line.lineTotalMinor, 0);
     expect(quote.subtotalMinor).toBe(summedLines);
     expect(quote.totalMinor).toBe(quote.subtotalMinor + quote.shippingMinor + quote.taxMinor);
   });
 
-  it('pins the rate it priced at onto the quote', async () => {
+  it('prices an overseas order in GBP at a rate of 1, unconverted', async () => {
     const { quoteOrder } = await loadPricing(ORDER_ENV);
-    const quote = quoteOrder({ lines, destinationCountry: 'US', currency: 'USD' });
+    const quote = quoteOrder({ lines, destinationCountry: 'US', currency: 'GBP' });
 
-    expect(quote.fxRate).toBe(1.25);
+    expect(quote.fxRate).toBe(1);
     expect(quote.fxCapturedAt).toBeInstanceOf(Date);
-    expect(quote.currency).toBe('USD');
+    expect(quote.currency).toBe('GBP');
+    const book = quote.lines.find((line) => line.bookId === 1)!;
+    expect(book.unitPriceMinor).toBe(999);
     expect(quote.shippingRule).toBe('ROW');
   });
 
