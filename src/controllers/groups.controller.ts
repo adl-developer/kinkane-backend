@@ -74,6 +74,23 @@ export const groupsController = {
     res.status(200).json({ ...result, limit, offset });
   },
 
+  /**
+   * The same list for somebody else, mounted under their profile. Filtered to
+   * what this viewer may see — the service decides; this only names who is
+   * asking.
+   */
+  async listForUser(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const targetId = parseId(req.params.userId, 'user ID');
+    const parsed = paginationSchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+    const { limit, offset } = parsed.data;
+    const result = await groupsService.listForUser(targetId, limit, offset, req.user.id);
+    res.status(200).json({ ...result, limit, offset });
+  },
+
   async get(req: AuthenticatedRequest, res: Response): Promise<void> {
     const groupId = parseId(req.params.groupId, 'group ID');
     const result = await groupsService.get(groupId, req.user.id);

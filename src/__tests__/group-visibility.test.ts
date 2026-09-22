@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { groupViewerCapabilities } from '../services/groups.service';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { groupViewerCapabilities, visibleGroupCondition } from '../services/groups.service';
 import type { GroupMembershipStatus } from '../db/schema';
 
 // groupViewerCapabilities is the security boundary of the Groups feature: every
@@ -88,5 +89,46 @@ describe('groupViewerCapabilities — who may invite', () => {
   it('reserves editing to the owner alone', () => {
     expect(caps('public', 'active', OTHER).canEdit).toBe(false);
     expect(caps('public', null, OWNER).canEdit).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The other half of the same boundary: reading a *person's* group list.
+//
+// groupViewerCapabilities guards one group at a time. visibleGroupCondition
+// guards the sideways read — "which clubs is Theo in" — which would otherwise
+// rebuild the roster of every private club one profile at a time. It is SQL
+// rather than a pure function, so it is pinned the way group-search.test.ts
+// pins its query: compile it and assert on the shape, no database needed.
+
+describe('visibleGroupCondition', () => {
+  const sqlFor = (viewerId: number) => new PgDialect().sqlToQuery(visibleGroupCondition(viewerId));
+
+  it('lets every public group through', () => {
+    // A public roster is already open to anyone signed in, so naming its
+    // members from a profile reveals nothing GET /groups/:id/members would not.
+    expect(sqlFor(7).sql).toMatch(/"privacy" = 'public'/);
+  });
+
+  it('admits a private group only when the viewer is in it', () => {
+    const { sql, params } = sqlFor(7);
+    expect(sql).toMatch(/or .*"id" in \(/is);
+    expect(sql).toMatch(/select .*"group_id" from "group_memberships"/is);
+    expect(params).toContain(7);
+  });
+
+  it('counts only an active membership, never an invitation', () => {
+    // Matches decideMembershipAction('view_members'), where an invitee to a
+    // private group is refused the roster like any other non-member. Dropping
+    // this predicate would let a pending invite unlock the sideways read.
+    expect(sqlFor(7).sql).toMatch(/"status" = 'active'/);
+  });
+
+  it('filters on the viewer, not on whoever is being looked at', () => {
+    // The one substitution that would invert the rule: filtering on the target
+    // makes the condition true for every group they are in, which is all of
+    // them — the filter would compile, pass a smoke test and protect nothing.
+    const { params } = sqlFor(7);
+    expect(params).toEqual([7]);
   });
 });

@@ -2,7 +2,8 @@ import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.middleware';
 import { followRequestLimiter } from '../middleware/rate-limit.middleware';
 import { usersController } from '../controllers/users.controller';
-import { wrap } from '../lib/route-helpers';
+import { groupsController } from '../controllers/groups.controller';
+import { wrap, wrapHttp } from '../lib/route-helpers';
 
 const router = Router();
 
@@ -17,6 +18,10 @@ router.get('/:userId',           wrap(usersController.getUserProfile));
 router.get('/:userId/books',     wrap(usersController.getUserBooks));
 router.get('/:userId/followers', wrap(usersController.listFollowers));
 router.get('/:userId/following', wrap(usersController.listFollowing));
+// A person's book clubs, hung off their profile rather than off /groups, because
+// it answers a question about the person. Private clubs the viewer is not in are
+// filtered out — see visibleGroupCondition.
+router.get('/:userId/groups',    wrapHttp(groupsController.listForUser));
 router.post('/:userId/follow', followRequestLimiter, wrap(usersController.sendFollowRequest));
 router.delete('/:userId/follow', wrap(usersController.withdrawFollowRequest));
 
