@@ -78,6 +78,62 @@ export function isSupplyToOrder(reportCode: string | null | undefined): boolean 
 }
 
 /**
+ * How many copies of a book one customer may put in a basket right now — the
+ * `availableQuantity` every book response carries.
+ *
+ * Mirrors the cart's own ceiling (the add-to-cart gate in availability.service
+ * plus the per-line cap in cart.service), so a quantity stepper built on this
+ * number can never offer a quantity the basket then refuses:
+ *
+ *  - no stock row, no live price, or an unsuppliable report code → 0
+ *  - supply-to-order (GXC, M/D) → the per-line cap, since there is no shelf to run out
+ *  - a stocked title → its stock, capped at the per-line cap
+ *
+ * **Capped at the per-line maximum on purpose, not just for consistency.** The
+ * raw figure is our supplier's wholesale stock, which is not ours to publish;
+ * the cap means the most this ever reveals is "fewer than N left".
+ *
+ * Market restrictions are not applied: they depend on a destination country a
+ * catalogue response does not have, and are enforced at add-to-cart instead.
+ */
+export function availableQuantityFor(
+  stock: { rrpGbp: string | null; stockQty: number | null; reportCode: string | null } | undefined,
+  maxPerLine: number,
+): number {
+  if (!stock) return 0;
+
+  const rrp = stock.rrpGbp === null ? NaN : Number(stock.rrpGbp);
+  if (!Number.isFinite(rrp) || rrp <= 0) return 0;
+
+  const reportCode = stock.reportCode?.trim().toUpperCase();
+  if (reportCode && UNSUPPLIABLE_REPORT_CODE_SET.has(reportCode)) return 0;
+
+  if (isSupplyToOrder(stock.reportCode)) return maxPerLine;
+
+  return Math.max(0, Math.min(stock.stockQty ?? 0, maxPerLine));
+}
+
+/**
+ * Which stock tier an edition is in, for choosing which edition of a title to
+ * show: 0 on the shelf now, 1 orderable but not stocked (extended catalogue,
+ * print on demand), 2 cannot be bought at the moment. Lower is better.
+ *
+ * Split out from availableQuantityFor because that number cannot tell the first
+ * two apart — a supply-to-order title reports the full per-line cap — and the
+ * shop must not lead with an order-in paperback while the hardback is on the shelf.
+ */
+export const STOCK_TIER = { IN_STOCK: 0, TO_ORDER: 1, UNAVAILABLE: 2 } as const;
+export type StockTier = (typeof STOCK_TIER)[keyof typeof STOCK_TIER];
+
+export function stockTierFor(
+  stock: { rrpGbp: string | null; stockQty: number | null; reportCode: string | null } | undefined,
+  maxPerLine: number,
+): StockTier {
+  if (availableQuantityFor(stock, maxPerLine) <= 0) return STOCK_TIER.UNAVAILABLE;
+  return isSupplyToOrder(stock!.reportCode) ? STOCK_TIER.TO_ORDER : STOCK_TIER.IN_STOCK;
+}
+
+/**
  * Restricts a catalogue query to books the e-commerce section can legitimately
  * list.
  *

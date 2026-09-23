@@ -94,6 +94,7 @@ vi.mock('../services/commerce/availability.service', () => ({
   availabilityService: {
     livePricesByIsbns: async () => new Map(),
     inStockByIsbns: async () => new Map(),
+    availableQuantityByIsbns: async () => new Map(),
   },
 }));
 

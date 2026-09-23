@@ -9,6 +9,9 @@ import {
   SHOP_BAND,
   UNSUPPLIABLE_REPORT_CODES,
   UNSUPPLIABLE_REPORT_CODE_SET,
+  availableQuantityFor,
+  stockTierFor,
+  STOCK_TIER,
 } from '../lib/shoppable';
 
 // The `shoppable=true` filter decides what the e-commerce section is allowed to
@@ -241,5 +244,85 @@ describe('planShopBands', () => {
     expect(planShopBands(0, 10, { inStock: 0, toOrder: 0 })).toEqual([
       { band: 2, offset: 0, take: 10 },
     ]);
+  });
+});
+
+// availableQuantity sits on every book response and drives the quantity
+// stepper, so it has to agree with what the cart will actually accept — a
+// stepper that offers 5 and a basket that 409s on 5 is the bug this prevents.
+describe('availableQuantityFor', () => {
+  const MAX = 10;
+  const stock = (over: Partial<{ rrpGbp: string | null; stockQty: number | null; reportCode: string | null }> = {}) => ({
+    rrpGbp: '9.99',
+    stockQty: 4,
+    reportCode: null,
+    ...over,
+  });
+
+  it('is the stock figure for a stocked title under the cap', () => {
+    expect(availableQuantityFor(stock(), MAX)).toBe(4);
+  });
+
+  it('never exceeds the per-line cap, so wholesale stock is not published', () => {
+    expect(availableQuantityFor(stock({ stockQty: 1000 }), MAX)).toBe(MAX);
+  });
+
+  it('is 0 for a stocked title with no stock', () => {
+    expect(availableQuantityFor(stock({ stockQty: 0 }), MAX)).toBe(0);
+    expect(availableQuantityFor(stock({ stockQty: null }), MAX)).toBe(0);
+  });
+
+  it('is the cap for supply-to-order titles, which report zero stock but are orderable', () => {
+    expect(availableQuantityFor(stock({ stockQty: 0, reportCode: 'GXC' }), MAX)).toBe(MAX);
+    expect(availableQuantityFor(stock({ stockQty: 0, reportCode: ' m/d ' }), MAX)).toBe(MAX);
+  });
+
+  it('is 0 whatever the stock when the report code says it cannot be supplied', () => {
+    for (const code of UNSUPPLIABLE_REPORT_CODES) {
+      expect(availableQuantityFor(stock({ stockQty: 50, reportCode: code }), MAX)).toBe(0);
+    }
+  });
+
+  it('is 0 without a live price', () => {
+    expect(availableQuantityFor(stock({ rrpGbp: null }), MAX)).toBe(0);
+    expect(availableQuantityFor(stock({ rrpGbp: '0.00' }), MAX)).toBe(0);
+  });
+
+  it('is 0 when the supplier has no row for the book at all', () => {
+    expect(availableQuantityFor(undefined, MAX)).toBe(0);
+  });
+});
+
+// The edition picker leads with a copy on the shelf, then an order-in one, then
+// one that cannot be bought. availableQuantity alone cannot tell the first two
+// apart — an order-in title reports the full cap — hence a tier of its own.
+describe('stockTierFor', () => {
+  const MAX = 10;
+  const stock = (over: Partial<{ rrpGbp: string | null; stockQty: number | null; reportCode: string | null }> = {}) => ({
+    rrpGbp: '9.99',
+    stockQty: 4,
+    reportCode: null,
+    ...over,
+  });
+
+  it('is in stock for a stocked title with copies on the shelf', () => {
+    expect(stockTierFor(stock(), MAX)).toBe(STOCK_TIER.IN_STOCK);
+  });
+
+  it('is order-in for a supply-to-order title, even though its quantity is the full cap', () => {
+    expect(stockTierFor(stock({ stockQty: 0, reportCode: 'GXC' }), MAX)).toBe(STOCK_TIER.TO_ORDER);
+    expect(availableQuantityFor(stock({ stockQty: 0, reportCode: 'GXC' }), MAX)).toBe(MAX);
+  });
+
+  it('is unavailable when nothing can be bought', () => {
+    expect(stockTierFor(stock({ stockQty: 0 }), MAX)).toBe(STOCK_TIER.UNAVAILABLE);
+    expect(stockTierFor(stock({ reportCode: 'NYP' }), MAX)).toBe(STOCK_TIER.UNAVAILABLE);
+    expect(stockTierFor(stock({ rrpGbp: null }), MAX)).toBe(STOCK_TIER.UNAVAILABLE);
+    expect(stockTierFor(undefined, MAX)).toBe(STOCK_TIER.UNAVAILABLE);
+  });
+
+  it('orders the tiers so that lower is better', () => {
+    expect(STOCK_TIER.IN_STOCK).toBeLessThan(STOCK_TIER.TO_ORDER);
+    expect(STOCK_TIER.TO_ORDER).toBeLessThan(STOCK_TIER.UNAVAILABLE);
   });
 });

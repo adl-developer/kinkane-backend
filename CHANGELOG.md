@@ -5,7 +5,8 @@
 
 ### Features
 
-* show press review quotes on book pages ([73a34ef](https://adl.github.com/adl-developer/kinkane-backend/commit/73a34ef64cc91bf14d8f89acff94dc7f90a0423e)) — [details](changelog/2026-09-22-nielsen-book-reviews.md)
+* add author biographies to book pages, from BDS ([25da942](https://adl.github.com/adl-developer/kinkane-backend/commit/25da9421897587ab832ab2bdf77696360a6f76bd)) — [details](changelog/2026-09-22-bds-author-bios-and-reviews.md)
+* show press review quotes on book pages ([73a34ef](https://adl.github.com/adl-developer/kinkane-backend/commit/73a34ef64cc91bf14d8f89acff94dc7f90a0423e)) — [details](changelog/2026-09-22-book-listing-review-fixes.md)
 
 
 ## 2026-09-18

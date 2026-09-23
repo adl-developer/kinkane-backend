@@ -309,7 +309,7 @@ export async function bustUserExclusions(userId: number): Promise<void> {
  * whole life of the v2 key, so it matched nothing and a user's rejected books
  * stayed in their feed for the full hour. Bump both together.
  */
-const PERSONALIZED_CACHE_PREFIX = 'personalized:v3:';
+const PERSONALIZED_CACHE_PREFIX = 'personalized:v4:';
 
 /**
  * Busts the personalized feed cache for all limit variants. `limit` is bounded

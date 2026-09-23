@@ -340,24 +340,11 @@ const envSchema = z.object({
 
   // Country resolution is NOT configured here — commerce reads it from
   // geoService, which owns GEO_COUNTRY_HEADER and MAXMIND_DB_PATH above.
-  // Currency display and referral scoring must agree about where a request
-  // comes from; two independent header lookups would eventually disagree.
+  // Commerce no longer uses it for currency (always GBP); it is still read for
+  // referral scoring, and one header lookup keeps the two from disagreeing.
 
-  // Currencies we are willing to present prices in. Kept deliberately short:
-  // every entry is a live FX exposure and another rounding surface.
-  SUPPORTED_CURRENCIES: z.string().default('USD,GBP,EUR'),
-  DEFAULT_CURRENCY: z.string().length(3).default('USD'),
-  // country -> currency. Anything unlisted falls back to DEFAULT_CURRENCY.
-  CURRENCY_BY_COUNTRY: z
-    .string()
-    .default('GB:GBP,IE:EUR,DE:EUR,FR:EUR,ES:EUR,IT:EUR,NL:EUR,BE:EUR,PT:EUR,AT:EUR,FI:EUR,GR:EUR'),
-
-  // Gardners quotes GBP and only GBP, so every non-GBP price is a conversion.
-  // A static table is the launch trade: no external dependency inside the
-  // checkout path, at the cost of drift. FX_BUFFER_PERCENT pads the rate so a
-  // few weeks of drift eats the buffer rather than the margin.
-  FX_RATES_FROM_GBP: z.string().default('USD:1.27,EUR:1.17'),
-  FX_BUFFER_PERCENT: z.coerce.number().min(0).max(25).default(3),
+  // No currency settings: the shop sells in GBP, exactly as Gardners quotes it.
+  // See SHOP_CURRENCY in services/commerce/pricing.
 
   // The launch promotion printed on every page of the shop: a percentage off
   // someone's first order, applied automatically at checkout rather than typed
@@ -854,13 +841,6 @@ export const config = {
     allowInDev: env.GARDNERS_DROPSHIP_ALLOW_IN_DEV,
   },
   commerce: {
-    currency: {
-      supported: parseList(env.SUPPORTED_CURRENCIES).map((c) => c.toUpperCase()),
-      default: env.DEFAULT_CURRENCY.toUpperCase(),
-      byCountry: parseMap(env.CURRENCY_BY_COUNTRY, (v) => v.toUpperCase()),
-      fxFromGbp: parseMap(env.FX_RATES_FROM_GBP, Number),
-      bufferPercent: env.FX_BUFFER_PERCENT,
-    },
     shipping: {
       rates: parseMap(env.SHIPPING_RATES, Number),
       perItemGbpPence: env.SHIPPING_PER_ITEM_GBP_PENCE,

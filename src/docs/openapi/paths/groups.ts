@@ -101,6 +101,28 @@ export const groupPaths = {
     },
   },
 
+  '/api/v1/users/{userId}/groups': {
+    get: {
+      tags: [GROUPS],
+      summary: "Groups someone else belongs to",
+      description:
+        'The "Groups" section of another reader\'s profile, most recently joined first. The same shape as `/api/v1/groups/mine`, and pending invitations are excluded here too.\n\n' +
+        '**Filtered to what you may see.** Public groups always appear. A private group appears only if *you* are an active member of it as well — otherwise reading profiles one by one would rebuild the roster of every private group, which `GET /groups/{groupId}/members` deliberately refuses. So this endpoint never reveals a membership the member list would not.\n\n' +
+        '`total` counts the filtered set, so it matches what can actually be paged through — two people looking at the same profile can legitimately see different totals.\n\n' +
+        'Calling it with your own id is allowed and returns everything, identical to `/api/v1/groups/mine`.',
+      parameters: [
+        param('userId', 'path', { type: 'integer' }, 'The user whose groups to list.', { example: 4412 }),
+        ...pagination(50),
+      ],
+      responses: {
+        200: groupListResponse("A page of that reader's groups."),
+        400: json('Invalid user id.', object({ error: { type: 'string' } })),
+        404: json('No such user.', object({ error: { type: 'string' } })),
+        ...authErrors,
+      },
+    },
+  },
+
   '/api/v1/groups/{groupId}/members': {
     get: {
       tags: [GROUPS],

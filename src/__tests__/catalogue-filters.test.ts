@@ -96,32 +96,11 @@ describe('fromPresentment', () => {
     expect(fromPresentment(1999, 'GBP')).toBe(1999);
   });
 
-  it('converts a customer-typed bound back to GBP pence', async () => {
+  // The shop sells in GBP only, so a bound in any other currency is refused
+  // rather than converted — even one the old FX table had a rate for.
+  it('refuses any currency other than GBP rather than converting', async () => {
     const { fromPresentment } = await loadPricing(ENV);
-    // $100.00 at 1.25 is £80.00.
-    expect(fromPresentment(10_000, 'USD')).toBe(8000);
-  });
-
-  it('inverts toPresentment closely enough to bound a filter', async () => {
-    const { fromPresentment, toPresentment } = await loadPricing(ENV);
-    for (const gbpPence of [199, 999, 1299, 2650, 9999]) {
-      const there = toPresentment(gbpPence, 'USD');
-      const back = fromPresentment(there, 'USD');
-      // Not exact by construction — the forward trip rounds up twice. One penny
-      // of slack on a filter boundary is invisible; a systematic drift is not.
-      expect(Math.abs(back - gbpPence)).toBeLessThanOrEqual(1);
-    }
-  });
-
-  it('accounts for the FX buffer, so the bound matches the displayed price', async () => {
-    const { fromPresentment } = await loadPricing({ ...ENV, FX_BUFFER_PERCENT: '3' });
-    // Ignoring the buffer would return 8000 here and filter against prices the
-    // shop never showed.
-    expect(fromPresentment(10_000, 'USD')).toBe(7767);
-  });
-
-  it('refuses a currency with no configured rate rather than guessing', async () => {
-    const { fromPresentment } = await loadPricing(ENV);
+    expect(() => fromPresentment(10_000, 'USD')).toThrow();
     expect(() => fromPresentment(10_000, 'NGN')).toThrow();
   });
 });

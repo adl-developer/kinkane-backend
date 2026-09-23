@@ -131,17 +131,17 @@ describe('discount arithmetic', () => {
     expect(quote.discountReason).toBeNull();
   });
 
-  it('converts the discount into the presentment currency', async () => {
+  it('passes the discount through in GBP pence, unconverted', async () => {
     const { quoteOrder } = await loadPricing(GBP_ONLY);
     const quote = quoteOrder({
       lines: [line(2000)],
-      destinationCountry: 'GB',
-      currency: 'USD',
+      destinationCountry: 'US',
+      currency: 'GBP',
       discountPercent: 15,
       discountReason: 'first_order',
     });
-    // £3.00 at 1.25 = $3.75.
-    expect(quote.discountMinor).toBe(375);
+    // 15% of £20.00 is £3.00, charged as 300 pence wherever the buyer is.
+    expect(quote.discountMinor).toBe(300);
     expect(quote.totalMinor).toBe(
       quote.subtotalMinor - quote.discountMinor + quote.shippingMinor + quote.taxMinor,
     );

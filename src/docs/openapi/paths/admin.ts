@@ -124,7 +124,7 @@ export const adminPaths = {
           totals: object({
             orders: { type: 'integer', description: 'Paid orders, all time.', example: 2 },
             revenueMinor: { type: 'integer', description: 'Sum of paid order totals, minor units.', example: 9896 },
-            revenueCurrency: { type: 'string', example: 'USD' },
+            revenueCurrency: { type: 'string', example: 'GBP' },
             processing: { type: 'integer', description: 'Paid but not yet dispatched — the fulfilment queue.', example: 1 },
             needsAttention: { type: 'integer', description: 'Paid orders that went wrong: supplier-rejected, refunded or cancelled.', example: 0 },
             unpaid: { type: 'integer', description: 'Checkouts nobody ever paid for. Not a card in the designs — the Orders tab badge reads this.', example: 1 },
@@ -139,7 +139,7 @@ export const adminPaths = {
             contactEmail: { type: 'string', format: 'email' },
             status: { type: 'string', example: 'paid' },
             statusTab: { type: 'string', enum: orderTabs.filter((t) => t !== 'all'), example: 'processing' },
-            currency: { type: 'string', example: 'USD' },
+            currency: { type: 'string', example: 'GBP' },
             totalMinor: { type: 'integer', example: 6997 },
             itemCount: { type: 'integer', example: 2 },
             placedAt: { type: 'string', format: 'date-time' },

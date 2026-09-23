@@ -26,7 +26,13 @@ import { logger } from '../../lib/logger';
 import { normalizeCountry } from './pricing';
 // Shared with the catalogue's `shoppable` filter so browse and checkout can
 // never disagree about which report codes mean "cannot be supplied".
-import { UNSUPPLIABLE_REPORT_CODE_SET, isSupplyToOrder } from '../../lib/shoppable';
+import {
+  UNSUPPLIABLE_REPORT_CODE_SET,
+  availableQuantityFor,
+  isSupplyToOrder,
+  stockTierFor,
+  type StockTier,
+} from '../../lib/shoppable';
 
 export type UnbuyableReason =
   | 'not_found'
@@ -404,12 +410,63 @@ export const availabilityService = {
     return map;
   },
 
+  /**
+   * `availableQuantity` for a page of ISBNs — see availableQuantityFor for what
+   * the number means. One batched query, same bargain as inStockByIsbns.
+   *
+   * An ISBN with no stock row is simply absent from the map; callers read that
+   * as 0, since a book Gardners knows nothing about cannot be ordered.
+   */
+  async availableQuantityByIsbns(isbns: (string | null)[]): Promise<Map<string, number>> {
+    const map = new Map<string, number>();
+    for (const row of await sellableStockRows(isbns)) {
+      map.set(row.isbn13, availableQuantityFor(row, config.commerce.cart.maxQuantityPerLine));
+    }
+    return map;
+  },
+
+  /** The stock tier per ISBN, for the edition picker — see stockTierFor. Absent means unavailable. */
+  async stockTierByIsbns(isbns: (string | null)[]): Promise<Map<string, StockTier>> {
+    const map = new Map<string, StockTier>();
+    for (const row of await sellableStockRows(isbns)) {
+      map.set(row.isbn13, stockTierFor(row, config.commerce.cart.maxQuantityPerLine));
+    }
+    return map;
+  },
+
   /** Single-book convenience wrapper for add-to-cart. */
   async checkOne(bookId: number, destinationCountry: string): Promise<BuyableBook | UnbuyableReason> {
     const { buyable, rejected } = await this.check([bookId], destinationCountry);
     return buyable.get(bookId) ?? rejected.get(bookId) ?? 'not_found';
   },
 };
+
+/**
+ * Stock rows for these ISBNs, skipping any whose book has been withdrawn.
+ *
+ * Add-to-cart rejects a withdrawn book as not found, so a quantity or stock tier
+ * for one would offer a stepper the basket then refuses. A withdrawn book can
+ * still be reached — the book page serves it, so its posts and shelves keep
+ * resolving — which is why this has to be filtered here rather than assumed.
+ */
+async function sellableStockRows(isbns: (string | null)[]) {
+  const unique = [...new Set(isbns.filter((isbn): isbn is string => isbn !== null))];
+  if (unique.length === 0) return [];
+  return db
+    .select({
+      isbn13: gardnersStock.isbn13,
+      rrpGbp: gardnersStock.rrpGbp,
+      stockQty: gardnersStock.stockQty,
+      reportCode: gardnersStock.reportCode,
+    })
+    .from(gardnersStock)
+    .where(
+      and(
+        inArray(gardnersStock.isbn13, unique),
+        sql`EXISTS (SELECT 1 FROM ${books} WHERE ${books.isbn13} = ${gardnersStock.isbn13} AND ${books.isRemoved} = false)`,
+      ),
+    );
+}
 
 /** Maps an unbuyable reason to the HTTP status and message the API returns. */
 /**
