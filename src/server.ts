@@ -25,6 +25,8 @@ import {
   startBestsellerRefreshCron,
   stopBestsellerRefreshCron,
 } from './jobs/order-reconciliation.cron';
+import { startNielsenReviewsCron, stopNielsenReviewsCron } from './jobs/nielsen-reviews.cron';
+import { startBdsEnrichmentCron, stopBdsEnrichmentCron } from './jobs/bds-enrichment.cron';
 import { startEmailWorker, stopEmailWorker } from './workers/email.worker';
 import { startFulfilmentWorker, stopFulfilmentWorker } from './workers/fulfilment.worker';
 import { startPushWorker, stopPushWorker } from './workers/push.worker';
@@ -44,6 +46,8 @@ async function main(): Promise<void> {
   const interactionCleanupTask = startInteractionCleanupCron();
   const orderReconciliationTask = startOrderReconciliationCron();
   const bestsellerRefreshTask = startBestsellerRefreshCron();
+  const nielsenReviewsTask = startNielsenReviewsCron();
+  const bdsEnrichmentTask = startBdsEnrichmentCron();
   const emailWorker = startEmailWorker();
   const pushWorker = startPushWorker();
   const fulfilmentWorker = startFulfilmentWorker();
@@ -68,6 +72,8 @@ async function main(): Promise<void> {
     stopInteractionCleanupCron(interactionCleanupTask);
     stopOrderReconciliationCron(orderReconciliationTask);
     stopBestsellerRefreshCron(bestsellerRefreshTask);
+    stopNielsenReviewsCron(nielsenReviewsTask);
+    stopBdsEnrichmentCron(bdsEnrichmentTask);
     // server.close() stops accepting new connections and waits for in-flight
     // requests to finish — disconnect Redis only after they drain so that any
     // in-flight cache/rate-limit call can still reach Redis.

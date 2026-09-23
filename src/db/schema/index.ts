@@ -33,3 +33,5 @@ export * from './gardners-market-restrictions';
 export * from './gardners-dropship-orders';
 export * from './commerce';
 export * from './shipping-rates';
+export * from './book-reviews';
+export * from './book-author-bios';

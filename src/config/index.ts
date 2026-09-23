@@ -183,7 +183,7 @@ const envSchema = z.object({
   // fetches to find them. The pool is paid for in latency, not just memory:
   // measured against the live catalogue, 300 rows return in ~800ms and 1000 in
   // ~5-18s, because the iterative index scan works towards the LIMIT.
-  RECO_TARGET_RESULTS: z.coerce.number().int().min(1).max(250).default(100),
+  RECO_TARGET_RESULTS: z.coerce.number().int().min(1).max(250).default(50),
   // Capped at 500 deliberately, well below anything pgvector would refuse: the
   // ceiling exists to stop an environment change re-introducing the 5-18s
   // search that the 1000-row pool produced. Raising it is a code change, so it
@@ -487,6 +487,67 @@ const envSchema = z.object({
   // Where Stripe returns the buyer after a one-time order checkout.
   STRIPE_ORDER_SUCCESS_URL: z.string().url().optional(),
   STRIPE_ORDER_CANCEL_URL: z.string().url().optional(),
+
+  // NielsenIQ BookData Online — review quotes, keyed by ISBN.
+  //
+  // Master switch, off by default: the account is metered by the record and
+  // the batch job will happily spend the day's allowance the moment it is
+  // deployed, so turning this on should be a deliberate act.
+  NIELSEN_REVIEWS_ENABLED: z
+    .string()
+    .default('false')
+    .transform((v) => v === 'true'),
+  NIELSEN_CLIENT_ID: z.string().min(1).optional(),
+  NIELSEN_PASSWORD: z.string().min(1).optional(),
+  // The developer guide prints this as http:// — the service redirects to
+  // https and the credentials ride in the query string, so default to https.
+  NIELSEN_BASE_URL: z
+    .string()
+    .url()
+    .default('https://ws.nielsenbookdataonline.com/BDOLRest/RESTwebServices/BDOLrequest'),
+  // Selects which territory's variant of the descriptive fields is returned
+  // (INT, UK, AU, NZ, SA, US, IN). It does not filter which editions match.
+  NIELSEN_TERRITORY: z.string().default('UK'),
+  NIELSEN_REVIEWS_CRON: z.string().default('0 1 * * *'),
+  // The two halves of the daily record allowance. They must add up to no more
+  // than the account limit (1,000 on the trial) — keeping a little headroom is
+  // sensible, since Nielsen publishes no usage figures to reconcile against.
+  NIELSEN_DAILY_BATCH_BUDGET: z.coerce.number().int().min(0).default(900),
+  NIELSEN_DAILY_ONDEMAND_BUDGET: z.coerce.number().int().min(0).default(100),
+  NIELSEN_REQUEST_DELAY_MS: z.coerce.number().int().min(0).default(250),
+  // How long before a book Nielsen had no review for is worth asking about
+  // again. Reviews are often filed well after publication.
+  NIELSEN_MISS_RECHECK_DAYS: z.coerce.number().int().min(1).default(90),
+
+  // ── BDS (Bibliographic Data Services) — author bios + review quotes ─────────
+  //
+  // Off by default for the same reason as Nielsen: turning on a paid data
+  // source should be a deliberate act, and the licence terms (display rights,
+  // storage, termination) were still open when this was built.
+  BDS_ENRICHMENT_ENABLED: z
+    .string()
+    .default('false')
+    .transform((v) => v === 'true'),
+  // ACS user account issued by BDS. The API trades these for a bearer token
+  // valid for a year, so they are used about once a year, not per request.
+  BDS_USERNAME: z.string().min(1).optional(),
+  BDS_PASSWORD: z.string().min(1).optional(),
+  BDS_BASE_URL: z.string().url().default('https://elastic.bdslive.com/bds/include/xmla-api.php'),
+  BDS_ENRICHMENT_CRON: z.string().default('30 2 * * *'),
+  // ISBNs per API call. BDS quote 100 as the ceiling; lower it only if they
+  // ask us to.
+  BDS_BATCH_SIZE: z.coerce.number().int().min(1).max(100).default(100),
+  // How many ISBNs the nightly sweep looks up. BDS publish no quota, so this is
+  // politeness plus a cap on how long one night's run can take: 20,000 is 200
+  // calls, a couple of minutes at the default delay.
+  BDS_NIGHTLY_ISBN_LIMIT: z.coerce.number().int().min(0).default(20_000),
+  BDS_REQUEST_DELAY_MS: z.coerce.number().int().min(0).default(500),
+  // How long an empty answer is trusted before the book is asked about again.
+  // Bios and quotes are often added after publication.
+  BDS_MISS_RECHECK_DAYS: z.coerce.number().int().min(1).default(60),
+  // The daily "what changed at BDS" pass pages through every record BDS
+  // updated yesterday, not just ours, so it is capped. See runDailyDelta.
+  BDS_DELTA_MAX_PAGES: z.coerce.number().int().min(0).default(100),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -813,6 +874,35 @@ export const config = {
     },
     orderSuccessUrl: env.STRIPE_ORDER_SUCCESS_URL ?? `${env.APP_URL}/cart?checkout=success`,
     orderCancelUrl: env.STRIPE_ORDER_CANCEL_URL ?? `${env.APP_URL}/cart?checkout=cancelled`,
+  },
+  nielsen: {
+    // Credentials are part of the switch: without them every lookup would
+    // fail, so treat an unconfigured account as "feature off" rather than
+    // letting the cron wake up and error its way through a batch.
+    enabled: env.NIELSEN_REVIEWS_ENABLED && !!env.NIELSEN_CLIENT_ID && !!env.NIELSEN_PASSWORD,
+    clientId: env.NIELSEN_CLIENT_ID,
+    password: env.NIELSEN_PASSWORD,
+    baseUrl: env.NIELSEN_BASE_URL,
+    territory: env.NIELSEN_TERRITORY,
+    cronSchedule: env.NIELSEN_REVIEWS_CRON,
+    dailyBatchBudget: env.NIELSEN_DAILY_BATCH_BUDGET,
+    dailyOnDemandBudget: env.NIELSEN_DAILY_ONDEMAND_BUDGET,
+    requestDelayMs: env.NIELSEN_REQUEST_DELAY_MS,
+    missRecheckDays: env.NIELSEN_MISS_RECHECK_DAYS,
+  },
+  bds: {
+    // As with Nielsen, missing credentials mean "feature off", not a cron that
+    // wakes up nightly to fail.
+    enabled: env.BDS_ENRICHMENT_ENABLED && !!env.BDS_USERNAME && !!env.BDS_PASSWORD,
+    username: env.BDS_USERNAME,
+    password: env.BDS_PASSWORD,
+    baseUrl: env.BDS_BASE_URL,
+    cronSchedule: env.BDS_ENRICHMENT_CRON,
+    batchSize: env.BDS_BATCH_SIZE,
+    nightlyIsbnLimit: env.BDS_NIGHTLY_ISBN_LIMIT,
+    requestDelayMs: env.BDS_REQUEST_DELAY_MS,
+    missRecheckDays: env.BDS_MISS_RECHECK_DAYS,
+    deltaMaxPages: env.BDS_DELTA_MAX_PAGES,
   },
 } as const;
 

@@ -33,6 +33,13 @@ import { normalisedNameSql, normaliseNameQuery } from '../lib/contributor-name';
 import { splitCandidates, type SplitCandidate } from '../lib/search-split';
 import { redis } from '../lib/redis';
 import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-excerpts.service';
+import {
+  getReviewsByIsbns,
+  pickReview,
+  bookReviewsService,
+  type BookReviewInfo,
+} from './book-reviews.service';
+import { getBiosByIsbns, bdsEnrichmentService, type AuthorBioInfo } from './bds-enrichment.service';
 import { TRENDING_SCORED_TYPES, trendingScoreSql } from './interactions.service';
 import { availabilityService } from './commerce/availability.service';
 import {
@@ -603,6 +610,19 @@ export interface EditionSummary {
 }
 
 export interface BookDetail extends BookListItem {
+  /**
+   * Review quotes from Nielsen or, where Nielsen has none, from BDS — `source`
+   * says which. HTML as supplied, with the outlet names embedded in the prose
+   * rather than as separate fields. Renders the same way longDescription
+   * does, and needs the same treatment by the client.
+   */
+  review: BookReviewInfo | null;
+  /**
+   * The author biography from BDS, as HTML. One block per book — it can cover
+   * several contributors — not attached to any single contributor, because
+   * BDS supply it per book and carry no author identifier.
+   */
+  authorBio: AuthorBioInfo | null;
   shortDescription: string | null;
   longDescription: string | null;
   editionNumber: number | null;
@@ -4201,7 +4221,7 @@ async function loadBookDetail(id: number): Promise<BookDetail | null> {
   const [book] = await db.select().from(books).where(eq(books.id, id)).limit(1);
   if (!book) return null;
 
-  const [contributors, genreRows, priceRows, subjects, excerptMap, otherEditionRows] = await Promise.all([
+  const [contributors, genreRows, priceRows, subjects, excerptMap, reviewMap, bioMap, otherEditionRows] = await Promise.all([
     db
       .select({
         role: bookContributors.role,
@@ -4242,6 +4262,10 @@ async function loadBookDetail(id: number): Promise<BookDetail | null> {
 
     getExcerptsByIsbns([book.isbn13]),
 
+    getReviewsByIsbns([book.isbn13]),
+
+    getBiosByIsbns([book.isbn13]),
+
     fetchOtherEditions(id, book.title),
   ]);
 
@@ -4278,6 +4302,8 @@ async function loadBookDetail(id: number): Promise<BookDetail | null> {
     prices: priceRows,
     subjects,
     excerpt: pickExcerpt(book.isbn13, excerptMap),
+    review: pickReview(book.isbn13, reviewMap),
+    authorBio: (book.isbn13 && bioMap.get(book.isbn13)) || null,
     otherEditions: otherEditionRows.map((row) => ({
       ...row,
       productFormLabel: getProductFormLabel(row.productForm),
@@ -4285,6 +4311,20 @@ async function loadBookDetail(id: number): Promise<BookDetail | null> {
   };
 
   await redis.set(cacheKey, JSON.stringify(detail), 'EX', BOOK_DETAIL_TTL);
+
+  // Fired after the cache is written, never awaited. A successful lookup
+  // deletes this key so the next request picks the review up — doing it
+  // before the set would let that delete land first and cache the
+  // review-less copy for the full hour instead.
+  if (!detail.review) {
+    void bookReviewsService.fetchOnDemand(book.isbn13, book.id);
+  }
+  // One BDS lookup answers both bio and review; it checks its own ledger, so
+  // a book BDS were already asked about costs one indexed read, no call.
+  if (!detail.authorBio) {
+    void bdsEnrichmentService.fetchOnDemand(book.isbn13, book.id);
+  }
+
   return detail;
 }
 

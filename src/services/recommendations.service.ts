@@ -94,7 +94,7 @@ const BACKFILL_SIMILARITY_THRESHOLD = config.recommendations.backfillMax;
 // has eaten a batch rather than giving up — so ef_search only needs to size the
 // first batch. strict_order, not relaxed_order, because `rank` is the position
 // in cosine order and has to stay exact.
-const HNSW_EF_SEARCH = 100;
+const HNSW_EF_SEARCH = 50;
 const HNSW_ITERATIVE_SCAN = 'strict_order';
 // Iterative scan landed in pgvector 0.8.0. Below that there is no resuming, so
 // the only lever is a single wide pass — 1000 is the ceiling this GUC accepts.
@@ -106,7 +106,7 @@ const MIN_ITERATIVE_SCAN_VERSION = [0, 8, 0];
 // written by the previous release are still correct and worth keeping.
 const BASELINE_SIMILARITY_MAX = 0.5;
 const BASELINE_BACKFILL_MAX = 0.7;
-const BASELINE_TARGET_RESULTS = 100;
+const BASELINE_TARGET_RESULTS = 50;
 
 const CACHE_TTL_HOURS = 48;
 // A result set this short is either a genuinely niche preference combination or

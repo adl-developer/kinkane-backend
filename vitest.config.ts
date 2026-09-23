@@ -9,7 +9,16 @@ export default defineConfig({
     // run — it has its own config and script. Leaving it here would make
     // `npm test` fail on any machine without Postgres up, and a suite that fails
     // for environmental reasons is one people start skipping.
-    exclude: ['**/node_modules/**', '**/dist/**', 'src/__tests__/endpoints.contract.test.ts'],
+    // The contract suite and the integration suite both need a real database
+    // and have their own configs. Left here, they would make the result depend
+    // on whether the machine happens to have TEST_DATABASE_URL set — the exact
+    // environment-dependence hermetic-env.ts exists to stamp out.
+    exclude: [
+      '**/node_modules/**',
+      '**/dist/**',
+      'src/__tests__/endpoints.contract.test.ts',
+      'src/__tests__/**/*.integration.test.ts',
+    ],
     // Runs before every test file. See the file for why: without it the suite
     // passes in CI and fails on any machine that has a .env.
     setupFiles: ['./src/__tests__/support/hermetic-env.ts'],
