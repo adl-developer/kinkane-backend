@@ -1,12 +1,29 @@
 # Changelog
 
 
+## 2026-09-24
+
+### Features
+
+* move a reader's type when they retake the quiz ([b38819d](https://adl.github.com/adl-developer/kinkane-backend/commit/b38819dd65e52e843797dc0e05fa039f680035ad)) — [details](changelog/2026-09-24-retake-updates-reader-type.md)
+
+
 ## 2026-09-22
 
 ### Features
 
+* show the book clubs another reader belongs to on their profile ([816efb2](https://adl.github.com/adl-developer/kinkane-backend/commit/816efb24c60119273a233886c1a941477aa4caa4)) — [details](changelog/2026-09-22-book-available-quantity.md)
 * add author biographies to book pages, from BDS ([25da942](https://adl.github.com/adl-developer/kinkane-backend/commit/25da9421897587ab832ab2bdf77696360a6f76bd)) — [details](changelog/2026-09-22-bds-author-bios-and-reviews.md)
+* list each top-level genre once, and let a genre filter everything under it ([bc229bd](https://adl.github.com/adl-developer/kinkane-backend/commit/bc229bdf7b6829151927759ce1d28d0dd9cfee70)) — [details](changelog/2026-09-22-genres-list-top-level-filter-whole-family.md)
+* show only the top-level genre name on books ([adbed6b](https://adl.github.com/adl-developer/kinkane-backend/commit/adbed6b9b8b51462fb9361f473ff910dfd58dee9)) — [details](changelog/2026-09-22-top-level-genre-names.md)
+* show one edition per title, paperback first, across the book listings ([f395bf8](https://adl.github.com/adl-developer/kinkane-backend/commit/f395bf8254e7b613481acfd23821d4c6dd435350)) — [details](changelog/2026-09-22-paperback-first-editions.md)
+* show and charge every price in pounds, exactly as Gardners supplies it ([58ee3a0](https://adl.github.com/adl-developer/kinkane-backend/commit/58ee3a0b8cf6b1a404cec662aa233b1775d32255)) — [details](changelog/2026-09-22-bds-author-bios-and-reviews.md)
+* show how many copies of a book can be bought on every book response ([43f6410](https://adl.github.com/adl-developer/kinkane-backend/commit/43f6410eae3065bf4f997a8f3b6f1b6a5ebc3af0)) — [details](changelog/2026-09-22-book-available-quantity.md)
 * show press review quotes on book pages ([73a34ef](https://adl.github.com/adl-developer/kinkane-backend/commit/73a34ef64cc91bf14d8f89acff94dc7f90a0423e)) — [details](changelog/2026-09-22-book-listing-review-fixes.md)
+
+### Bug Fixes
+
+* stop book listings skipping or repeating titles, and lead with in-stock editions ([01b3c71](https://adl.github.com/adl-developer/kinkane-backend/commit/01b3c7126ca986e572cf993332b0a9284726e26a)) — [details](changelog/2026-09-22-bds-author-bios-and-reviews.md)
 
 
 ## 2026-09-18
