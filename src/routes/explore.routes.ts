@@ -95,9 +95,9 @@ router.get('/personalized', requireAuth, requirePlus, (req: Request, res: Respon
  * too. Editions are collapsed, so a title appears once however many formats the
  * catalogue carries.
  *
- * Matching uses `users.reader_type`, which is set at signup and not moved by
- * quiz retakes — a reader who has retaken the quiz is still cohorted by their
- * original type. See booksService.likedByReaderType for why.
+ * Matching uses `users.reader_type`, which is set at signup and updated by each
+ * quiz retake — so retaking the quiz can move a reader into a different cohort
+ * and change this rail. See booksService.likedByReaderType.
  *
  * **Returns 200 with an empty array** when the caller has no reader type, and
  * when no one else shares theirs. Both mean the same thing to a client: hide

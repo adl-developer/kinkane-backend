@@ -370,7 +370,7 @@ export const cataloguePaths = {
         '',
         '**Returns `200` with an empty array when the caller has no reader type, and when nobody else shares theirs.** Neither is an error: both mean there is no rail to draw, and the client hides the section. Reader type is assigned during onboarding and can legitimately be absent.',
         '',
-        'Matched on the reader type stored at signup. Retaking the quiz records a newly inferred type in the caller’s preference history but does **not** move them between cohorts — so this rail reflects the profile the app shows them, which is the same one.',
+        'Matched on the caller’s stored reader type, which is set at signup and re-inferred each time they save picks from a quiz retake — so a retake can move them between cohorts. This rail always reflects the profile the app shows them, since both read the same column.',
         '',
         '**Unlike the other feeds here, these rows carry no price or stock.** This is a discovery carousel rather than a shop surface, so there are no `unitPriceMinor`, `compareAtMinor`, `currency` or `inStock` fields on them and no `currency` parameter to send. They do carry `availableQuantity`, like every book response. Titles the shop cannot sell are still excluded, so the rail never advertises something unbuyable.',
         '',

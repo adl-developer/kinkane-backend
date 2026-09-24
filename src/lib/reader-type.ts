@@ -9,8 +9,8 @@ import { logger } from './logger';
  * primary authors and genres, then hands that context to Gemini.
  *
  * Shared by both quiz paths — guest onboarding, which stores the result on the
- * user row at signup, and the logged-in retake, which records it in the
- * preference history without touching the user row.
+ * user row at signup, and the logged-in retake, which rewrites that same column
+ * and records the new value in the preference history.
  *
  * Never throws. Reader type is a nice-to-have label, not something worth
  * failing a signup or a preference save over — a null result just means the

@@ -214,12 +214,12 @@ needs at least two readers sharing a reader type, one of whom has shelf
 activity. Seeded and demo databases often have neither. Use `readerType` (§7)
 against a group you have seeded rather than concluding the endpoint is broken.
 
-**Retaking the quiz does not move a reader between groups.** Reader type is
-assigned at signup. A retake records a newly inferred type in the reader's
-preference history, but does not reassign them — so the rail will not change
-after a retake. This is intentional for now: it keeps the rail consistent with
-the profile name shown in the heading above it, which comes from the same place.
-If the product wants retakes to move people, that is a deliberate follow-up.
+**Retaking the quiz can move a reader between groups.** Reader type is assigned
+at signup and re-inferred whenever a signed-in reader saves their picks from a
+retake, so the rail — and the profile name in the heading above it, which comes
+from the same column — can both change after a retake. If your test account's
+rail suddenly holds different books, check whether you retook the quiz on it.
+When inference fails the reader keeps the type they had.
 
 ## 11. Endpoint summary
 
