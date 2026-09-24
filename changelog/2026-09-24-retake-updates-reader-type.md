@@ -21,7 +21,11 @@ genres, book IDs, dislikes) were already saved by `PATCH /refresh`, so reader
 type was the one part of the profile that didn't move.
 
 The write is inside the same transaction as the shelf and interaction inserts, so
-a retake either lands completely or not at all.
+a retake either lands completely or not at all — the same choice the onboarding
+path makes. The trade-off is real and was taken knowingly: a failure on the label
+write rolls the picks back with it, where the history write below is allowed to
+fail on its own. The picks and the label are one event to the reader, and a
+retake they have to redo beats a profile that disagrees with the books under it.
 
 ## A failed inference keeps the old type
 
@@ -49,7 +53,7 @@ behavior, not a seeding problem.
 
 ## Docs corrected
 
-Six places asserted the old behavior and now describe the new one:
+Eight places asserted the old behavior and now describe the new one:
 `recommendations.service.ts`, `recommendations.routes.ts`, `explore.routes.ts`,
 `books.service.ts`, `lib/reader-type.ts`, the `catalogue`/`onboarding` OpenAPI
 descriptions, and §10 of
@@ -68,12 +72,18 @@ were left as written.
 
 ## Verification
 
-`npm test` — 1013 passing, including 5 new cases in
+`npm test` — 1014 passing, including 6 new cases in
 [quiz-retake-reader-type.test.ts](../src/__tests__/quiz-retake-reader-type.test.ts):
-the user row gets the inferred type, a failed inference issues no write at all,
-the history gets the inferred type, the history carries the existing type forward
-on failure, and the shelf insert still happens alongside the new write. Confirmed
-the suite fails against the old code path before it passed against the new one.
+the user row gets the inferred type, the write is scoped to the one reader who
+retook, a failed inference issues no write at all, the history gets the inferred
+type, the history carries the existing type forward on failure, and the shelf
+insert still happens alongside the new write.
+
+Two of those were confirmed to fail before they passed: the whole suite against
+the pre-change code path, and the scoping case against a deliberately wrong user
+id. The scoping case exists because an UPDATE on `users` that lost its WHERE
+would relabel every reader in the table while satisfying every other assertion in
+the file, so the test mock captures the condition rather than only the values.
 
 `tsc --noEmit` clean.
 

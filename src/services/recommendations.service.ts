@@ -1366,6 +1366,14 @@ export const recommendationsService = {
       // Only written when inference actually produced a type: a null means
       // Gemini failed, not that the reader stopped having a type, so the
       // existing label survives rather than being cleared.
+      //
+      // Inside the transaction, so a retake never half-lands with the picks on
+      // the shelf and the old label still on the profile — the same choice the
+      // onboarding path makes (see auth.service.ts). The cost is that a failure
+      // here rolls the picks back too, which is the opposite of how the history
+      // write below is treated. Deliberate: the picks and the label are one
+      // event to the reader, and a retake they have to redo is a better outcome
+      // than a profile that silently disagrees with the books under it.
       if (readerType) {
         await tx.update(users).set({ readerType, updatedAt: new Date() }).where(eq(users.id, userId));
       }

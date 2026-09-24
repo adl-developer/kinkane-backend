@@ -15,8 +15,10 @@ code.
 ## 1. What the rail is
 
 Every reader is assigned one of eight **reader types** when they finish the
-onboarding quiz — "The Open Door", "The Seeker", and so on. This endpoint
-answers one question:
+onboarding quiz — "The Open Door", "The Seeker", and so on. It is not fixed for
+life: retaking the quiz re-infers it and can move the reader to another type, so
+don't cache it past the point where a retake could have happened (see §10). This
+endpoint answers one question:
 
 > Of the other people who share your reader type, which books did they
 > respond well to?

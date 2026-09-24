@@ -17,8 +17,14 @@ import { recommendationsService } from '../services/recommendations.service';
 // What fetchAndInferReaderType returns for the call under test.
 let inferred: string | null = 'The Seeker';
 
-// Every `update()` the call makes, as { table, values }.
-const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+// Every `update()` the call makes, as { table, values, where }. `where` is
+// captured because an UPDATE on `users` that forgot it would rewrite every
+// reader's type in the table, and assertions on the values alone cannot see that.
+const updates: Array<{
+  table: unknown;
+  values: Record<string, unknown>;
+  where?: unknown;
+}> = [];
 // Every `insert()` the call makes, as { table, values }.
 const inserts: Array<{ table: unknown; values: unknown }> = [];
 // Every history row recorded, as the options passed to `record`.
@@ -27,14 +33,38 @@ const historyCalls: Array<{ readerType?: string | null }> = [];
 const CHOSEN = [1, 2];
 
 function chainableUpdate(table: unknown) {
+  const entry: { table: unknown; values: Record<string, unknown>; where?: unknown } = {
+    table,
+    values: {},
+  };
   const chain = {
     set: (values: Record<string, unknown>) => {
-      updates.push({ table, values });
+      entry.values = values;
+      updates.push(entry);
       return chain;
     },
-    where: async () => undefined,
+    where: async (condition: unknown) => {
+      entry.where = condition;
+    },
   };
   return chain;
+}
+
+/**
+ * Flattens a Drizzle condition to the literal values it was built from, so a
+ * test can ask which row an UPDATE was scoped to without depending on the SQL
+ * the builder happens to emit.
+ */
+function conditionValues(condition: unknown): unknown[] {
+  const chunks = (condition as { queryChunks?: unknown[] } | undefined)?.queryChunks ?? [];
+  return chunks.flatMap((chunk) => {
+    // A chunk is either a literal SQL fragment, a column (carrying `name`) or a
+    // bound parameter (carrying `value`) — the bound parameter is the user id.
+    const { value, name } = (chunk ?? {}) as { value?: unknown; name?: unknown };
+    if (value !== undefined) return Array.isArray(value) ? value : [value];
+    if (name !== undefined) return [name];
+    return [chunk];
+  });
 }
 
 function fakeTx() {
@@ -117,6 +147,17 @@ describe('saveSelections (reader type after a quiz retake)', () => {
     expect(readerTypeUpdates()).toHaveLength(1);
     expect(readerTypeUpdates()[0].values.readerType).toBe('The Seeker');
     expect(result.readerType).toBe('The Seeker');
+  });
+
+  it('scopes the write to the one reader who retook the quiz', async () => {
+    await recommendationsService.saveSelections(7, CHOSEN);
+
+    // An UPDATE on `users` that lost its WHERE would relabel every reader in the
+    // table, and it would satisfy every other assertion here — so the condition
+    // itself is checked, not just the values written.
+    const [write] = readerTypeUpdates();
+    expect(write.where).toBeDefined();
+    expect(conditionValues(write.where)).toContain(7);
   });
 
   it('leaves the existing reader type alone when inference fails', async () => {
