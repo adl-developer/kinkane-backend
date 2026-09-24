@@ -277,7 +277,7 @@ export const onboardingPaths = {
         '',
         'A chosen book already on the shelf **keeps its existing status, note and source** — this call never overwrites the user’s own edits.',
         '',
-        'Reader type is re-inferred from the new picks and written to the preference history, but the `readerType` shown in settings is deliberately left alone: a retake is evidence about taste, not a decision the user made about how they want to be labelled.',
+        'Reader type is re-inferred from the new picks and written to both the reader’s profile — so the `readerType` shown in settings and the cohort behind the “readers like you” rail both follow the retake — and the preference history. If inference fails the existing reader type is kept rather than cleared.',
         '',
         '**Requires Kinkané Plus** — it exists only to finish a retake, and only Plus members can start one. **Rate limit:** 20 per hour.',
       ].join('\n'),

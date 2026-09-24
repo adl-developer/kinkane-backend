@@ -15,8 +15,10 @@ code.
 ## 1. What the rail is
 
 Every reader is assigned one of eight **reader types** when they finish the
-onboarding quiz — "The Open Door", "The Seeker", and so on. This endpoint
-answers one question:
+onboarding quiz — "The Open Door", "The Seeker", and so on. It is not fixed for
+life: retaking the quiz re-infers it and can move the reader to another type, so
+don't cache it past the point where a retake could have happened (see §10). This
+endpoint answers one question:
 
 > Of the other people who share your reader type, which books did they
 > respond well to?
@@ -214,12 +216,12 @@ needs at least two readers sharing a reader type, one of whom has shelf
 activity. Seeded and demo databases often have neither. Use `readerType` (§7)
 against a group you have seeded rather than concluding the endpoint is broken.
 
-**Retaking the quiz does not move a reader between groups.** Reader type is
-assigned at signup. A retake records a newly inferred type in the reader's
-preference history, but does not reassign them — so the rail will not change
-after a retake. This is intentional for now: it keeps the rail consistent with
-the profile name shown in the heading above it, which comes from the same place.
-If the product wants retakes to move people, that is a deliberate follow-up.
+**Retaking the quiz can move a reader between groups.** Reader type is assigned
+at signup and re-inferred whenever a signed-in reader saves their picks from a
+retake, so the rail — and the profile name in the heading above it, which comes
+from the same column — can both change after a retake. If your test account's
+rail suddenly holds different books, check whether you retook the quiz on it.
+When inference fails the reader keeps the type they had.
 
 ## 11. Endpoint summary
 

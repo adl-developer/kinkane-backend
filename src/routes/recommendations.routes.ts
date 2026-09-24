@@ -142,10 +142,10 @@ router.patch('/refresh', requireAuth, requirePlus, recommendationsLimiter, (req:
  * A chosen book already on the shelf keeps the status, note and source the user
  * gave it — this call never overwrites their own edits.
  *
- * Reader type is re-inferred from the new picks and recorded in the preference
- * history, but `users.readerType` (what settings displays) is deliberately left
- * unchanged — a retake is evidence about taste, not a decision the user made
- * about how they want to be labelled.
+ * Reader type is re-inferred from the new picks and written to both
+ * `users.readerType` (what settings displays, and what cohorts the "readers like
+ * you" rail) and the preference history. If inference fails the existing reader
+ * type is kept rather than cleared.
  *
  * Body: { chosenBookIds: number[],      — 1 to 5 book IDs
  *         dislikedBookIds?: number[] }  — books swiped away, optional, additive

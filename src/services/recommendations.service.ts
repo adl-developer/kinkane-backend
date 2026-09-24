@@ -1288,11 +1288,14 @@ export const recommendationsService = {
    * shelf and in the interaction log, and swiped-away books go straight into the
    * permanent rejection history.
    *
-   * Reader type is re-inferred from the new picks and written to the preference
-   * history only — `users.readerType` is left alone. A retake is evidence about
-   * taste, but the reader type shown in settings stays something the user owns
-   * rather than something a quiz silently overwrites; the history row is where
-   * the drift becomes visible.
+   * Reader type is re-inferred from the new picks and written to both
+   * `users.readerType` and the preference history, so a retake moves the label
+   * settings shows and the cohort the "readers like you" rail reads. The history
+   * row is still where the drift over time stays visible.
+   *
+   * Inference failing leaves the existing reader type in place. It is a
+   * nice-to-have label, and a Gemini hiccup is no reason to blank out a type the
+   * user already had.
    *
    * Both writes feed the exclusion set, so neither a chosen nor a rejected book
    * can come back in a later quiz.
@@ -1359,13 +1362,33 @@ export const recommendationsService = {
           })),
         )
         .onConflictDoNothing();
+
+      // Only written when inference actually produced a type: a null means
+      // Gemini failed, not that the reader stopped having a type, so the
+      // existing label survives rather than being cleared.
+      //
+      // Inside the transaction, so a retake never half-lands with the picks on
+      // the shelf and the old label still on the profile — the same choice the
+      // onboarding path makes (see auth.service.ts). The cost is that a failure
+      // here rolls the picks back too, which is the opposite of how the history
+      // write below is treated. Deliberate: the picks and the label are one
+      // event to the reader, and a retake they have to redo is a better outcome
+      // than a profile that silently disagrees with the books under it.
+      if (readerType) {
+        await tx.update(users).set({ readerType, updatedAt: new Date() }).where(eq(users.id, userId));
+      }
     });
 
     // History is a side record, not the point of the call — a failure to log
     // the snapshot must not fail the user's selection, which is already saved.
     try {
       const prefs = await recommendationsService.getPreferences(userId);
-      await preferenceHistoryService.record(userId, prefs, 'user_edit', { readerType });
+      // `readerType ?? undefined` so a failed inference makes `record` read the
+      // user row and carry the existing type forward, rather than writing a null
+      // that would read as "this reader has no type" in the history.
+      await preferenceHistoryService.record(userId, prefs, 'user_edit', {
+        readerType: readerType ?? undefined,
+      });
     } catch (err) {
       logger.error('Failed to record preference history after quiz selections', {
         userId,

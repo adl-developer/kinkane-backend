@@ -3803,13 +3803,11 @@ export const booksService = {
    * The caller's own rows are excluded from the count, so a book only they have
    * liked can never appear — "readers like you" means other readers.
    *
-   * Cohorting is on `users.reader_type` alone. That column is written at signup
-   * and deliberately left untouched by quiz retakes, which record their newly
-   * inferred type in `preference_history` instead (see lib/reader-type.ts) — so
-   * a reader who has retaken the quiz is still grouped by their original type.
-   * A known limitation rather than an oversight: following retakes means a
-   * per-user latest-row lookup over preference history on *both* sides of this
-   * query, and the label the UI prints under the rail comes off the user row too.
+   * Cohorting is on `users.reader_type` alone, which is written at signup and
+   * rewritten by every quiz retake that infers a type (see lib/reader-type.ts) —
+   * so a reader who retakes the quiz moves into the cohort their new picks imply,
+   * and this rail follows them there without any extra lookup. The history table
+   * keeps the older types for auditing; nothing here reads them.
    *
    * Returns an empty page — never an error — both when the caller has no reader
    * type and when nobody else shares theirs. To a client those are the same
