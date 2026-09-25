@@ -40,6 +40,7 @@ import {
   type BookReviewInfo,
 } from './book-reviews.service';
 import { getBiosByIsbns, bdsEnrichmentService, type AuthorBioInfo } from './bds-enrichment.service';
+import { attributableContributor, type BioConfidence } from '../lib/author-bio-match';
 import { TRENDING_SCORED_TYPES, trendingScoreSql } from './interactions.service';
 import { availabilityService } from './commerce/availability.service';
 import {
@@ -609,6 +610,11 @@ export interface EditionSummary {
   availableQuantity?: number;
 }
 
+/** A book-page contributor, with the biography when it is safely theirs. */
+export interface DetailContributor extends Pick<BookContributor, 'role' | 'personName' | 'sequenceNumber'> {
+  bio?: { bioHtml: string; confidence: BioConfidence };
+}
+
 export interface BookDetail extends BookListItem {
   /**
    * Review quotes from Nielsen or, where Nielsen has none, from BDS — `source`
@@ -619,10 +625,18 @@ export interface BookDetail extends BookListItem {
   review: BookReviewInfo | null;
   /**
    * The author biography from BDS, as HTML. One block per book — it can cover
-   * several contributors — not attached to any single contributor, because
-   * BDS supply it per book and carry no author identifier.
+   * several contributors — so it stays at book level. Where it can safely be
+   * attributed to one person it *also* appears on that contributor; see
+   * lib/author-bio-match.
    */
   authorBio: AuthorBioInfo | null;
+  /**
+   * Contributors, each carrying `bio` when this book's biography is
+   * demonstrably about them: they are the book's only author, and the text
+   * names them. Absent otherwise — an edited collection's biography covers
+   * several people and belongs to none of them.
+   */
+  contributors: DetailContributor[];
   shortDescription: string | null;
   longDescription: string | null;
   editionNumber: number | null;
@@ -4206,6 +4220,23 @@ export const booksService = {
  * Builds (or reads from cache) everything on the book page except the live
  * shop fields — booksService.getById is the only caller and adds those.
  */
+/**
+ * Copies the book's biography onto the one contributor it can be attributed
+ * to, leaving every other contributor untouched. The biography also stays at
+ * book level in `authorBio`, so nothing is lost when it belongs to nobody.
+ */
+function withAttributedBio(
+  contributors: Pick<BookContributor, 'role' | 'personName' | 'sequenceNumber'>[],
+  bioHtml: string | null,
+): DetailContributor[] {
+  const match = attributableContributor(contributors, bioHtml);
+  if (!match) return contributors;
+
+  return contributors.map((c) =>
+    c === match.contributor ? { ...c, bio: { bioHtml: bioHtml!, confidence: match.confidence } } : c,
+  );
+}
+
 async function loadBookDetail(id: number): Promise<BookDetail | null> {
   const cacheKey = `book:detail:${id}`;
   const cached = await redis.get(cacheKey);
@@ -4295,7 +4326,7 @@ async function loadBookDetail(id: number): Promise<BookDetail | null> {
     coverUrl: book.coverUrl,
     createdAt: book.createdAt,
     updatedAt: book.updatedAt,
-    contributors,
+    contributors: withAttributedBio(contributors, bioMap.get(book.isbn13 ?? '')?.bioHtml ?? null),
     genres: toDisplayGenres(genreRows),
     prices: priceRows,
     subjects,

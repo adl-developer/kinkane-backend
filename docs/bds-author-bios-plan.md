@@ -1,7 +1,9 @@
 # Plan: author biographies, and review quotes where Nielsen has none
 
 **Written 2026-09-25**, after the BDS licence was attached and the API measured
-against the real catalogue. Companion to
+against the real catalogue. **Revised the same day** after a backfill trial of
+~200 live calls, which changed the delivery design (see "What the API can and
+cannot do" and Part 3). Companion to
 `changelog/2026-09-22-bds-author-bios-and-reviews.md`, which describes what is
 already built and shipped (switched off).
 
@@ -18,7 +20,9 @@ Measured with `scripts/bds-probe.ts` against `isbn-sample-500.csv`:
 | Prizes | 3/500 |
 | `biographical_note` | does not exist as a field; `author_bio` is the only bio |
 
-A live sweep of 200 books took 5.5 seconds, so the full catalogue is 2–3 hours.
+A live sweep of 200 books took 5.5 seconds; a sustained 2,000-book sweep ran at
+38 books/sec, which is 8 hours for 1.1M books serially, or about 2.5 hours with
+a few requests in flight at once.
 
 Local catalogue shape, which decides how far bios can be pushed:
 
@@ -43,6 +47,33 @@ And how well a bio can be tied to a person, over the 156 bios fetched live:
 **The core constraint: BDS supply one bio blob per book, which may cover
 several contributors, and carry no author identifier.** Per-author bios must
 therefore be derived, and that derivation is the only real risk in this plan.
+
+## What the API can and cannot do
+
+Measured over ~200 live calls on 2026-09-25. **No call failed, at any point.**
+
+| | Measured |
+|---|---|
+| Records per call (`PL`) | **hard cap of 100** — asking for 200 or 500 still returns 100 |
+| Paging window | **`offset + page size <= 5,000`**. Offset 4,991 works; 4,992 returns an **empty result with no error** |
+| Page overlap | pages overlap by one record (offset 10 starts at result 10), so paged reads must deduplicate |
+| Records BDS change per day | **~136,000** (692,367 over 7 days) |
+| Throughput, serial with a 500ms delay | 38 books/sec → 8 hours for 1.1M |
+| Throughput, 4–6 requests in parallel | 3.1x faster, zero failures, no latency drift → ~2.5 hours |
+| Rate limiting | none documented, no `X-RateLimit-*`/`Retry-After` headers, none observed in a 30-call burst at concurrency 6 |
+| Token | JWT valid one year, `scope: {"acs_user_licence_code":"book"}` |
+| Response size | ~326KB per 100 records, so a full pass moves ~3.6GB |
+| ISBNs BDS does not hold | ~1.2% |
+
+**The consequence that reshaped this plan:** BDS change ~136,000 records a day,
+and only the first 5,000 of any result set can be read. A "what changed
+yesterday" query can therefore see about 4% of the changes, and going past the
+window looks identical to reaching the end of the results. **The daily-delta
+approach cannot work over this API**, whatever page size or date range is used.
+
+Unlike Nielsen, there is no metered daily allowance — no budget table is
+needed. That is an observation, not a guarantee: nothing in writing says so,
+and a full refresh is two orders of magnitude more traffic than this trial.
 
 ## What the data looks like
 
@@ -231,16 +262,75 @@ the Nielsen subscription still earns its place.
 
 ---
 
+# Part 3 — Getting the data in, and keeping it fresh
+
+Revised after the trial. What is built today assumes a daily delta the API
+cannot serve, so this part replaces it.
+
+## 3.1 The backfill (one-off, ~1.1M books)
+
+`scripts/bds-backfill.ts` works today, with two changes before it runs for real:
+
+- **Iterate by keyset, not by `ORDER BY publication_date`.** The current
+  candidate query is a sequential scan plus a sort over `books` — 251ms at 83k
+  rows locally, so several seconds per page at 1.1M, repeated for every page.
+  Walking `books.id` in ranges removes both.
+- **Make concurrency configurable** (`BDS_CONCURRENCY`, default 1). At 4–6 the
+  trial ran 3.1x faster with no failures, cutting 8 hours to ~2.5. Default it
+  to 1 until BDS confirm parallel requests are acceptable.
+
+Everything else already holds: 100 ISBNs per call, every answer committed as it
+arrives, misses recorded, safe to stop and re-run.
+
+## 3.2 Keeping it fresh: a rotating re-sweep, not a delta
+
+**Delete `runDailyDelta` and `BDS_DELTA_MAX_PAGES`.** They cannot work (see
+"What the API can and cannot do"), and worse, they fail silently — an
+over-deep page is indistinguishable from "no more changes", so the job would
+report success while missing 96% of the day's changes.
+
+Replace it with a nightly job over **our own ISBNs**, which we control and can
+therefore page through completely, in three priority tiers:
+
+1. **Never asked** — new books from the Gardners ingest. Always first, so a
+   newly stocked book gets its bio within a day.
+2. **Review gap** — books where Nielsen has answered "no review" and BDS has
+   not been asked. This is Part 2.1, and it is where a BDS review adds
+   something new.
+3. **Oldest checked** — everything else, oldest `checked_at` first, so the
+   catalogue refreshes on a rotation. A 30-day rotation over 1.1M books is
+   ~37,000 books or ~370 calls a night; a 90-day rotation is ~120 calls.
+
+Tier 3 replaces the delta entirely: instead of asking BDS what changed, we
+re-ask about our own books on a cycle. It is simpler, it cannot silently miss
+anything, and the cost is trivial.
+
+`BDS_NIGHTLY_ISBN_LIMIT` becomes the rotation dial: 40,000 gives a monthly
+refresh, 15,000 a quarterly one.
+
+## 3.3 Ask BDS about the file feed as well
+
+Their ONIX file feed is the right tool for bulk and for genuine change
+detection, and it sidesteps the 5,000-record window. Worth having both: the
+feed for volume, the API for on-demand lookups of a single book.
+
+---
+
 # Sequencing
 
 | | Work | Size | Depends on |
 |---|---|---|---|
-| 1 | Full catalogue backfill (`scripts/bds-backfill.ts`) | 2–3 hours, unattended | display licence |
-| 2 | 2.1 gap-first sweep | half a day | — |
-| 3 | 1.1 per-contributor bios in book detail | half a day | backfill |
-| 4 | 1.2–1.3 author bio store + collision guard | 1–2 days | 1.1 |
-| 5 | 1.4 author endpoint | 1 day + app work | 1.2 |
-| 6 | 2.3–2.4 Nielsen retune and measurement | half a day | backfill |
+| 1 | 3.2 replace the delta with the rotating re-sweep | half a day | — |
+| 2 | 3.1 keyset iteration + configurable concurrency | half a day | — |
+| 3 | Full catalogue backfill | 2.5–8 hours, unattended | display licence, steps 1–2 |
+| 4 | 1.1 per-contributor bios in book detail | half a day | backfill |
+| 5 | 1.2–1.3 author bio store + collision guard | 1–2 days | step 4 |
+| 6 | 1.4 author endpoint | 1 day + app work | step 5 |
+| 7 | 2.3–2.4 Nielsen retune and measurement | half a day | backfill |
+
+Steps 1 and 2 moved ahead of the backfill: running an 8-hour job on code that
+is about to be replaced, using a query that degrades as the ledger fills, would
+be wasted effort.
 
 ## Blocking
 
@@ -248,7 +338,19 @@ the Nielsen subscription still earns its place.
 it, and keep it if the contract ends.** Everything here stores licensed
 third-party text and puts it on a public page.
 
-## Open question
+## Questions for BDS
+
+1. Is there a daily or monthly cap, or a fair-use policy, on requests or
+   records? Nothing is documented and nothing showed up in testing, but a full
+   refresh is ~11,000 requests.
+2. Are 4–6 requests in parallel acceptable? It cuts the backfill from 8 hours
+   to ~2.5.
+3. Is the 5,000-record paging window deliberate? It makes "everything you
+   changed yesterday" unanswerable over the API.
+4. Can we have the ONIX file feed alongside the API, limited to our ISBNs?
+5. Written confirmation of display, storage and post-termination rights.
+
+## Open question for us
 
 Does the app want an author page? Steps 4 and 5 only pay off if there is
 somewhere to show an author-level bio. Without one, step 3 alone delivers most
