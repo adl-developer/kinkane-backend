@@ -164,7 +164,9 @@ export function parseRecords(xml: string): BdsRecord[] {
       biographicalNotes: list(fields, 'biographical_note'),
       review: first(fields, 'review'),
       prizes: first(fields, 'prizes'),
-      relatedEditions: list(fields, 'related_editions').filter((c) => ISBN13.test(c)),
+      // Deduplicated: BDS repeat an edition when it is listed in more than one
+      // of the fields that feed this list (seen live, e.g. 9780241635537).
+      relatedEditions: [...new Set(list(fields, 'related_editions').filter((c) => ISBN13.test(c)))],
       indexUpdated: first(fields, 'index_updated'),
     });
   }
@@ -173,19 +175,46 @@ export function parseRecords(xml: string): BdsRecord[] {
 
 /**
  * BDS report errors as a JSON body — with HTTP 200, so the status code alone
- * says nothing. Seen live: `{"response":{"error_code":1,"error_msg":
- * "Unauthorised access! ...","explain":"No token or invalid token"}}`.
+ * says nothing. There are two shapes, both seen live:
+ *
+ *   {"response":{"error_code":1,"error_msg":"Unauthorised access! ...",
+ *     "explain":"No token or invalid token"}}
+ *   {"errordetails":{"errorcode":"You need to configure the Database Licence
+ *     Subscriptions via the ACS for this customer.","errormessage":1}}
+ *
+ * In the second, the names are the wrong way round: `errorcode` holds the
+ * message and `errormessage` holds the number. Whichever value is a string is
+ * treated as the message. Its code is never reported as an auth failure, so a
+ * licensing problem can't send us round the re-login loop — the account
+ * authenticates fine, it just has no data behind it.
  */
-function parseErrorBody(body: string): { code: number; message: string } | null {
+function parseErrorBody(body: string): { code: number; message: string; retryableAuth: boolean } | null {
   const trimmed = body.trimStart();
   if (!trimmed.startsWith('{')) return null;
   try {
-    const json = JSON.parse(trimmed) as { response?: { error_code?: number | string; error_msg?: string; explain?: string } };
+    const json = JSON.parse(trimmed) as {
+      response?: { error_code?: number | string; error_msg?: string; explain?: string };
+      errordetails?: { errorcode?: number | string; errormessage?: number | string };
+    };
+
+    const details = json.errordetails;
+    if (details) {
+      const parts = [details.errorcode, details.errormessage];
+      const message = parts.find((p) => typeof p === 'string' && p.trim() !== '') as string | undefined;
+      const code = parts.find((p) => typeof p === 'number');
+      return {
+        code: Number(code ?? -1),
+        message: message ?? 'unknown BDS error',
+        retryableAuth: false,
+      };
+    }
+
     const r = json.response;
     if (!r || r.error_code === undefined || Number(r.error_code) === 0) return null;
     return {
       code: Number(r.error_code),
       message: [r.error_msg, r.explain].filter(Boolean).join(' — ') || 'unknown BDS error',
+      retryableAuth: Number(r.error_code) === AUTH_ERROR_CODE,
     };
   } catch {
     return null;
@@ -219,7 +248,12 @@ async function login(): Promise<string> {
   if (!username || !password) throw new BdsAuthError('BDS credentials are not configured');
 
   const url = new URL(baseUrl);
-  url.searchParams.set('sx', '_login');
+  // 'ax', not 'sx'. The API document's prose calls it a "token endpoint" and
+  // never names the parameter; only the PHP sample in Schedule 1 shows it, and
+  // BDS answer any unrecognised request with the same "No token or invalid
+  // token" error as an unauthenticated one — so a wrong name here looks
+  // exactly like wrong credentials. Verified live 2026-09-24.
+  url.searchParams.set('ax', '_login');
   url.searchParams.set('usr', username);
   url.searchParams.set('pwd', password);
 
@@ -274,11 +308,11 @@ export async function bdsGet(params: Record<string, string>): Promise<string> {
 
     const error = parseErrorBody(body);
     if (!error) return body;
-    if (error.code === AUTH_ERROR_CODE && attempt === 1) {
+    if (error.retryableAuth && attempt === 1) {
       await forgetToken();
       continue;
     }
-    if (error.code === AUTH_ERROR_CODE) throw new BdsAuthError(`BDS rejected a fresh token: ${error.message}`);
+    if (error.retryableAuth) throw new BdsAuthError(`BDS rejected a fresh token: ${error.message}`);
     throw new BdsRequestError(`BDS error ${error.code}: ${error.message}`);
   }
   // Unreachable: the loop either returns or throws.
