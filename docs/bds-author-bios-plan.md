@@ -2,8 +2,13 @@
 
 **Written 2026-09-25**, after the BDS licence was attached and the API measured
 against the real catalogue. **Revised the same day** after a backfill trial of
-~200 live calls, which changed the delivery design (see "What the API can and
-cannot do" and Part 3). Companion to
+~200 live calls, which changed the delivery design.
+
+**Status: Parts 1, 2 and 3 are built and committed** (`9eeb37d`, `e148770`,
+`d703517`), switched off behind `BDS_ENRICHMENT_ENABLED`. What is left is the
+display licence, the full backfill, and the app work. See "What was actually
+built" at the end, which records where the plan changed on contact with the
+data. Companion to
 `changelog/2026-09-22-bds-author-bios-and-reviews.md`, which describes what is
 already built and shipped (switched off).
 
@@ -364,3 +369,72 @@ of the value.
 - Parsing review attributions into structured fields.
 - Using `related_editions` to fix the Jellybooks excerpt mismatch. Worth doing,
   but it is a separate piece of work.
+
+
+---
+
+# What was actually built
+
+Three places where doing the work changed the plan.
+
+## Reviews: the gap-filling premise was wrong
+
+The plan assumed BDS reviews would fill Nielsen's gaps. Measured against every
+book Nielsen has answered for (902 of them):
+
+| | Count |
+|---|---|
+| Nielsen has a quote | 236 |
+| BDS has a quote | 233 |
+| **BDS fills a Nielsen gap** | **9** |
+| Both have one | 224 |
+| Nielsen only | 12 |
+| Bios on those same books | **721 (80%)** |
+
+The two sources are nearly the same corpus. So Part 2.1's "review gap" priority
+tier was **dropped** — it would chase a 1.4% gain. BDS reviews are still stored,
+because they arrive in the same call as the bio and cost nothing, and Nielsen is
+still preferred when both have one. The bios are the reason to run this at all.
+
+## Attribution: two rules, not one
+
+1.1 shipped with a second condition the plan did not have: a biography is
+refused if it also names **another contributor**. Seen live on manga, where one
+blob covers writer and illustrator, and on books with a named translator. At
+4.1% of attributions (43 of 1,047) it is cheap to refuse, and the alternative is
+one person's life story under another's name.
+
+The author-level guard needed a third correction: the author's own name had to
+be **excluded** from the similarity comparison. Every biography of a person
+names them, so two different people with the same name share those words — the
+one case where the comparison must be sharpest is the one the name blunts. With
+the name left in, a marine geologist and a children's author scored as the same
+man.
+
+## Freshness: retries matter more than speed
+
+The trial produced two transient network failures where the same request worked
+from curl. Over ~11,000 requests that is routine, so requests now retry through
+transient failures (1s, 3s, 9s), and a batch that still fails costs only itself
+— the run continues and the next sweep picks those books up.
+
+Measured throughput after making the delay stop serialising concurrent runs:
+
+| Concurrency | Rate | Full catalogue |
+|---|---|---|
+| 1 | 31 books/sec | 9.9 hours |
+| 4 | 130 books/sec | 2.3 hours |
+| 6 | 142 books/sec | 2.2 hours |
+
+Six is barely better than four, so four is the sensible setting once BDS confirm
+parallel requests are welcome.
+
+## Still open
+
+- **Display licence** — blocks switching on, not building.
+- **The full backfill** — 2.3 hours at concurrency 4.
+- **Re-measure the ambiguity threshold after the backfill.** The gap between
+  same-person (0.138) and unrelated (max 0.125) biographies is narrow, and rests
+  on the two same-person samples the local data happens to contain. Real name
+  collisions will only appear at full catalogue scale.
+- **App work**: the book page's contributor biographies, and an author page.
