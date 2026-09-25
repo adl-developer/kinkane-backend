@@ -14,6 +14,9 @@ import { redis } from './redis';
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
+/** Attempts per request, for transient network failures only. */
+const HTTP_ATTEMPTS = 3;
+
 // A year, per the API document. Cached for a little less so we never send a
 // token in its final hours; a rejected token triggers a fresh login anyway.
 const TOKEN_TTL_SECONDS = 360 * 24 * 60 * 60;
@@ -223,16 +226,49 @@ function parseErrorBody(body: string): { code: number; message: string; retryabl
 
 // ── Transport ────────────────────────────────────────────────────────────────
 
+/**
+ * Network-level failures, which say nothing about the request itself: a
+ * dropped connection, a DNS blip, or our own timeout firing. Seen live during
+ * the backfill trial — BDS went unreachable from Node for a couple of minutes
+ * while the same request worked from curl, then recovered on its own.
+ */
+function isTransient(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return err.name === 'AbortError' || err.name === 'TimeoutError' || err.message === 'fetch failed';
+}
+
+/**
+ * One GET, retried through transient failures.
+ *
+ * A backfill is ~11,000 requests over hours; without this, a single blip ends
+ * the run. Anything BDS answers — including an error body — is returned as-is
+ * and never retried here, because repeating a request the server understood
+ * would not change the answer.
+ */
 async function httpGet(url: URL, headers: Record<string, string> = {}): Promise<string> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  try {
-    const response = await fetch(url, { headers, signal: controller.signal });
-    if (!response.ok) throw new BdsRequestError(`BDS responded with HTTP ${response.status}`);
-    return await response.text();
-  } finally {
-    clearTimeout(timer);
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= HTTP_ATTEMPTS; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      const response = await fetch(url, { headers, signal: controller.signal });
+      if (!response.ok) throw new BdsRequestError(`BDS responded with HTTP ${response.status}`);
+      return await response.text();
+    } catch (err) {
+      lastError = err;
+      if (!isTransient(err) || attempt === HTTP_ATTEMPTS) break;
+      // 1s, 3s, 9s — long enough for a brief outage, short enough that a
+      // backfill does not stall on one bad batch.
+      await new Promise((res) => setTimeout(res, 1000 * 3 ** (attempt - 1)));
+    } finally {
+      clearTimeout(timer);
+    }
   }
+
+  throw lastError instanceof BdsRequestError
+    ? lastError
+    : new BdsRequestError(`BDS request failed after ${HTTP_ATTEMPTS} attempts: ${String((lastError as Error)?.message ?? lastError)}`);
 }
 
 let memoryToken: string | null = null;
@@ -360,29 +396,17 @@ export async function fetchByIsbns(isbns: string[]): Promise<Map<string, BdsReco
 }
 
 /**
- * One page of records BDS changed between two dates (yyyymmdd, inclusive).
- * `index_updated` is the field to use: the documented SINCE/DTSPAN operators
- * filter on publication date, not on when a record changed.
+ * There is deliberately no "what changed at BDS" reader here.
+ *
+ * BDS change roughly 136,000 records a day, and the API will only page through
+ * the first 5,000 results of any query (`offset + PL <= 5000`, measured
+ * 2026-09-25) — beyond that it returns an empty page with no error, which is
+ * indistinguishable from reaching the end. Any such reader would therefore
+ * report success while silently missing ~96% of the day's changes.
+ *
+ * Freshness comes from re-asking about our own ISBNs on a rotation instead;
+ * see runSweep in services/bds-enrichment.service.ts.
  */
-export async function fetchUpdatedPage(
-  fromYmd: string,
-  toYmd: string,
-  page: number,
-  pageSize = 100,
-): Promise<{ records: BdsRecord[]; rawCount: number }> {
-  const body = await bdsGet({
-    SF1: 'index_updated',
-    ST1: `${fromYmd}:${toYmd}`,
-    PL: String(pageSize),
-    M: String(page * pageSize),
-    VIEW: 'xml',
-    FIELDS: BDS_FIELDS.join(','),
-  });
-  // rawCount, not records.length, decides whether there is another page:
-  // records without an ISBN are dropped by the parser but still fill a page.
-  const rawCount = [...body.matchAll(/<(resultfields|record)\b[^>]*>/gi)].length;
-  return { records: parseRecords(body), rawCount };
-}
 
 /** Test hook: drop the in-process token so each test starts logged out. */
 export function resetBdsTokenForTests(): void {

@@ -5,6 +5,7 @@
 
 ### Features
 
+* give each author a page with their biography and books ([e148770](https://adl.github.com/adl-developer/kinkane-backend/commit/e1487708051e9f782e850d4824c78f6d177af446))
 * show an author's biography beside their name on a book page ([9eeb37d](https://adl.github.com/adl-developer/kinkane-backend/commit/9eeb37d0f700990f0004a7c83cb5070ca41f775a))
 
 ### Bug Fixes

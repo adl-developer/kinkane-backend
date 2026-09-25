@@ -1,10 +1,12 @@
-import { and, eq, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNotNull, isNull, lt, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { books, bookAuthorBios } from '../db/schema';
 import { config } from '../config';
 import { logger } from '../lib/logger';
 import { redis } from '../lib/redis';
-import { BdsAuthError, fetchByIsbns, fetchUpdatedPage, type BdsRecord } from '../lib/bds';
+import pLimit from 'p-limit';
+import { BdsAuthError, fetchByIsbns, type BdsRecord } from '../lib/bds';
+import { rebuildAuthorBios } from './author-bios.service';
 import { storeReviewResults } from './book-reviews.service';
 
 /**
@@ -95,20 +97,58 @@ async function storeResults(results: Map<string, BdsRecord | null>): Promise<{ b
  */
 export async function enrichIsbns(
   isbns: string[],
-  opts: { delayMs?: number } = {},
-): Promise<{ checked: number; bios: number; reviews: number }> {
+  opts: { delayMs?: number; concurrency?: number } = {},
+): Promise<{ checked: number; bios: number; reviews: number; failed: number }> {
   const unique = [...new Set(isbns.filter(Boolean))];
-  const totals = { checked: 0, bios: 0, reviews: 0 };
+  const totals = { checked: 0, bios: 0, reviews: 0, failed: 0 };
 
+  const batches: string[][] = [];
   for (let i = 0; i < unique.length; i += config.bds.batchSize) {
-    if (i > 0 && opts.delayMs) await sleep(opts.delayMs);
-    const batch = unique.slice(i, i + config.bds.batchSize);
-    const results = await fetchByIsbns(batch);
-    const stored = await storeResults(results);
-    totals.checked += batch.length;
-    totals.bios += stored.bios;
-    totals.reviews += stored.reviews;
+    batches.push(unique.slice(i, i + config.bds.batchSize));
   }
+
+  // BDS publish no rate limit and none showed up in testing (30 calls at six
+  // at a time, no failures, no slowdown), but "none observed" is not "none",
+  // so concurrency defaults to 1 and is raised deliberately. At 4-6 a full
+  // catalogue pass drops from about 8 hours to 2.5.
+  const concurrency = Math.max(1, opts.concurrency ?? config.bds.concurrency);
+  const limit = pLimit(concurrency);
+
+  await Promise.all(
+    batches.map((batch, index) =>
+      limit(async () => {
+        // Running one at a time, the delay is the pacing. Running several, the
+        // concurrency limit is the pacing and the delay would simply idle
+        // every worker — so it is used once, to stagger the opening burst.
+        if (opts.delayMs) {
+          if (concurrency === 1) {
+            if (index > 0) await sleep(opts.delayMs);
+          } else if (index < concurrency) {
+            await sleep(Math.round((opts.delayMs / concurrency) * index));
+          }
+        }
+        try {
+          const results = await fetchByIsbns(batch);
+          const stored = await storeResults(results);
+          totals.checked += batch.length;
+          totals.bios += stored.bios;
+          totals.reviews += stored.reviews;
+        } catch (err) {
+          // Credentials will not fix themselves, so that one stops the run.
+          if (err instanceof BdsAuthError) throw err;
+          // Anything else costs this batch and nothing more. A backfill is
+          // ~11,000 requests over hours; ending all of it because one failed
+          // (after its own retries) would throw away everything already done,
+          // and the books are simply picked up by the next run.
+          totals.failed += batch.length;
+          logger.warn('BDS batch failed, skipping', {
+            isbns: batch.length,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }),
+    ),
+  );
   return totals;
 }
 
@@ -172,105 +212,92 @@ export const bdsEnrichmentService = {
   },
 
   /**
-   * The nightly sweep: books BDS have never been asked about, then misses old
-   * enough to be worth asking again, newest publications first.
+   * The nightly pass, and the backfill: books BDS has never been asked about
+   * first, then the oldest answers, so the catalogue refreshes on a rotation.
    *
-   * `limit` overrides BDS_NIGHTLY_ISBN_LIMIT — the backfill script passes a
-   * large one to work through the whole catalogue in one go.
+   * Two tiers rather than one query, because they want different orders:
+   *
+   *  1. **Never asked** — new books from the Gardners ingest, and everything
+   *     the backfill has not reached yet. Walked by `books.id` as a keyset:
+   *     an `ORDER BY publication_date` over a million rows is a sequential
+   *     scan plus a sort, repeated for every page, and it gets slower as the
+   *     ledger fills.
+   *  2. **Asked longest ago** — the refresh rotation, oldest `checked_at`
+   *     first. BDS change ~136,000 records a day and their API will only
+   *     page through 5,000 results, so asking them what changed is not
+   *     possible; re-asking about our own books on a cycle is. At the default
+   *     30 days that is ~1/30th of the catalogue a night.
+   *
+   * `limit` caps how many ISBNs one run may spend.
    */
-  async runSweep(opts: { limit?: number } = {}): Promise<{ checked: number; bios: number; reviews: number }> {
+  async runSweep(opts: { limit?: number; concurrency?: number } = {}): Promise<{
+    checked: number;
+    bios: number;
+    reviews: number;
+    failed: number;
+    fresh: number;
+    refreshed: number;
+  }> {
     const limit = opts.limit ?? config.bds.nightlyIsbnLimit;
-    const totals = { checked: 0, bios: 0, reviews: 0 };
+    const totals = { checked: 0, bios: 0, reviews: 0, failed: 0, fresh: 0, refreshed: 0 };
     if (limit <= 0) return totals;
 
-    const recheckCutoff = new Date(Date.now() - config.bds.missRecheckDays * 24 * 60 * 60 * 1000);
-
-    // Selected in pages so a catalogue-sized backfill never holds a million
-    // ISBNs in memory, and so progress is committed as it goes.
     const pageSize = 5_000;
+    const run = async (isbns: string[]) => {
+      const done = await enrichIsbns(isbns, {
+        delayMs: config.bds.requestDelayMs,
+        concurrency: opts.concurrency,
+      });
+      totals.checked += done.checked;
+      totals.bios += done.bios;
+      totals.reviews += done.reviews;
+      totals.failed += done.failed;
+      // Failed batches count as progress for the keyset: they are not retried
+      // in this run, or a persistent failure would loop forever.
+      return done.checked + done.failed;
+    };
+
+    // Tier 1: never asked, walked by id.
+    let afterId = 0;
     while (totals.checked < limit) {
-      const candidates = await db
-        .select({ isbn13: books.isbn13 })
+      const rows = await db
+        .select({ id: books.id, isbn13: books.isbn13 })
         .from(books)
         .leftJoin(bookAuthorBios, eq(bookAuthorBios.isbn13, books.isbn13))
         .where(
           and(
             isNotNull(books.isbn13),
             eq(books.publishingStatus, '04'),
-            or(
-              isNull(bookAuthorBios.id),
-              and(isNull(bookAuthorBios.bioHtml), lt(bookAuthorBios.checkedAt, recheckCutoff)),
-            ),
+            gt(books.id, afterId),
+            isNull(bookAuthorBios.id),
           ),
         )
-        .orderBy(sql`${books.publicationDate} DESC NULLS LAST`)
+        .orderBy(books.id)
         .limit(Math.min(pageSize, limit - totals.checked));
 
-      // Each stored answer bumps checked_at past the cutoff or creates the
-      // row, so the same query naturally moves on to the next books.
-      const isbns = candidates.map((c) => c.isbn13).filter((i): i is string => i !== null);
-      if (isbns.length === 0) break;
-
-      const done = await enrichIsbns(isbns, { delayMs: config.bds.requestDelayMs });
-      totals.checked += done.checked;
-      totals.bios += done.bios;
-      totals.reviews += done.reviews;
-      logger.info('BDS sweep progress', totals);
+      if (rows.length === 0) break;
+      afterId = rows[rows.length - 1].id;
+      totals.fresh += await run(rows.map((r) => r.isbn13!).filter(Boolean));
+      logger.info('BDS sweep progress (new books)', totals);
     }
+
+    // Tier 2: the refresh rotation, and re-checks of books BDS had nothing for.
+    const refreshCutoff = new Date(Date.now() - config.bds.refreshDays * 24 * 60 * 60 * 1000);
+    while (totals.checked < limit) {
+      const rows = await db
+        .select({ isbn13: bookAuthorBios.isbn13 })
+        .from(bookAuthorBios)
+        .innerJoin(books, eq(books.isbn13, bookAuthorBios.isbn13))
+        .where(and(eq(books.publishingStatus, '04'), lt(bookAuthorBios.checkedAt, refreshCutoff)))
+        .orderBy(bookAuthorBios.checkedAt)
+        .limit(Math.min(pageSize, limit - totals.checked));
+
+      if (rows.length === 0) break;
+      totals.refreshed += await run(rows.map((r) => r.isbn13));
+      logger.info('BDS sweep progress (refresh)', totals);
+    }
+
     return totals;
-  },
-
-  /**
-   * Picks up changes BDS made yesterday or today to books we have already
-   * looked up — a publisher adding a bio or a new review quote.
-   *
-   * This pages through every record BDS changed, not just ours, keeping only
-   * ISBNs we sell. It is capped at BDS_DELTA_MAX_PAGES and says so when it
-   * hits the cap; if BDS's daily change volume turns out to be large, their
-   * filtered daily feed is the better tool.
-   */
-  async runDailyDelta(now = new Date()): Promise<{ pages: number; stored: number; truncated: boolean }> {
-    const maxPages = config.bds.deltaMaxPages;
-    const result = { pages: 0, stored: 0, truncated: false };
-    if (maxPages <= 0) return result;
-
-    const from = ymd(new Date(now.getTime() - 24 * 60 * 60 * 1000));
-    const to = ymd(now);
-
-    for (let page = 0; page < maxPages; page++) {
-      if (page > 0 && config.bds.requestDelayMs) await sleep(config.bds.requestDelayMs);
-      const { records, rawCount } = await fetchUpdatedPage(from, to, page);
-      result.pages++;
-
-      if (records.length > 0) {
-        // Only books we have already asked about: new ones are the sweep's job,
-        // and this keeps the delta from creating rows for books we don't sell.
-        const known = await db
-          .select({ isbn13: bookAuthorBios.isbn13, sourceUpdated: bookAuthorBios.sourceUpdated })
-          .from(bookAuthorBios)
-          .where(inArray(bookAuthorBios.isbn13, [...new Set(records.map((r) => r.isbn13))]));
-        const version = new Map(known.map((k) => [k.isbn13, k.sourceUpdated]));
-
-        const changed = new Map<string, BdsRecord | null>();
-        for (const record of records) {
-          if (!version.has(record.isbn13)) continue;
-          if (record.indexUpdated && version.get(record.isbn13) === record.indexUpdated) continue;
-          if (!changed.has(record.isbn13)) changed.set(record.isbn13, record);
-        }
-        await storeResults(changed);
-        result.stored += changed.size;
-      }
-
-      if (rawCount < 100) return result;
-    }
-
-    result.truncated = true;
-    logger.warn('BDS daily delta hit its page cap — some changes were not applied', {
-      maxPages,
-      from,
-      to,
-    });
-    return result;
   },
 
   /** What the cron runs: yesterday's changes, then the sweep. */
@@ -288,10 +315,12 @@ export const bdsEnrichmentService = {
     }
 
     try {
-      const delta = await this.runDailyDelta();
-      logger.info('BDS daily delta complete', delta);
       const sweep = await this.runSweep();
       logger.info('BDS sweep complete', sweep);
+      // Author pages are derived from what the sweep just stored, so they are
+      // rebuilt in the same run rather than drifting a day behind.
+      const authors = await rebuildAuthorBios();
+      logger.info('BDS author biographies rebuilt', authors);
     } catch (err) {
       if (err instanceof BdsAuthError) {
         logger.error('BDS credentials rejected — nightly run stopped', { error: err.message });

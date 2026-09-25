@@ -51,7 +51,8 @@ if (testUrl) {
 /** What the fake BDS holds, by ISBN. Absent = BDS has no record. */
 const bdsData = new Map<string, Partial<BdsRecord>>();
 const bdsCalls: string[][] = [];
-let updatedPages: Partial<BdsRecord>[][] = [];
+/** ISBNs the fake BDS should fail on, to stand in for a network blip. */
+const bdsFailures = new Set<string>();
 
 function record(isbn13: string, fields: Partial<BdsRecord> = {}): BdsRecord {
   return {
@@ -72,11 +73,8 @@ vi.mock('../lib/bds', async () => {
     ...actual,
     fetchByIsbns: async (isbns: string[]) => {
       bdsCalls.push(isbns);
+      if (isbns.some((i) => bdsFailures.has(i))) throw new actual.BdsRequestError('fetch failed');
       return new Map(isbns.map((i) => [i, bdsData.has(i) ? record(i, bdsData.get(i)) : null]));
-    },
-    fetchUpdatedPage: async (_from: string, _to: string, page: number) => {
-      const recs = (updatedPages[page] ?? []).map((r) => record(r.isbn13!, r));
-      return { records: recs, rawCount: recs.length };
     },
   };
 });
@@ -148,7 +146,7 @@ describeIfDb('BDS enrichment', () => {
     await clean();
     bdsData.clear();
     bdsCalls.length = 0;
-    updatedPages = [];
+    bdsFailures.clear();
     redisStore.clear();
   });
 
@@ -162,7 +160,7 @@ describeIfDb('BDS enrichment', () => {
 
     const totals = await svc.enrichIsbns(['9780000000001', '9780000000002', '9780000000003']);
 
-    expect(totals).toEqual({ checked: 3, bios: 2, reviews: 1 });
+    expect(totals).toEqual({ checked: 3, bios: 2, reviews: 1, failed: 0 });
     expect(await bioRow('9780000000001')).toMatchObject({ bio_html: '<p>Bio one</p>', source_field: 'author_bio', source_updated: '20260920' });
     expect(await bioRow('9780000000002')).toMatchObject({ bio_html: '<p>Note A</p>\n<p>Note B</p>', source_field: 'biographical_note' });
     // BDS had no record: a miss is still written, so the sweep moves on.
@@ -202,7 +200,10 @@ describeIfDb('BDS enrichment', () => {
     expect([...bios.keys()]).toEqual(['9780000000001']);
   });
 
-  it('sweep: active books never asked, newest first, then stops', async () => {
+  it('sweep: walks books never asked about, by id, and stops when none are left', async () => {
+    // By id, not by publication date: an ORDER BY over a million rows is a
+    // sequential scan plus a sort on every page of a backfill, and it gets
+    // slower as the ledger fills. A keyset stays flat.
     await addBook('9780000000010', '2020-01-01');
     await addBook('9780000000011', '2026-01-01');
     await addBook('9780000000012', '2024-01-01');
@@ -211,57 +212,70 @@ describeIfDb('BDS enrichment', () => {
 
     const first = await svc.bdsEnrichmentService.runSweep({ limit: 1 });
     expect(first.checked).toBe(1);
-    expect(bdsCalls.flat()).toEqual(['9780000000011']);
+    expect(bdsCalls.flat()).toEqual(['9780000000010']);
 
     const rest = await svc.bdsEnrichmentService.runSweep({ limit: 100 });
     expect(rest.checked).toBe(1);
-    expect(bdsCalls.flat()).toEqual(['9780000000011', '9780000000010']);
+    expect(bdsCalls.flat()).toEqual(['9780000000010', '9780000000011']);
 
     // Nothing left to ask about.
     expect((await svc.bdsEnrichmentService.runSweep({ limit: 100 })).checked).toBe(0);
   });
 
-  it('sweep: re-asks about a miss only once it is older than the recheck window', async () => {
-    await addBook('9780000000020', '2026-01-01');
-    await addBook('9780000000021', '2026-01-01');
+  it('sweep: refreshes the longest-unasked books once the new ones are done', async () => {
+    // Freshness comes from re-asking about our own books on a rotation: BDS
+    // change ~136k records a day and their API only pages through 5,000, so
+    // asking them what changed is not possible.
+    await addBook('9780000000060', '2026-01-01');
+    await addBook('9780000000061', '2026-01-01');
     await db.execute(sql`
       INSERT INTO book_author_bios (isbn13, bio_html, checked_at) VALUES
-        ('9780000000020', NULL, now() - interval '400 days'),
-        ('9780000000021', NULL, now() - interval '1 day')
+        ('9780000000060', '<p>stale</p>', now() - interval '400 days'),
+        ('9780000000061', '<p>fresh</p>', now() - interval '1 day')
     `);
 
-    await svc.bdsEnrichmentService.runSweep({ limit: 100 });
-    expect(bdsCalls.flat()).toEqual(['9780000000020']);
+    const totals = await svc.bdsEnrichmentService.runSweep({ limit: 100 });
+
+    expect(bdsCalls.flat()).toEqual(['9780000000060']);
+    expect(totals.refreshed).toBe(1);
+    expect(totals.fresh).toBe(0);
   });
 
-  it('delta: updates books we already know when their version changed, ignores the rest', async () => {
+  it('sweep: asks about new books before refreshing old answers', async () => {
+    await addBook('9780000000070', '2020-01-01'); // never asked
+    await addBook('9780000000071', '2026-01-01');
     await db.execute(sql`
-      INSERT INTO book_author_bios (isbn13, bio_html, source_updated) VALUES
-        ('9780000000030', '<p>old</p>', '20260101'),
-        ('9780000000031', '<p>same</p>', '20260921')
+      INSERT INTO book_author_bios (isbn13, bio_html, checked_at)
+      VALUES ('9780000000071', '<p>stale</p>', now() - interval '400 days')
     `);
-    updatedPages = [[
-      { isbn13: '9780000000030', authorBio: '<p>new</p>', review: '<p>new quote</p>', indexUpdated: '20260921' },
-      { isbn13: '9780000000031', authorBio: '<p>changed?</p>', indexUpdated: '20260921' },
-      { isbn13: '9780000000099', authorBio: '<p>not ours</p>', indexUpdated: '20260921' },
-    ]];
 
-    const result = await svc.bdsEnrichmentService.runDailyDelta(new Date('2026-09-22T03:00:00Z'));
+    const totals = await svc.bdsEnrichmentService.runSweep({ limit: 100 });
 
-    expect(result).toEqual({ pages: 1, stored: 1, truncated: false });
-    expect((await bioRow('9780000000030')).bio_html).toBe('<p>new</p>');
-    expect((await bioRow('9780000000031')).bio_html).toBe('<p>same</p>');
-    expect(await bioRow('9780000000099')).toBeUndefined();
-    expect(await reviewRows('9780000000030')).toEqual([{ source: 'bds', review_html: '<p>new quote</p>' }]);
+    // New book first, refresh second.
+    expect(bdsCalls.flat()).toEqual(['9780000000070', '9780000000071']);
+    expect(totals).toMatchObject({ fresh: 1, refreshed: 1 });
   });
 
-  it('delta: flags a run that hit the page cap', async () => {
-    const full = Array.from({ length: 100 }, (_, i) => ({ isbn13: `97800000${String(i).padStart(5, '0')}` }));
-    updatedPages = Array.from({ length: 200 }, () => full);
+  it('survives a failed batch instead of losing the whole run', async () => {
+    // A backfill is ~11,000 requests over hours. One transient failure must
+    // cost that batch and nothing else, or a blip throws away hours of work.
+    process.env.BDS_BATCH_SIZE = '2';
+    await addBook('9780000000080', '2026-01-01');
+    await addBook('9780000000081', '2026-01-01');
+    await addBook('9780000000082', '2026-01-01');
+    await addBook('9780000000083', '2026-01-01');
+    bdsFailures.add('9780000000080');
+    bdsData.set('9780000000083', { authorBio: '<p>Bio</p>' });
 
-    const result = await svc.bdsEnrichmentService.runDailyDelta();
-    expect(result.truncated).toBe(true);
-    expect(result.pages).toBe(100);
+    const totals = await svc.bdsEnrichmentService.runSweep({ limit: 100 });
+
+    expect(totals.failed).toBe(2);
+    expect(totals.checked).toBe(2);
+    // The books after the failed batch were still asked about and stored.
+    expect(totals.bios).toBe(1);
+    expect(await bioRow('9780000000083')).toMatchObject({ bio_html: '<p>Bio</p>' });
+    // And the failed ones were left unanswered, for the next run to pick up.
+    expect(await bioRow('9780000000080')).toBeUndefined();
   });
 
   it('on-demand: looks up an unseen book once, then never again', async () => {
