@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-09-25
+
+### Bug Fixes
+
+* make the connection to the BDS book data service work ([6ef45ac](https://adl.github.com/adl-developer/kinkane-backend/commit/6ef45acb5ac4ed0e64afaaaf8f49502b0823ef2e))
+
+
 ## 2026-09-24
 
 ### Features
