@@ -30,6 +30,11 @@ const suggestionsSchema = z.object({
   dedupe: dedupeParam,
 });
 
+const authorDetailSchema = z.object({
+  name: z.string().trim().min(1).max(500),
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+});
+
 // No `shoppable` here, unlike the catalogue listing. A recommendation is an
 // invitation to buy: every "you may also like" card carries an Add button, so
 // the books are always sellable ones and the live price and stock are always on
@@ -360,6 +365,33 @@ export const booksController = {
     try {
       const results = await booksService.authorSuggestions(parsed.data.q, parsed.data.limit);
       res.status(200).json({ authors: results });
+    } catch (err: unknown) {
+      const e = err as Error;
+      res.status(500).json({ error: e.message });
+    }
+  },
+
+  /**
+   * `GET /api/v1/authors/:name` — one author's biography and books.
+   *
+   * Keyed by name because that is all the data has: the supplier gives no
+   * author identifier. A name we hold no safe biography for still gets a
+   * response, with `bio: null` and their books.
+   */
+  async authorDetail(req: Request, res: Response): Promise<void> {
+    const parsed = authorDetailSchema.safeParse({ name: req.params.name, limit: req.query.limit });
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+
+    try {
+      const author = await booksService.authorDetail(parsed.data.name, parsed.data.limit);
+      if (!author) {
+        res.status(404).json({ error: 'Not found' });
+        return;
+      }
+      res.status(200).json({ author });
     } catch (err: unknown) {
       const e = err as Error;
       res.status(500).json({ error: e.message });

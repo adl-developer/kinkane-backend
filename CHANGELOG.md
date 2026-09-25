@@ -3,6 +3,10 @@
 
 ## 2026-09-25
 
+### Features
+
+* show an author's biography beside their name on a book page ([9eeb37d](https://adl.github.com/adl-developer/kinkane-backend/commit/9eeb37d0f700990f0004a7c83cb5070ca41f775a))
+
 ### Bug Fixes
 
 * make the connection to the BDS book data service work ([6ef45ac](https://adl.github.com/adl-developer/kinkane-backend/commit/6ef45acb5ac4ed0e64afaaaf8f49502b0823ef2e))

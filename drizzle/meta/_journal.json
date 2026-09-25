@@ -484,6 +484,13 @@
       "when": 1790080908762,
       "tag": "0068_bds_author_bios_and_review_sources",
       "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1790340184931,
+      "tag": "0069_author_level_bios",
+      "breakpoints": true
     }
   ]
 }
