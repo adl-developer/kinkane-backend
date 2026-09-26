@@ -1,4 +1,4 @@
-import { eq, desc, sql } from 'drizzle-orm';
+import { and, eq, desc, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { userPreferenceHistory, users } from '../db/schema';
 import type {
@@ -65,6 +65,28 @@ function compareCanonical(a: unknown, b: unknown): number {
   const sa = JSON.stringify(a) ?? 'null';
   const sb = JSON.stringify(b) ?? 'null';
   return sa < sb ? -1 : sa > sb ? 1 : 0;
+}
+
+/**
+ * Rows of one user's timeline, optionally narrowed to the entries where a
+ * given field changed.
+ *
+ * The baseline row (`changedFields` empty — the signup snapshot, or the
+ * backfill row for accounts that predate history) belongs to every field's
+ * timeline: it is when that field was first set. Without it, a reader who has
+ * never edited their genres would open genre history and find it empty.
+ *
+ * `@>` rather than the jsonb `?` operator, which drivers can mistake for a
+ * bind-parameter placeholder.
+ */
+export function historyScope(userId: number, field?: PreferenceHistoryField): SQL {
+  const ownRows = eq(userPreferenceHistory.userId, userId);
+  if (!field) return ownRows;
+  return and(
+    ownRows,
+    sql`(${userPreferenceHistory.changedFields} @> ${JSON.stringify([field])}::jsonb
+      OR ${userPreferenceHistory.changedFields} = '[]'::jsonb)`,
+  )!;
 }
 
 export const preferenceHistoryService = {
@@ -148,26 +170,48 @@ export const preferenceHistoryService = {
     return inserted ?? null;
   },
 
-  /** Newest-first page of a user's preference timeline. */
+  /**
+   * Newest-first page of a user's preference timeline. With `field`, only the
+   * entries where that field changed (plus the baseline) — filtered here rather
+   * than by the client so `total` and paging describe the list actually shown.
+   */
   async list(
     userId: number,
-    { limit = 20, offset = 0 }: { limit?: number; offset?: number } = {},
+    {
+      limit = 20,
+      offset = 0,
+      field,
+    }: { limit?: number; offset?: number; field?: PreferenceHistoryField } = {},
   ): Promise<{ items: UserPreferenceHistory[]; total: number }> {
+    const scope = historyScope(userId, field);
     const [items, [{ count }]] = await Promise.all([
       db
         .select()
         .from(userPreferenceHistory)
-        .where(eq(userPreferenceHistory.userId, userId))
+        .where(scope)
         .orderBy(desc(userPreferenceHistory.recordedAt), desc(userPreferenceHistory.id))
         .limit(limit)
         .offset(offset),
       db
         .select({ count: sql<number>`count(*)::int` })
         .from(userPreferenceHistory)
-        .where(eq(userPreferenceHistory.userId, userId)),
+        .where(scope),
     ]);
 
     return { items, total: count };
+  },
+
+  /**
+   * One entry of a user's own timeline, or null. Scoped by user as well as id,
+   * so another reader's entry id reads as not found rather than leaking.
+   */
+  async get(userId: number, id: number): Promise<UserPreferenceHistory | null> {
+    const [row] = await db
+      .select()
+      .from(userPreferenceHistory)
+      .where(and(eq(userPreferenceHistory.userId, userId), eq(userPreferenceHistory.id, id)))
+      .limit(1);
+    return row ?? null;
   },
 
   /**
