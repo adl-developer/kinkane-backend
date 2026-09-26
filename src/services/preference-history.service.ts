@@ -202,6 +202,19 @@ export const preferenceHistoryService = {
   },
 
   /**
+   * One entry of a user's own timeline, or null. Scoped by user as well as id,
+   * so another reader's entry id reads as not found rather than leaking.
+   */
+  async get(userId: number, id: number): Promise<UserPreferenceHistory | null> {
+    const [row] = await db
+      .select()
+      .from(userPreferenceHistory)
+      .where(and(eq(userPreferenceHistory.userId, userId), eq(userPreferenceHistory.id, id)))
+      .limit(1);
+    return row ?? null;
+  },
+
+  /**
    * Deletes history rows older than `retentionYears`, except each user's most
    * recent row. Without that exemption a user who set their preferences once
    * and never touched them again would lose their entire history, leaving an

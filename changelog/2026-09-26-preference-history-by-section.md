@@ -30,6 +30,58 @@ tapped. No second request.
 Entries also now include `dislikedBookIds`. It was recorded all along and
 dropped from the response.
 
+## One endpoint per screen
+
+`?field=` still returns whole snapshots, which leaves the app to pick one
+section out of a full taste profile. Each History tab now has its own
+endpoint returning only what that screen shows:
+
+```
+GET /api/v1/user/preference-history/mood
+GET /api/v1/user/preference-history/genres
+GET /api/v1/user/preference-history/avoid
+GET /api/v1/user/preference-history/:section/:id   (detail screen)
+```
+
+```json
+{
+  "section": "mood",
+  "history": [
+    {
+      "id": 88,
+      "recordedAt": "2026-08-10T14:00:00.000Z",
+      "prompt": "I want to feel like I am in a foggy coastal town living in a lighthouse.",
+      "moods": [
+        { "key": "comforted", "label": "Comforted" },
+        { "key": "challenged", "label": "Challenged" },
+        { "key": "escaped", "label": "Escaped" }
+      ]
+    }
+  ],
+  "pagination": { "total": 5, "limit": 20, "offset": 0, "hasMore": false }
+}
+```
+
+- **genres** entries carry `genres: [{ key: "literary fiction", label: "Literary Fiction" }]`.
+- **avoid** entries carry `dealBreakers` (one chip list, as the detail screen
+  shows it) and `categories` (the same choices grouped, as saved).
+
+`recordedAt` stays a timestamp. The row date ("August 10, 2026") depends on
+the reader's timezone, which only the device knows.
+
+**Telling the prompt from the moods needs a list of the mood cards.**
+`feelings` stores presets and free text in one array, so the server now keeps
+the 15 mood cards from the design (Comforted through Suspense) and matches
+them case-insensitively. Anything else is the prompt. That list has to follow
+the app: a new mood card added there and not here comes back as a prompt.
+
+**A deal-breaker picked under two categories is one chip.** The design repeats
+"Too dark or heavy" under Emotional Tone and Content Sensitivity, and the detail
+screen shows chips, not categories.
+
+**Another reader's entry id is a 404**, not a 403, so ids don't reveal whether
+an entry exists.
+
 ## Decisions worth knowing about
 
 **The first entry is in every section's list.** The signup snapshot (and the
@@ -62,7 +114,14 @@ already narrowed by the `(user_id, recorded_at)` index.
 
 ## Verification
 
-- `npm test`: 1036 passing, including 7 new cases in
+- The section endpoints: 15 cases in
+  [preference-sections.test.ts](../src/__tests__/preference-sections.test.ts)
+  covering the prompt/mood split (including mixed case and a second free-text
+  entry), genre labels, deal-breaker flattening and de-duplication, the
+  section-to-field mapping, an unknown section (400) and another reader's
+  entry (404).
+
+- `npm test`: 1051 passing, including 7 new cases in
   [preference-history.test.ts](../src/__tests__/preference-history.test.ts). The
   filter is rendered through the real Postgres dialect and checked for the
   user scope, the `@>` match with the right parameter, the baseline-row
