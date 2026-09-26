@@ -299,7 +299,12 @@ export const onboardingPaths = {
             readerType: {
               type: 'string', nullable: true,
               description: 'Freshly inferred from the new picks. `null` if inference failed — not an error.',
-              example: 'The Wanderer',
+              example: 'The Open Door',
+            },
+            readerTypeTagline: {
+              type: 'string', nullable: true,
+              description: 'One-line tagline for `readerType`, for display under it. `null` whenever `readerType` is.',
+              example: "You're open to the world but discerning about what stays.",
             },
             books: arrayOf(object({
               id: { type: 'integer', example: 48213 },

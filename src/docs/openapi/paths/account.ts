@@ -11,12 +11,24 @@ export const accountPaths = {
       tags: [TAG],
       summary: 'Get account settings',
       description:
-        'The caller’s settings. Currently just shelf visibility; notification toggles live under `/user/notification-preferences`.',
+        'The caller’s profile basics, shelf visibility and reader type. Notification toggles live under `/user/notification-preferences`.',
       responses: {
         200: json('The settings.',
           object({
             settings: object({
+              name: { type: 'string', example: 'Ada' },
+              photoUrl: { type: 'string', format: 'uri', nullable: true },
               shelfVisibility: { type: 'string', enum: ['public', 'friends', 'private'], example: 'friends' },
+              readerType: {
+                type: 'string', nullable: true,
+                description: 'Set at signup and re-inferred on each quiz retake. `null` if it was never inferred.',
+                example: 'The Open Door',
+              },
+              readerTypeTagline: {
+                type: 'string', nullable: true,
+                description: 'One-line tagline for `readerType`, for display under it. `null` whenever `readerType` is.',
+                example: "You're open to the world but discerning about what stays.",
+              },
             }),
           })),
         401: resp('Unauthorized'),

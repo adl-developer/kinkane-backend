@@ -3,6 +3,7 @@ import { shopCurrency } from './books.controller';
 import { z } from 'zod';
 import { booksService } from '../services/books.service';
 import { readerTypeEnum } from '../db/schema';
+import { readerTypeTagline } from '../lib/reader-type-taglines';
 import {
   bestsellersService,
   BESTSELLER_WINDOWS,
@@ -140,13 +141,15 @@ export const exploreController = {
     const { limit, offset, readerType } = parsed.data;
 
     try {
-      const { books, total } = await booksService.likedByReaderType(
+      const { books, total, readerType: cohort } = await booksService.likedByReaderType(
         userId,
         limit,
         offset,
         readerType,
       );
       res.status(200).json({
+        readerType: cohort,
+        readerTypeTagline: readerTypeTagline(cohort),
         books,
         pagination: { total, limit, offset, hasMore: offset + books.length < total },
       });

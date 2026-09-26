@@ -397,6 +397,16 @@ export const cataloguePaths = {
       responses: {
         200: json('A page of books the cohort loved. Empty when the caller has no reader type, or is the only one with it.',
           object({
+            readerType: {
+              type: 'string', nullable: true,
+              description: 'The cohort that was read — the `readerType` you sent, else your own. Returned even when `books` is empty, so the rail header can name the type. `null` only when there was no cohort to read.',
+              example: 'The Open Door',
+            },
+            readerTypeTagline: {
+              type: 'string', nullable: true,
+              description: 'One-line tagline for `readerType`, for display under it. `null` whenever `readerType` is.',
+              example: "You're open to the world but discerning about what stays.",
+            },
             books: arrayOf(ref('BookSummary')),
             pagination: ref('Pagination'),
           })),

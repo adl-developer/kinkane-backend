@@ -156,7 +156,7 @@ describe('reader-type cohort feed', () => {
   });
 
   it('returns an empty page rather than throwing when there is no reader type', () => {
-    expect(method).toContain('if (!cohortType) return { books: [], total: 0 };');
+    expect(method).toContain('if (!cohortType) return { books: [], total: 0, readerType: null };');
   });
 
   it('validates the reader-type override against the database enum', () => {
