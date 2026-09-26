@@ -5,6 +5,7 @@
 
 ### Features
 
+* give each preference screen its own history, shaped like the screen ([4048fa1](https://adl.github.com/adl-developer/kinkane-backend/commit/4048fa121a3e222b6201267f541a4958f45bfc6a)) — [details](changelog/2026-09-26-preference-history-by-section.md)
 * let the app show preference history one section at a time ([836a0f0](https://adl.github.com/adl-developer/kinkane-backend/commit/836a0f053e01cf3699081cc590e7e2b64d7aadf5)) — [details](changelog/2026-09-26-preference-history-by-section.md)
 
 ### Bug Fixes
