@@ -15,7 +15,7 @@ import {
 } from '../db/schema';
 import { recommendationCache, type RecommendationItem } from '../db/schema/recommendations';
 import type { Dislikes } from '../db/schema/onboarding';
-import { dedupeByTitle } from '../lib/dedupe';
+import { dedupeByWork, workKey } from '../lib/dedupe';
 import { buildFeedCondition } from './books.service';
 import {
   buildHasAuthorCondition,
@@ -804,7 +804,7 @@ function buildFormatCondition(intent: 'fiction' | 'non-fiction' | null) {
  *
  * One pass out to BACKFILL_SIMILARITY_THRESHOLD, split into two tiers in
  * memory: books within SIMILARITY_THRESHOLD are the strict matches, deduped on
- * title by best edition; anything beyond it only tops the list off if the
+ * work (normalized title + first author, see workKey) by best edition; anything beyond it only tops the list off if the
  * strict tier left fewer than TARGET_RESULTS. Backfilled books always sort
  * after every strict match, so overall rank still reflects match quality.
  * `baseConditions` (dislikes, format, already-owned books) applies to the pass,
@@ -812,10 +812,11 @@ function buildFormatCondition(intent: 'fiction' | 'non-fiction' | null) {
  */
 type CandidateRow = { id: number; title: string };
 
-// The columns dedupeByTitle needs to pick the best of several same-titled candidates,
+// The columns dedupeByWork needs to pick the best of several editions of one work,
 // fetched alongside id/title and stripped before this function's callers ever see them —
 // none of them are part of the {id, title} contract downstream code relies on.
 type ScoredCandidateRow = CandidateRow & {
+  author: string | null;
   subtitle: null;
   coverUrl: string | null;
   shortDescription: string | null;
@@ -935,10 +936,29 @@ async function fetchCandidateBooks(
     });
   };
 
+  // First named A01 author per book, for the work key both tiers dedupe on. Every candidate
+  // has one (buildHasAuthorCondition), so a miss here only means the key falls back to title.
+  const fetchFirstAuthors = async (ids: number[]): Promise<Map<number, string>> => {
+    const firstAuthor = new Map<number, string>();
+    if (ids.length === 0) return firstAuthor;
+    const contributorRows = await db
+      .select({ bookId: bookContributors.bookId, personName: bookContributors.personName })
+      .from(bookContributors)
+      .where(and(inArray(bookContributors.bookId, ids), eq(bookContributors.role, 'A01')))
+      .orderBy(bookContributors.sequenceNumber);
+    for (const c of contributorRows) {
+      if (c.personName?.trim() && !firstAuthor.has(c.bookId)) firstAuthor.set(c.bookId, c.personName);
+    }
+    return firstAuthor;
+  };
+
   // Attaches genreCount/hasPrice (the two DedupeCandidate fields not directly on `books`)
-  // via one batched IN query each, so dedupeByTitle can score the pool — same pattern as
+  // via one batched IN query each, so dedupeByWork can score the pool — same pattern as
   // FeedScoringRow in books.service.ts.
-  const withScoring = async (rows: Awaited<ReturnType<typeof fetchRows>>): Promise<ScoredCandidateRow[]> => {
+  const withScoring = async (
+    rows: Awaited<ReturnType<typeof fetchRows>>,
+    firstAuthor: Map<number, string>,
+  ): Promise<ScoredCandidateRow[]> => {
     if (rows.length === 0) return [];
     const ids = rows.map((r) => r.id);
     const [genreCounts, priceRows] = await Promise.all([
@@ -953,6 +973,7 @@ async function fetchCandidateBooks(
     const priceIds = new Set(priceRows.map((p) => p.bookId));
     return rows.map((r) => ({
       ...r,
+      author: firstAuthor.get(r.id) ?? null,
       subtitle: null,
       genreCount: genreCountById.get(r.id) ?? 0,
       hasPrice: priceIds.has(r.id),
@@ -972,7 +993,10 @@ async function fetchCandidateBooks(
 
   const isStrict = (row: { distance: number }) => Number(row.distance) < SIMILARITY_THRESHOLD;
 
-  const primaryCandidates = dedupeByTitle(await withScoring(rows.filter(isStrict)))
+  const firstAuthor = await fetchFirstAuthors(rows.map((r) => r.id));
+  const keyOf = (row: { id: number; title: string }) => workKey(row.title, firstAuthor.get(row.id) ?? null);
+
+  const primaryCandidates = dedupeByWork(await withScoring(rows.filter(isStrict), firstAuthor))
     .slice(0, TARGET_RESULTS)
     .map(stripScoring);
 
@@ -981,20 +1005,20 @@ async function fetchCandidateBooks(
   }
 
   const stillNeeded = TARGET_RESULTS - primaryCandidates.length;
-  const seenTitles = new Set(primaryCandidates.map((r) => r.title.trim().toLowerCase()));
+  const seenWorks = new Set(primaryCandidates.map(keyOf));
 
   // Backfill candidates are a strictly worse-match pool, only reached because the primary
   // tier came up short — they exist to top the list off, not to be scored against each
-  // other, so this keeps the simple first-seen-title rule rather than the full priority
+  // other, so this keeps the simple first-seen-work rule rather than the full priority
   // scoring above. Rows already considered for the strict tier are skipped: one that lost
-  // its title there must not reappear as a worse match here.
+  // its work there must not reappear as a worse match here.
   const backfillCandidates: CandidateRow[] = [];
   for (const row of rows) {
     if (backfillCandidates.length >= stillNeeded) break;
     if (isStrict(row)) continue;
-    const key = row.title.trim().toLowerCase();
-    if (seenTitles.has(key)) continue;
-    seenTitles.add(key);
+    const key = keyOf(row);
+    if (seenWorks.has(key)) continue;
+    seenWorks.add(key);
     backfillCandidates.push({ id: row.id, title: row.title });
   }
 

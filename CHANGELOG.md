@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-09-26
+
+### Bug Fixes
+
+* stop the quiz showing the same book twice under slightly different titles ([7ff2c43](https://adl.github.com/adl-developer/kinkane-backend/commit/7ff2c43b4a1a8f21c447eaf490a85b25e5f4a127)) — [details](changelog/2026-09-26-quiz-duplicate-books.md)
+
+
 ## 2026-09-24
 
 ### Features
