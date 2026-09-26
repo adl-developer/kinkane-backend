@@ -120,6 +120,51 @@ export function dedupeByTitle<T extends DedupeCandidate>(rows: T[]): T[] {
 }
 
 /**
+ * Folds a title or author name down to the form two listings of the same work share,
+ * whatever the feed did to the spelling: case, accents, punctuation, "&" for "and", and a
+ * leading or trailing article ("The Hobbit", "Hobbit, The", "hobbit") all collapse.
+ *
+ * Deliberately stops short of dropping subtitles. Measured on the catalogue, cutting at the
+ * colon or dash merges far more distinct books than duplicates — mostly numbered series by
+ * one author ("Deadly! Irish History - The Vikings" / "- The Celts") — while this folding
+ * alone only ever merged true duplicates.
+ *
+ * In-memory only. The exclusion predicate in lib/exclusions.ts keeps its own simpler
+ * normalizeForMatch, because that one has to agree with SQL and with stored snapshots.
+ */
+export function normalizeWorkText(value: string): string {
+  return value
+    .normalize('NFKD')
+    .replace(/\p{M}/gu, '')
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()
+    .replace(/^(the|a|an) /, '')
+    .replace(/ (the|a|an)$/, '');
+}
+
+/**
+ * The identity of a work for "is this the same book twice?": normalized title plus
+ * normalized first author, so two editions of one book collapse while two different books
+ * that happen to share a title ("Home" by two authors) stay apart. A missing author keys on
+ * the title alone.
+ */
+export function workKey(title: string, author: string | null): string {
+  // NUL separator so a title/author pair can't collide with a differently-split one.
+  return `${normalizeWorkText(title)}\u0000${author ? normalizeWorkText(author) : ''}`;
+}
+
+/**
+ * Same as {@link dedupeByTitle}, but keyed on {@link workKey} — the looser title match plus
+ * the first author — so spelling variants of one work collapse and same-titled books by
+ * different authors don't.
+ */
+export function dedupeByWork<T extends DedupeCandidate & { author: string | null }>(rows: T[]): T[] {
+  return pickBestByKey(rows, (r) => workKey(r.title, r.author));
+}
+
+/**
  * Same as {@link dedupeByTitle}, but keyed on the title+subtitle pair so distinct books
  * that happen to share a title but differ in subtitle (e.g. different anthologies) are not
  * incorrectly collapsed into one.

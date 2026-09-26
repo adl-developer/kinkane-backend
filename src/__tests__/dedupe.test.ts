@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { dedupeByTitle, dedupeByTitleAndSubtitle, type DedupeCandidate } from '../lib/dedupe';
+import {
+  dedupeByTitle,
+  dedupeByTitleAndSubtitle,
+  dedupeByWork,
+  normalizeWorkText,
+  workKey,
+  type DedupeCandidate,
+} from '../lib/dedupe';
 
 interface Row extends DedupeCandidate {
   id: number;
@@ -243,5 +250,64 @@ describe('edition format preference', () => {
       { id: 2, title: 'Dune', subtitle: null, ...complete() },
     ];
     expect(dedupeByTitle(rows).map((r) => r.id)).toEqual([2]);
+  });
+});
+
+describe('normalizeWorkText', () => {
+  it.each([
+    ['The Hobbit', 'hobbit'],
+    ['Hobbit, The', 'hobbit'],
+    ['  the  hobbit. ', 'hobbit'],
+    ['A Return to Love', 'return to love'],
+    ['Goodbye, Eastern Europe', 'goodbye eastern europe'],
+    ['Bridget & Gabe', 'bridget and gabe'],
+    ['Les Misérables', 'les miserables'],
+    ['Don’t Look Now', 'don t look now'],
+    ["Don't Look Now", 'don t look now'],
+  ])('%s -> %s', (input, expected) => {
+    expect(normalizeWorkText(input)).toBe(expected);
+  });
+
+  it('keeps an article that is the whole title or mid-title', () => {
+    expect(normalizeWorkText('A')).toBe('a');
+    expect(normalizeWorkText('Anna and the King')).toBe('anna and the king');
+  });
+
+  it('does not strip subtitles, so series entries stay distinct', () => {
+    expect(normalizeWorkText('Deadly! Irish History - The Vikings')).not.toBe(
+      normalizeWorkText('Deadly! Irish History - The Celts'),
+    );
+    expect(normalizeWorkText('Mistborn: Secret History')).not.toBe(normalizeWorkText('Mistborn'));
+  });
+});
+
+describe('workKey', () => {
+  it('matches spelling variants of one work by one author', () => {
+    expect(workKey('The Odyssey', 'Homer')).toBe(workKey('Odyssey', 'HOMER '));
+  });
+
+  it('separates same-titled books by different authors', () => {
+    expect(workKey('Home', 'Toni Morrison')).not.toBe(workKey('Home', 'Marilynne Robinson'));
+  });
+});
+
+describe('dedupeByWork', () => {
+  type WorkRow = Row & { author: string | null };
+
+  it('collapses title variants of the same work to the best edition, in first position', () => {
+    const rows: WorkRow[] = [
+      { id: 1, title: 'The Green Mile', author: 'Stephen King', subtitle: null, ...bare() },
+      { id: 2, title: 'Carrie', author: 'Stephen King', subtitle: null, ...bare() },
+      { id: 3, title: 'Green Mile', author: 'Stephen King', subtitle: null, ...complete() },
+    ];
+    expect(dedupeByWork(rows).map((r) => r.id)).toEqual([3, 2]);
+  });
+
+  it('keeps same-titled books by different authors', () => {
+    const rows: WorkRow[] = [
+      { id: 1, title: 'Home', author: 'Toni Morrison', subtitle: null, ...bare() },
+      { id: 2, title: 'Home', author: 'Marilynne Robinson', subtitle: null, ...bare() },
+    ];
+    expect(dedupeByWork(rows)).toHaveLength(2);
   });
 });
