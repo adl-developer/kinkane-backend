@@ -3823,7 +3823,7 @@ export const booksService = {
     limit: number,
     offset: number,
     readerType?: ReaderType,
-  ): Promise<{ books: TrendingBookItem[]; total: number }> {
+  ): Promise<{ books: TrendingBookItem[]; total: number; readerType: ReaderType | null }> {
     // An explicit reader type overrides the caller's own, so any cohort can be
     // browsed rather than only the one you happen to belong to. The caller is
     // still excluded from the count and their own exclusions still apply, so the
@@ -3850,7 +3850,7 @@ export const booksService = {
     // that failure by design and leaves the column null rather than blocking a
     // signup over a nice-to-have. For a signed-out visitor it simply means they
     // did not name a cohort, which is the only way they can pick one.
-    if (!cohortType) return { books: [], total: 0 };
+    if (!cohortType) return { books: [], total: 0, readerType: null };
 
     // A signed-out visitor has no shelf to exclude and no likes of their own to
     // discount, so both of those narrowings simply do not apply. They see the
@@ -3967,13 +3967,17 @@ export const booksService = {
     // postgres-js hands back a RowList, which is array-like but not an Array —
     // same cast the other raw-SQL readers in this file use.
     const rows = result as unknown as ReaderTypeFeedRow[];
-    if (rows.length === 0) return { books: [], total: 0 };
+    // The resolved cohort goes back with the rows, even when there are none, so
+    // the client can title the rail with the type and its tagline without a
+    // second call to learn which cohort it was given.
+    if (rows.length === 0) return { books: [], total: 0, readerType: cohortType };
 
     // No price on this rail (see the docs), but the quantity is on every book
     // response, so a card here reads the same as a card anywhere else.
     return {
       books: await attachAvailableQuantity(await hydrateBookCards(rows)),
       total: Number(rows[0].total),
+      readerType: cohortType,
     };
   },
 

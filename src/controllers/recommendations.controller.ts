@@ -4,6 +4,7 @@ import { recommendationsService } from '../services/recommendations.service';
 import { maybeSendRecommendationAfterRefresh } from '../services/recommendation-notifications.service';
 import { logger } from '../lib/logger';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
+import { readerTypeTagline } from '../lib/reader-type-taglines';
 
 // ── Validation schemas ────────────────────────────────────────────────────────
 
@@ -201,7 +202,11 @@ export const recommendationsController = {
         parsed.data.chosenBookIds,
         parsed.data.dislikedBookIds,
       );
-      res.status(200).json({ readerType: result.readerType, books: result.books });
+      res.status(200).json({
+        readerType: result.readerType,
+        readerTypeTagline: readerTypeTagline(result.readerType),
+        books: result.books,
+      });
     } catch (err: unknown) {
       const e = err as Error & { statusCode?: number };
       const status = e.statusCode ?? 500;

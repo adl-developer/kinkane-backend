@@ -149,8 +149,9 @@ router.patch('/refresh', requireAuth, requirePlus, recommendationsLimiter, (req:
  *
  * Body: { chosenBookIds: number[],      — 1 to 5 book IDs
  *         dislikedBookIds?: number[] }  — books swiped away, optional, additive
- * Returns 200: { readerType, books: [{ id, title, coverUrl }] }
- *              — readerType is the freshly inferred value, null if inference failed
+ * Returns 200: { readerType, readerTypeTagline, books: [{ id, title, coverUrl }] }
+ *              — readerType is the freshly inferred value, null if inference failed;
+ *                readerTypeTagline is its one-line tagline, null whenever readerType is
  * Errors: 400 validation or unknown book ID | 401 unauthenticated |
  *         403 not a Plus member | 429 rate limit
  */
