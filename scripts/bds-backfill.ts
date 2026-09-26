@@ -1,13 +1,15 @@
 /**
  * One-off catalogue backfill for BDS author bios and review quotes.
  *
- *   npx tsx scripts/bds-backfill.ts [--limit N]
+ *   npx tsx scripts/bds-backfill.ts [--limit N] [--concurrency N]
  *
  * Runs the same sweep as the nightly cron, but with a limit large enough to
- * cover the whole catalogue (default 2,000,000). At 100 ISBNs a call and
- * BDS_REQUEST_DELAY_MS between calls, ~1.1M active books is ~11,000 calls —
- * a few hours. Safe to stop and re-run: every answer is committed as it
- * arrives and the sweep only picks books not yet asked about.
+ * cover the whole catalogue (default 2,000,000). ~1.1M active books is ~11,000
+ * calls: about 8 hours serially, or 2.5 with --concurrency 4. Measured at 38
+ * books/sec serial on 2026-09-25.
+ *
+ * Safe to stop and re-run: every answer is committed as it arrives, and the
+ * sweep walks books by id, asking only about those with no answer yet.
  *
  * Requires BDS_ENRICHMENT_ENABLED=true and credentials, like the cron.
  */
@@ -15,8 +17,13 @@ import { config } from '../src/config';
 import { redis } from '../src/lib/redis';
 import { bdsEnrichmentService } from '../src/services/bds-enrichment.service';
 
-const arg = process.argv.indexOf('--limit');
-const limit = arg > -1 ? Number(process.argv[arg + 1]) : 2_000_000;
+function numberArg(flag: string, fallback: number): number {
+  const at = process.argv.indexOf(flag);
+  return at > -1 ? Number(process.argv[at + 1]) : fallback;
+}
+
+const limit = numberArg('--limit', 2_000_000);
+const concurrency = numberArg('--concurrency', config.bds.concurrency);
 
 async function main() {
   if (!config.bds.enabled) {
@@ -28,7 +35,8 @@ async function main() {
     process.exit(2);
   }
   const started = Date.now();
-  const totals = await bdsEnrichmentService.runSweep({ limit });
+  console.log(`Backfilling up to ${limit.toLocaleString()} books, ${concurrency} request(s) at a time.`);
+  const totals = await bdsEnrichmentService.runSweep({ limit, concurrency });
   console.log({ ...totals, minutes: ((Date.now() - started) / 60_000).toFixed(1) });
 }
 

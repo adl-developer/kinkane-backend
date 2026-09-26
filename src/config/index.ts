@@ -545,9 +545,13 @@ const envSchema = z.object({
   // How long an empty answer is trusted before the book is asked about again.
   // Bios and quotes are often added after publication.
   BDS_MISS_RECHECK_DAYS: z.coerce.number().int().min(1).default(60),
-  // The daily "what changed at BDS" pass pages through every record BDS
-  // updated yesterday, not just ours, so it is capped. See runDailyDelta.
-  BDS_DELTA_MAX_PAGES: z.coerce.number().int().min(0).default(100),
+  // How many lookups run at once. BDS publish no rate limit and none appeared
+  // in testing, so this stays at 1 until they confirm parallel requests are
+  // welcome; 4-6 cuts a full catalogue pass from ~8 hours to ~2.5.
+  BDS_CONCURRENCY: z.coerce.number().int().min(1).max(10).default(1),
+  // How often the whole catalogue is re-asked about, in days. The nightly
+  // sweep refreshes roughly 1/N of it each night once the backfill is done.
+  BDS_REFRESH_DAYS: z.coerce.number().int().min(1).default(30),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -902,7 +906,8 @@ export const config = {
     nightlyIsbnLimit: env.BDS_NIGHTLY_ISBN_LIMIT,
     requestDelayMs: env.BDS_REQUEST_DELAY_MS,
     missRecheckDays: env.BDS_MISS_RECHECK_DAYS,
-    deltaMaxPages: env.BDS_DELTA_MAX_PAGES,
+    concurrency: env.BDS_CONCURRENCY,
+    refreshDays: env.BDS_REFRESH_DAYS,
   },
 } as const;
 

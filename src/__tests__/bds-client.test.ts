@@ -30,6 +30,14 @@ const UNAUTHORISED = JSON.stringify({
   response: { error_code: 1, error_msg: 'Unauthorised access! Terminating client.', explain: 'No token or invalid token' },
 });
 const LOGIN_OK = JSON.stringify({ response: { token: 'jwt-1' } });
+// The live response for an account with no Database Licence Subscription. Note
+// the reversed names: errorcode carries the message, errormessage the number.
+const LICENCE_ERROR = JSON.stringify({
+  errordetails: {
+    errorcode: 'You need to configure the Database Licence Subscriptions via the ACS for this customer.',
+    errormessage: 1,
+  },
+});
 
 // Trimmed from BDS's sample record — the bio is the real one, the review is
 // the empty CDATA block the sample actually has.
@@ -51,7 +59,7 @@ const LIVE_SHAPE_WITH_REVIEW = `
 <fv_barcode>9780241635537</fv_barcode>
 <fv_review><![CDATA[<p>&lsquo;Compelling&rsquo; <i>The Observer</i></p>]]></fv_review>
 <fv_prizes>Shortlisted for the Women's Prize for Fiction 2024</fv_prizes>
-<fv_related_editions>9780241635544|9780241635551</fv_related_editions>
+<fv_related_editions>9780241635544|9780241635551|9780241635544</fv_related_editions>
 <fv_index_updated>20260918</fv_index_updated>
 </resultfields>`;
 
@@ -73,7 +81,7 @@ function mockFetch(dataResponses: string[], loginResponse = LOGIN_OK) {
   const queue = [...dataResponses];
   const fetchMock = vi.fn(async (url: URL, init?: { headers?: Record<string, string> }) => {
     calls.push({ url, headers: init?.headers ?? {} });
-    const body = url.searchParams.get('sx') === '_login' ? loginResponse : (queue.shift() ?? '');
+    const body = url.searchParams.get('ax') === '_login' ? loginResponse : (queue.shift() ?? '');
     return { ok: true, status: 200, text: async () => body };
   });
   vi.stubGlobal('fetch', fetchMock);
@@ -149,6 +157,8 @@ describe('fetchByIsbns', () => {
 
     expect(calls).toHaveLength(2);
     expect(calls[0].url.protocol).toBe('https:');
+    // 'ax' is the login parameter, not 'sx' — see the note in login().
+    expect(calls[0].url.searchParams.get('ax')).toBe('_login');
     expect(calls[0].url.searchParams.get('usr')).toBe('kinkane');
     // Special characters in the password survive URL encoding intact.
     expect(calls[0].url.searchParams.get('pwd')).toBe('p&ss word');
@@ -216,6 +226,19 @@ describe('fetchByIsbns', () => {
     mockFetch([UNAUTHORISED, UNAUTHORISED]);
 
     await expect(fetchByIsbns(['9780241635537'])).rejects.toBeInstanceOf(BdsAuthError);
+  });
+
+  it('raises a request error, not an auth retry, when the account has no data licence', async () => {
+    // The live account authenticates but carries no licence; BDS answer with a
+    // second error shape whose numeric code is also 1. Treating that as an auth
+    // failure would send us round the login loop for a problem no token fixes.
+    const { fetchByIsbns, BdsRequestError } = await loadBds();
+    const calls = mockFetch([LICENCE_ERROR, LICENCE_ERROR]);
+
+    await expect(fetchByIsbns(['9780241635537'])).rejects.toBeInstanceOf(BdsRequestError);
+    await expect(fetchByIsbns(['9780241635537'])).rejects.toThrow(/Database Licence Subscriptions/);
+    // Login once, one data call, then the error — no second login.
+    expect(calls.filter((c) => c.url.searchParams.get('ax') === '_login')).toHaveLength(1);
   });
 
   it('throws an auth error when login itself is refused', async () => {

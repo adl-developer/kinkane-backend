@@ -1,6 +1,19 @@
 # Changelog
 
 
+## 2026-09-25
+
+### Features
+
+* keep author and review data fresh without losing a night's work ([d703517](https://adl.github.com/adl-developer/kinkane-backend/commit/d703517050772f5149e103f22114d541e38ed472)) — [details](changelog/2026-09-25-author-biographies-and-author-pages.md)
+* give each author a page with their biography and books ([e148770](https://adl.github.com/adl-developer/kinkane-backend/commit/e1487708051e9f782e850d4824c78f6d177af446)) — [details](changelog/2026-09-25-author-biographies-and-author-pages.md)
+* show an author's biography beside their name on a book page ([9eeb37d](https://adl.github.com/adl-developer/kinkane-backend/commit/9eeb37d0f700990f0004a7c83cb5070ca41f775a)) — [details](changelog/2026-09-25-author-biographies-and-author-pages.md)
+
+### Bug Fixes
+
+* make the connection to the BDS book data service work ([6ef45ac](https://adl.github.com/adl-developer/kinkane-backend/commit/6ef45acb5ac4ed0e64afaaaf8f49502b0823ef2e)) — [details](changelog/2026-09-25-author-biographies-and-author-pages.md)
+
+
 ## 2026-09-24
 
 ### Features

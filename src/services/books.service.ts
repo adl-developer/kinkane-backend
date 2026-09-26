@@ -29,7 +29,7 @@ import {
   getUserExclusions,
 } from '../lib/exclusions';
 import { logger } from '../lib/logger';
-import { normalisedNameSql, normaliseNameQuery } from '../lib/contributor-name';
+import { normalisedNameSql, normaliseNameQuery, NORMALISED_PERSON_NAME } from '../lib/contributor-name';
 import { splitCandidates, type SplitCandidate } from '../lib/search-split';
 import { redis } from '../lib/redis';
 import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-excerpts.service';
@@ -40,6 +40,8 @@ import {
   type BookReviewInfo,
 } from './book-reviews.service';
 import { getBiosByIsbns, bdsEnrichmentService, type AuthorBioInfo } from './bds-enrichment.service';
+import { attributableContributor, type BioConfidence } from '../lib/author-bio-match';
+import { authorsWithBios, getAuthorBio, normaliseAuthorName } from './author-bios.service';
 import { TRENDING_SCORED_TYPES, trendingScoreSql } from './interactions.service';
 import { availabilityService } from './commerce/availability.service';
 import {
@@ -455,6 +457,16 @@ export interface SuggestionItem {
 export interface AuthorSuggestion {
   personName: string;
   bookCount: number;
+  /** Whether GET /authors/:name would return a biography for this person. */
+  hasBio: boolean;
+}
+
+/** What GET /authors/:name returns. */
+export interface AuthorDetail {
+  personName: string;
+  bookCount: number;
+  bio: { bioHtml: string; sourceIsbn13: string | null; booksConsidered: number } | null;
+  books: BookListItem[];
 }
 
 export interface TrendingBookItem {
@@ -609,6 +621,11 @@ export interface EditionSummary {
   availableQuantity?: number;
 }
 
+/** A book-page contributor, with the biography when it is safely theirs. */
+export interface DetailContributor extends Pick<BookContributor, 'role' | 'personName' | 'sequenceNumber'> {
+  bio?: { bioHtml: string; confidence: BioConfidence };
+}
+
 export interface BookDetail extends BookListItem {
   /**
    * Review quotes from Nielsen or, where Nielsen has none, from BDS — `source`
@@ -619,10 +636,18 @@ export interface BookDetail extends BookListItem {
   review: BookReviewInfo | null;
   /**
    * The author biography from BDS, as HTML. One block per book — it can cover
-   * several contributors — not attached to any single contributor, because
-   * BDS supply it per book and carry no author identifier.
+   * several contributors — so it stays at book level. Where it can safely be
+   * attributed to one person it *also* appears on that contributor; see
+   * lib/author-bio-match.
    */
   authorBio: AuthorBioInfo | null;
+  /**
+   * Contributors, each carrying `bio` when this book's biography is
+   * demonstrably about them: they are the book's only author, and the text
+   * names them. Absent otherwise — an edited collection's biography covers
+   * several people and belongs to none of them.
+   */
+  contributors: DetailContributor[];
   shortDescription: string | null;
   longDescription: string | null;
   editionNumber: number | null;
@@ -3402,10 +3427,66 @@ export const booksService = {
       rows = [...rows, ...extra];
     }
 
-    const results = rows.map((r) => ({ personName: r.personName as string, bookCount: r.bookCount }));
+    const names = rows.map((r) => r.personName as string);
+    // One indexed lookup for the page, so the list can mark who has a
+    // biography without the client calling the author endpoint per row.
+    const withBios = await authorsWithBios(names);
+    const results = rows.map((r) => ({
+      personName: r.personName as string,
+      bookCount: r.bookCount,
+      hasBio: withBios.has(normaliseAuthorName(r.personName as string)),
+    }));
 
     await redis.set(cacheKey, JSON.stringify(results), 'EX', SUGGESTIONS_TTL);
     return results;
+  },
+
+  /**
+   * One author: their biography, if we have a safe one, and their books.
+   *
+   * Matched on the normalised name, the same key author search uses, because
+   * 22% of contributor rows arrive with doubled internal spaces.
+   *
+   * `bio` is null when we hold nothing, and *also* when the name is shared by
+   * people with different biographies — see services/author-bios.service.ts.
+   * Returns null only when the name is not in the catalogue at all, so a
+   * biography-less author still gets a page listing their books.
+   */
+  async authorDetail(name: string, limit = 20): Promise<AuthorDetail | null> {
+    const normalised = normaliseAuthorName(name);
+
+    const bookRows = await db
+      .select({ id: books.id })
+      .from(bookContributors)
+      .innerJoin(books, eq(books.id, bookContributors.bookId))
+      .where(
+        and(
+          eq(bookContributors.role, 'A01'),
+          sql`lower(${sql.raw(NORMALISED_PERSON_NAME)}) = ${normalised}`,
+          eq(books.isRemoved, false),
+        ),
+      )
+      .orderBy(sql`${books.publicationDate} DESC NULLS LAST`)
+      .limit(limit);
+
+    const [{ total }] = (await db.execute(sql`
+      SELECT count(DISTINCT bc.book_id)::int AS total
+      FROM book_contributors bc
+      JOIN books b ON b.id = bc.book_id
+      WHERE bc.role = 'A01'
+        AND lower(${sql.raw(NORMALISED_PERSON_NAME)}) = ${normalised}
+        AND b.is_removed = false
+    `)) as unknown as { total: number }[];
+
+    const bio = await getAuthorBio(name);
+    if (total === 0 && !bio) return null;
+
+    return {
+      personName: bio?.displayName ?? name,
+      bookCount: total,
+      bio: bio ? { bioHtml: bio.bioHtml, sourceIsbn13: bio.sourceIsbn13, booksConsidered: bio.booksConsidered } : null,
+      books: await this.listByIds(bookRows.map((r) => r.id)),
+    };
   },
 
   /**
@@ -4206,6 +4287,23 @@ export const booksService = {
  * Builds (or reads from cache) everything on the book page except the live
  * shop fields — booksService.getById is the only caller and adds those.
  */
+/**
+ * Copies the book's biography onto the one contributor it can be attributed
+ * to, leaving every other contributor untouched. The biography also stays at
+ * book level in `authorBio`, so nothing is lost when it belongs to nobody.
+ */
+function withAttributedBio(
+  contributors: Pick<BookContributor, 'role' | 'personName' | 'sequenceNumber'>[],
+  bioHtml: string | null,
+): DetailContributor[] {
+  const match = attributableContributor(contributors, bioHtml);
+  if (!match) return contributors;
+
+  return contributors.map((c) =>
+    c === match.contributor ? { ...c, bio: { bioHtml: bioHtml!, confidence: match.confidence } } : c,
+  );
+}
+
 async function loadBookDetail(id: number): Promise<BookDetail | null> {
   const cacheKey = `book:detail:${id}`;
   const cached = await redis.get(cacheKey);
@@ -4295,7 +4393,7 @@ async function loadBookDetail(id: number): Promise<BookDetail | null> {
     coverUrl: book.coverUrl,
     createdAt: book.createdAt,
     updatedAt: book.updatedAt,
-    contributors,
+    contributors: withAttributedBio(contributors, bioMap.get(book.isbn13 ?? '')?.bioHtml ?? null),
     genres: toDisplayGenres(genreRows),
     prices: priceRows,
     subjects,

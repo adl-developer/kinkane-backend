@@ -14,6 +14,9 @@ import { redis } from './redis';
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
+/** Attempts per request, for transient network failures only. */
+const HTTP_ATTEMPTS = 3;
+
 // A year, per the API document. Cached for a little less so we never send a
 // token in its final hours; a rejected token triggers a fresh login anyway.
 const TOKEN_TTL_SECONDS = 360 * 24 * 60 * 60;
@@ -164,7 +167,9 @@ export function parseRecords(xml: string): BdsRecord[] {
       biographicalNotes: list(fields, 'biographical_note'),
       review: first(fields, 'review'),
       prizes: first(fields, 'prizes'),
-      relatedEditions: list(fields, 'related_editions').filter((c) => ISBN13.test(c)),
+      // Deduplicated: BDS repeat an edition when it is listed in more than one
+      // of the fields that feed this list (seen live, e.g. 9780241635537).
+      relatedEditions: [...new Set(list(fields, 'related_editions').filter((c) => ISBN13.test(c)))],
       indexUpdated: first(fields, 'index_updated'),
     });
   }
@@ -173,19 +178,46 @@ export function parseRecords(xml: string): BdsRecord[] {
 
 /**
  * BDS report errors as a JSON body — with HTTP 200, so the status code alone
- * says nothing. Seen live: `{"response":{"error_code":1,"error_msg":
- * "Unauthorised access! ...","explain":"No token or invalid token"}}`.
+ * says nothing. There are two shapes, both seen live:
+ *
+ *   {"response":{"error_code":1,"error_msg":"Unauthorised access! ...",
+ *     "explain":"No token or invalid token"}}
+ *   {"errordetails":{"errorcode":"You need to configure the Database Licence
+ *     Subscriptions via the ACS for this customer.","errormessage":1}}
+ *
+ * In the second, the names are the wrong way round: `errorcode` holds the
+ * message and `errormessage` holds the number. Whichever value is a string is
+ * treated as the message. Its code is never reported as an auth failure, so a
+ * licensing problem can't send us round the re-login loop — the account
+ * authenticates fine, it just has no data behind it.
  */
-function parseErrorBody(body: string): { code: number; message: string } | null {
+function parseErrorBody(body: string): { code: number; message: string; retryableAuth: boolean } | null {
   const trimmed = body.trimStart();
   if (!trimmed.startsWith('{')) return null;
   try {
-    const json = JSON.parse(trimmed) as { response?: { error_code?: number | string; error_msg?: string; explain?: string } };
+    const json = JSON.parse(trimmed) as {
+      response?: { error_code?: number | string; error_msg?: string; explain?: string };
+      errordetails?: { errorcode?: number | string; errormessage?: number | string };
+    };
+
+    const details = json.errordetails;
+    if (details) {
+      const parts = [details.errorcode, details.errormessage];
+      const message = parts.find((p) => typeof p === 'string' && p.trim() !== '') as string | undefined;
+      const code = parts.find((p) => typeof p === 'number');
+      return {
+        code: Number(code ?? -1),
+        message: message ?? 'unknown BDS error',
+        retryableAuth: false,
+      };
+    }
+
     const r = json.response;
     if (!r || r.error_code === undefined || Number(r.error_code) === 0) return null;
     return {
       code: Number(r.error_code),
       message: [r.error_msg, r.explain].filter(Boolean).join(' — ') || 'unknown BDS error',
+      retryableAuth: Number(r.error_code) === AUTH_ERROR_CODE,
     };
   } catch {
     return null;
@@ -194,16 +226,49 @@ function parseErrorBody(body: string): { code: number; message: string } | null 
 
 // ── Transport ────────────────────────────────────────────────────────────────
 
+/**
+ * Network-level failures, which say nothing about the request itself: a
+ * dropped connection, a DNS blip, or our own timeout firing. Seen live during
+ * the backfill trial — BDS went unreachable from Node for a couple of minutes
+ * while the same request worked from curl, then recovered on its own.
+ */
+function isTransient(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return err.name === 'AbortError' || err.name === 'TimeoutError' || err.message === 'fetch failed';
+}
+
+/**
+ * One GET, retried through transient failures.
+ *
+ * A backfill is ~11,000 requests over hours; without this, a single blip ends
+ * the run. Anything BDS answers — including an error body — is returned as-is
+ * and never retried here, because repeating a request the server understood
+ * would not change the answer.
+ */
 async function httpGet(url: URL, headers: Record<string, string> = {}): Promise<string> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  try {
-    const response = await fetch(url, { headers, signal: controller.signal });
-    if (!response.ok) throw new BdsRequestError(`BDS responded with HTTP ${response.status}`);
-    return await response.text();
-  } finally {
-    clearTimeout(timer);
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= HTTP_ATTEMPTS; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      const response = await fetch(url, { headers, signal: controller.signal });
+      if (!response.ok) throw new BdsRequestError(`BDS responded with HTTP ${response.status}`);
+      return await response.text();
+    } catch (err) {
+      lastError = err;
+      if (!isTransient(err) || attempt === HTTP_ATTEMPTS) break;
+      // 1s, 3s, 9s — long enough for a brief outage, short enough that a
+      // backfill does not stall on one bad batch.
+      await new Promise((res) => setTimeout(res, 1000 * 3 ** (attempt - 1)));
+    } finally {
+      clearTimeout(timer);
+    }
   }
+
+  throw lastError instanceof BdsRequestError
+    ? lastError
+    : new BdsRequestError(`BDS request failed after ${HTTP_ATTEMPTS} attempts: ${String((lastError as Error)?.message ?? lastError)}`);
 }
 
 let memoryToken: string | null = null;
@@ -219,7 +284,12 @@ async function login(): Promise<string> {
   if (!username || !password) throw new BdsAuthError('BDS credentials are not configured');
 
   const url = new URL(baseUrl);
-  url.searchParams.set('sx', '_login');
+  // 'ax', not 'sx'. The API document's prose calls it a "token endpoint" and
+  // never names the parameter; only the PHP sample in Schedule 1 shows it, and
+  // BDS answer any unrecognised request with the same "No token or invalid
+  // token" error as an unauthenticated one — so a wrong name here looks
+  // exactly like wrong credentials. Verified live 2026-09-24.
+  url.searchParams.set('ax', '_login');
   url.searchParams.set('usr', username);
   url.searchParams.set('pwd', password);
 
@@ -274,11 +344,11 @@ export async function bdsGet(params: Record<string, string>): Promise<string> {
 
     const error = parseErrorBody(body);
     if (!error) return body;
-    if (error.code === AUTH_ERROR_CODE && attempt === 1) {
+    if (error.retryableAuth && attempt === 1) {
       await forgetToken();
       continue;
     }
-    if (error.code === AUTH_ERROR_CODE) throw new BdsAuthError(`BDS rejected a fresh token: ${error.message}`);
+    if (error.retryableAuth) throw new BdsAuthError(`BDS rejected a fresh token: ${error.message}`);
     throw new BdsRequestError(`BDS error ${error.code}: ${error.message}`);
   }
   // Unreachable: the loop either returns or throws.
@@ -326,29 +396,17 @@ export async function fetchByIsbns(isbns: string[]): Promise<Map<string, BdsReco
 }
 
 /**
- * One page of records BDS changed between two dates (yyyymmdd, inclusive).
- * `index_updated` is the field to use: the documented SINCE/DTSPAN operators
- * filter on publication date, not on when a record changed.
+ * There is deliberately no "what changed at BDS" reader here.
+ *
+ * BDS change roughly 136,000 records a day, and the API will only page through
+ * the first 5,000 results of any query (`offset + PL <= 5000`, measured
+ * 2026-09-25) — beyond that it returns an empty page with no error, which is
+ * indistinguishable from reaching the end. Any such reader would therefore
+ * report success while silently missing ~96% of the day's changes.
+ *
+ * Freshness comes from re-asking about our own ISBNs on a rotation instead;
+ * see runSweep in services/bds-enrichment.service.ts.
  */
-export async function fetchUpdatedPage(
-  fromYmd: string,
-  toYmd: string,
-  page: number,
-  pageSize = 100,
-): Promise<{ records: BdsRecord[]; rawCount: number }> {
-  const body = await bdsGet({
-    SF1: 'index_updated',
-    ST1: `${fromYmd}:${toYmd}`,
-    PL: String(pageSize),
-    M: String(page * pageSize),
-    VIEW: 'xml',
-    FIELDS: BDS_FIELDS.join(','),
-  });
-  // rawCount, not records.length, decides whether there is another page:
-  // records without an ISBN are dropped by the parser but still fill a page.
-  const rawCount = [...body.matchAll(/<(resultfields|record)\b[^>]*>/gi)].length;
-  return { records: parseRecords(body), rawCount };
-}
 
 /** Test hook: drop the in-process token so each test starts logged out. */
 export function resetBdsTokenForTests(): void {
