@@ -5,6 +5,7 @@
 
 ### Bug Fixes
 
+* apply the quiz duplicate-book check to recommendations ([be051c1](https://adl.github.com/adl-developer/kinkane-backend/commit/be051c1fd576adc250f6d3ac0ebfad90d7140a35)) — [details](changelog/2026-09-26-quiz-duplicate-books.md)
 * stop the quiz showing the same book twice under slightly different titles ([7ff2c43](https://adl.github.com/adl-developer/kinkane-backend/commit/7ff2c43b4a1a8f21c447eaf490a85b25e5f4a127)) — [details](changelog/2026-09-26-quiz-duplicate-books.md)
 
 

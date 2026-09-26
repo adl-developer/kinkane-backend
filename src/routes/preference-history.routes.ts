@@ -13,9 +13,10 @@ const router = Router();
  *
  * A user can only read their own history — there is no path to anyone else's.
  *
- * Query (optional): { limit? (1-100, default 20), offset? (default 0) }
+ * Query (optional): { limit? (1-100, default 20), offset? (default 0),
+ *   field? — only entries where this field changed, plus the baseline entry }
  * Returns 200: { preferenceHistory: [{ id, feelings, bookIds, genres, dislikes,
- *   readerType, changedFields, source, recordedAt }],
+ *   dislikedBookIds, readerType, changedFields, source, recordedAt }],
  *   pagination: { total, limit, offset, hasMore } }
  * Errors: 400 invalid query | 401 unauthenticated
  */

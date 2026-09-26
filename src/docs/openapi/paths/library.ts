@@ -169,6 +169,9 @@ export const libraryPaths = {
         param('limit', 'query', { type: 'integer', minimum: 1, maximum: 100, default: 20 },
           'Items per page (1–100 here, unlike the 50 used elsewhere).'),
         param('offset', 'query', { type: 'integer', minimum: 0, default: 0 }, 'Items to skip.'),
+        param('field', 'query',
+          { type: 'string', enum: ['feelings', 'genres', 'dislikes', 'bookIds', 'dislikedBookIds', 'readerType'] },
+          'Only entries where this field changed — `feelings` for mood history, `genres` for genre history, `dislikes` for what-to-avoid history. The first entry (when preferences were set at signup) is always included, since that is when every field was first set. `total` and paging count the filtered list.'),
       ],
       responses: {
         200: json('A page of history.',
@@ -179,6 +182,11 @@ export const libraryPaths = {
               genres: { type: 'array', items: { type: 'string' }, example: ['poetry', 'classics', 'travel'] },
               dislikes: { type: 'object', additionalProperties: { type: 'array', items: { type: 'string' } } },
               bookIds: { type: 'array', items: { type: 'integer' }, example: [48213] },
+              dislikedBookIds: {
+                type: 'array', items: { type: 'integer' },
+                description: 'Books the reader had swiped away as of this entry.',
+                example: [57, 60],
+              },
               readerType: { type: 'string', nullable: true, example: 'The Wanderer' },
               changedFields: {
                 type: 'array', items: { type: 'string' },
@@ -187,8 +195,9 @@ export const libraryPaths = {
               },
               source: {
                 type: 'string',
-                description: 'What produced this snapshot — onboarding, a quiz retake, a selections save.',
-                example: 'quiz_retake',
+                enum: ['onboarding', 'user_edit', 'system'],
+                description: 'What produced this snapshot — `onboarding` at signup, `user_edit` for a preferences save or quiz retake, `system` is reserved and not written today.',
+                example: 'user_edit',
               },
               recordedAt: { type: 'string', format: 'date-time', example: '2026-08-02T14:00:00.000Z' },
             })),
