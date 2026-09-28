@@ -196,7 +196,7 @@ const envSchema = z.object({
   // form still works before anyone sets up a dedicated support mailbox — it
   // just means support mail arrives wherever hello@ goes.
   SUPPORT_INBOX: z.string().email().optional(),
-  EMAIL_FROM_NAME: z.string().default('Kinkane'),
+  EMAIL_FROM_NAME: z.string().default('Kinkané'),
 
   // Base client URL, and the single source of truth for every user-facing link
   // this server builds: email CTAs, password reset, Stripe return URLs, and
