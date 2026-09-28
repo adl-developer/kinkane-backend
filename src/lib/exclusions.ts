@@ -1,4 +1,5 @@
 import { sql, eq, and, inArray, type SQL } from 'drizzle-orm';
+import type { PgColumn } from 'drizzle-orm/pg-core';
 import { db } from '../db';
 import { books, bookContributors, userBooks, userDislikedBooks } from '../db/schema';
 import { redis } from './redis';
@@ -24,12 +25,56 @@ export interface UserExclusions {
 export const EMPTY_EXCLUSIONS: UserExclusions = { bookIds: [], works: [] };
 
 /**
- * The one normalization used on both sides of every title/author comparison.
- * Must stay in lockstep with the SQL below (`lower(btrim(...))`) — if these two
- * ever disagree, exclusions silently stop matching.
+ * The normalization used on both sides of every author comparison, and the form
+ * title/author snapshots are stored in. Must stay in lockstep with the SQL below
+ * (`lower(btrim(...))`) — if these two ever disagree, exclusions silently stop
+ * matching.
  */
 export function normalizeForMatch(value: string): string {
   return value.trim().toLowerCase();
+}
+
+/**
+ * The title half of "is this the same work?": case, punctuation, "&" for "and",
+ * and a leading or trailing article all fold away, so "Secret Lives of Baba
+ * Segi's Wives", "The Secret Lives of Baba Segi's Wives" and "Secret Lives of
+ * Baba Segi's Wives, The" are one title.
+ *
+ * {@link titleMatchSql} is its SQL twin and the two must agree character for
+ * character — that is the whole contract. It is why this stops short of
+ * lib/dedupe's normalizeWorkText, which also strips accents: the database has no
+ * unaccent extension, so "Café" and "Cafe" stay apart here. Idempotent, and
+ * accepts a stored normalizeForMatch snapshot as input, so snapshots written
+ * before this existed match exactly as a fresh title would.
+ */
+export function normalizeTitleForMatch(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    // ICU's [[:alnum:]]: Alphabetic plus decimal digits — not \p{N}, which would
+    // also keep superscripts and fractions that the SQL side turns into spaces.
+    .replace(/[^\p{Alphabetic}\p{Nd}]+/gu, ' ')
+    .trim()
+    .replace(/^(the|a|an) /, '')
+    .replace(/ (the|a|an)$/, '');
+}
+
+/**
+ * {@link normalizeTitleForMatch} in SQL. The ICU collation is load-bearing: the
+ * database runs ctype C, under which lower() and [[:alnum:]] only know ASCII, so
+ * without it an accented title would fold differently here than in JS.
+ */
+export function titleMatchSql(title: SQL | PgColumn): SQL {
+  return sql`regexp_replace(
+    regexp_replace(
+      btrim(regexp_replace(
+        replace(lower(${title} COLLATE "und-x-icu"), '&', ' and '),
+        '[^[:alnum:]]+', ' ', 'g'
+      )),
+      '^(the|a|an) ', ''
+    ),
+    ' (the|a|an)$', ''
+  )`;
 }
 
 /**
@@ -40,7 +85,8 @@ export function normalizeForMatch(value: string): string {
  * list grows — a reader who has rejected 200 books gets the same shape of
  * query as one who has rejected 3.
  *
- * The match is by title, with the author acting as a tie-breaker that only
+ * The match is by title — folded by normalizeTitleForMatch, so a leading
+ * "The" or a stray comma does not make a second work — with the author acting as a tie-breaker that only
  * gets to *rescue* a same-titled book — never to let one through on a
  * technicality. So a candidate is excluded when its title matches and any of:
  *
@@ -68,13 +114,18 @@ export function buildWorkExclusionCondition(works: ExcludedWork[]): SQL | undefi
   // sibling row to infer from.
   const rows = works.map(
     (w) =>
-      sql`(${normalizeForMatch(w.title)}::text, ${w.author === null ? null : normalizeForMatch(w.author)}::text)`,
+      sql`(${normalizeTitleForMatch(w.title)}::text, ${w.author === null ? null : normalizeForMatch(w.author)}::text)`,
   );
 
+  // Folding the candidate's title costs about 3µs a row. Postgres hashes the
+  // VALUES list and folds each candidate once per probe, so this stays one fold
+  // per row however long the list is — measured at 68ms for 200 works over 20k
+  // rows. Hoisting the fold into its own OFFSET 0 subquery looks cheaper and
+  // measured ten times slower, since it defeats the hashing.
   return sql`NOT EXISTS (
     SELECT 1
     FROM (VALUES ${sql.join(rows, sql`, `)}) AS excluded_work(title, author)
-    WHERE excluded_work.title = lower(btrim(${books.title}))
+    WHERE excluded_work.title = ${titleMatchSql(books.title)}
       AND (
         excluded_work.author IS NULL
         OR NOT EXISTS (${namedAuthorSubquery()})
@@ -166,15 +217,16 @@ export function filterExcludedWorks<
   // whole rejection list.
   const authorsByTitle = new Map<string, (string | null)[]>();
   for (const work of exclusions.works) {
-    const authors = authorsByTitle.get(work.title) ?? [];
+    const title = normalizeTitleForMatch(work.title);
+    const authors = authorsByTitle.get(title) ?? [];
     authors.push(work.author);
-    authorsByTitle.set(work.title, authors);
+    authorsByTitle.set(title, authors);
   }
 
   return items.filter((item) => {
     if (excludedIds.has(item.id)) return false;
 
-    const excludedAuthors = authorsByTitle.get(normalizeForMatch(item.title));
+    const excludedAuthors = authorsByTitle.get(normalizeTitleForMatch(item.title));
     if (!excludedAuthors) return true;
 
     // An untagged catalogue row has nothing to disprove the title match with,
@@ -309,7 +361,7 @@ export async function bustUserExclusions(userId: number): Promise<void> {
  * whole life of the v2 key, so it matched nothing and a user's rejected books
  * stayed in their feed for the full hour. Bump both together.
  */
-const PERSONALIZED_CACHE_PREFIX = 'personalized:v4:';
+const PERSONALIZED_CACHE_PREFIX = 'personalized:v5:';
 
 /**
  * Busts the personalized feed cache for all limit variants. `limit` is bounded
@@ -375,7 +427,7 @@ function dedupeWorks(works: ExcludedWork[]): ExcludedWork[] {
   for (const work of works) {
     // Explicit NUL separator so a title/author pair can't collide with a
     // differently-split pair whose title happens to contain the separator.
-    byKey.set(`${work.title}\u0000${work.author ?? ''}`, work);
+    byKey.set(`${normalizeTitleForMatch(work.title)}\u0000${work.author ?? ''}`, work);
   }
   return [...byKey.values()];
 }

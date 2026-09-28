@@ -6,6 +6,7 @@ import {
   filterExcludedWorks,
   hasNamedAuthor,
   normalizeForMatch,
+  normalizeTitleForMatch,
   type UserExclusions,
 } from '../lib/exclusions';
 
@@ -45,7 +46,42 @@ describe('normalizeForMatch', () => {
   });
 });
 
+describe('normalizeTitleForMatch', () => {
+  it.each([
+    ["The Secret Lives of Baba Segi's Wives", 'secret lives of baba segi s wives'],
+    ["Secret Lives of Baba Segi's Wives", 'secret lives of baba segi s wives'],
+    ["Secret Lives of Baba Segi's Wives, The", 'secret lives of baba segi s wives'],
+    ['A Return to Love', 'return to love'],
+    ['Bridget & Gabe', 'bridget and gabe'],
+    ['  Things  Fall   Apart. ', 'things fall apart'],
+    // No unaccent in the database, so the SQL twin cannot strip accents.
+    ['Les Misérables', 'les misérables'],
+    // Superscripts are not [[:alnum:]] under ICU, so they must not be here either.
+    ['[¹8F]FDG PET/CT', '8f fdg pet ct'],
+  ])('%s -> %s', (input, expected) => {
+    expect(normalizeTitleForMatch(input)).toBe(expected);
+  });
+
+  it('accepts a stored normalizeForMatch snapshot and lands on the same key', () => {
+    const raw = "The Secret Lives of Baba Segi's Wives";
+    expect(normalizeTitleForMatch(normalizeForMatch(raw))).toBe(normalizeTitleForMatch(raw));
+  });
+
+  it('is idempotent', () => {
+    const once = normalizeTitleForMatch('Hobbit, The');
+    expect(normalizeTitleForMatch(once)).toBe(once);
+  });
+});
+
 describe('buildWorkExclusionCondition', () => {
+  it('folds a leading article out of the excluded title, matching the SQL fold', () => {
+    const { sql, params } = compile(
+      buildWorkExclusionCondition([{ title: "the secret lives of baba segi's wives", author: null }]),
+    );
+    expect(params).toContain('secret lives of baba segi s wives');
+    expect(sql).toContain('und-x-icu');
+  });
+
   it('returns undefined for an empty list so callers can spread it', () => {
     expect(buildWorkExclusionCondition([])).toBeUndefined();
   });
@@ -118,6 +154,17 @@ describe('filterExcludedWorks', () => {
       exclusions({ bookIds: [1], works: [{ title: 'dune', author: 'frank herbert' }] }),
     );
     expect(kept).toHaveLength(0);
+  });
+
+  it('drops "The X" when "X" was picked, and the reverse', () => {
+    const books = [
+      item(1, "The Secret Lives of Baba Segi's Wives", ['Lola Shoneyin']),
+      item(2, "Secret Lives of Baba Segi's Wives", ['Lola Shoneyin']),
+    ];
+    const pickedPlain = exclusions({ works: [{ title: "secret lives of baba segi's wives", author: 'lola shoneyin' }] });
+    const pickedThe = exclusions({ works: [{ title: "the secret lives of baba segi's wives", author: 'lola shoneyin' }] });
+    expect(filterExcludedWorks(books, pickedPlain)).toHaveLength(0);
+    expect(filterExcludedWorks(books, pickedThe)).toHaveLength(0);
   });
 
   it('keeps a same-titled book by a different author', () => {

@@ -5,7 +5,7 @@
 
 ### Features
 
-* show the reader type's tagline straight after the quiz, not only on later screens ([8648b9f](https://adl.github.com/adl-developer/kinkane-backend/commit/8648b9f8692c332d772fd6668b6e887667788871)) — [details](changelog/2026-09-28-author-search-any-word-order.md)
+* show the reader type's tagline straight after the quiz, not only on later screens ([8648b9f](https://adl.github.com/adl-developer/kinkane-backend/commit/8648b9f8692c332d772fd6668b6e887667788871)) — [details](changelog/2026-09-28-book-editions-hardback-first-no-duplicate-recommendations.md)
 
 ### Bug Fixes
 

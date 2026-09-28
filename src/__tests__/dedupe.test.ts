@@ -3,6 +3,9 @@ import {
   dedupeByTitle,
   dedupeByTitleAndSubtitle,
   dedupeByWork,
+  dedupeCardsByWork,
+  firstNamedAuthor,
+  groupEditions,
   normalizeWorkText,
   workKey,
   type DedupeCandidate,
@@ -181,13 +184,13 @@ describe('edition format preference', () => {
     ...overrides,
   });
 
-  it('shows the paperback when paperback, hardback and other formats all exist', () => {
-    const rows = [ed(1, 'AB'), ed(2, 'BB'), ed(3, 'BC')];
+  it('shows the hardback when paperback, hardback and other formats all exist', () => {
+    const rows = [ed(1, 'AB'), ed(2, 'BC'), ed(3, 'BB')];
     expect(dedupeByTitle(rows).map((r) => r.id)).toEqual([3]);
   });
 
-  it('falls back to the hardback when there is no paperback', () => {
-    const rows = [ed(1, 'EA'), ed(2, 'BB'), ed(3, 'AB')];
+  it('falls back to the paperback when there is no hardback', () => {
+    const rows = [ed(1, 'EA'), ed(2, 'BC'), ed(3, 'AB')];
     expect(dedupeByTitle(rows).map((r) => r.id)).toEqual([2]);
   });
 
@@ -196,35 +199,35 @@ describe('edition format preference', () => {
     expect(dedupeByTitle(rows).map((r) => r.id)).toEqual([1]);
   });
 
-  it('prefers the paperback even over a hardback with a cover and a complete record', () => {
-    const rows = [ed(1, 'BB'), ed(2, 'BC', bare({ productForm: 'BC', stockTier: IN_STOCK }))];
+  it('prefers the hardback even over a paperback with a cover and a complete record', () => {
+    const rows = [ed(1, 'BC'), ed(2, 'BB', bare({ productForm: 'BB', stockTier: IN_STOCK }))];
     expect(dedupeByTitle(rows).map((r) => r.id)).toEqual([2]);
   });
 
-  it('prefers an in-stock hardback over a paperback that cannot be bought', () => {
-    const rows = [ed(1, 'BC', { stockTier: UNAVAILABLE }), ed(2, 'BB')];
+  it('prefers an in-stock paperback over a hardback that cannot be bought', () => {
+    const rows = [ed(1, 'BB', { stockTier: UNAVAILABLE }), ed(2, 'BC')];
     expect(dedupeByTitle(rows).map((r) => r.id)).toEqual([2]);
   });
 
   // The shop lists in-stock books first; leading that section with an order-in
-  // paperback while the hardback is on the shelf is what this rule prevents.
-  it('prefers an in-stock hardback over an order-in paperback', () => {
-    const rows = [ed(1, 'BC', { stockTier: TO_ORDER }), ed(2, 'BB')];
+  // hardback while the paperback is on the shelf is what this rule prevents.
+  it('prefers an in-stock paperback over an order-in hardback', () => {
+    const rows = [ed(1, 'BB', { stockTier: TO_ORDER }), ed(2, 'BC')];
     expect(dedupeByTitle(rows).map((r) => r.id)).toEqual([2]);
   });
 
-  it('prefers an order-in hardback over a paperback that cannot be bought', () => {
-    const rows = [ed(1, 'BC', { stockTier: UNAVAILABLE }), ed(2, 'BB', { stockTier: TO_ORDER })];
+  it('prefers an order-in paperback over a hardback that cannot be bought', () => {
+    const rows = [ed(1, 'BB', { stockTier: UNAVAILABLE }), ed(2, 'BC', { stockTier: TO_ORDER })];
     expect(dedupeByTitle(rows).map((r) => r.id)).toEqual([2]);
   });
 
-  it('prefers the paperback among order-in editions', () => {
-    const rows = [ed(1, 'BB', { stockTier: TO_ORDER }), ed(2, 'BC', { stockTier: TO_ORDER })];
+  it('prefers the hardback among order-in editions', () => {
+    const rows = [ed(1, 'BC', { stockTier: TO_ORDER }), ed(2, 'BB', { stockTier: TO_ORDER })];
     expect(dedupeByTitle(rows).map((r) => r.id)).toEqual([2]);
   });
 
-  it('still prefers the paperback when no edition can be bought', () => {
-    const rows = [ed(1, 'BB', { stockTier: UNAVAILABLE }), ed(2, 'BC', { stockTier: UNAVAILABLE })];
+  it('still prefers the hardback when no edition can be bought', () => {
+    const rows = [ed(1, 'BC', { stockTier: UNAVAILABLE }), ed(2, 'BB', { stockTier: UNAVAILABLE })];
     expect(dedupeByTitle(rows).map((r) => r.id)).toEqual([2]);
   });
 
@@ -238,7 +241,7 @@ describe('edition format preference', () => {
   });
 
   it('reads the ONIX code case- and whitespace-insensitively', () => {
-    const rows = [ed(1, 'BB'), ed(2, ' bc ')];
+    const rows = [ed(1, 'BC'), ed(2, ' bb ')];
     expect(dedupeByTitle(rows).map((r) => r.id)).toEqual([2]);
   });
 
@@ -309,5 +312,119 @@ describe('dedupeByWork', () => {
       { id: 2, title: 'Home', author: 'Marilynne Robinson', subtitle: null, ...bare() },
     ];
     expect(dedupeByWork(rows)).toHaveLength(2);
+  });
+
+  it('never recommends both "X" and "The X"', () => {
+    const rows: WorkRow[] = [
+      { id: 1, title: "Secret Lives of Baba Segi's Wives", author: 'Lola Shoneyin', subtitle: null, ...complete() },
+      { id: 2, title: "The Secret Lives of Baba Segi's Wives", author: 'Lola Shoneyin', subtitle: null, ...complete() },
+    ];
+    expect(dedupeByWork(rows)).toHaveLength(1);
+  });
+
+  describe('picks cover, then newest, then price, then most data', () => {
+    const work = (id: number, overrides: Partial<Row>): WorkRow => ({
+      id,
+      title: 'Dune',
+      author: 'Frank Herbert',
+      subtitle: null,
+      ...complete(),
+      ...overrides,
+    });
+
+    it('prefers a cover over a newer edition without one', () => {
+      const rows = [work(1, { coverUrl: null, publicationDate: '2024-01-01' }), work(2, { publicationDate: '2001-01-01' })];
+      expect(dedupeByWork(rows).map((r) => r.id)).toEqual([2]);
+    });
+
+    it('prefers the newest among editions with covers, even over a more complete record', () => {
+      const rows = [
+        work(1, { publicationDate: '2001-01-01' }),
+        work(2, { publicationDate: '2024-01-01', shortDescription: null, genreCount: 0, hasPrice: false }),
+      ];
+      expect(dedupeByWork(rows).map((r) => r.id)).toEqual([2]);
+    });
+
+    it('prefers a priced edition when cover and date tie', () => {
+      const rows = [work(1, { hasPrice: false }), work(2, { shortDescription: null, genreCount: 0 })];
+      expect(dedupeByWork(rows).map((r) => r.id)).toEqual([2]);
+    });
+
+    it('prefers more data points when everything else ties', () => {
+      const rows = [work(1, { shortDescription: null, genreCount: 0 }), work(2, { shortDescription: null })];
+      expect(dedupeByWork(rows).map((r) => r.id)).toEqual([2]);
+    });
+
+    it('ignores format — a recommendation is one card per book', () => {
+      const rows = [work(1, { productForm: 'BB' }), work(2, { productForm: 'BC', publicationDate: '2024-01-01' })];
+      expect(dedupeByWork(rows).map((r) => r.id)).toEqual([2]);
+    });
+
+    it('still puts an edition on the shelf first when stock is known', () => {
+      const rows = [work(1, { stockTier: 1, publicationDate: '2024-01-01' }), work(2, { stockTier: 0 })];
+      expect(dedupeByWork(rows).map((r) => r.id)).toEqual([2]);
+    });
+  });
+});
+
+describe('firstNamedAuthor', () => {
+  it('takes the lowest-sequence named A01', () => {
+    expect(
+      firstNamedAuthor([
+        { role: 'B01', personName: 'An Editor', sequenceNumber: 1 },
+        { role: 'A01', personName: '  ', sequenceNumber: 2 },
+        { role: 'A01', personName: 'Second', sequenceNumber: 4 },
+        { role: 'A01', personName: 'First', sequenceNumber: 3 },
+      ]),
+    ).toBe('First');
+  });
+
+  it('is null with no named author', () => {
+    expect(firstNamedAuthor([{ role: 'B01', personName: 'Ed', sequenceNumber: 1 }])).toBeNull();
+  });
+});
+
+describe('dedupeCardsByWork', () => {
+  it('keys on the first author from contributors', () => {
+    const card = (id: number, title: string, author: string) => ({
+      id,
+      title,
+      subtitle: null,
+      contributors: [{ role: 'A01', personName: author, sequenceNumber: 1 }],
+      ...complete(),
+    });
+    const rows = [card(1, 'Home', 'Toni Morrison'), card(2, 'The Home', 'Toni Morrison'), card(3, 'Home', 'Marilynne Robinson')];
+    expect(dedupeCardsByWork(rows).map((r) => r.id)).toEqual([1, 3]);
+  });
+});
+
+describe('groupEditions', () => {
+  const ed = (id: number, title: string, overrides: Partial<Row> = {}): Row => ({
+    id,
+    title,
+    subtitle: null,
+    ...complete({ stockTier: 0 }),
+    ...overrides,
+  });
+  const key = (r: Row) => normalizeWorkText(r.title);
+
+  it('keeps every edition, each work where it first appeared, hardback first within it', () => {
+    const rows = [
+      ed(1, 'Dune', { productForm: 'BC' }),
+      ed(2, 'Emma', { productForm: 'BC' }),
+      ed(3, 'The Dune', { productForm: 'BB' }),
+      ed(4, 'Dune', { productForm: 'AJ' }),
+    ];
+    expect(groupEditions(rows, key).map((g) => g.map((r) => r.id))).toEqual([[3, 1, 4], [2]]);
+  });
+
+  it('lets an edition on the shelf lead an order-in hardback', () => {
+    const rows = [ed(1, 'Dune', { productForm: 'BB', stockTier: 1 }), ed(2, 'Dune', { productForm: 'BC' })];
+    expect(groupEditions(rows, key).flat().map((r) => r.id)).toEqual([2, 1]);
+  });
+
+  it('keeps relevance order between editions that tie', () => {
+    const rows = [ed(1, 'Dune', { productForm: 'BC' }), ed(2, 'Dune', { productForm: 'BC' })];
+    expect(groupEditions(rows, key).flat().map((r) => r.id)).toEqual([1, 2]);
   });
 });

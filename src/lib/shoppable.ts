@@ -120,7 +120,7 @@ export function availableQuantityFor(
  *
  * Split out from availableQuantityFor because that number cannot tell the first
  * two apart — a supply-to-order title reports the full per-line cap — and the
- * shop must not lead with an order-in paperback while the hardback is on the shelf.
+ * shop must not lead with an order-in hardback while the paperback is on the shelf.
  */
 export const STOCK_TIER = { IN_STOCK: 0, TO_ORDER: 1, UNAVAILABLE: 2 } as const;
 export type StockTier = (typeof STOCK_TIER)[keyof typeof STOCK_TIER];
