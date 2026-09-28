@@ -30,6 +30,14 @@ const suggestionsSchema = z.object({
   dedupe: dedupeParam,
 });
 
+// The author typeahead pages through every matching name, so it takes an offset and a
+// larger page than the book suggestions do.
+const authorSuggestionsSchema = z.object({
+  q: z.string().min(1, 'Query must not be empty').max(100),
+  limit: z.coerce.number().int().min(1).max(50).default(8),
+  offset: z.coerce.number().int().min(0).max(10_000).default(0),
+});
+
 // No `shoppable` here, unlike the catalogue listing. A recommendation is an
 // invitation to buy: every "you may also like" card carries an Add button, so
 // the books are always sellable ones and the live price and stock are always on
@@ -351,15 +359,16 @@ export const booksController = {
   },
 
   async authorSuggestions(req: Request, res: Response): Promise<void> {
-    const parsed = suggestionsSchema.safeParse(req.query);
+    const parsed = authorSuggestionsSchema.safeParse(req.query);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.flatten().fieldErrors });
       return;
     }
 
     try {
-      const results = await booksService.authorSuggestions(parsed.data.q, parsed.data.limit);
-      res.status(200).json({ authors: results });
+      const { q, limit, offset } = parsed.data;
+      const { authors, hasMore } = await booksService.authorSuggestions(q, limit, offset);
+      res.status(200).json({ authors, limit, offset, hasMore });
     } catch (err: unknown) {
       const e = err as Error;
       res.status(500).json({ error: e.message });

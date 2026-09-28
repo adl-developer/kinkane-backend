@@ -113,13 +113,17 @@ export function nameWordStartPattern(word: string): string {
 }
 
 /**
- * Whether a query is worth an any-order word match on top of the in-order ones.
+ * Whether a query is worth the word-start match on top of the plain prefix ones.
  *
- * Needs two or more words — a single word is already covered by the prefix and
- * word-prefix matches. And needs at least one word of three or more characters, because
- * that is what gives the trigram index something to look up; a query made only of
- * initials ("j k") would otherwise be a regex scan over every contributor row.
+ * For two or more words it is what makes word order irrelevant. For a single word it
+ * catches a name whose words are joined by punctuation rather than a space —
+ * "J.Roderick Heller" for "roderick", "Smith,Barbara" for "barbara" — which the
+ * space-anchored word-prefix match cannot see.
+ *
+ * Needs at least one word of three or more characters, because that is what gives the
+ * trigram index something to look up; a query made only of initials ("j k") would
+ * otherwise be a regex scan over every contributor row.
  */
 export function wantsAnyOrderNameMatch(words: string[]): boolean {
-  return words.length >= 2 && words.some((w) => w.length >= 3);
+  return words.some((w) => w.length >= 3);
 }

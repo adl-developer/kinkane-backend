@@ -206,12 +206,14 @@ describe('name word order and punctuation', () => {
     expect(nameSearchWords(' , . ')).toEqual([]);
   });
 
-  it('only adds the any-order arm when the index has a word to look up', () => {
+  it('only adds the word-start arm when the index has a word to look up', () => {
     expect(wantsAnyOrderNameMatch(['shakespeare', 'william'])).toBe(true);
-    // One word is already covered by the prefix and word-prefix arms.
-    expect(wantsAnyOrderNameMatch(['shakespeare'])).toBe(false);
+    // A single word gets it too: it is what finds "J.Roderick Heller" for "roderick",
+    // where the word follows punctuation instead of a space.
+    expect(wantsAnyOrderNameMatch(['roderick'])).toBe(true);
     // Initials alone give the trigram index nothing to look up — a scan of every row.
     expect(wantsAnyOrderNameMatch(['j', 'k'])).toBe(false);
+    expect(wantsAnyOrderNameMatch(['jo'])).toBe(false);
   });
 
   it('escapes regex syntax so a query cannot inject a pattern', () => {
@@ -232,8 +234,16 @@ describe('name word order and punctuation', () => {
     );
   });
 
-  it('leaves single-word queries exactly as they were', () => {
-    expect(compile('king', 'cheap')).not.toMatch(/~\*/);
+  it('matches a single word after punctuation, not only after a space', () => {
+    const { params } = dialect.sqlToQuery(buildAuthorMatchCondition('roderick', 'cheap'));
+    expect(params).toContain(nameWordStartPattern('roderick'));
+    expect(new RegExp(nameWordStartPattern('roderick'), 'i').test('J.Roderick Heller')).toBe(true);
+    // Still a word start: a fragment from the middle of a word is not an exact match.
+    expect(new RegExp(nameWordStartPattern('son'), 'i').test('Johnson')).toBe(false);
+  });
+
+  it('leaves two-letter queries on the plain prefix arms', () => {
+    expect(compile('ki', 'cheap')).not.toMatch(/~\*/);
   });
 });
 

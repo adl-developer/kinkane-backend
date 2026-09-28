@@ -9,9 +9,9 @@
 
 ### Bug Fixes
 
-* stop a trailing comma from changing author search results ([2b9c22d](https://adl.github.com/adl-developer/kinkane-backend/commit/2b9c22d6da0c473b65a10427db5e5a38e4759be6)) — [details](changelog/2026-09-28-author-search-any-word-order.md)
+* stop a trailing comma from changing author search results ([2b9c22d](https://adl.github.com/adl-developer/kinkane-backend/commit/2b9c22d6da0c473b65a10427db5e5a38e4759be6)) — [details](changelog/2026-09-28-author-search-every-matching-name.md)
 * find authors whatever order or punctuation their name is typed in ([efc8f5d](https://adl.github.com/adl-developer/kinkane-backend/commit/efc8f5d2a319cf32dd747ea7112d096b1440590e)) — [details](changelog/2026-09-28-author-search-any-word-order.md)
-* rebuild author-name search indexes that older databases never picked up ([6ad97c4](https://adl.github.com/adl-developer/kinkane-backend/commit/6ad97c42c4f63c21be13b435aff3bb182995fef9)) — [details](changelog/2026-09-28-author-search-any-word-order.md)
+* rebuild author-name search indexes that older databases never picked up ([6ad97c4](https://adl.github.com/adl-developer/kinkane-backend/commit/6ad97c42c4f63c21be13b435aff3bb182995fef9)) — [details](changelog/2026-09-28-author-search-every-matching-name.md)
 
 
 ## 2026-09-26

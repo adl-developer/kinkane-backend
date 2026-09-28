@@ -3387,62 +3387,97 @@ export const booksService = {
     return results;
   },
 
-  async authorSuggestions(rawQ: string, limit: number): Promise<AuthorSuggestion[]> {
+  /**
+   * Every contributor name matching `q`, a page at a time.
+   *
+   * Ordered by how the name matched (see buildPersonNameTier), then authors (ONIX A01)
+   * ahead of names only ever credited as editor, translator or illustrator, then by
+   * how many books carry the name. The order is total — the name itself is the last
+   * key — so paging with `offset` never repeats or skips a name.
+   *
+   * Every exact match comes before any fuzzy one, across pages: the fuzzy near-misses
+   * ("Barbera", "Barbaro") only start once the exact matches have run out.
+   *
+   * All roles, not just A01: an editor or translator is still someone a reader can look
+   * up by name, and the book search this feeds already matches them.
+   */
+  async authorSuggestions(
+    rawQ: string,
+    limit: number,
+    offset = 0,
+  ): Promise<{ authors: AuthorSuggestion[]; hasMore: boolean }> {
     const q = canonicalNameQuery(rawQ);
-    // v2: names are now grouped and returned normalised, so a v1 entry holds the old
-    // duplicated, unranked list.
-    const cacheKey = `author-suggestions:v2:${createHash('sha256').update(`${q}:${limit}`).digest('hex')}`;
+    // v3: every role, and paged. A v2 entry holds an authors-only first page.
+    const cacheKey = `author-suggestions:v3:${createHash('sha256').update(`${q}:${limit}:${offset}`).digest('hex')}`;
     const cached = await redis.get(cacheKey);
-    if (cached) return JSON.parse(cached) as AuthorSuggestion[];
+    if (cached) return JSON.parse(cached) as { authors: AuthorSuggestion[]; hasMore: boolean };
 
     const bookCount = sql<number>`COUNT(DISTINCT ${bookContributors.bookId})::int`;
+    const isAuthor = sql`BOOL_OR(${bookContributors.role} = 'A01')`;
     const selectColumns = { personName: sql<string>`${SUGGESTION_NAME}`, bookCount };
-    const baseWhere = and(eq(bookContributors.role, 'A01'), sql`${bookContributors.personName} IS NOT NULL`);
-    const tierOf = buildPersonNameTier(q);
+    const hasName = sql`${bookContributors.personName} IS NOT NULL`;
+    const exact = buildPersonNameExactCondition(q);
 
-    // Same tiered approach as suggestions() — try the exact tiers (index scans on the name
-    // indexes) first, and only fall through to the expensive word_similarity/FTS tier if
-    // they don't fill `limit`. Within a tier, the author with more books leads: typing
-    // "shakespeare" should offer William (76 books) before Nicholas (2).
-    let rows = await withWordSimilarityThreshold((conn) =>
+    // Exact tiers first — index scans on the name indexes. One row past the page is
+    // fetched to tell whether another page exists without a separate count.
+    const exactRows = await withWordSimilarityThreshold((conn) =>
       conn
         .select(selectColumns)
         .from(bookContributors)
-        .where(and(baseWhere, buildPersonNameExactCondition(q)))
+        .where(and(hasName, exact))
         .groupBy(SUGGESTION_NAME)
-        .orderBy(tierOf, desc(bookCount), SUGGESTION_NAME)
-        .limit(limit),
+        .orderBy(buildPersonNameTier(q), desc(isAuthor), desc(bookCount), SUGGESTION_NAME)
+        .limit(limit + 1)
+        .offset(offset),
     );
 
-    if (rows.length < limit) {
-      const excludeNames = rows.map((r) => r.personName);
-      const fts = q.length >= 3
-        ? sql` OR to_tsvector('simple', ${SUGGESTION_NAME}) @@ plainto_tsquery('simple', ${q})`
-        : sql``;
-      const extra = await withWordSimilarityThreshold((conn) =>
+    let rows = exactRows;
+    let hasMore = exactRows.length > limit;
+
+    // The exact matches ran out on this page, so the rest of it — and every later page —
+    // comes from the fuzzy tier. Its own offset is how far this page reaches past the
+    // last exact match, which needs the exact total only when this page holds none.
+    if (!hasMore) {
+      let exactTotal = offset + exactRows.length;
+      if (exactRows.length === 0 && offset > 0) {
+        const [{ n }] = await withWordSimilarityThreshold((conn) =>
+          conn
+            .select({ n: sql<number>`COUNT(DISTINCT ${SUGGESTION_NAME})::int` })
+            .from(bookContributors)
+            .where(and(hasName, exact)),
+        );
+        exactTotal = n;
+      }
+      const want = limit - exactRows.length;
+      const fuzzyRows = await withWordSimilarityThreshold((conn) =>
         conn
           .select(selectColumns)
           .from(bookContributors)
-          .where(
-            and(
-              baseWhere,
-              sql`(${buildPersonNameExactCondition(q)} OR ${q} <% ${SUGGESTION_NAME}${fts})`,
-              excludeNames.length > 0
-                ? sql`${SUGGESTION_NAME} NOT IN (${sql.join(excludeNames.map((n) => sql`${n}`), sql`, `)})`
-                : undefined,
-            ),
-          )
+                    // Trigram similarity only. The full-text arm this used to carry matched whole
+          // words of the name, which the word-start match in `exact` now already covers —
+          // and it had no index, so it cost a scan of every contributor row per page.
+          .where(and(hasName, sql`${q} <% ${SUGGESTION_NAME}`, sql`NOT ${exact}`))
           .groupBy(SUGGESTION_NAME)
-          .orderBy(tierOf, sql`word_similarity(${q}, ${SUGGESTION_NAME}) DESC`, desc(bookCount), SUGGESTION_NAME)
-          .limit(limit - rows.length),
+          .orderBy(
+            sql`word_similarity(${q}, ${SUGGESTION_NAME}) DESC`,
+            desc(isAuthor),
+            desc(bookCount),
+            SUGGESTION_NAME,
+          )
+          .limit(want + 1)
+          .offset(Math.max(0, offset - exactTotal)),
       );
-      rows = [...rows, ...extra];
+      hasMore = fuzzyRows.length > want;
+      rows = [...exactRows, ...fuzzyRows.slice(0, want)];
     }
 
-    const results = rows.map((r) => ({ personName: r.personName as string, bookCount: r.bookCount }));
+    const result = {
+      authors: rows.slice(0, limit).map((r) => ({ personName: r.personName, bookCount: r.bookCount })),
+      hasMore,
+    };
 
-    await redis.set(cacheKey, JSON.stringify(results), 'EX', SUGGESTIONS_TTL);
-    return results;
+    await redis.set(cacheKey, JSON.stringify(result), 'EX', SUGGESTIONS_TTL);
+    return result;
   },
 
   /**
