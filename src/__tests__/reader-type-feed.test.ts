@@ -123,8 +123,8 @@ describe('reader-type cohort feed', () => {
     // Two spellings of "the same book" in one codebase is how a filter quietly
     // stops matching. lib/exclusions.ts is the definition; this must copy it.
     const exclusions = readFileSync(join(__dirname, '..', 'lib/exclusions.ts'), 'utf8');
-    expect(exclusions).toContain('lower(btrim(');
-    expect(method).toContain('lower(btrim(${books.title}))');
+    expect(exclusions).toContain('WHERE excluded_work.title = ${titleMatchSql(books.title)}');
+    expect(method).toContain('${titleMatchSql(books.title)} AS work_title');
   });
 
   it('orders deterministically so offset pagination is stable', () => {

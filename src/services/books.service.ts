@@ -20,13 +20,15 @@ import {
   type BookSubject,
   type BookPrice,
 } from '../db/schema';
-import { dedupeByTitle, dedupeByTitleAndSubtitle } from '../lib/dedupe';
+import { dedupeByTitle, dedupeCardsByWork, firstNamedAuthor, groupEditions, normalizeWorkText, workKey } from '../lib/dedupe';
 import {
   buildHasAuthorCondition,
   buildWorkExclusionCondition,
   EMPTY_EXCLUSIONS,
   filterExcludedWorks,
   getUserExclusions,
+  resolveWorkSnapshots,
+  titleMatchSql,
 } from '../lib/exclusions';
 import { logger } from '../lib/logger';
 import {
@@ -264,8 +266,10 @@ export interface ListBooksOptions {
   sort?: 'asc' | 'desc';
   limit: number;
   offset: number;
-  // Opt-in: collapses same-titled editions down to the best one (cover > complete dataset >
-  // newest publication date > has a price). See dedupeByTitle in lib/dedupe.ts.
+  // Opt-in. Without `q`: collapses same-titled editions down to the best one (on the shelf >
+  // hardback > paperback > cover > complete dataset > newest > has a price) — see
+  // dedupeByTitle in lib/dedupe.ts. With `q`: every edition is listed, but each work's
+  // editions are brought together in that same order — see groupEditions.
   dedupe?: boolean;
   /**
    * Opt-in: orders the results the way a shop has to — everything Gardners can
@@ -311,6 +315,12 @@ export interface DedupeCursor {
 
 /** How many recent titles to remember in the cursor for cross-page filtering. */
 const CURSOR_TAIL_TITLES = 100;
+/**
+ * The same for a grouped search, which remembers row ids instead (see list()).
+ * Larger because a page's siblings count too: up to SIBLING_EDITIONS_PER_TITLE
+ * per work on top of the page itself.
+ */
+const CURSOR_TAIL_IDS = 300;
 
 export function encodeDedupeCursor(cursor: DedupeCursor): string {
   return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
@@ -2268,7 +2278,7 @@ const SIBLING_EDITIONS_PER_TITLE = 10;
  *    come back in through the swap, and an author search cannot swap a book in
  *    on a co-contributor the query never named.
  *
- * Within each title the in-stock, then paperback, then hardback editions are
+ * Within each title the in-stock, then hardback, then paperback editions are
  * kept first, so the cap never drops the edition the picker would have chosen.
  * Each sibling comes back with its shop band, since the page's shop fields are
  * keyed on the band a row was selected by and a sibling was not selected by any.
@@ -2300,7 +2310,8 @@ async function fetchSiblingEditions(
     WHEN ${buildShopBandCondition(SHOP_BAND.TO_ORDER)} THEN ${SHOP_BAND.TO_ORDER}
     ELSE ${SHOP_BAND.UNSELLABLE}
   END`;
-  const format = sql`CASE upper(btrim(${books.productForm})) WHEN 'BC' THEN 0 WHEN 'BB' THEN 1 ELSE 2 END`;
+  // Mirrors formatRank in lib/dedupe.
+  const format = sql`CASE upper(btrim(${books.productForm})) WHEN 'BB' THEN 0 WHEN 'BC' THEN 1 ELSE 2 END`;
 
   const ranked = db
     .select({
@@ -2400,7 +2411,9 @@ export const booksService = {
     // `searchType: undefined` explicitly it would still hash as absent, which is the
     // blended page — hence v2's controller defaulting rather than forwarding an optional.
     // v8: the edition picker now prefers in-stock, then order-in editions, then paperback > hardback > other, so v7 pages could hold the wrong edition of a title.
-    const rowsCacheKey = `books:list:v8:${createHash('sha256').update(JSON.stringify(opts)).digest('hex')}`;
+    // v9: hardback now leads paperback, and a deduped search lists every edition grouped
+    // by work instead of one per title — a v8 page is the wrong rows in the wrong order.
+    const rowsCacheKey = `books:list:v9:${createHash('sha256').update(JSON.stringify(opts)).digest('hex')}`;
     // Keyed only on the fields that affect the count (not limit/offset/sort) so every
     // page of the same filter — and every sort direction — shares one cached total.
     //
@@ -2952,7 +2965,60 @@ export const booksService = {
           let result: BookListItem[];
           let nextCursor: string | null = null;
 
-          if (opts.dedupe) {
+          if (opts.dedupe && opts.q) {
+            // A search lists every edition, grouped by work with the preferred
+            // one first — on the shelf, then hardback, then paperback. Siblings
+            // pulled in above join their work's group rather than waiting for
+            // a later page.
+            //
+            // The cursor tail carries row ids here, not titles: nothing is
+            // collapsed, so what must not repeat is a row, and a title filter
+            // would drop a later edition of a shown work for good.
+            const idKey = (id: number) => `#${id}`;
+            const carryOverFiltered = enriched.filter((r) => !carryOverTitles.has(idKey(r.id)));
+            const scored = await withStockTier(
+              carryOverFiltered.map((r) => ({
+                ...r,
+                shortDescription: descriptionById.get(r.id) ?? null,
+                genreCount: r.genres.length,
+                hasPrice: r.prices.length > 0,
+              })),
+            );
+            const groups = groupEditions(scored, (r) => workKey(r.title, firstNamedAuthor(r.contributors)));
+            // Whole groups only, so a work's editions never straddle a page
+            // break. A page can run past `limit` by the tail of its last group;
+            // that is the price of never splitting one.
+            const taken: typeof scored = [];
+            let groupsTaken = 0;
+            for (const group of groups) {
+              if (taken.length >= opts.limit) break;
+              taken.push(...group);
+              groupsTaken++;
+            }
+            hasMore = hasMore || groupsTaken < groups.length;
+            result = taken.map(({ shortDescription: _shortDescription, genreCount: _genreCount, hasPrice: _hasPrice, stockTier: _stockTier, ...item }) => item);
+
+            if (hasMore) {
+              // Resume at the first scanned row this page did not show. Every
+              // row before it was shown or carried over; shown rows after it
+              // (and shown siblings, which sit anywhere in the scan) ride
+              // forward in the tail so the next page skips them.
+              const shownIds = new Set(result.map((r) => r.id));
+              let resumeAt = rawRows.findIndex(
+                (r) => !shownIds.has(r.id) && !carryOverTitles.has(idKey(r.id)),
+              );
+              if (resumeAt <= 0) resumeAt = rawRows.length;
+              const scannedBefore = new Set(rawRows.slice(0, resumeAt).map((r) => r.id));
+              const stillAhead = result.filter((r) => !scannedBefore.has(r.id)).map((r) => idKey(r.id));
+              const nextTail = Array.from(
+                new Set([...(opts.cursor?.t ?? []), ...stillAhead]),
+              ).slice(-CURSOR_TAIL_IDS);
+              nextCursor = encodeDedupeCursor({
+                o: effectiveOffset + resumeAt,
+                t: nextTail,
+              });
+            }
+          } else if (opts.dedupe) {
             // Drop any rows whose title was already returned on the previous
             // page. Same case-folded key that dedupeByTitle uses, so a match
             // here is exactly a match there.
@@ -3143,7 +3209,8 @@ export const booksService = {
     // v3: results now depend on `dedupe` too (added below) — v2 entries predate the flag
     // and were always deduped, so they'd be wrongly served as the non-deduped default.
     // v4: the edition picker now prefers in-stock, then order-in editions, then paperback > hardback > other.
-    const cacheKey = `suggestions:v4:${type}:${dedupe}:${createHash('sha256').update(`${q}:${limit}`).digest('hex')}`;
+    // v5: dedupe now lists every edition grouped by work, hardback first, instead of one per title.
+    const cacheKey = `suggestions:v5:${type}:${dedupe}:${createHash('sha256').update(`${q}:${limit}`).digest('hex')}`;
     const cached = await redis.get(cacheKey);
     if (cached) return JSON.parse(cached) as SuggestionItem[];
 
@@ -3282,9 +3349,12 @@ export const booksService = {
       });
     }
 
-    // Title-grouping (picking the best of several same-titled editions) only runs when the
-    // caller opts in — plain id-overlap between the two branches still gets collapsed either
+    // Edition grouping only runs when the caller opts in: every edition stays, but each
+    // work's editions sit together, on the shelf first, then hardback, then paperback (see
+    // groupEditions). Plain id-overlap between the two branches still gets collapsed either
     // way, since that's the same book appearing twice, not different editions of a work.
+    // Authors aren't known yet at this point, so the key is the folded title plus subtitle —
+    // which can only over-group, and grouping reorders without dropping anything.
     let titleRows: SuggestionRow[];
     let authorRows: SuggestionRow[];
     if (dedupe) {
@@ -3307,11 +3377,14 @@ export const booksService = {
         hasPrice: priceIds.has(r.id),
       });
 
-      const dedupedTitle = dedupeByTitleAndSubtitle(await withStockTier(titlePool.map(withScoring)));
-      const titleIds = new Set(dedupedTitle.map((r) => r.id));
-      const dedupedAuthor = dedupeByTitleAndSubtitle(await withStockTier(authorPool.map(withScoring))).filter((r) => !titleIds.has(r.id));
-      titleRows = dedupedTitle;
-      authorRows = dedupedAuthor;
+      const editionKey = (r: SuggestionRow) => `${normalizeWorkText(r.title)}|${normalizeWorkText(r.subtitle ?? '')}`;
+      const groupedTitle = groupEditions(await withStockTier(titlePool.map(withScoring)), editionKey).flat();
+      const titleIds = new Set(groupedTitle.map((r) => r.id));
+      const groupedAuthor = groupEditions(await withStockTier(authorPool.map(withScoring)), editionKey)
+        .flat()
+        .filter((r) => !titleIds.has(r.id));
+      titleRows = groupedTitle;
+      authorRows = groupedAuthor;
     } else {
       const titleIds = new Set(titlePool.map((r) => r.id));
       titleRows = titlePool;
@@ -3574,7 +3647,8 @@ export const booksService = {
     // filtering has spare rows to eat; v2 reweighted scores per interaction
     // type; v1 was the flat unweighted ranking.)
     // v6: the edition picker now prefers in-stock, then order-in editions, then paperback > hardback > other.
-    const cacheKey = `trending:v6:${limit}`;
+    // v7: one card per work ("The X" and "X" by one author collapse), picked by cover > newest > price > data.
+    const cacheKey = `trending:v7:${limit}`;
     const cached = await redis.get(cacheKey);
     if (cached) {
       return attachShopFields(
@@ -3704,7 +3778,7 @@ export const booksService = {
 
     // Preserve the score-ordered sequence from bookIds
     const ordered = bookIds.map((id) => bookMap.get(id)).filter((b): b is FeedScoringRow => b !== undefined);
-    const pool = dedupeByTitle(await withStockTier(ordered)).slice(0, cacheTarget).map(stripFeedScoring);
+    const pool = dedupeCardsByWork(await withStockTier(ordered)).slice(0, cacheTarget).map(stripFeedScoring);
 
     // The pool is shared across all viewers; each one gets their own filtered
     // view of it.
@@ -3722,7 +3796,9 @@ export const booksService = {
     // pool is identical for shop and non-shop callers — `shoppable` is out of
     // the key, and the bump drops the pre-fix pools that were never filtered.
     // v4: the edition picker now prefers in-stock, then order-in editions, then paperback > hardback > other.
-    const cacheKey = `personalized:v4:${userId}:${limit}`;
+    // v5: one card per work, picked by cover > newest > price > data. Bumped in
+    // step with PERSONALIZED_CACHE_PREFIX in lib/exclusions.ts.
+    const cacheKey = `personalized:v5:${userId}:${limit}`;
     const cached = await redis.get(cacheKey);
     if (cached) {
       return attachShopFields(JSON.parse(cached) as TrendingBookItem[], currency);
@@ -3838,7 +3914,7 @@ export const booksService = {
 
     // Preserve cosine similarity order from rows
     const ordered = rows.map((r) => bookMap.get(r.id)).filter((b): b is FeedScoringRow => b !== undefined);
-    const results = dedupeByTitle(await withStockTier(ordered)).slice(0, limit).map(stripFeedScoring);
+    const results = dedupeCardsByWork(await withStockTier(ordered)).slice(0, limit).map(stripFeedScoring);
 
     // Cached without prices — attachShopFields runs on every read instead.
     await redis.set(cacheKey, JSON.stringify(results), 'EX', PERSONALIZED_TTL);
@@ -3970,14 +4046,11 @@ export const booksService = {
                ${books.productForm}     AS product_form,
                ${books.publicationDate} AS publication_date,
                cohort.user_id           AS user_id,
-               -- The work this row is an edition of, in exactly the form
-               -- lib/exclusions.ts normalises to. Identical on purpose: two
-               -- spellings of "the same book" in one codebase is how a filter
-               -- quietly stops matching. lower() is ASCII-only under this
-               -- database's C ctype, so accented titles fold by byte rather than
-               -- by locale — the same behaviour the exclusion filter already has,
-               -- which is the point of copying it rather than improving on it.
-               lower(btrim(${books.title})) AS work_title,
+               -- The work this row is an edition of, folded by the same
+               -- titleMatchSql the exclusion filter uses. Identical on purpose:
+               -- two spellings of "the same book" in one codebase is how a filter
+               -- quietly stops matching. So "The X" and "X" count as one work.
+               ${titleMatchSql(books.title)} AS work_title,
                (SELECT lower(btrim(bc.person_name))
                   FROM book_contributors bc
                  WHERE bc.book_id = ${books.id}
@@ -4004,8 +4077,9 @@ export const booksService = {
         FROM candidates
         GROUP BY work_title, work_author
       ),
-      -- Per-edition support, used only to decide which edition represents the
-      -- work on screen: the one the cohort actually picked up.
+      -- Which edition represents the work on screen: one with a cover, then the
+      -- newest, the same order every recommendation surface picks by (see
+      -- lib/dedupe). Per-edition support only breaks ties after those.
       edition_scores AS (
         SELECT id, title, subtitle, cover_url, isbn13, product_form, publication_date,
                work_title, work_author, COUNT(DISTINCT user_id)::int AS edition_likers
@@ -4016,7 +4090,11 @@ export const booksService = {
       representative AS (
         SELECT DISTINCT ON (work_title, work_author) *
         FROM edition_scores
-        ORDER BY work_title, work_author, edition_likers DESC, id
+        ORDER BY work_title, work_author,
+                 (cover_url IS NOT NULL) DESC,
+                 publication_date DESC NULLS LAST,
+                 edition_likers DESC,
+                 id
       )
       SELECT representative.id, representative.title, representative.subtitle,
              representative.cover_url, representative.isbn13,
@@ -4127,25 +4205,40 @@ export const booksService = {
 
     if (rows.length === 0) return [];
 
-    const hydrated = await booksService.listByIds(rows.map((row) => row.id));
+    const [hydrated, basketWorks] = await Promise.all([
+      booksService.listByIds(rows.map((row) => row.id)),
+      resolveWorkSnapshots(bookIds),
+    ]);
     // listByIds makes no ordering promise, so re-impose similarity order.
     const byId = new Map(hydrated.map((book) => [book.id, book]));
-    const ordered = rows
+    const similar = rows
       .map((row) => byId.get(row.id))
       .filter((book): book is BookListItem => Boolean(book));
+    // One card per work, picked the way every recommendation surface picks
+    // (lib/dedupe's dedupeCardsByWork). listByIds carries no description, so
+    // that one data point is left out of the comparison for every row alike.
+    const ordered = dedupeCardsByWork(
+      similar.map((book) => ({
+        ...book,
+        shortDescription: null,
+        genreCount: book.genres.length,
+        hasPrice: book.prices.length > 0,
+      })),
+    ).map(({ shortDescription: _shortDescription, genreCount: _genreCount, hasPrice: _hasPrice, ...book }) => book);
 
-    // Signed-in shoppers do not get recommended books they have already
-    // rejected. Guests have no exclusions to apply, which is the common case
-    // here since the basket is client-held until sign-in.
+    // Never another edition of a book already in the basket — the id filter in
+    // the query only catches the exact edition. Signed-in shoppers also do not
+    // get recommended books they have already rejected or shelved; guests have
+    // no exclusions of their own, which is the common case here since the
+    // basket is client-held until sign-in.
     // Uncached, unlike the other feeds — but the price still goes on here rather
     // than in listByIds, so the shop fields ride one code path for every feed.
-    if (userId === undefined) {
-      return attachShopFields(ordered.slice(0, limit), currency);
-    }
-
-    const exclusions = await getUserExclusions(userId);
+    const exclusions = userId === undefined ? EMPTY_EXCLUSIONS : await getUserExclusions(userId);
     return attachShopFields(
-      filterExcludedWorks(ordered, exclusions).slice(0, limit),
+      filterExcludedWorks(ordered, {
+        bookIds: exclusions.bookIds,
+        works: [...exclusions.works, ...basketWorks.values()],
+      }).slice(0, limit),
       currency,
     );
   },
@@ -4164,7 +4257,8 @@ export const booksService = {
     // books. (v3 keyed on shoppable; v2 made the value a pool of cacheTarget
     // items so per-user filtering has spare rows to eat.)
     // v5: the edition picker now prefers in-stock, then order-in editions, then paperback > hardback > other.
-    const cacheKey = `similar:v5:${bookId}:${limit}`;
+    // v6: one card per work, picked by cover > newest > price > data.
+    const cacheKey = `similar:v6:${bookId}:${limit}`;
     const cached = await redis.get(cacheKey);
     if (cached) {
       return attachShopFields(
@@ -4268,7 +4362,7 @@ export const booksService = {
 
     // Preserve cosine similarity order from rows
     const ordered = rows.map((r) => bookMap.get(r.id)).filter((b): b is FeedScoringRow => b !== undefined);
-    const pool = dedupeByTitle(await withStockTier(ordered)).slice(0, cacheTarget).map(stripFeedScoring);
+    const pool = dedupeCardsByWork(await withStockTier(ordered)).slice(0, cacheTarget).map(stripFeedScoring);
 
     // The pool is what gets cached and shared across users; the caller gets
     // their own filtered view of it.
@@ -4489,7 +4583,7 @@ async function attachAvailableQuantity<T extends { isbn13: string | null }>(
 /**
  * Tags each row with its stock tier — on the shelf, order-in, or cannot be
  * bought (lib/shoppable's stockTierFor) — for the edition picker in lib/dedupe,
- * which ranks on it before format (paperback > hardback > other).
+ * which ranks on it before anything else.
  */
 async function withStockTier<T extends { isbn13: string | null }>(
   rows: T[],

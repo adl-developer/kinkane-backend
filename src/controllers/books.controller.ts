@@ -14,10 +14,11 @@ import { isbnFromQuery } from '../lib/isbn';
 // string coerces to true), so accepted values are explicit — see refreshQuerySchema in
 // recommendations.controller.ts for the same pattern.
 //
-// On by default: every /books endpoint shows one edition per title — on the shelf first,
-// then order-in, then unavailable; within that, paperback, then hardback, then any other
-// format (see lib/dedupe). Send ?dedupe=false to get every edition, e.g. an "other
-// formats" view. Clients should paginate with `cursor`, not `offset`, on this path.
+// On by default. A browse (no `q`) shows one edition per title — on the shelf first,
+// then order-in, then unavailable; within that, hardback, then paperback, then any other
+// format (see lib/dedupe). A search shows every edition, grouped by work in that same
+// order. Send ?dedupe=false to get every edition ungrouped, e.g. an "other formats" view.
+// Clients should paginate with `cursor`, not `offset`, on this path.
 const dedupeParam = z.enum(['true', 'false']).default('true').transform((v) => v === 'true');
 
 const suggestionsSchema = z.object({
@@ -26,7 +27,7 @@ const suggestionsSchema = z.object({
   // Defaults to matching both title and author. The single-sided values stay accepted so
   // existing callers that pass type=title or type=author keep their current behaviour.
   type: z.enum(['all', 'title', 'author']).default('all'),
-  // Collapses same-titled editions down to one, paperback first — see dedupeParam above.
+  // Groups each work's editions together, hardback first — see dedupeParam above.
   dedupe: dedupeParam,
 });
 
@@ -85,7 +86,8 @@ const listSchemaBase = z.object({
   sort: z.enum(['asc', 'desc']).optional(),
   limit: z.coerce.number().int().min(1).max(50).default(20),
   offset: z.coerce.number().int().min(0).default(0),
-  // One edition per title by default, paperback first — see dedupeParam above.
+  // One edition per title by default (every edition, grouped, for a search), hardback
+  // first — see dedupeParam above.
   dedupe: dedupeParam,
   /**
    * Opt-in: orders the results the way a shop has to, rather than narrowing

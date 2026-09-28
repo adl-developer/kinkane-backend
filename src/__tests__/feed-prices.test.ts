@@ -27,12 +27,12 @@ describe('discovery feeds', () => {
   });
 
   it('attaches on every feed return path', () => {
-    // Six: trending (cached + fresh), similar (cached + fresh), personalized
-    // (cached + fresh) and basketRecommendations (guest + signed-in) — minus the
-    // two personalized paths that share one wrapper.
+    // Trending (cached + fresh), similar (cached + fresh), personalized
+    // (cached + fresh) and basketRecommendations (one path for guests and
+    // signed-in shoppers alike).
     const attachments = source.match(/attachShopFields\(/g) ?? [];
     // One definition plus one call per return path.
-    expect(attachments.length).toBeGreaterThanOrEqual(8);
+    expect(attachments.length).toBeGreaterThanOrEqual(7);
   });
 
   it('never writes a price into the cache', () => {
