@@ -449,7 +449,7 @@ export const commercePaths = {
         '',
         'An unknown reference, a wrong token and a mistyped one all return the same `404` with the same body, so this cannot be used to discover which orders exist. Do not try to distinguish them in your error handling; show one "we couldn\u2019t find that order" state.',
         '',
-        '**Rate limit:** 10 per 15 minutes per IP. A user retyping a reference will not hit it; a script will.',
+        '**Rate limit:** 50 per 15 minutes per IP. A user retyping a reference will not hit it; a script will.',
       ].join('\n'),
       requestBody: body(object({
         reference: { type: 'string', example: 'ORD-7K2M9QX4' },
@@ -486,7 +486,7 @@ export const commercePaths = {
         '',
         'An unknown order number and a mismatched email return the same `404` with the same body. Show one "we couldn\u2019t find that order" state.',
         '',
-        '**Rate limit:** 10 per 15 minutes per IP.',
+        '**Rate limit:** 50 per 15 minutes per IP.',
       ].join('\n'),
       requestBody: body(object({
         reference: {
@@ -525,7 +525,7 @@ export const commercePaths = {
         '',
         '`404` covers unknown reference, wrong token and already-claimed alike.',
         '',
-        '**Rate limit:** 10 per 15 minutes per IP.',
+        '**Rate limit:** 50 per 15 minutes per IP.',
       ].join('\n'),
       requestBody: body(object({
         reference: { type: 'string', example: 'ORD-7K2M9QX4' },

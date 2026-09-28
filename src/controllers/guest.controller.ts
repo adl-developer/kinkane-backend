@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { z } from 'zod';
 import { guestService } from '../services/guest.service';
 import { logger } from '../lib/logger';
+import { readerTypeTagline } from '../lib/reader-type-taglines';
 
 const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -88,7 +89,11 @@ export const guestController = {
         res.status(404).json({ error: 'Session not found or expired' });
         return;
       }
-      res.status(200).json({ readerType: result.readerType, books: result.books });
+      res.status(200).json({
+        readerType: result.readerType,
+        readerTypeTagline: readerTypeTagline(result.readerType),
+        books: result.books,
+      });
     } catch (err: unknown) {
       logger.error('Unexpected error saving selections', { error: (err as Error).message });
       res.status(500).json({ error: 'An unexpected error occurred' });

@@ -29,7 +29,15 @@ import {
   getUserExclusions,
 } from '../lib/exclusions';
 import { logger } from '../lib/logger';
-import { normalisedNameSql, normaliseNameQuery } from '../lib/contributor-name';
+import {
+  NORMALISED_PERSON_NAME,
+  canonicalNameQuery,
+  nameSearchWords,
+  nameWordStartPattern,
+  normalisedNameSql,
+  normaliseNameQuery,
+  wantsAnyOrderNameMatch,
+} from '../lib/contributor-name';
 import { splitCandidates, type SplitCandidate } from '../lib/search-split';
 import { redis } from '../lib/redis';
 import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-excerpts.service';
@@ -750,6 +758,25 @@ function buildSearchOrderBy(q: string): SQL[] {
   return buildSearchRankOrderBy(q, sql`${books.title}`, sql`${books.searchVector}`);
 }
 
+/**
+ * Every word of the query starts some word of the name, in any order — or null when the
+ * query is not worth it (see wantsAnyOrderNameMatch). `name` must be the normalised name
+ * expression, both so the trigram index built over it serves the ~* and so that
+ * whitespace in the name is a single space the word-start pattern can see.
+ *
+ * Deliberately word-*start*, not substring: "hunt rod" should reach "Roderick Hunt", but
+ * "son smith" should not reach "Johnson Smith" — a fragment from the middle of a word is
+ * the fuzzy tier's business, not an exact match.
+ */
+function anyOrderNameMatch(name: SQL, q: string): SQL | null {
+  const words = nameSearchWords(q);
+  if (!wantsAnyOrderNameMatch(words)) return null;
+  return sql`(${sql.join(
+    words.map((w) => sql`${name} ~* ${nameWordStartPattern(w)}`),
+    sql` AND `,
+  )})`;
+}
+
 // Matches books by their author's name, as an *uncorrelated* subquery over a
 // bounded candidate set.
 //
@@ -786,7 +813,7 @@ function buildSearchOrderBy(q: string): SQL[] {
 // The split also puts the prefix tiers where an index can serve them. Tiers 0 and 2 match
 // on lower(person_name) LIKE — plain LIKE, not ILIKE, since text_pattern_ops matches no
 // other operator — which EXPLAIN confirms is an indexed range scan on
-// idx_book_contributors_name_lower_pattern, the same trick buildFastTitlePrefixCondition
+// idx_book_contributors_norm_name_lower_pattern, the same trick buildFastTitlePrefixCondition
 // uses on titles. The word-prefix tiers are the trigram GIN's job. Both indexes cover
 // every role, so the role predicate is a cheap recheck rather than the thing that decides
 // whether an index can be used at all — see db/setup.ts.
@@ -822,8 +849,9 @@ export function buildAuthorMatchSource(rawQ: string, tier: 'cheap' | 'broad'): S
   // doubled space is collapsed out of the comparison on both sides. See
   // lib/contributor-name.ts. Normalising here rather than at the call sites means a
   // caller cannot forget: the count probe, the row fetch and suggestions all reach the
-  // name tiers through this function.
-  const q = normaliseNameQuery(rawQ);
+  // name tiers through this function. Stray punctuation at either end is trimmed too, so
+  // "barbara," searches the same as "barbara" — see canonicalNameQuery.
+  const q = canonicalNameQuery(rawQ);
   const prefix = q + '%';
   const wordPrefix = '% ' + q + '%';
   // Interpolated raw, because it is a column expression rather than a value. It must stay
@@ -843,13 +871,18 @@ export function buildAuthorMatchSource(rawQ: string, tier: 'cheap' | 'broad'): S
       LIMIT ${AUTHOR_MATCH_LIMIT}
     )`;
 
+  // The word-prefix tiers also take the query's words in any order, so "Shakespeare,
+  // William", "King Stephen" and "Tolkien, J.R.R." land here as the exact matches they
+  // are, rather than falling through to the fuzzy tier — where they used to arrive with
+  // an approximate count and near-miss names mixed in. See anyOrderNameMatch.
+  const anyOrder = anyOrderNameMatch(NAME, q);
   const wordPrefixArm = (tierTag: number, role: SQL) => sql`
     (
       SELECT bc.book_id, ${sql.raw(String(tierTag))} AS tier, 1::real AS score
       FROM book_contributors bc
       WHERE ${role}
         AND bc.person_name IS NOT NULL
-        AND ${NAME} ILIKE ${wordPrefix}
+        AND (${NAME} ILIKE ${wordPrefix}${anyOrder ? sql` OR ${anyOrder}` : sql``})
       LIMIT ${AUTHOR_MATCH_LIMIT}
     )`;
 
@@ -1058,17 +1091,32 @@ function buildFastTitlePrefixOrderBy(): SQL[] {
   return [sql`lower(${books.title})`, asc(books.id)];
 }
 
-// Cheap tier for authorSuggestions()'s grouped-by-name query — prefix/word-prefix
-// directly on person_name, same rationale as buildTitlePrefixCondition.
-function buildPersonNamePrefixCondition(q: string): SQL {
-  const prefix = q + '%';
-  const wordPrefix = '% ' + q + '%';
-  return sql`(${bookContributors.personName} ILIKE ${prefix} OR ${bookContributors.personName} ILIKE ${wordPrefix})`;
+// Match ladder for authorSuggestions()'s grouped-by-name query, over the normalised name
+// so the name indexes serve it and so a name the feed stored with a doubled space groups
+// with its cleanly spaced twin instead of being listed twice ("Roderick Hunt" and
+// "Roderick  Hunt" were two suggestions). Same tiers as buildAuthorMatchSource: the name
+// starts with the query, then a word of it does, then every word of the query starts a
+// word of it in any order — which is what makes "Shakespeare, William" an exact match.
+const SUGGESTION_NAME = sql.raw(NORMALISED_PERSON_NAME);
+
+function buildPersonNameExactCondition(q: string): SQL {
+  const anyOrder = anyOrderNameMatch(SUGGESTION_NAME, q);
+  return sql`(
+    lower(${SUGGESTION_NAME}) LIKE lower(${q + '%'})
+    OR ${SUGGESTION_NAME} ILIKE ${'% ' + q + '%'}
+    ${anyOrder ? sql`OR ${anyOrder}` : sql``}
+  )`;
 }
 
-function buildPersonNamePrefixOrderBy(q: string): SQL[] {
-  const prefix = q + '%';
-  return [sql`CASE WHEN ${bookContributors.personName} ILIKE ${prefix} THEN 0 ELSE 1 END`];
+// 0–2 are the exact tiers above; 3 is anything only the fuzzy arm matched.
+function buildPersonNameTier(q: string): SQL {
+  const anyOrder = anyOrderNameMatch(SUGGESTION_NAME, q);
+  return sql`CASE
+    WHEN lower(${SUGGESTION_NAME}) LIKE lower(${q + '%'}) THEN 0
+    WHEN ${SUGGESTION_NAME} ILIKE ${'% ' + q + '%'} THEN 1
+    ${anyOrder ? sql`WHEN ${anyOrder} THEN 2` : sql``}
+    ELSE 3
+  END`;
 }
 
 // `searchCondition` is threaded in separately (rather than built from opts.q here) so
@@ -1715,7 +1763,7 @@ async function fetchAuthorSearchPage(opts: ListBooksOptions, q: string, pageSize
  * Two arms per candidate, mirroring the tiers buildAuthorMatchSource already uses and for
  * the same reasons:
  *   - a plain-prefix arm on `lower(normalised person_name) LIKE 'run%'`, which
- *     idx_book_contributors_name_lower_pattern serves as a range scan. This is the arm that
+ *     idx_book_contributors_norm_name_lower_pattern serves as a range scan. This is the arm that
  *     catches "chimamanda ngozi adichie" and, because the feed stores some names inverted
  *     ("Achebe, Chinua"), a good share of surname-first rows too.
  *   - a word-prefix arm on `normalised person_name ILIKE '% run%'`, which the trigram GIN
@@ -3339,73 +3387,97 @@ export const booksService = {
     return results;
   },
 
-  async authorSuggestions(q: string, limit: number): Promise<AuthorSuggestion[]> {
-    const cacheKey = `author-suggestions:${createHash('sha256').update(`${q}:${limit}`).digest('hex')}`;
+  /**
+   * Every contributor name matching `q`, a page at a time.
+   *
+   * Ordered by how the name matched (see buildPersonNameTier), then authors (ONIX A01)
+   * ahead of names only ever credited as editor, translator or illustrator, then by
+   * how many books carry the name. The order is total — the name itself is the last
+   * key — so paging with `offset` never repeats or skips a name.
+   *
+   * Every exact match comes before any fuzzy one, across pages: the fuzzy near-misses
+   * ("Barbera", "Barbaro") only start once the exact matches have run out.
+   *
+   * All roles, not just A01: an editor or translator is still someone a reader can look
+   * up by name, and the book search this feeds already matches them.
+   */
+  async authorSuggestions(
+    rawQ: string,
+    limit: number,
+    offset = 0,
+  ): Promise<{ authors: AuthorSuggestion[]; hasMore: boolean }> {
+    const q = canonicalNameQuery(rawQ);
+    // v3: every role, and paged. A v2 entry holds an authors-only first page.
+    const cacheKey = `author-suggestions:v3:${createHash('sha256').update(`${q}:${limit}:${offset}`).digest('hex')}`;
     const cached = await redis.get(cacheKey);
-    if (cached) return JSON.parse(cached) as AuthorSuggestion[];
+    if (cached) return JSON.parse(cached) as { authors: AuthorSuggestion[]; hasMore: boolean };
 
-    const prefix = q + '%';
-    const wordPrefix = '% ' + q + '%';
-    const fts = q.length >= 3
-      ? sql` OR to_tsvector('simple', ${bookContributors.personName}) @@ plainto_tsquery('simple', ${q})`
-      : sql``;
+    const bookCount = sql<number>`COUNT(DISTINCT ${bookContributors.bookId})::int`;
+    const isAuthor = sql`BOOL_OR(${bookContributors.role} = 'A01')`;
+    const selectColumns = { personName: sql<string>`${SUGGESTION_NAME}`, bookCount };
+    const hasName = sql`${bookContributors.personName} IS NOT NULL`;
+    const exact = buildPersonNameExactCondition(q);
 
-    const selectColumns = {
-      personName: bookContributors.personName,
-      bookCount: sql<number>`COUNT(DISTINCT ${bookContributors.bookId})::int`,
-    };
-    const baseWhere = and(eq(bookContributors.role, 'A01'), sql`${bookContributors.personName} IS NOT NULL`);
-
-    // Same tiered approach as suggestions() — try the cheap prefix/word-prefix
-    // tier (index scan on the trigram index) first, and only fall through to
-    // the expensive word_similarity/FTS tier if that doesn't fill `limit`.
-    let rows = await withWordSimilarityThreshold((conn) =>
+    // Exact tiers first — index scans on the name indexes. One row past the page is
+    // fetched to tell whether another page exists without a separate count.
+    const exactRows = await withWordSimilarityThreshold((conn) =>
       conn
         .select(selectColumns)
         .from(bookContributors)
-        .where(and(baseWhere, buildPersonNamePrefixCondition(q)))
-        .groupBy(bookContributors.personName)
-        .orderBy(...buildPersonNamePrefixOrderBy(q))
-        .limit(limit),
+        .where(and(hasName, exact))
+        .groupBy(SUGGESTION_NAME)
+        .orderBy(buildPersonNameTier(q), desc(isAuthor), desc(bookCount), SUGGESTION_NAME)
+        .limit(limit + 1)
+        .offset(offset),
     );
 
-    if (rows.length < limit) {
-      const excludeNames = rows.map((r) => r.personName).filter((n): n is string => n !== null);
-      const extra = await withWordSimilarityThreshold((conn) =>
+    let rows = exactRows;
+    let hasMore = exactRows.length > limit;
+
+    // The exact matches ran out on this page, so the rest of it — and every later page —
+    // comes from the fuzzy tier. Its own offset is how far this page reaches past the
+    // last exact match, which needs the exact total only when this page holds none.
+    if (!hasMore) {
+      let exactTotal = offset + exactRows.length;
+      if (exactRows.length === 0 && offset > 0) {
+        const [{ n }] = await withWordSimilarityThreshold((conn) =>
+          conn
+            .select({ n: sql<number>`COUNT(DISTINCT ${SUGGESTION_NAME})::int` })
+            .from(bookContributors)
+            .where(and(hasName, exact)),
+        );
+        exactTotal = n;
+      }
+      const want = limit - exactRows.length;
+      const fuzzyRows = await withWordSimilarityThreshold((conn) =>
         conn
           .select(selectColumns)
           .from(bookContributors)
-          .where(
-            and(
-              baseWhere,
-              sql`(
-                ${bookContributors.personName} ILIKE ${prefix}
-                OR ${bookContributors.personName} ILIKE ${wordPrefix}
-                OR ${q} <% ${bookContributors.personName}
-                ${fts}
-              )`,
-              excludeNames.length > 0 ? notInArray(bookContributors.personName, excludeNames) : undefined,
-            ),
-          )
-          .groupBy(bookContributors.personName)
+                    // Trigram similarity only. The full-text arm this used to carry matched whole
+          // words of the name, which the word-start match in `exact` now already covers —
+          // and it had no index, so it cost a scan of every contributor row per page.
+          .where(and(hasName, sql`${q} <% ${SUGGESTION_NAME}`, sql`NOT ${exact}`))
+          .groupBy(SUGGESTION_NAME)
           .orderBy(
-            sql`CASE
-              WHEN ${bookContributors.personName} ILIKE ${prefix}     THEN 0
-              WHEN ${bookContributors.personName} ILIKE ${wordPrefix} THEN 1
-              WHEN word_similarity(${q}, ${bookContributors.personName}) > 0.3 THEN 2
-              ELSE 3
-            END`,
-            sql`word_similarity(${q}, ${bookContributors.personName}) DESC`,
+            sql`word_similarity(${q}, ${SUGGESTION_NAME}) DESC`,
+            desc(isAuthor),
+            desc(bookCount),
+            SUGGESTION_NAME,
           )
-          .limit(limit - rows.length),
+          .limit(want + 1)
+          .offset(Math.max(0, offset - exactTotal)),
       );
-      rows = [...rows, ...extra];
+      hasMore = fuzzyRows.length > want;
+      rows = [...exactRows, ...fuzzyRows.slice(0, want)];
     }
 
-    const results = rows.map((r) => ({ personName: r.personName as string, bookCount: r.bookCount }));
+    const result = {
+      authors: rows.slice(0, limit).map((r) => ({ personName: r.personName, bookCount: r.bookCount })),
+      hasMore,
+    };
 
-    await redis.set(cacheKey, JSON.stringify(results), 'EX', SUGGESTIONS_TTL);
-    return results;
+    await redis.set(cacheKey, JSON.stringify(result), 'EX', SUGGESTIONS_TTL);
+    return result;
   },
 
   /**

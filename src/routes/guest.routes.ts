@@ -38,7 +38,10 @@ const router = Router();
  * Params: id — the guestSessionId returned by POST /recommendations
  * Body:   { chosenBookIds: number[],      — 1 to 5 book IDs
  *           dislikedBookIds?: number[] }  — books swiped away, optional
- * Returns 200: { ok: true }
+ * Returns 200: { readerType, readerTypeTagline, books: [{ id, title, coverUrl }] }
+ *              — readerType is inferred from the chosen books and saved onto the
+ *                account at registration; null if inference failed. The tagline
+ *                is null whenever readerType is.
  * Errors: 400 invalid UUID or validation failure | 404 session not found or expired
  */
 router.post('/:id/selections', guestSessionLimiter, guestController.saveSelections);

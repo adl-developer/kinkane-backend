@@ -144,7 +144,23 @@ export const onboardingPaths = {
       }, ['chosenBookIds'])),
       responses: {
         200: json('Saved to the guest session.',
-          object({ ok: { type: 'boolean', example: true } }), { ok: true }),
+          object({
+            readerType: {
+              type: 'string', nullable: true,
+              description: 'Inferred from the chosen books, and saved onto the account at registration. `null` if inference failed — not an error.',
+              example: 'The Open Door',
+            },
+            readerTypeTagline: {
+              type: 'string', nullable: true,
+              description: 'One-line tagline for `readerType`, for display under it. `null` whenever `readerType` is.',
+              example: "You're open to the world but discerning about what stays.",
+            },
+            books: arrayOf(object({
+              id: { type: 'integer', example: 48213 },
+              title: { type: 'string', example: 'Girl, Woman, Other' },
+              coverUrl: { type: 'string', format: 'uri', nullable: true },
+            })),
+          })),
         400: resp('ValidationError'),
         404: json('No such session, or it has expired (72 hours by default).', ref('Error'),
           { error: 'Guest session not found' }),

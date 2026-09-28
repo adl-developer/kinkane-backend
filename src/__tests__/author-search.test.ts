@@ -1,7 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { buildAuthorMatchCondition, buildAuthorMatchSource } from '../services/books.service';
-import { normalisedNameSql, normaliseNameQuery } from '../lib/contributor-name';
+import {
+  canonicalNameQuery,
+  nameSearchWords,
+  nameWordStartPattern,
+  normalisedNameSql,
+  normaliseNameQuery,
+  wantsAnyOrderNameMatch,
+} from '../lib/contributor-name';
 
 // Search matches a book by its author's name as well as by its title. The risk in that
 // feature is never correctness of the match — it's cost: book_contributors is the larger
@@ -183,5 +190,79 @@ describe('scoring within a tier', () => {
     // word_similarity() per row is the expensive part; the cheap tier must not acquire it
     // as a side effect of scoring.
     expect(compile('king', 'cheap')).not.toMatch(/word_similarity/i);
+  });
+});
+
+describe('name word order and punctuation', () => {
+  // "Shakespeare, William", "King Stephen" and "Tolkien, J.R.R." used to miss every exact
+  // tier — those compare the query as one in-order string — and fell through to the fuzzy
+  // tier, which found the author but with an approximate count and near-miss names mixed
+  // in. The word-prefix tiers now also accept the query's words in any order.
+  it('splits a query into words regardless of commas, full stops or order', () => {
+    expect(nameSearchWords('Shakespeare, William')).toEqual(['shakespeare', 'william']);
+    expect(nameSearchWords('william  shakespeare')).toEqual(['william', 'shakespeare']);
+    expect(nameSearchWords('Tolkien, J.R.R.')).toEqual(['tolkien', 'j', 'r']);
+    expect(nameSearchWords('Haig-Brown')).toEqual(['haig', 'brown']);
+    expect(nameSearchWords(' , . ')).toEqual([]);
+  });
+
+  it('only adds the word-start arm when the index has a word to look up', () => {
+    expect(wantsAnyOrderNameMatch(['shakespeare', 'william'])).toBe(true);
+    // A single word gets it too: it is what finds "J.Roderick Heller" for "roderick",
+    // where the word follows punctuation instead of a space.
+    expect(wantsAnyOrderNameMatch(['roderick'])).toBe(true);
+    // Initials alone give the trigram index nothing to look up — a scan of every row.
+    expect(wantsAnyOrderNameMatch(['j', 'k'])).toBe(false);
+    expect(wantsAnyOrderNameMatch(['jo'])).toBe(false);
+  });
+
+  it('escapes regex syntax so a query cannot inject a pattern', () => {
+    expect(nameWordStartPattern('a+b')).toMatch(/a\\\+b$/);
+    expect(nameWordStartPattern('(x)')).toMatch(/\\\(x\\\)$/);
+  });
+
+  it('matches word starts in any order on the exact tiers, not only the fuzzy one', () => {
+    for (const tier of ['cheap', 'broad'] as const) {
+      const { sql, params } = dialect.sqlToQuery(buildAuthorMatchCondition('Shakespeare, William', tier));
+      expect(sql, `${tier}: no any-order arm`).toMatch(/~\*/);
+      expect(params).toContain(nameWordStartPattern('shakespeare'));
+      expect(params).toContain(nameWordStartPattern('william'));
+    }
+    // And it is against the normalised name, so the trigram index serves it.
+    expect(compile('Shakespeare, William', 'cheap')).toMatch(
+      /btrim\(regexp_replace\(bc\.person_name, '\\s\+', ' ', 'g'\)\) ~\*/,
+    );
+  });
+
+  it('matches a single word after punctuation, not only after a space', () => {
+    const { params } = dialect.sqlToQuery(buildAuthorMatchCondition('roderick', 'cheap'));
+    expect(params).toContain(nameWordStartPattern('roderick'));
+    expect(new RegExp(nameWordStartPattern('roderick'), 'i').test('J.Roderick Heller')).toBe(true);
+    // Still a word start: a fragment from the middle of a word is not an exact match.
+    expect(new RegExp(nameWordStartPattern('son'), 'i').test('Johnson')).toBe(false);
+  });
+
+  it('leaves two-letter queries on the plain prefix arms', () => {
+    expect(compile('ki', 'cheap')).not.toMatch(/~\*/);
+  });
+});
+
+describe('stray punctuation at the ends of a query', () => {
+  // "barbara," used to search for names literally starting "barbara," — which found one
+  // malformed supplier name and missed the other 246 books by a Barbara.
+  it('searches the same as the bare word', () => {
+    for (const q of ['barbara,', 'barbara ,', ',barbara', 'barbara.', ' barbara; ']) {
+      expect(canonicalNameQuery(q), q).toBe('barbara');
+      expect(compile(q, 'cheap'), q).toBe(compile('barbara', 'cheap'));
+    }
+  });
+
+  it('keeps punctuation inside the query, where stored names have it too', () => {
+    expect(canonicalNameQuery('Dr. Seuss')).toBe('Dr. Seuss');
+    expect(canonicalNameQuery('Seuss, Dr.')).toBe('Seuss, Dr');
+  });
+
+  it('leaves a query of pure punctuation as it was rather than matching everything', () => {
+    expect(canonicalNameQuery(',')).toBe(',');
   });
 });

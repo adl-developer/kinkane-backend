@@ -84,7 +84,7 @@ export const recommendationsLimiter = rateLimit({
 // Keyed by user rather than IP so one person on a shared network can't lock
 // everyone else out of subscribing.
 /**
- * Guest order lookup and claim: 10 per 15 minutes, per IP.
+ * Guest order lookup, tracking and claim: 50 per 15 minutes, per IP.
  *
  * Keyed by IP rather than by user because the whole point of these endpoints is
  * that there is no user yet. The token they take is 256 bits, so this is not
@@ -95,7 +95,7 @@ export const recommendationsLimiter = rateLimit({
  */
 export const guestOrderLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 10,
+  max: 50,
   standardHeaders: true,
   legacyHeaders: false,
   handler: json429,

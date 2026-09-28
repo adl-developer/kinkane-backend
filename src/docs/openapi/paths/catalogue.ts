@@ -127,6 +127,8 @@ export const cataloguePaths = {
         '',
         '`type=author` matches **any** contributor, with ONIX A01 authors ranked above editors, translators and illustrators — so searching an editor by name still finds the volume they edited, just below the books actually written by anyone of that name.',
         '',
+        'Author names match regardless of word order or punctuation — `Hunt, Roderick`, `hunt roderick` and `Roderick Hunt` return the same books, with an exact total rather than a fuzzy estimate.',
+        '',
         '**Not a drop-in swap from v1.** A search box wired to `?q=` gets title matches only here, where v1 would have folded in that author\u2019s books. Moving one to v2 means deciding which side it searches, or issuing both requests.',
         '',
         ...listPaginationNotes,
@@ -247,22 +249,29 @@ export const cataloguePaths = {
     get: {
       tags: [TAG],
       ...publicEndpoint,
-      summary: 'Typeahead for author names',
+      summary: 'Search author names',
       description:
-        'Deduplicated author entities with a book count, for browsing by author rather than by title. Ranked prefix → word prefix → trigram similarity. Minimum 1 character.',
+        'Every contributor name matching `q`, a page at a time, with how many books carry it. Page with `offset` until `hasMore` is false to get all of them.\n\n' +
+        'Word order and punctuation do not matter: `Shakespeare, William`, `shakespeare william` and `William Shakespeare` find the same author, and `barbara,` returns exactly what `barbara` does. A name matches when each word of the query starts a word of the name, whether the name separates its words with spaces, commas or full stops.\n\n' +
+        'Ordered by how the name matched (starts with the query → a word starts with it → every word in any order), then authors ahead of names only credited as editor, translator or illustrator, then by book count. **Every exact match comes before any fuzzy near-miss**, across pages: once the names that genuinely contain the query run out, the remaining pages hold similar-looking names (`Barbera` for `barbara`). Names are returned with runs of whitespace collapsed, so a name the feed stored with a doubled space is one entry, not two.',
       parameters: [
         param('q', 'query', { type: 'string', minLength: 1, maxLength: 100 },
-          'Partial author name.', { required: true, example: 'evar' }),
-        param('limit', 'query', { type: 'integer', minimum: 1, maximum: 15, default: 8 },
-          'Suggestions to return (1–15).'),
+          'Author name, whole or partial, in any order.', { required: true, example: 'evaristo, bernardine' }),
+        param('limit', 'query', { type: 'integer', minimum: 1, maximum: 50, default: 8 },
+          'Names per page (1–50).'),
+        param('offset', 'query', { type: 'integer', minimum: 0, maximum: 10000, default: 0 },
+          'Names to skip — pass the previous page\u2019s offset + limit.'),
       ],
       responses: {
-        200: json('Matching authors.',
+        200: json('A page of matching names.',
           object({
             authors: arrayOf(object({
-              name: { type: 'string', example: 'Bernardine Evaristo' },
+              personName: { type: 'string', example: 'Bernardine Evaristo' },
               bookCount: { type: 'integer', example: 11 },
             })),
+            limit: { type: 'integer', example: 8 },
+            offset: { type: 'integer', example: 0 },
+            hasMore: { type: 'boolean', example: true, description: 'Whether another page follows.' },
           })),
         400: resp('ValidationError'),
         429: resp('RateLimited'),
