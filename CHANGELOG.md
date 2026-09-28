@@ -3,6 +3,10 @@
 
 ## 2026-09-28
 
+### Features
+
+* show the reader type's tagline straight after the quiz, not only on later screens ([8648b9f](https://adl.github.com/adl-developer/kinkane-backend/commit/8648b9f8692c332d772fd6668b6e887667788871)) — [details](changelog/2026-09-28-author-search-any-word-order.md)
+
 ### Bug Fixes
 
 * stop a trailing comma from changing author search results ([2b9c22d](https://adl.github.com/adl-developer/kinkane-backend/commit/2b9c22d6da0c473b65a10427db5e5a38e4759be6)) — [details](changelog/2026-09-28-author-search-any-word-order.md)
