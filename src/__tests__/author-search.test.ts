@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { buildAuthorMatchCondition, buildAuthorMatchSource } from '../services/books.service';
 import {
+  canonicalNameQuery,
   nameSearchWords,
   nameWordStartPattern,
   normalisedNameSql,
@@ -233,5 +234,25 @@ describe('name word order and punctuation', () => {
 
   it('leaves single-word queries exactly as they were', () => {
     expect(compile('king', 'cheap')).not.toMatch(/~\*/);
+  });
+});
+
+describe('stray punctuation at the ends of a query', () => {
+  // "barbara," used to search for names literally starting "barbara," — which found one
+  // malformed supplier name and missed the other 246 books by a Barbara.
+  it('searches the same as the bare word', () => {
+    for (const q of ['barbara,', 'barbara ,', ',barbara', 'barbara.', ' barbara; ']) {
+      expect(canonicalNameQuery(q), q).toBe('barbara');
+      expect(compile(q, 'cheap'), q).toBe(compile('barbara', 'cheap'));
+    }
+  });
+
+  it('keeps punctuation inside the query, where stored names have it too', () => {
+    expect(canonicalNameQuery('Dr. Seuss')).toBe('Dr. Seuss');
+    expect(canonicalNameQuery('Seuss, Dr.')).toBe('Seuss, Dr');
+  });
+
+  it('leaves a query of pure punctuation as it was rather than matching everything', () => {
+    expect(canonicalNameQuery(',')).toBe(',');
   });
 });

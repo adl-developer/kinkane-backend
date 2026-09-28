@@ -50,6 +50,29 @@ export function normaliseNameQuery(q: string): string {
   return q.replace(/\s+/g, ' ').trim();
 }
 
+/** Separator punctuation at either end of a query — see canonicalNameQuery. */
+const EDGE_SEPARATORS = /^[\s.,;:'’()/-]+|[\s.,;:'’()/-]+$/g;
+
+/**
+ * The search term as name matching should see it: whitespace normalised as above, and
+ * any separator punctuation trimmed off the ends. "barbara," is someone halfway through
+ * typing "barbara, kingsolver", not a search for a name that literally starts with a
+ * comma — left in, the prefix tiers looked for "barbara,%" and found only the one
+ * malformed supplier name that happens to contain it.
+ *
+ * Only the ends. A comma or full stop inside the query is kept, because the in-order
+ * tiers compare against stored names that have them ("Dr. Seuss", "J.R.R. Tolkien"),
+ * and anything word-order-shaped is handled by the any-order match instead.
+ *
+ * Falls back to the whitespace-normalised term when trimming would leave nothing, so a
+ * query of pure punctuation behaves exactly as it did rather than becoming a bare "%".
+ */
+export function canonicalNameQuery(q: string): string {
+  const normalised = normaliseNameQuery(q);
+  const trimmed = normalised.replace(EDGE_SEPARATORS, '');
+  return trimmed.length > 0 ? trimmed : normalised;
+}
+
 /**
  * What separates the words of a name for any-order matching. Commas and full stops are
  * the ones that matter — "Shakespeare, William" and "J.R.R. Tolkien" — and hyphens and
@@ -60,7 +83,7 @@ export function normaliseNameQuery(q: string): string {
  */
 const NAME_WORD_START = `(^|[ .,'’()/-])`;
 
-const SEPARATOR_RUN = /[\s.,'’()/-]+/;
+const SEPARATOR_RUN = /[\s.,;:'’()/-]+/;
 
 /**
  * Splits a name query into the words that must each start a word of the matched name,

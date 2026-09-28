@@ -31,6 +31,7 @@ import {
 import { logger } from '../lib/logger';
 import {
   NORMALISED_PERSON_NAME,
+  canonicalNameQuery,
   nameSearchWords,
   nameWordStartPattern,
   normalisedNameSql,
@@ -848,8 +849,9 @@ export function buildAuthorMatchSource(rawQ: string, tier: 'cheap' | 'broad'): S
   // doubled space is collapsed out of the comparison on both sides. See
   // lib/contributor-name.ts. Normalising here rather than at the call sites means a
   // caller cannot forget: the count probe, the row fetch and suggestions all reach the
-  // name tiers through this function.
-  const q = normaliseNameQuery(rawQ);
+  // name tiers through this function. Stray punctuation at either end is trimmed too, so
+  // "barbara," searches the same as "barbara" — see canonicalNameQuery.
+  const q = canonicalNameQuery(rawQ);
   const prefix = q + '%';
   const wordPrefix = '% ' + q + '%';
   // Interpolated raw, because it is a column expression rather than a value. It must stay
@@ -3386,7 +3388,7 @@ export const booksService = {
   },
 
   async authorSuggestions(rawQ: string, limit: number): Promise<AuthorSuggestion[]> {
-    const q = normaliseNameQuery(rawQ);
+    const q = canonicalNameQuery(rawQ);
     // v2: names are now grouped and returned normalised, so a v1 entry holds the old
     // duplicated, unranked list.
     const cacheKey = `author-suggestions:v2:${createHash('sha256').update(`${q}:${limit}`).digest('hex')}`;

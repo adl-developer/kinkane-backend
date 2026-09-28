@@ -46,6 +46,10 @@ order**. This check is added to the existing word-prefix tiers (tiers 1 and 3 in
 `buildAuthorMatchSource`), so these matches rank as exact matches and are counted
 exactly. The tier ladder, the A01-above-other-roles rule and the per-branch caps are unchanged.
 
+Punctuation at either end of the query is trimmed first (`canonicalNameQuery`), so
+"barbara," searches the same as "barbara". Before, it looked for names literally starting
+"barbara," and found 2 books instead of 248.
+
 Helpers are in `lib/contributor-name.ts`: `nameSearchWords`, `nameWordStartPattern` and
 `wantsAnyOrderNameMatch`.
 
