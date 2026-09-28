@@ -49,3 +49,54 @@ export const NORMALISED_PERSON_NAME = normalisedNameSql('person_name');
 export function normaliseNameQuery(q: string): string {
   return q.replace(/\s+/g, ' ').trim();
 }
+
+/**
+ * What separates the words of a name for any-order matching. Commas and full stops are
+ * the ones that matter — "Shakespeare, William" and "J.R.R. Tolkien" — and hyphens and
+ * apostrophes let "Haig Brown" and "Grady" reach "Haig-Brown" and "O'Grady".
+ *
+ * Spelled out rather than written as a POSIX class: the database's ctype is C, so
+ * [[:alnum:]] would treat every accented letter as a separator and match mid-word.
+ */
+const NAME_WORD_START = `(^|[ .,'’()/-])`;
+
+const SEPARATOR_RUN = /[\s.,'’()/-]+/;
+
+/**
+ * Splits a name query into the words that must each start a word of the matched name,
+ * in any order. "Shakespeare, William", "William Shakespeare" and "shakespeare william"
+ * all give the same two words; "Tolkien, J.R.R." gives tolkien, j and r, which is how it
+ * reaches both "J.R.R. Tolkien" and "J. R. R. Tolkien".
+ *
+ * Lowercased and deduplicated — the comparison is case-insensitive and a repeated word
+ * ("j r r") adds nothing but another predicate.
+ */
+export function nameSearchWords(q: string): string[] {
+  const words = q.toLowerCase().split(SEPARATOR_RUN).filter((w) => w.length > 0);
+  return [...new Set(words)];
+}
+
+/**
+ * Regex matching `word` at the start of any word of a name — at the start of the
+ * string or just after a separator. Used with ~*, which the trigram index serves.
+ * Whitespace is only ever a single space by the time it is compared: the column side
+ * goes through normalisedNameSql first.
+ *
+ * The word is escaped, so a query can't smuggle regex syntax in; separators never reach
+ * here because nameSearchWords splits on them.
+ */
+export function nameWordStartPattern(word: string): string {
+  return NAME_WORD_START + word.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
+}
+
+/**
+ * Whether a query is worth an any-order word match on top of the in-order ones.
+ *
+ * Needs two or more words — a single word is already covered by the prefix and
+ * word-prefix matches. And needs at least one word of three or more characters, because
+ * that is what gives the trigram index something to look up; a query made only of
+ * initials ("j k") would otherwise be a regex scan over every contributor row.
+ */
+export function wantsAnyOrderNameMatch(words: string[]): boolean {
+  return words.length >= 2 && words.some((w) => w.length >= 3);
+}

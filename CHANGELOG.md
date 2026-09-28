@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-09-28
+
+### Bug Fixes
+
+* rebuild author-name search indexes that older databases never picked up ([6ad97c4](https://adl.github.com/adl-developer/kinkane-backend/commit/6ad97c42c4f63c21be13b435aff3bb182995fef9)) — [details](changelog/2026-09-28-author-search-any-word-order.md)
+
+
 ## 2026-09-26
 
 ### Features

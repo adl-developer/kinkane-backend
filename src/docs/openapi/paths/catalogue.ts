@@ -127,6 +127,8 @@ export const cataloguePaths = {
         '',
         '`type=author` matches **any** contributor, with ONIX A01 authors ranked above editors, translators and illustrators — so searching an editor by name still finds the volume they edited, just below the books actually written by anyone of that name.',
         '',
+        'Author names match regardless of word order or punctuation — `Hunt, Roderick`, `hunt roderick` and `Roderick Hunt` return the same books, with an exact total rather than a fuzzy estimate.',
+        '',
         '**Not a drop-in swap from v1.** A search box wired to `?q=` gets title matches only here, where v1 would have folded in that author\u2019s books. Moving one to v2 means deciding which side it searches, or issuing both requests.',
         '',
         ...listPaginationNotes,
@@ -249,7 +251,7 @@ export const cataloguePaths = {
       ...publicEndpoint,
       summary: 'Typeahead for author names',
       description:
-        'Deduplicated author entities with a book count, for browsing by author rather than by title. Ranked prefix → word prefix → trigram similarity. Minimum 1 character.',
+        'Deduplicated author entities with a book count, for browsing by author rather than by title. Ranked prefix → word prefix → every word in any order → trigram similarity, and within each of those by book count. Word order and punctuation do not matter: `Shakespeare, William`, `shakespeare william` and `William Shakespeare` all find the same author. Names are returned with runs of whitespace collapsed, so a name the feed stored with a doubled space is one suggestion, not two. Minimum 1 character.',
       parameters: [
         param('q', 'query', { type: 'string', minLength: 1, maxLength: 100 },
           'Partial author name.', { required: true, example: 'evar' }),
