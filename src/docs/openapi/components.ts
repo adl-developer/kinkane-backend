@@ -346,6 +346,16 @@ const socialSchemas = {
             description: "The caller's relationship to this user.",
             example: 'following',
           },
+          incomingFollowRequest: {
+            type: 'object',
+            nullable: true,
+            description:
+              'A pending follow request this user has sent the *caller*. When set, show Accept/Decline (with `requestId`) instead of a Follow button — `POST /users/{userId}/follow` is refused with a 409 while it is pending.',
+            properties: {
+              requestId: { type: 'integer', example: 902 },
+              requestedAt: { type: 'string', format: 'date-time', example: '2026-09-28T20:48:04.353Z' },
+            },
+          },
           followerCount: { type: 'integer', example: 128 },
           followingCount: { type: 'integer', example: 94 },
           bookCount: { type: 'integer', example: 37 },

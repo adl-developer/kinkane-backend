@@ -9,6 +9,7 @@
 
 ### Bug Fixes
 
+* spell Kinkané with its accent in push notifications and the email sender name ([ae256c6](https://adl.github.com/adl-developer/kinkane-backend/commit/ae256c683ae161efa8a1358d2d1d9ab607199564)) — [details](changelog/2026-09-28-author-search-every-matching-name.md)
 * search shows every edition hardback first, and recommendations never repeat a book ([4119cf8](https://adl.github.com/adl-developer/kinkane-backend/commit/4119cf893543504a8045d9822098d6eeec3f02cb)) — [details](changelog/2026-09-28-book-editions-hardback-first-no-duplicate-recommendations.md)
 * let author search return every matching name, not just the first few ([92356d2](https://adl.github.com/adl-developer/kinkane-backend/commit/92356d2e037bfda7029dbd591ed7184bdf819dac)) — [details](changelog/2026-09-28-author-search-every-matching-name.md)
 * stop a trailing comma from changing author search results ([2b9c22d](https://adl.github.com/adl-developer/kinkane-backend/commit/2b9c22d6da0c473b65a10427db5e5a38e4759be6)) — [details](changelog/2026-09-28-author-search-every-matching-name.md)

@@ -22,7 +22,8 @@ router.get('/:userId/following', wrap(usersController.listFollowing));
 // it answers a question about the person. Private clubs the viewer is not in are
 // filtered out — see visibleGroupCondition.
 router.get('/:userId/groups',    wrapHttp(groupsController.listForUser));
-router.post('/:userId/follow', followRequestLimiter, wrap(usersController.sendFollowRequest));
+// wrapHttp so a 409 carries its `code` and `requestId`, not just the message
+router.post('/:userId/follow', followRequestLimiter, wrapHttp(usersController.sendFollowRequest));
 router.delete('/:userId/follow', wrap(usersController.withdrawFollowRequest));
 
 export default router;
