@@ -64,6 +64,8 @@ shelf.
 
 ```json
 {
+  "readerType": "The Open Door",
+  "readerTypeTagline": "You're open to the world but discerning about what stays.",
   "books": [
     {
       "id": 43935,
@@ -84,6 +86,10 @@ shelf.
   "pagination": { "total": 137, "limit": 20, "offset": 0, "hasMore": true }
 }
 ```
+
+`readerType` and `readerTypeTagline` were added on 2026-09-26. They name the
+cohort the rail was built from, and are covered in
+[reader-type-taglines-client-brief.md](reader-type-taglines-client-brief.md) §5.
 
 Books are ordered most-supported first. The book object is the same shape every
 list and search endpoint returns, with one exception — see §5.
@@ -227,4 +233,4 @@ When inference fails the reader keeps the type they had.
 
 | Method | Path | Auth | Returns |
 | --- | --- | --- | --- |
-| `GET` | `/api/v1/explore/reader-type` | none — Bearer optional | `{ books, pagination }` — books only, no prices |
+| `GET` | `/api/v1/explore/reader-type` | none — Bearer optional | `{ readerType, readerTypeTagline, books, pagination }` — books carry no prices |

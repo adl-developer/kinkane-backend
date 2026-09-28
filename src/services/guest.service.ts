@@ -1,6 +1,6 @@
 import { eq, and, gt, inArray } from 'drizzle-orm';
 import { db } from '../db';
-import { guestSessions, books, type GuestSession, type Dislikes } from '../db/schema';
+import { guestSessions, books, type GuestSession, type Dislikes, type ReaderType } from '../db/schema';
 import { config } from '../config';
 import { fetchAndInferReaderType } from '../lib/reader-type';
 
@@ -78,7 +78,7 @@ export const guestService = {
     id: string,
     chosenBookIds: number[],
     dislikedBookIds: number[] = [],
-  ): Promise<{ readerType: string | null; books: { id: number; title: string; coverUrl: string | null }[] } | null> {
+  ): Promise<{ readerType: ReaderType | null; books: { id: number; title: string; coverUrl: string | null }[] } | null> {
     const readerType = await fetchAndInferReaderType(chosenBookIds);
 
     const [updated] = await db

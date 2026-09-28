@@ -5,6 +5,7 @@
 
 ### Bug Fixes
 
+* stop a trailing comma from changing author search results ([2b9c22d](https://adl.github.com/adl-developer/kinkane-backend/commit/2b9c22d6da0c473b65a10427db5e5a38e4759be6)) — [details](changelog/2026-09-28-author-search-any-word-order.md)
 * find authors whatever order or punctuation their name is typed in ([efc8f5d](https://adl.github.com/adl-developer/kinkane-backend/commit/efc8f5d2a319cf32dd747ea7112d096b1440590e)) — [details](changelog/2026-09-28-author-search-any-word-order.md)
 * rebuild author-name search indexes that older databases never picked up ([6ad97c4](https://adl.github.com/adl-developer/kinkane-backend/commit/6ad97c42c4f63c21be13b435aff3bb182995fef9)) — [details](changelog/2026-09-28-author-search-any-word-order.md)
 
@@ -13,7 +14,7 @@
 
 ### Features
 
-* return each reader type's tagline alongside it ([96d0a8f](https://adl.github.com/adl-developer/kinkane-backend/commit/96d0a8f57f493aaf85cb97b982bd2d1436017712)) — [details](changelog/2026-09-26-preference-history-by-section.md)
+* return each reader type's tagline alongside it ([96d0a8f](https://adl.github.com/adl-developer/kinkane-backend/commit/96d0a8f57f493aaf85cb97b982bd2d1436017712)) — [details](changelog/2026-09-26-reader-type-tagline.md)
 * give each preference screen its own history, shaped like the screen ([4048fa1](https://adl.github.com/adl-developer/kinkane-backend/commit/4048fa121a3e222b6201267f541a4958f45bfc6a)) — [details](changelog/2026-09-26-preference-history-by-section.md)
 * let the app show preference history one section at a time ([836a0f0](https://adl.github.com/adl-developer/kinkane-backend/commit/836a0f053e01cf3699081cc590e7e2b64d7aadf5)) — [details](changelog/2026-09-26-preference-history-by-section.md)
 
