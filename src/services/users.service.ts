@@ -1,6 +1,6 @@
 import { eq, and, sql, asc, desc } from 'drizzle-orm';
 import { db } from '../db';
-import { users, posts, followRequests, userBooks, books, ShelfVisibility } from '../db/schema';
+import { users, posts, followRequests, userBooks, books, notifications, ShelfVisibility } from '../db/schema';
 import { enqueueEmail } from '../lib/email-queue';
 import { enqueuePush } from '../lib/push-queue';
 import { notificationPreferencesService } from './notification-preferences.service';
@@ -447,7 +447,7 @@ export const usersService = {
 
     const [[sender], [receiver]] = await Promise.all([
       db.select({ name: users.name, email: users.email }).from(users).where(eq(users.id, existing.senderId)).limit(1),
-      db.select({ name: users.name }).from(users).where(eq(users.id, receiverId)).limit(1),
+      db.select({ name: users.name, photoUrl: users.photoUrl }).from(users).where(eq(users.id, receiverId)).limit(1),
     ]);
 
     if (sender && receiver) {
@@ -463,6 +463,16 @@ export const usersService = {
           accepterId: receiverId,
           accepterName: receiver.name,
         }).catch((err) => logger.error('Failed to enqueue follow-accepted push', { err }));
+        db.insert(notifications).values({
+          userId: existing.senderId,
+          type: 'follow_accepted',
+          data: {
+            followRequestId: requestId,
+            accepterId: receiverId,
+            accepterName: receiver.name,
+            accepterPhotoUrl: receiver.photoUrl ?? null,
+          },
+        }).catch((err) => logger.error('Failed to store follow-accepted notification', { err }));
       }).catch((err) => logger.error('Failed to check follow-accepted notification preference', { err }));
     } else {
       logger.warn('Skipped follow-accepted email — user(s) not found after accept', {

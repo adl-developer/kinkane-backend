@@ -9,6 +9,7 @@ import {
   notificationPreferences,
   recommendationEmailLog,
   userDislikedBooks,
+  notifications,
 } from '../db/schema';
 import {
   buildHasAuthorCondition,
@@ -163,6 +164,11 @@ export async function sendRecommendationEmail(
   const now = new Date();
 
   await Promise.all([
+    db.insert(notifications).values({
+      userId,
+      type: 'new_recommendation',
+      data: { bookId: pick.bookId, bookTitle: pick.title, bookAuthor: pick.author, bookCoverUrl: pick.coverUrl },
+    }),
     db
       .insert(recommendationEmailLog)
       .values({ userId, bookId: pick.bookId })
