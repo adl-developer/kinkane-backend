@@ -163,7 +163,7 @@ the better path when they simply want to see their own history.
 | --- | --- | --- |
 | `400` | Malformed order number or email | Field-level validation message |
 | `404` | Unknown order number **or** wrong email | One "we couldn't find that order" state |
-| `429` | Rate limited: 10 per 15 min per IP | "Too many attempts, try again shortly" |
+| `429` | Rate limited: 50 per 15 min per IP | "Too many attempts, try again shortly" |
 
 > The `404` is deliberately identical for an unknown order number and a
 > mismatched email, so the endpoint cannot be used to discover which orders
@@ -370,9 +370,9 @@ than the confirmation screen and sometimes never arrives.
 | --- | --- | --- | --- |
 | `POST` | `/api/v1/cart/checkout` | optional | Create the order, get the Stripe URL + access token |
 | `GET` | `/api/v1/payments/{reference}` | none | Confirm payment landed. 60/min |
-| `POST` | `/api/v1/orders/track` | none | **Track by order number + email.** 10 per 15 min |
-| `POST` | `/api/v1/orders/lookup` | none | Read by reference + access token. 10 per 15 min |
-| `POST` | `/api/v1/orders/claim` | **required** | Attach a guest order to the account. 10 per 15 min |
+| `POST` | `/api/v1/orders/track` | none | **Track by order number + email.** 50 per 15 min |
+| `POST` | `/api/v1/orders/lookup` | none | Read by reference + access token. 50 per 15 min |
+| `POST` | `/api/v1/orders/claim` | **required** | Attach a guest order to the account. 50 per 15 min |
 | `GET` | `/api/v1/orders?status=` | required | The signed-in customer's order history |
 | `GET` | `/api/v1/orders/:id` | required | One of their orders, with lines |
 

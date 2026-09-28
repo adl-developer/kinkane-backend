@@ -468,7 +468,7 @@ appears on rows that are sellable in the first place.
 | `CART_TOO_LARGE` | 400 | Too many distinct titles. Cap the basket client-side to match `CART_MAX_ITEMS`. |
 | `COUNTRY_NOT_SUPPORTED` | 409 | We cannot ship there. Surface it at the address step, not after payment. |
 | — | 404 | On lookup or claim: unknown reference, wrong token, or already claimed — deliberately indistinguishable. Show one "we couldn't find that order" state; do not try to tell them apart. |
-| — | 429 | Lookup and claim allow 10 per 15 minutes per IP. A person retyping will not hit it. |
+| — | 429 | Lookup, tracking and claim allow 50 per 15 minutes per IP, shared. A person retyping will not hit it. |
 
 ## Five things that catch people out
 
