@@ -49,15 +49,11 @@ export const usersController = {
     }
   },
 
+  // Mounted with wrapHttp, which turns a thrown statusCode/code/details into the response.
   async sendFollowRequest(req: AuthenticatedRequest, res: Response): Promise<void> {
-    try {
-      const receiverId = parseId(req.params.userId, 'user ID');
-      await usersService.sendFollowRequest(req.user.id, receiverId);
-      res.status(201).json({ success: true });
-    } catch (err: unknown) {
-      const e = err as Error & { statusCode?: number };
-      res.status(e.statusCode ?? 500).json({ error: e.message });
-    }
+    const receiverId = parseId(req.params.userId, 'user ID');
+    await usersService.sendFollowRequest(req.user.id, receiverId);
+    res.status(201).json({ success: true });
   },
 
   async withdrawFollowRequest(req: AuthenticatedRequest, res: Response): Promise<void> {

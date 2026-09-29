@@ -16,7 +16,7 @@ async function processPushJob(job: Job): Promise<void> {
       const { userId, senderId, senderName } = job.data as PushJobMap['friend-request-sent'];
       await sendPush(userId, {
         title: 'New friend request',
-        body: `${senderName} wants to connect with you on Kinkane.`,
+        body: `${senderName} wants to connect with you on Kinkané.`,
         data: { type: 'friend_request', senderId: String(senderId) },
       });
       break;

@@ -1,6 +1,6 @@
 import { eq, and, sql, asc, desc } from 'drizzle-orm';
 import { db } from '../db';
-import { users, posts, followRequests, userBooks, books, ShelfVisibility } from '../db/schema';
+import { users, posts, followRequests, userBooks, books, notifications, ShelfVisibility } from '../db/schema';
 import { enqueueEmail } from '../lib/email-queue';
 import { enqueuePush } from '../lib/push-queue';
 import { notificationPreferencesService } from './notification-preferences.service';
@@ -47,6 +47,9 @@ export interface UserProfile {
   photoUrl: string | null;
   yearJoined: number;
   followStatus: FollowStatus;
+  // A pending request *they* sent *you*. When set, show Accept/Decline instead
+  // of a Follow button — sending one back is refused with a 409.
+  incomingFollowRequest: { requestId: number; requestedAt: Date } | null;
   // Only present for accepted followers
   followerCount?: number;
   followingCount?: number;
@@ -66,6 +69,54 @@ function toFollowStatus(status: string | null | undefined): FollowStatus {
   if (status === 'pending') return 'pending';
   if (status === 'declined') return 'declined';
   return 'none';
+}
+
+interface FollowRequestRow {
+  id: number;
+  status: FollowStatus;
+}
+
+export type FollowRequestDecision =
+  | { action: 'insert' }
+  | { action: 'resend'; requestId: number }
+  | { action: 'reject'; statusCode: 409; message: string; code?: string; details?: Record<string, unknown> };
+
+/**
+ * What sending a follow request should do, given the caller's own request to
+ * the target (`outgoing`) and the target's request to the caller (`incoming`).
+ *
+ * The caller's own request is checked first: someone already following, or
+ * already waiting, gets that answer whatever the other side looks like.
+ *
+ * A pending `incoming` request then blocks a new one. The two people would
+ * otherwise each be waiting on the other for the same relationship, and the
+ * receiver has a one-tap way to resolve it — accept — that this sends them to.
+ * Only *pending* blocks: an accepted incoming request means they follow you,
+ * and following them back is a separate relationship; a declined one is over.
+ */
+export function decideFollowRequest(
+  outgoing: FollowRequestRow | undefined,
+  incoming: FollowRequestRow | undefined,
+  targetName: string,
+): FollowRequestDecision {
+  if (outgoing?.status === 'pending') {
+    return { action: 'reject', statusCode: 409, message: 'Follow request already sent' };
+  }
+  if (outgoing?.status === 'accepted') {
+    return { action: 'reject', statusCode: 409, message: 'You are already following this user' };
+  }
+  if (incoming?.status === 'pending') {
+    return {
+      action: 'reject',
+      statusCode: 409,
+      message: `${targetName} has already sent you a follow request. Accept or decline it instead.`,
+      code: 'INCOMING_FOLLOW_REQUEST_PENDING',
+      details: { requestId: incoming.id },
+    };
+  }
+  // A declined request of the caller's own is re-sent by resetting it to pending.
+  if (outgoing?.status === 'declined') return { action: 'resend', requestId: outgoing.id };
+  return { action: 'insert' };
 }
 
 /**
@@ -99,8 +150,8 @@ export const usersService = {
       throw Object.assign(new Error('Cannot view your own profile via this endpoint'), { statusCode: 400 });
     }
 
-    // Fetch user row and requester's follow status in parallel
-    const [[userRow], [followRow]] = await Promise.all([
+    // Fetch user row and the follow requests in each direction in parallel
+    const [[userRow], [followRow], [incomingRow]] = await Promise.all([
       db
         .select({ id: users.id, name: users.name, photoUrl: users.photoUrl, createdAt: users.createdAt, shelfVisibility: users.shelfVisibility })
         .from(users)
@@ -110,6 +161,17 @@ export const usersService = {
         .select({ status: followRequests.status })
         .from(followRequests)
         .where(and(eq(followRequests.senderId, requesterId), eq(followRequests.receiverId, targetId)))
+        .limit(1),
+      db
+        .select({ requestId: followRequests.id, requestedAt: followRequests.createdAt })
+        .from(followRequests)
+        .where(
+          and(
+            eq(followRequests.senderId, targetId),
+            eq(followRequests.receiverId, requesterId),
+            eq(followRequests.status, 'pending'),
+          ),
+        )
         .limit(1),
     ]);
 
@@ -123,6 +185,7 @@ export const usersService = {
       photoUrl: userRow.photoUrl ?? null,
       yearJoined: new Date(userRow.createdAt).getFullYear(),
       followStatus,
+      incomingFollowRequest: incomingRow ?? null,
       shelfVisibility: userRow.shelfVisibility,
     };
 
@@ -289,25 +352,32 @@ export const usersService = {
       throw Object.assign(new Error('Please verify your email before sending follow requests'), { statusCode: 403 });
     }
 
-    // Check for an existing request
-    const [existing] = await db
-      .select({ id: followRequests.id, status: followRequests.status })
-      .from(followRequests)
-      .where(and(eq(followRequests.senderId, senderId), eq(followRequests.receiverId, receiverId)))
-      .limit(1);
+    // The caller's own request to the target, and the target's to the caller
+    const [[outgoing], [incoming]] = await Promise.all([
+      db
+        .select({ id: followRequests.id, status: followRequests.status })
+        .from(followRequests)
+        .where(and(eq(followRequests.senderId, senderId), eq(followRequests.receiverId, receiverId)))
+        .limit(1),
+      db
+        .select({ id: followRequests.id, status: followRequests.status })
+        .from(followRequests)
+        .where(and(eq(followRequests.senderId, receiverId), eq(followRequests.receiverId, senderId)))
+        .limit(1),
+    ]);
 
-    if (existing) {
-      if (existing.status === 'pending') {
-        throw Object.assign(new Error('Follow request already sent'), { statusCode: 409 });
-      }
-      if (existing.status === 'accepted') {
-        throw Object.assign(new Error('You are already following this user'), { statusCode: 409 });
-      }
-      // status === 'declined' — re-send by resetting to pending
+    const decision = decideFollowRequest(outgoing, incoming, target.name);
+
+    if (decision.action === 'reject') {
+      const { message, ...rest } = decision;
+      throw Object.assign(new Error(message), rest);
+    }
+
+    if (decision.action === 'resend') {
       await db
         .update(followRequests)
         .set({ status: 'pending', updatedAt: new Date() })
-        .where(eq(followRequests.id, existing.id));
+        .where(eq(followRequests.id, decision.requestId));
     } else {
       // onConflictDoNothing handles the concurrent-insert race; the first request wins
       const [inserted] = await db
@@ -377,7 +447,7 @@ export const usersService = {
 
     const [[sender], [receiver]] = await Promise.all([
       db.select({ name: users.name, email: users.email }).from(users).where(eq(users.id, existing.senderId)).limit(1),
-      db.select({ name: users.name }).from(users).where(eq(users.id, receiverId)).limit(1),
+      db.select({ name: users.name, photoUrl: users.photoUrl }).from(users).where(eq(users.id, receiverId)).limit(1),
     ]);
 
     if (sender && receiver) {
@@ -393,6 +463,16 @@ export const usersService = {
           accepterId: receiverId,
           accepterName: receiver.name,
         }).catch((err) => logger.error('Failed to enqueue follow-accepted push', { err }));
+        db.insert(notifications).values({
+          userId: existing.senderId,
+          type: 'follow_accepted',
+          data: {
+            followRequestId: requestId,
+            accepterId: receiverId,
+            accepterName: receiver.name,
+            accepterPhotoUrl: receiver.photoUrl ?? null,
+          },
+        }).catch((err) => logger.error('Failed to store follow-accepted notification', { err }));
       }).catch((err) => logger.error('Failed to check follow-accepted notification preference', { err }));
     } else {
       logger.warn('Skipped follow-accepted email — user(s) not found after accept', {

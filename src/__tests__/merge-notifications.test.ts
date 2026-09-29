@@ -171,3 +171,20 @@ describe('group invites in the feed', () => {
     expect(result.map((r) => r.id)).toEqual([1, 'fr_5', 2]);
   });
 });
+
+describe('follow accepted and new recommendation in the feed', () => {
+  it('shows an accepted request to its sender as a stored, markable item', () => {
+    // The live friend_request view only covers requests sent *to* the caller,
+    // so an acceptance of the caller's own request has to be a stored row —
+    // otherwise it reaches their phone as a push and never appears here.
+    const data = { followRequestId: 14, accepterId: 85, accepterName: 'Kofi Mensah', accepterPhotoUrl: null };
+    const [item] = mergeNotifications([notif({ id: 30, type: 'follow_accepted', data })], [], 20, 0);
+    expect(item).toMatchObject({ id: 30, type: 'follow_accepted', readAt: null, data });
+  });
+
+  it('carries the recommended book through untouched', () => {
+    const data = { bookId: 48213, bookTitle: 'Homegoing', bookAuthor: 'Yaa Gyasi', bookCoverUrl: null };
+    const [item] = mergeNotifications([notif({ id: 31, type: 'new_recommendation', data })], [], 20, 0);
+    expect(item).toMatchObject({ id: 31, type: 'new_recommendation', data });
+  });
+});

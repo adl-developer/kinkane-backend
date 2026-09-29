@@ -346,6 +346,16 @@ const socialSchemas = {
             description: "The caller's relationship to this user.",
             example: 'following',
           },
+          incomingFollowRequest: {
+            type: 'object',
+            nullable: true,
+            description:
+              'A pending follow request this user has sent the *caller*. When set, show Accept/Decline (with `requestId`) instead of a Follow button — `POST /users/{userId}/follow` is refused with a 409 while it is pending.',
+            properties: {
+              requestId: { type: 'integer', example: 902 },
+              requestedAt: { type: 'string', format: 'date-time', example: '2026-09-28T20:48:04.353Z' },
+            },
+          },
           followerCount: { type: 'integer', example: 128 },
           followingCount: { type: 'integer', example: 94 },
           bookCount: { type: 'integer', example: 37 },
@@ -416,12 +426,13 @@ const socialSchemas = {
   Notification: {
     type: 'object',
     description:
-      'One item in the notifications feed. The feed merges stored rows (`post_like`, `post_comment`, `group_invite`) with a live view over the follow-request table, which is why `id` is only markable-as-read for the stored kinds.',
+      'One item in the notifications feed. The feed merges stored rows (`post_like`, `post_comment`, `group_invite`, `follow_accepted`, `new_recommendation`) with a live view over the follow-request table (`friend_request`, requests sent *to* the caller), which is why `id` is only markable-as-read for the stored kinds.\n\n' +
+      '`follow_accepted` goes to the person whose request was accepted; its `data` carries `followRequestId`, `accepterId`, `accepterName` and `accepterPhotoUrl`. `new_recommendation` carries `bookId`, `bookTitle`, `bookAuthor` and `bookCoverUrl`.',
     properties: {
       id: { type: 'integer', example: 5521 },
       type: {
         type: 'string',
-        enum: ['post_like', 'post_comment', 'group_invite', 'friend_request'],
+        enum: ['post_like', 'post_comment', 'group_invite', 'follow_accepted', 'new_recommendation', 'friend_request'],
         example: 'post_comment',
       },
       actor: { $ref: '#/components/schemas/UserSummary' },

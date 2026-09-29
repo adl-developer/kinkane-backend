@@ -1,4 +1,4 @@
-import type { Notification } from '../db/schema';
+import type { Notification, NotificationType } from '../db/schema';
 
 export interface FriendRequestRow {
   id: number;
@@ -12,7 +12,7 @@ export interface FriendRequestRow {
 export type NotificationItem =
   | {
       id: number;
-      type: 'post_like' | 'post_comment' | 'group_invite';
+      type: NotificationType;
       createdAt: Date;
       readAt: Date | null;
       data: Record<string, unknown>;
@@ -46,7 +46,7 @@ export function mergeNotifications(
     ...notifRows.map(
       (row): NotificationItem => ({
         id: row.id,
-        type: row.type as 'post_like' | 'post_comment' | 'group_invite',
+        type: row.type as NotificationType,
         createdAt: row.createdAt,
         readAt: row.readAt,
         data: row.data as Record<string, unknown>,

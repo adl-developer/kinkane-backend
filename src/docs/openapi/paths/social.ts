@@ -431,14 +431,27 @@ export const socialPaths = {
       tags: [PEOPLE],
       summary: 'Send a follow request',
       description:
-        'Following is **request-and-accept**, not instant: this creates a pending request the other user resolves from `GET /users/follow-requests`. A 409 means a request is already pending or the caller already follows them.\n\n**Rate limit:** 30 per hour.',
+        'Following is **request-and-accept**, not instant: this creates a pending request the other user resolves from `GET /users/follow-requests`. A 409 means a request is already pending, the caller already follows them, or **they have already sent the caller a request**.\n\n' +
+        'That last case carries `code: "INCOMING_FOLLOW_REQUEST_PENDING"` and the **`requestId`** of their request — pass it to the accept or decline endpoint rather than sending one back. The profile\'s `incomingFollowRequest` tells you this before the button is tapped.\n\n**Rate limit:** 30 per hour.',
       parameters: [userIdParam],
       responses: {
         201: successResponse,
         400: json('Invalid id, or an attempt to follow oneself.', ref('ValidationError')),
         404: resp('NotFound'),
-        409: json('Already following, or a request is already pending.', ref('Error'),
-          { error: 'Follow request already exists' }),
+        409: json('Already following, a request is already pending, or they have already sent the caller one.',
+          object({
+            error: { type: 'string', example: 'Ama Boateng has already sent you a follow request. Accept or decline it instead.' },
+            code: {
+              type: 'string',
+              enum: ['INCOMING_FOLLOW_REQUEST_PENDING'],
+              description: 'Present only when they have already sent the caller a request.',
+            },
+            requestId: {
+              type: 'integer',
+              description: 'Their pending request, for the accept/decline endpoints. Present only with that code.',
+              example: 902,
+            },
+          })),
         ...authErrors,
       },
     },

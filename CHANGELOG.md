@@ -5,12 +5,15 @@
 
 ### Features
 
+* stop a follow request going back to someone who already sent you one ([e0fdbfc](https://adl.github.com/adl-developer/kinkane-backend/commit/e0fdbfc2fb51492bde13937b07f130d2d31606af)) — [details](changelog/2026-09-28-follow-accepted-and-recommendations-in-notifications.md)
 * show the reader type's tagline straight after the quiz, not only on later screens ([8648b9f](https://adl.github.com/adl-developer/kinkane-backend/commit/8648b9f8692c332d772fd6668b6e887667788871)) — [details](changelog/2026-09-28-book-editions-hardback-first-no-duplicate-recommendations.md)
 
 ### Bug Fixes
 
+* spell Kinkané with its accent in push notifications and the email sender name ([ae256c6](https://adl.github.com/adl-developer/kinkane-backend/commit/ae256c683ae161efa8a1358d2d1d9ab607199564)) — [details](changelog/2026-09-28-follow-accepted-and-recommendations-in-notifications.md)
+* search shows every edition hardback first, and recommendations never repeat a book ([4119cf8](https://adl.github.com/adl-developer/kinkane-backend/commit/4119cf893543504a8045d9822098d6eeec3f02cb)) — [details](changelog/2026-09-28-book-editions-hardback-first-no-duplicate-recommendations.md)
 * let author search return every matching name, not just the first few ([92356d2](https://adl.github.com/adl-developer/kinkane-backend/commit/92356d2e037bfda7029dbd591ed7184bdf819dac)) — [details](changelog/2026-09-28-author-search-every-matching-name.md)
-* stop a trailing comma from changing author search results ([2b9c22d](https://adl.github.com/adl-developer/kinkane-backend/commit/2b9c22d6da0c473b65a10427db5e5a38e4759be6)) — [details](changelog/2026-09-28-author-search-every-matching-name.md)
+* stop a trailing comma from changing author search results ([2b9c22d](https://adl.github.com/adl-developer/kinkane-backend/commit/2b9c22d6da0c473b65a10427db5e5a38e4759be6)) — [details](changelog/2026-09-28-follow-accepted-and-recommendations-in-notifications.md)
 * find authors whatever order or punctuation their name is typed in ([efc8f5d](https://adl.github.com/adl-developer/kinkane-backend/commit/efc8f5d2a319cf32dd747ea7112d096b1440590e)) — [details](changelog/2026-09-28-author-search-any-word-order.md)
 * rebuild author-name search indexes that older databases never picked up ([6ad97c4](https://adl.github.com/adl-developer/kinkane-backend/commit/6ad97c42c4f63c21be13b435aff3bb182995fef9)) — [details](changelog/2026-09-28-author-search-every-matching-name.md)
 

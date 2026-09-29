@@ -1,11 +1,19 @@
 import { pgTable, serial, integer, varchar, jsonb, timestamp, index } from 'drizzle-orm/pg-core';
 import { users } from './users';
 
-// Types that already have a producer wired up. `friend_request` notifications
-// are not stored here — they're a live view over `follow_requests` (see
-// notifications.service.ts) since that table is already the source of truth
-// for pending/accepted/declined state.
-export const notificationTypes = ['post_like', 'post_comment', 'group_invite'] as const;
+// Types that already have a producer wired up. Incoming `friend_request`
+// notifications are not stored here — they're a live view over
+// `follow_requests` (see notifications.service.ts) since that table is already
+// the source of truth for pending/accepted/declined state. `follow_accepted`
+// is stored because it goes to the *sender*, whom that live view never covers,
+// and it needs its own read state.
+export const notificationTypes = [
+  'post_like',
+  'post_comment',
+  'group_invite',
+  'follow_accepted',
+  'new_recommendation',
+] as const;
 export type NotificationType = (typeof notificationTypes)[number];
 
 export const notifications = pgTable(
