@@ -94,26 +94,24 @@ router.get('/recommendations', optionalAuth, booksController.basketRecommendatio
  * present, where relevance ranking wins. There is no price ordering — see
  * buildSortOrderBy for why.
  *
- * `shoppable=true` orders the results the way a shop has to, in three bands:
- * what Gardners can supply and has in stock, then what is orderable but
- * unstocked (the extended catalogue and print-on-demand titles, which never
- * have a shelf), then everything unsellable — no ISBN13, no live price, or an
- * unsuppliable report code. Every row carries `shoppable` and `inStock`, so a
- * listing can badge the tail or stop at it.
+ * `shoppable=true` lists only what a customer can buy: books with no ISBN13,
+ * no live supplier price, or an unsuppliable report code are excluded, from the
+ * rows and the total alike. The rest come in four bands — in stock, then in
+ * stock but market-restricted somewhere, then orderable but unstocked (the
+ * extended catalogue, print-on-demand, and titles out of stock today), then the
+ * same but restricted. Every row carries `shoppable` and `inStock`.
  *
- * It ranks rather than filters, and both halves of that are deliberate. Nothing
- * is excluded because a catalogue that changes size with a query parameter is a
- * catalogue a client cannot page through consistently — and stock in particular
- * moves hourly, so a book vanishing mid-browse is worse than one shown as
- * temporarily unavailable. The ordering exists because a shop still has to lead
- * with what a customer can buy today.
+ * Out-of-stock titles are *not* excluded: stock moves hourly, and a book
+ * vanishing mid-browse is worse than one badged as temporarily unavailable.
+ * Market-restricted titles are not excluded either, only sunk, and
+ * "restricted" means restricted for the customer's country, taken from the
+ * request (geo header, then MaxMind); a book restricted only elsewhere stays in
+ * the unrestricted band. When the country is unknown, any restriction counts.
+ * Rights are enforced against the real delivery country at add-to-cart. See
+ * SHOP_BAND in lib/shoppable.
  *
- * `priceMin`/`priceMax` are unaffected and still filter: a price range is a
- * request for a shelf, not an ordering.
- *
- * It is not a sellability guarantee either way: market restrictions need a
- * destination country, which this public endpoint does not have, so they stay
- * enforced at add-to-cart.
+ * With `shoppable=false` (the default) nothing is excluded or reordered.
+ * `priceMin`/`priceMax` narrow the shoppable shelf further.
  *
  * Public — no auth required.
  */

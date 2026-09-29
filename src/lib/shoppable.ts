@@ -10,7 +10,7 @@
  * to a cart. One const, imported by both.
  */
 import { sql, type SQL } from 'drizzle-orm';
-import { books, gardnersStock } from '../db/schema';
+import { books, gardnersMarketRestrictions, gardnersStock } from '../db/schema';
 
 /**
  * Gardners report codes that mean a title cannot actually be supplied, whatever
@@ -137,13 +137,13 @@ export function stockTierFor(
  * Restricts a catalogue query to books the e-commerce section can legitimately
  * list.
  *
- * **The discovery feeds' filter.** `GET /books?shoppable=true` no longer uses
- * it — that endpoint ranks instead of filtering, see SHOP_BAND — but a feed is
- * a fixed handful of tiles that all render an Add button, so a feed that
- * surfaces an unsellable book produces a button that cannot work, with no
- * "further down the list" for it to sink to. Feeds still exclude; the listing
- * demotes. buildShopBandCondition is defined against this same supply test, so
- * the two cannot disagree about what sellable means.
+ * **The shop's filter, and the discovery feeds'.** `GET /books?shoppable=true`
+ * applies it to every query it runs — rows, total and sibling editions — and
+ * then ranks what survives, see SHOP_BAND. The feeds apply it unconditionally:
+ * a feed is a fixed handful of tiles that all render an Add button, so an
+ * unsellable book there is a button that cannot work. buildShopBandCondition
+ * is defined against this same supply test, so the two cannot disagree about
+ * what sellable means.
  *
  * Three exclusions, all permanent properties of the record rather than of
  * today's stock position:
@@ -166,13 +166,12 @@ export function stockTierFor(
  *     page request and the next, with the 5-minute row cache freezing whichever
  *     answer it happened to observe. Out-of-stock books stay in the results
  *     carrying `inStock: false` for the shop to badge instead.
- *   - **Market restrictions.** Those are a function of the destination country,
- *     and `GET /books` is public and unauthenticated — there is no destination
- *     to evaluate against. Worse, the restriction check fails *closed*: with
- *     GARDNERS_REGION_BY_COUNTRY unpopulated it treats every restricted title
- *     as blocked, which at a cart is a visible 409 but here would silently
- *     shrink the catalogue with nothing to notice it by. Rights restrictions
- *     stay enforced where a real destination exists — availabilityService.check().
+ *   - **Market restrictions.** Those are a function of the destination, and a
+ *     browsing customer's country is a guess from their IP, not where the parcel
+ *     is going. Excluding on it would silently hide titles a customer could
+ *     legitimately order to an address elsewhere. The shop ranks restricted
+ *     titles lower instead (SHOP_BAND), and rights are enforced against the real
+ *     delivery country at add-to-cart — availabilityService.check().
  *
  * So this is necessary but not sufficient for a sale: everything it removes is
  * certainly unbuyable, but what survives still has to clear the full gate at
@@ -207,38 +206,118 @@ export function buildShoppableCondition(): SQL {
 /**
  * Where a book sits in the shop's ordering when `GET /books?shoppable=true`.
  *
- * `shoppable` used to be a filter: anything buildShoppableCondition rejected
- * simply did not appear. It is now a *ranking* — nothing is excluded, and the
- * three bands below are emitted in order, so the shop's first page is what a
- * customer can actually buy today and the dead stock sinks to the end.
+ * `shoppable=true` filters, then ranks. Anything buildShoppableCondition
+ * rejects — no ISBN13, no live price, an unsuppliable report code — is not
+ * listed at all; a shop that shows a book nobody can buy is showing a dead Add
+ * button. What survives is emitted in four bands, in this order:
  *
- * The bands are deliberately coarse. Two values (sellable / not) would leave
- * out-of-stock titles mixed in among the buyable ones, and a finer split would
- * be ordering on numbers — a stock level, a report date — that move hourly and
- * would reshuffle the catalogue under a paginating client for no visible gain.
+ *   0 IN_STOCK            — Gardners has stock; not restricted for this customer.
+ *   1 IN_STOCK_RESTRICTED — Gardners has stock; restricted for this customer.
+ *   2 TO_ORDER            — `stock_qty` is 0 or null; not restricted.
+ *   3 TO_ORDER_RESTRICTED — `stock_qty` is 0 or null; restricted.
  *
- *   0 IN_STOCK   — clears buildShoppableCondition *and* Gardners has stock.
- *   1 TO_ORDER   — clears buildShoppableCondition, `stock_qty` is 0 or null.
- *                  This is where GXC (extended catalogue) and M/D (print on
- *                  demand) live: genuinely orderable, just never shelved, so
- *                  they are behind the stocked titles rather than below the
- *                  unsellable ones. See SUPPLY_TO_ORDER_REPORT_CODES.
- *   2 UNSELLABLE — everything else: no ISBN13, no `gardners_stock` row, no
- *                  price, or an unsuppliable report code.
+ * "Restricted" is judged against the customer's country when we know it and
+ * restricted anywhere when we do not — see buildMarketRestrictedCondition.
+ *
+ * Stock is the primary key and restriction the secondary: every book on the
+ * shelf comes before any book that is not, and within each the unrestricted
+ * ones lead. The to-order bands are where GXC (extended catalogue) and M/D
+ * (print on demand) live — genuinely orderable, just never shelved — alongside
+ * titles that are merely out of stock today. See SUPPLY_TO_ORDER_REPORT_CODES.
+ *
+ * The bands are deliberately coarse. A finer split would be ordering on numbers
+ * — a stock level, a report date — that move hourly and would reshuffle the
+ * catalogue under a paginating client for no visible gain.
+ *
+ * UNSELLABLE is no longer a band the listing walks. It remains as the value
+ * for a row that falls outside all four, so the band CASE in
+ * fetchSiblingEditions has an honest ELSE and a response never labels such a
+ * row sellable.
  */
-export const SHOP_BAND = { IN_STOCK: 0, TO_ORDER: 1, UNSELLABLE: 2 } as const;
+export const SHOP_BAND = {
+  IN_STOCK: 0,
+  IN_STOCK_RESTRICTED: 1,
+  TO_ORDER: 2,
+  TO_ORDER_RESTRICTED: 3,
+  UNSELLABLE: 4,
+} as const;
 export type ShopBand = (typeof SHOP_BAND)[keyof typeof SHOP_BAND];
 
-/** The bands in the order the shop lists them. */
+/**
+ * The bands the shop lists, in the order it lists them. UNSELLABLE is absent
+ * on purpose: `shoppable=true` excludes it rather than sinking it.
+ */
 export const SHOP_BAND_ORDER: readonly ShopBand[] = [
   SHOP_BAND.IN_STOCK,
+  SHOP_BAND.IN_STOCK_RESTRICTED,
   SHOP_BAND.TO_ORDER,
-  SHOP_BAND.UNSELLABLE,
+  SHOP_BAND.TO_ORDER_RESTRICTED,
 ];
 
-/** True for the two bands a customer can put in a basket. */
+/** True for every band a customer can put in a basket. */
 export function isSellableBand(band: ShopBand): boolean {
   return band !== SHOP_BAND.UNSELLABLE;
+}
+
+/**
+ * True when the book is market-restricted for a customer in the given Gardners
+ * regions — or, with no regions, restricted anywhere at all.
+ *
+ * With regions (see gardnersRegionsForCountry) it applies exactly the rules
+ * add-to-cart does in availabilityService.check():
+ *
+ *   - a 'N' row naming one of the customer's regions → restricted there;
+ *   - 'Y' rows that name none of the customer's regions → the title is sold
+ *     only elsewhere, so restricted there too;
+ *   - no rows, or rows that do not touch the customer → not restricted.
+ *
+ * A title restricted only in the USA therefore stays at the top for a customer
+ * in Ghana. Region codes are compared upper-cased, as add-to-cart does.
+ *
+ * With no regions — the customer's country is unknown, because the request
+ * carried no geo header and MaxMind had no answer — there is nothing to test
+ * against, so any restriction row counts. That errs towards ranking a book
+ * lower, never towards promising one the basket may refuse.
+ *
+ * Wrapped as a scalar `(SELECT EXISTS (...))` rather than a bare EXISTS, and
+ * that is load-bearing. A bare `NOT EXISTS` is an anti-join the planner is free
+ * to rewrite, and against a table this size (~875k rows, one per restricted
+ * ISBN) it does: it hashes the whole table and sorts the result, abandoning
+ * the index-ordered walk that stops after one page. Measured locally on band 0,
+ * page 1: 34ms before the restriction split, 714ms with a bare NOT EXISTS, 14ms
+ * with this form — a scalar subquery cannot be pulled up into a join, so it
+ * stays one probe of idx_gardners_market_restrictions_isbn per candidate row.
+ */
+export function buildMarketRestrictedCondition(regions?: readonly string[]): SQL {
+  if (!regions || regions.length === 0) {
+    return sql`(SELECT EXISTS (
+    SELECT 1 FROM ${gardnersMarketRestrictions} mr
+    WHERE mr.isbn13 = ${books.isbn13}
+  ))`;
+  }
+
+  const inRegions = (column: SQL) =>
+    sql`upper(${column}) IN (${sql.join(
+      regions.map((region) => sql`${region.toUpperCase()}`),
+      sql`, `,
+    )})`;
+
+  return sql`(SELECT EXISTS (
+    SELECT 1 FROM ${gardnersMarketRestrictions} mr
+    WHERE mr.isbn13 = ${books.isbn13}
+      AND (
+        (mr.flag = 'N' AND ${inRegions(sql`mr.region_code`)})
+        OR (
+          mr.flag = 'Y'
+          AND NOT EXISTS (
+            SELECT 1 FROM ${gardnersMarketRestrictions} mr_allow
+            WHERE mr_allow.isbn13 = mr.isbn13
+              AND mr_allow.flag = 'Y'
+              AND ${inRegions(sql`mr_allow.region_code`)}
+          )
+        )
+      )
+  ))`;
 }
 
 /**
@@ -254,12 +333,12 @@ export function isSellableBand(band: ShopBand): boolean {
  * to offer a price sort.
  *
  * As a predicate it is the shape already proven at scale: the same correlated
- * EXISTS `shoppable=true` has always filtered on, backed by
+ * EXISTS buildShoppableCondition filters on, backed by
  * idx_gardners_stock_shoppable. Each band keeps whatever ordering and index the
  * caller was already using, and list() walks the bands in order, mapping a page
  * offset onto them — see planShopBands.
  */
-export function buildShopBandCondition(band: ShopBand): SQL {
+export function buildShopBandCondition(band: ShopBand, regions?: readonly string[]): SQL {
   const codes = sql.join(
     UNSUPPLIABLE_REPORT_CODES.map((code) => sql`${code}`),
     sql`, `,
@@ -267,8 +346,8 @@ export function buildShopBandCondition(band: ShopBand): SQL {
 
   // The supply half — price present and not reported unsuppliable — is exactly
   // buildShoppableCondition's EXISTS body, which is what keeps the two
-  // definitions of "sellable" from drifting: band 2 is the complement of bands
-  // 0 and 1, so a book is in one band and no other by construction.
+  // definitions of "sellable" from drifting: UNSELLABLE is the complement of
+  // the four listed bands, so a book is in one band and no other by construction.
   const suppliable = sql`
     gs.rrp_gbp > 0
     AND (
@@ -277,9 +356,9 @@ export function buildShopBandCondition(band: ShopBand): SQL {
     )`;
 
   if (band === SHOP_BAND.UNSELLABLE) {
-    // NOT EXISTS rather than a negated band-0/1 pair: a book with no ISBN13 has
-    // nothing to correlate on and must still land here, and the anti-join reads
-    // that case correctly without a separate NULL test.
+    // NOT EXISTS rather than a negated pair of the other bands: a book with no
+    // ISBN13 has nothing to correlate on and must still land here, and the
+    // anti-join reads that case correctly without a separate NULL test.
     return sql`(
       ${books.isbn13} IS NULL
       OR NOT EXISTS (
@@ -291,13 +370,20 @@ export function buildShopBandCondition(band: ShopBand): SQL {
   }
 
   // `stock_qty` is nullable and a null means "the feed has never said" — which
-  // is not stock. COALESCE rather than `> 0` alone so the two bands partition
-  // the suppliable rows exhaustively; a row that satisfied neither would vanish
-  // from the listing entirely.
-  const stock =
-    band === SHOP_BAND.IN_STOCK
-      ? sql`COALESCE(gs.stock_qty, 0) > 0`
-      : sql`COALESCE(gs.stock_qty, 0) = 0`;
+  // is not stock. COALESCE rather than `> 0` alone so the in-stock and to-order
+  // bands partition the suppliable rows exhaustively; a row that satisfied
+  // neither would vanish from the listing entirely.
+  const inStock = band === SHOP_BAND.IN_STOCK || band === SHOP_BAND.IN_STOCK_RESTRICTED;
+  const stock = inStock
+    ? sql`COALESCE(gs.stock_qty, 0) > 0`
+    : sql`COALESCE(gs.stock_qty, 0) = 0`;
+
+  // EXISTS / NOT EXISTS of the same subquery, so the restricted and unrestricted
+  // halves of each stock band partition it exactly.
+  const restricted = band === SHOP_BAND.IN_STOCK_RESTRICTED || band === SHOP_BAND.TO_ORDER_RESTRICTED;
+  const restriction = restricted
+    ? buildMarketRestrictedCondition(regions)
+    : sql`NOT ${buildMarketRestrictedCondition(regions)}`;
 
   return sql`(
     ${books.isbn13} IS NOT NULL
@@ -307,21 +393,16 @@ export function buildShopBandCondition(band: ShopBand): SQL {
         AND ${suppliable}
         AND ${stock}
     )
+    AND ${restriction}
   )`;
 }
 
 /**
  * The price filter, as a condition of its own.
  *
- * It used to ride inside buildShoppableCondition's EXISTS, which was free while
- * `shoppable` was a filter — same probe, one extra comparison. Now that
- * `shoppable` only ranks, the bounds have to stand alone, because they are
- * still a genuine *filter*: a customer asking for £5–£10 wants that shelf, not
- * the whole catalogue with the priced books on top.
- *
- * A book with no price (band 2, by definition) cannot satisfy this, so a
- * price-filtered shop page contains no unsellable rows at all — the ranking
- * simply has nothing left to sink.
+ * Kept apart from buildShoppableCondition rather than folded into its EXISTS
+ * so that one stays a single fixed predicate — the one idx_gardners_stock_shoppable
+ * mirrors — and the bounds are added only when a customer asks for a shelf.
  *
  * `rrp_gbp` is pounds (numeric(10,2)) and the bounds arrive as pence, so the
  * comparison is done in pence to keep the arithmetic integral on our side.
@@ -361,19 +442,22 @@ export interface ShopBandSegment {
 /**
  * Maps a page of the combined listing onto the bands that make it up.
  *
- * The bands are concatenated, so a page is a window over
- * `band0 ++ band1 ++ band2` and usually falls entirely inside one of them —
- * `planShopBands(0, 20, ...)` on a healthy catalogue is a single segment. Only
- * a page straddling a boundary costs a second query.
+ * The bands are concatenated in SHOP_BAND_ORDER, so a page is a window over
+ * `band0 ++ band1 ++ band2 ++ band3` and usually falls entirely inside one of
+ * them — `planShopBands(0, 20, ...)` on a healthy catalogue is a single
+ * segment. Only a page straddling a boundary costs a second query.
  *
- * `bandSizes` are the counts of bands 0 and 1; band 2 is unbounded and always
- * last, so it never needs one. Those counts are cached (see COUNT_TTL) and may
- * be capped, which makes a *deep* page approximate in exactly the way a capped
- * search total already is: a boundary that has moved since the count was taken
- * shifts rows by the drift, so `hasMore` remains the honest pagination signal
- * rather than arithmetic on `total`. Shallow pages — every page a shopper
- * actually reaches — are unaffected, because the drift is at the boundary and
- * the boundary is tens of thousands of rows in.
+ * `bandSizes` are the counts of the leading bands of SHOP_BAND_ORDER, in that
+ * order. Any band without a size — always at least the last — is treated as
+ * unbounded, so the tail never needs counting: planning past its real end
+ * simply fetches fewer rows, which is what ends the listing. Those counts are
+ * cached (see COUNT_TTL) and may be capped, which makes a *deep* page
+ * approximate in exactly the way a capped search total already is: a boundary
+ * that has moved since the count was taken shifts rows by the drift, so
+ * `hasMore` remains the honest pagination signal rather than arithmetic on
+ * `total`. Shallow pages — every page a shopper actually reaches — are
+ * unaffected, because the drift is at the boundary and the boundary is
+ * thousands of rows in.
  *
  * Callers must still top up from the following band when a segment returns
  * fewer rows than it asked for: the counts and the rows are two observations of
@@ -382,20 +466,17 @@ export interface ShopBandSegment {
 export function planShopBands(
   offset: number,
   need: number,
-  bandSizes: { inStock: number; toOrder: number },
+  bandSizes: readonly number[],
 ): ShopBandSegment[] {
-  const sizes: [ShopBand, number][] = [
-    [SHOP_BAND.IN_STOCK, bandSizes.inStock],
-    [SHOP_BAND.TO_ORDER, bandSizes.toOrder],
-    [SHOP_BAND.UNSELLABLE, Number.POSITIVE_INFINITY],
-  ];
-
   const segments: ShopBandSegment[] = [];
   let remainingOffset = offset;
   let remaining = need;
 
-  for (const [band, size] of sizes) {
+  for (const [index, band] of SHOP_BAND_ORDER.entries()) {
     if (remaining <= 0) break;
+    const size = index < SHOP_BAND_ORDER.length - 1
+      ? (bandSizes[index] ?? Number.POSITIVE_INFINITY)
+      : Number.POSITIVE_INFINITY;
     if (remainingOffset >= size) {
       remainingOffset -= size;
       continue;

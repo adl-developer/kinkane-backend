@@ -1,10 +1,23 @@
 # Changelog
 
 
+## 2026-09-29
+
+### Features
+
+* shop only lists books you can buy, with ones restricted in your country last ([6693de9](https://adl.github.com/adl-developer/kinkane-backend/commit/6693de9f86796667066e2cb13a7fcc3410b47976)) — [details](changelog/2026-09-29-shop-hides-unsellable-books-restricted-titles-last.md)
+* let customers buy books that are only restricted in other countries ([c18e88d](https://adl.github.com/adl-developer/kinkane-backend/commit/c18e88d39258571ed55931d09e009ea57fe1c4d5)) — [details](changelog/2026-09-29-books-restricted-elsewhere-can-be-bought.md)
+
+### Bug Fixes
+
+* shop shows the edition you can buy first, not one restricted in your country ([2ed136a](https://adl.github.com/adl-developer/kinkane-backend/commit/2ed136ab5ce9f88698f6bb69dd53a7054157e452)) — [details](changelog/2026-09-29-books-restricted-elsewhere-can-be-bought.md)
+
+
 ## 2026-09-28
 
 ### Features
 
+* show accepted follow requests and new recommendations in the notifications list ([421cdab](https://adl.github.com/adl-developer/kinkane-backend/commit/421cdab4deb85712ec1abf30c4ce2c3e9c66d8e0)) — [details](changelog/2026-09-28-follow-accepted-and-recommendations-in-notifications.md)
 * stop a follow request going back to someone who already sent you one ([e0fdbfc](https://adl.github.com/adl-developer/kinkane-backend/commit/e0fdbfc2fb51492bde13937b07f130d2d31606af)) — [details](changelog/2026-09-28-follow-accepted-and-recommendations-in-notifications.md)
 * show the reader type's tagline straight after the quiz, not only on later screens ([8648b9f](https://adl.github.com/adl-developer/kinkane-backend/commit/8648b9f8692c332d772fd6668b6e887667788871)) — [details](changelog/2026-09-28-book-editions-hardback-first-no-duplicate-recommendations.md)
 

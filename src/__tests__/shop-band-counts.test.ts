@@ -4,8 +4,8 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 /**
  * What a shop page costs before it returns a row.
  *
- * `GET /books?shoppable=true` is ranked, not filtered, and the ranking is a ladder of
- * bands walked in order (see SHOP_BAND). Mapping a page offset onto that ladder needs the
+ * `GET /books?shoppable=true` filters out the unsellable books and ranks the rest, and
+ * the ranking is a ladder of bands walked in order (see SHOP_BAND). Mapping a page offset onto that ladder needs the
  * band *sizes*, and each size is a correlated EXISTS over `gardners_stock` per candidate
  * row whose LIMIT only short-circuits once a band exceeds SHOP_BAND_COUNT_CAP — a band
  * smaller than the cap scans the whole catalogue to discover it. Cold, the pair measured
@@ -149,20 +149,51 @@ describe('shop band counts', () => {
   // rows without being told where the boundaries are.
   it('still walk the ladder from band 0 when skipped', async () => {
     await browse({ offset: 0 });
-    // Three band-predicated row fetches, in band order, because the mock returns no rows
-    // and each band is topped up from the next.
-    const banded = selectWheres.filter((w) => /gardners_stock/i.test(w));
-    expect(banded.length).toBe(3);
-    expect(/stock_qty/i.test(banded[0]!)).toBe(true);
+    // Four band-predicated row fetches, in band order, because the mock returns no rows
+    // and each band is topped up from the next. The unsellable band is never fetched.
+    // Matched on stock_qty, which only a band predicate mentions: every shoppable query
+    // now carries the sellable filter, so the total's WHERE touches gardners_stock too.
+    const banded = selectWheres.filter((w) => /stock_qty/i.test(w));
+    expect(banded.length).toBe(4);
+    expect(/stock_qty, 0\) > 0/i.test(banded[0]!)).toBe(true);
+    expect(/not \(select exists \(\s*select 1 from "gardners_market_restrictions"/i.test(banded[0]!)).toBe(true);
   });
 
   // A deep page genuinely has bands to skip, so the sizes are load-bearing there and must
   // still be paid for.
   it('are computed once the page runs past the first band', async () => {
-    counts = [500, 500];
+    counts = [500, 500, 500];
     await browse({ offset: 5000 });
-    expect(issued.filter(isBandCount).length).toBe(2);
-    expect(keyOfKind('books:shopband:', redisReads).length).toBe(2);
+    // Every band but the last, which planShopBands treats as unbounded.
+    expect(issued.filter(isBandCount).length).toBe(3);
+    expect(keyOfKind('books:shopband:', redisReads).length).toBe(3);
+  });
+});
+
+// `shoppable=true` excludes what a customer cannot buy from every query it makes, not
+// only from the rows. A total or a band count that still included the unsellable books
+// would promise pages the ladder can never fill.
+describe('the shoppable filter', () => {
+  const sellable = /upper\(btrim\(gs\.report_code\)\) NOT IN/i;
+
+  it('is on every row fetch and on the total', async () => {
+    await browse({ offset: 0 });
+    expect(selectWheres.length).toBeGreaterThan(0);
+    for (const where of selectWheres) expect(where).toMatch(sellable);
+    expect(explains.every((e) => sellable.test(e))).toBe(true);
+  });
+
+  it('is on the band counts of a deep page', async () => {
+    counts = [500, 500, 500];
+    await browse({ offset: 5000 });
+    const bandCounts = issued.filter(isBandCount);
+    expect(bandCounts.length).toBe(3);
+    for (const count of bandCounts) expect(count).toMatch(sellable);
+  });
+
+  it('is absent when shoppable is off, so every book comes through', async () => {
+    await browse({ shoppable: false });
+    for (const where of selectWheres) expect(where).not.toMatch(/gardners_stock/i);
   });
 });
 
@@ -180,14 +211,14 @@ describe('the count cache key', () => {
   });
 
   it('ignores currency for the band keys too, which share the same filters', async () => {
-    counts = [500, 500];
+    counts = [500, 500, 500];
     await browse({ offset: 5000, currency: 'GBP' });
     const gbp = keyOfKind('books:shopband:', redisReads);
     redisReads = [];
-    counts = [500, 500];
+    counts = [500, 500, 500];
     await browse({ offset: 5000, currency: 'EUR' });
     expect(keyOfKind('books:shopband:', redisReads)).toEqual(gbp);
-    expect(gbp.length).toBe(2);
+    expect(gbp.length).toBe(3);
   });
 
   // The guard on the fix, not the fix: a filter that *does* change the count must still
