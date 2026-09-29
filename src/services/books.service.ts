@@ -2977,6 +2977,19 @@ export const booksService = {
               : {}),
           }));
 
+          // The edition picker ranks on stockTier first. On a shoppable listing that is
+          // the shop band instead, whose order already reads "on the shelf, then
+          // unrestricted for this customer": ranking on stock alone let a sibling
+          // hardback restricted in the customer's country replace the unrestricted
+          // paperback that band 0 selected, putting at the top an edition add-to-cart
+          // refuses. Off the shop, the plain stock tier stands.
+          // The cast is only on the tier's type: a band is a number in the same
+          // lower-is-better sense the picker compares, just with four values, not three.
+          const withPickerTier = <T extends { id: number; stockTier?: number }>(rows: T[]): T[] =>
+            opts.shoppable
+              ? rows.map((r) => ({ ...r, stockTier: bandByRow.get(r.id) ?? SHOP_BAND.UNSELLABLE }) as T)
+              : rows;
+
           let hasMore = rawHasMore;
           let result: BookListItem[];
           let nextCursor: string | null = null;
@@ -2992,14 +3005,14 @@ export const booksService = {
             // would drop a later edition of a shown work for good.
             const idKey = (id: number) => `#${id}`;
             const carryOverFiltered = enriched.filter((r) => !carryOverTitles.has(idKey(r.id)));
-            const scored = await withStockTier(
+            const scored = withPickerTier(await withStockTier(
               carryOverFiltered.map((r) => ({
                 ...r,
                 shortDescription: descriptionById.get(r.id) ?? null,
                 genreCount: r.genres.length,
                 hasPrice: r.prices.length > 0,
               })),
-            );
+            ));
             const groups = groupEditions(scored, (r) => workKey(r.title, firstNamedAuthor(r.contributors)));
             // Whole groups only, so a work's editions never straddle a page
             // break. A page can run past `limit` by the tail of its last group;
@@ -3041,14 +3054,14 @@ export const booksService = {
             const carryOverFiltered = enriched.filter(
               (r) => !carryOverTitles.has(r.title.trim().toLowerCase()),
             );
-            const scored = await withStockTier(
+            const scored = withPickerTier(await withStockTier(
               carryOverFiltered.map((r) => ({
                 ...r,
                 shortDescription: descriptionById.get(r.id) ?? null,
                 genreCount: r.genres.length,
                 hasPrice: r.prices.length > 0,
               })),
-            );
+            ));
             const deduped = dedupeByTitle(scored);
             hasMore = hasMore || deduped.length > opts.limit;
             result = deduped.slice(0, opts.limit).map(({ shortDescription: _shortDescription, genreCount: _genreCount, hasPrice: _hasPrice, stockTier: _stockTier, ...item }) => item);

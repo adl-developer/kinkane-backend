@@ -65,6 +65,11 @@ add-to-cart, is described in `2026-09-29-books-restricted-elsewhere-can-be-bough
 - **Restricted books are ranked lower, not removed.** The browsing country is
   only a guess from the IP address. Someone in the UK may be ordering to an
   address in Ghana.
+- **Picking one edition per title respects restrictions too.** With `dedupe`
+  on, editions were ranked by stock and then format. That let a restricted
+  hardback take the top slot from an unrestricted paperback of the same title.
+  On shoppable listings, editions are now ranked by shop group, so an edition
+  you can buy wins.
 - **The restriction check is a per-row lookup, not a join.** Written as a
   plain `NOT EXISTS`, Postgres hashed the entire 875k-row restrictions table
   and sorted the result on every page load (34 ms → 714 ms for page 1 locally).
