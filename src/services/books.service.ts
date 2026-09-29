@@ -67,7 +67,7 @@ import {
 import { SHOP_CURRENCY, toPresentment } from './commerce/pricing';
 import { config } from '../config';
 import { getProductFormLabel } from '../lib/product-form';
-import { addDisplayGenre, toDisplayGenres } from '../lib/genre-display';
+import { addDisplayGenre, genreDisplayName, genreFamilySlug, toDisplayGenres, type GenreRef } from '../lib/genre-display';
 import { genresService } from './genres.service';
 
 const BOOK_DETAIL_TTL    = 60 * 60;    // 1 hour
@@ -393,6 +393,14 @@ export interface BookListItem {
   updatedAt: Date;
   contributors: Pick<BookContributor, 'role' | 'personName' | 'sequenceNumber'>[];
   genres: Pick<Genre, 'name' | 'slug'>[];
+  /**
+   * The publisher's nominated primary genre (books.main_genre_id), in the same
+   * display form as the `genres` entries — top-level name and family slug — so
+   * it is always one of them and its slug works as `?genre=`. Null for roughly
+   * a third of the catalogue, which carries no nomination; clients must render
+   * a book without one.
+   */
+  mainGenre: GenreRef | null;
   prices: Pick<BookPrice, 'priceType' | 'priceAmount' | 'currencyCode'>[];
   excerpt: BookExcerptInfo | null;
   /**
@@ -1347,16 +1355,25 @@ function buildWhereClause(opts: ListBooksOptions, searchCondition?: SQL): SQL | 
   return conditions.length > 0 ? and(...conditions) : undefined;
 }
 
+/** A stored genre in the display form BookListItem.mainGenre carries. */
+function toDisplayMainGenre(genre: GenreRef | null): GenreRef | null {
+  return genre ? { name: genreDisplayName(genre.name), slug: genreFamilySlug(genre) } : null;
+}
+
+type ListRelations = Pick<BookListItem, 'contributors' | 'genres' | 'mainGenre' | 'prices'>;
+
+const EMPTY_RELATIONS: ListRelations = { contributors: [], genres: [], mainGenre: null, prices: [] };
+
 async function attachRelationsToList(
   rows: { id: number }[],
-): Promise<Map<number, { contributors: BookListItem['contributors']; genres: BookListItem['genres']; prices: BookListItem['prices'] }>> {
+): Promise<Map<number, ListRelations>> {
   const ids = rows.map((r) => r.id);
-  const map = new Map<number, { contributors: BookListItem['contributors']; genres: BookListItem['genres']; prices: BookListItem['prices'] }>();
-  ids.forEach((id) => map.set(id, { contributors: [], genres: [], prices: [] }));
+  const map = new Map<number, ListRelations>();
+  ids.forEach((id) => map.set(id, { contributors: [], genres: [], mainGenre: null, prices: [] }));
 
   if (ids.length === 0) return map;
 
-  const [contributors, genreRows, priceRows] = await Promise.all([
+  const [contributors, genreRows, mainGenreRows, priceRows] = await Promise.all([
     db
       .select({
         bookId: bookContributors.bookId,
@@ -1381,6 +1398,14 @@ async function attachRelationsToList(
       // one's slug is kept on every read (see lib/genre-display).
       .orderBy(genres.id),
 
+    // A separate lookup rather than a column on LIST_COLUMNS, for the same
+    // reason stock is: the list tiers' plans stay on the books table alone.
+    db
+      .select({ bookId: books.id, name: genres.name, slug: genres.slug })
+      .from(books)
+      .innerJoin(genres, eq(genres.id, books.mainGenreId))
+      .where(inArray(books.id, ids)),
+
     db
       .select({
         bookId: bookPrices.bookId,
@@ -1398,6 +1423,10 @@ async function attachRelationsToList(
   for (const g of genreRows) {
     const entry = map.get(g.bookId);
     if (entry) addDisplayGenre(entry.genres, g);
+  }
+  for (const g of mainGenreRows) {
+    const entry = map.get(g.bookId);
+    if (entry) entry.mainGenre = toDisplayMainGenre(g);
   }
   for (const p of priceRows) {
     map.get(p.bookId)?.prices.push({ priceType: p.priceType, priceAmount: p.priceAmount, currencyCode: p.currencyCode });
@@ -2420,7 +2449,8 @@ export const booksService = {
     // by work instead of one per title — a v8 page is the wrong rows in the wrong order.
     // v10: `shoppable=true` filters out unsellable books again and ranks market-restricted
     // titles below unrestricted ones — a v9 page holds the unsellable tail and the old order.
-    const rowsCacheKey = `books:list:v10:${createHash('sha256').update(JSON.stringify(opts)).digest('hex')}`;
+    // v11: every row now carries `mainGenre`; a v10 page has no such field at all.
+    const rowsCacheKey = `books:list:v11:${createHash('sha256').update(JSON.stringify(opts)).digest('hex')}`;
     // Keyed only on the fields that affect the count (not limit/offset/sort) so every
     // page of the same filter — and every sort direction — shares one cached total.
     //
@@ -3627,7 +3657,7 @@ export const booksService = {
         return {
           ...row,
           productFormLabel: getProductFormLabel(row.productForm),
-          ...(relations.get(id) ?? { contributors: [], genres: [], prices: [] }),
+          ...(relations.get(id) ?? EMPTY_RELATIONS),
           excerpt: pickExcerpt(row.isbn13, excerptMap),
         } as BookListItem;
       })
@@ -4408,7 +4438,10 @@ export const booksService = {
 async function loadBookDetail(id: number): Promise<BookDetail | null> {
   const cacheKey = `book:detail:${id}`;
   const cached = await redis.get(cacheKey);
-  if (cached) {
+  // A detail cached before `mainGenre` existed has no such key, and is rebuilt
+  // rather than served as null for up to an hour. The key itself is not renamed
+  // because other services delete it to refresh a book page.
+  if (cached && cached.includes('"mainGenre":')) {
     const detail = JSON.parse(cached) as BookDetail;
     detail.createdAt = new Date(detail.createdAt);
     detail.updatedAt = new Date(detail.updatedAt);
@@ -4418,7 +4451,7 @@ async function loadBookDetail(id: number): Promise<BookDetail | null> {
   const [book] = await db.select().from(books).where(eq(books.id, id)).limit(1);
   if (!book) return null;
 
-  const [contributors, genreRows, priceRows, subjects, excerptMap, reviewMap, bioMap, otherEditionRows] = await Promise.all([
+  const [contributors, genreRows, priceRows, subjects, excerptMap, reviewMap, bioMap, otherEditionRows, mainGenreRow] = await Promise.all([
     db
       .select({
         role: bookContributors.role,
@@ -4464,6 +4497,15 @@ async function loadBookDetail(id: number): Promise<BookDetail | null> {
     getBiosByIsbns([book.isbn13]),
 
     fetchOtherEditions(id, book.title),
+
+    book.mainGenreId === null
+      ? Promise.resolve(null)
+      : db
+          .select({ name: genres.name, slug: genres.slug })
+          .from(genres)
+          .where(eq(genres.id, book.mainGenreId))
+          .limit(1)
+          .then(([row]) => row ?? null),
   ]);
 
   const detail: BookDetail = {
@@ -4496,6 +4538,7 @@ async function loadBookDetail(id: number): Promise<BookDetail | null> {
     updatedAt: book.updatedAt,
     contributors,
     genres: toDisplayGenres(genreRows),
+    mainGenre: toDisplayMainGenre(mainGenreRow),
     prices: priceRows,
     subjects,
     excerpt: pickExcerpt(book.isbn13, excerptMap),

@@ -8,6 +8,10 @@
 * shop only lists books you can buy, with ones restricted in your country last ([6693de9](https://adl.github.com/adl-developer/kinkane-backend/commit/6693de9f86796667066e2cb13a7fcc3410b47976)) — [details](changelog/2026-09-29-shop-hides-unsellable-books-restricted-titles-last.md)
 * let customers buy books that are only restricted in other countries ([c18e88d](https://adl.github.com/adl-developer/kinkane-backend/commit/c18e88d39258571ed55931d09e009ea57fe1c4d5)) — [details](changelog/2026-09-29-books-restricted-elsewhere-can-be-bought.md)
 
+### Bug Fixes
+
+* shop shows the edition you can buy first, not one restricted in your country ([2ed136a](https://adl.github.com/adl-developer/kinkane-backend/commit/2ed136ab5ce9f88698f6bb69dd53a7054157e452)) — [details](changelog/2026-09-29-books-restricted-elsewhere-can-be-bought.md)
+
 
 ## 2026-09-28
 
