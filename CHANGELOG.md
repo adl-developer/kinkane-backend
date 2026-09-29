@@ -5,6 +5,7 @@
 
 ### Features
 
+* show accepted follow requests and new recommendations in the notifications list ([421cdab](https://adl.github.com/adl-developer/kinkane-backend/commit/421cdab4deb85712ec1abf30c4ce2c3e9c66d8e0)) — [details](changelog/2026-09-28-follow-accepted-and-recommendations-in-notifications.md)
 * stop a follow request going back to someone who already sent you one ([e0fdbfc](https://adl.github.com/adl-developer/kinkane-backend/commit/e0fdbfc2fb51492bde13937b07f130d2d31606af)) — [details](changelog/2026-09-28-follow-accepted-and-recommendations-in-notifications.md)
 * show the reader type's tagline straight after the quiz, not only on later screens ([8648b9f](https://adl.github.com/adl-developer/kinkane-backend/commit/8648b9f8692c332d772fd6668b6e887667788871)) — [details](changelog/2026-09-28-book-editions-hardback-first-no-duplicate-recommendations.md)
 

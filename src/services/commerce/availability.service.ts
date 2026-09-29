@@ -24,6 +24,7 @@ import {
 import { config } from '../../config';
 import { logger } from '../../lib/logger';
 import { normalizeCountry } from './pricing';
+import { gardnersRegionsForCountry } from './gardners-regions';
 // Shared with the catalogue's `shoppable` filter so browse and checkout can
 // never disagree about which report codes mean "cannot be supplied".
 import {
@@ -109,21 +110,6 @@ function poundsToPence(rrpGbp: string | null): number | null {
 }
 
 /**
- * Resolves an ISO country to the Gardners region code(s) used by
- * `gardners_market_restrictions`.
- *
- * Gardners' region vocabulary is its own (REGIONS.CSV) and does not line up
- * with ISO-3166, so this mapping has to be supplied by an operator via
- * GARDNERS_REGION_BY_COUNTRY. It ships empty on purpose — a guessed mapping
- * would be worse than no mapping, because it would silently authorise sales
- * into territories we have not actually checked.
- */
-function gardnersRegionsForCountry(countryCode: string): string[] {
-  const mapped = config.commerce.gardnersRegionByCountry[countryCode];
-  return mapped ? mapped.split('|').map((r) => r.trim().toUpperCase()).filter(Boolean) : [];
-}
-
-/**
  * Applies the market-restriction rules for one destination.
  *
  * Semantics come straight from the feed (see the schema comment):
@@ -150,7 +136,7 @@ function isRestricted(
     logger.warn('Blocking a rights-restricted title: no Gardners region mapping for destination', {
       isbn13,
       destinationCountry,
-      hint: 'Populate GARDNERS_REGION_BY_COUNTRY from REGIONS.CSV',
+      hint: 'Add the country to gardners-regions.ts or GARDNERS_REGION_BY_COUNTRY',
     });
     return true;
   }
