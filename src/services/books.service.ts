@@ -118,9 +118,9 @@ const SEARCH_COUNT_CAP = 1000;
 // map a page offset onto the concatenated bands (see planShopBands), so they only have to
 // be exact over the range a shopper can actually reach; past this the boundary is
 // approximate and `hasMore` carries pagination, exactly as it does past SEARCH_COUNT_CAP.
-// Capped rather than exact because these are two counts over a 2M-row catalogue and they
-// are on the path of every shop page — the cap is what keeps a cold cache from paying for
-// a full scan twice.
+// Capped rather than exact because these are up to three counts over a 2M-row catalogue
+// and they are on the path of every deep shop page — the cap is what keeps a cold cache
+// from paying for a full scan per band.
 const SHOP_BAND_COUNT_CAP = 200_000;
 
 // Above this many *estimated* rows, a filter-only browse reports the planner's estimate
@@ -272,20 +272,14 @@ export interface ListBooksOptions {
   // editions are brought together in that same order — see groupEditions.
   dedupe?: boolean;
   /**
-   * Opt-in: orders the results the way a shop has to — everything Gardners can
-   * supply and has on the shelf first, then what is orderable but unstocked,
-   * then everything unsellable. See SHOP_BAND for the bands and why there are
-   * three of them.
+   * Opt-in: lists only what a customer can buy, in the order a shop has to —
+   * books with no ISBN13, no live supplier price, or an unsuppliable report code
+   * are excluded (buildShoppableCondition), and the rest come in stock first,
+   * then orderable but unstocked, with titles restricted for the customer after the
+   * unrestricted ones inside each. See SHOP_BAND for the four bands.
    *
-   * This used to *exclude* the unsellable tail rather than sink it, which made
-   * `shoppable=true` and `shoppable=false` return different books; they now
-   * return the same books in a different order. Callers that relied on the
-   * filter should read `shoppable` on each row — the flag says which side of
-   * the line a result fell on, so a listing can stop at the boundary itself.
-   *
-   * `priceMin`/`priceMax` are unaffected and still filter, since a price range
-   * is a request for a shelf rather than an ordering. See
-   * buildPriceBoundsCondition.
+   * With it off nothing is excluded or reordered. `priceMin`/`priceMax` narrow
+   * the shoppable shelf further — see buildPriceBoundsCondition.
    */
   shoppable?: boolean;
   /**
@@ -296,6 +290,14 @@ export interface ListBooksOptions {
    * buildWhereClause(opts) themselves, and would otherwise silently ignore it.
    */
   shopBand?: ShopBand;
+  /**
+   * The customer's Gardners regions, for deciding which shoppable books count as
+   * market-restricted — see buildMarketRestrictedCondition. Set by the controller
+   * from the request's country on `shoppable=true` requests only; absent means the
+   * country is unknown, and any restriction at all counts. Sorted and de-duplicated,
+   * so two countries with the same regions share cache entries.
+   */
+  restrictionRegions?: string[];
   /**
    * For dedupe=true only. When supplied it overrides `offset`: the server
    * resumes at the raw-row position the token encodes and also filters out any
@@ -408,12 +410,11 @@ export interface BookListItem {
    * ISBN13, a supplier price, and no unsuppliable report code. Present only on
    * `shoppable=true` requests, alongside `inStock`.
    *
-   * It exists because `shoppable=true` ranks rather than filters: the unsellable
-   * tail is still in the response, at the end, and without this a client would
-   * have to infer "unsellable" from a missing price and get it wrong for a book
-   * that is merely out of stock. `shoppable: true, inStock: false` is orderable
-   * with a longer lead time; `shoppable: false` is not orderable at all and must
-   * not be given an Add button.
+   * `shoppable=true` excludes unsellable books, so in practice this is always
+   * `true` there. It is kept because clients already read it, and because it is
+   * derived from the band a row was selected by: a row that somehow fell outside
+   * every sellable band would say `false` rather than be offered for sale.
+   * `shoppable: true, inStock: false` is orderable with a longer lead time.
    */
   shoppable?: boolean;
   /**
@@ -694,9 +695,8 @@ export interface BookDetail extends BookListItem {
  *    sellable filter (buildShoppableCondition) is unconditional here, *not*
  *    gated on a caller's `shoppable` flag — which the feeds no longer take at
  *    all. Their rows are always sellable and always priced. The flag survives
- *    only on `GET /books`, where it means something different: it *ranks* the
- *    catalogue into shop bands rather than filtering it, because a listing that
- *    changes size with a query parameter cannot be paged through consistently.
+ *    only on `GET /books`, where it applies this same filter and then ranks what
+ *    is left into shop bands.
  *
  * Exported because the bestseller chart is a feed too, and lives in
  * commerce/bestsellers.service.ts — it ranks off `order_items` rather than off
@@ -1325,12 +1325,14 @@ function buildWhereClause(opts: ListBooksOptions, searchCondition?: SQL): SQL | 
     conditions.push(sql`${books.publicationDate} <= ${`${opts.yearMax}-12-31`}`);
   }
 
-  // `shoppable` itself is no longer a condition — it orders, and list() walks
-  // the bands. What survives here is the half of it that was always a genuine
-  // filter: an explicit price range. It is applied on any `shoppable=true`
-  // request, band or no band, so every band's query agrees on which shelf it is
-  // paginating over.
+  // `shoppable=true` excludes what a customer cannot buy, then list() orders the
+  // rest by walking the bands. The exclusion lives here, band or no band, so every
+  // query a shoppable request makes — each band's rows, the total, the band counts,
+  // the search tier probes and the sibling editions — agrees on which shelf it is
+  // paginating over. A total that still counted the unsellable books would promise
+  // pages the band ladder can never fill.
   if (opts.shoppable) {
+    conditions.push(buildShoppableCondition());
     const priceBounds = buildPriceBoundsCondition({
       minGbpPence: opts.priceMinGbpPence,
       maxGbpPence: opts.priceMaxGbpPence,
@@ -1339,7 +1341,7 @@ function buildWhereClause(opts: ListBooksOptions, searchCondition?: SQL): SQL | 
   }
 
   if (opts.shopBand !== undefined) {
-    conditions.push(buildShopBandCondition(opts.shopBand));
+    conditions.push(buildShopBandCondition(opts.shopBand, opts.restrictionRegions));
   }
 
   return conditions.length > 0 ? and(...conditions) : undefined;
@@ -2286,6 +2288,7 @@ const SIBLING_EDITIONS_PER_TITLE = 10;
 async function fetchSiblingEditions(
   pageRows: ListRow[],
   where: SQL | undefined,
+  restrictionRegions: readonly string[] | undefined,
 ): Promise<{ row: ListRow; band: ShopBand }[]> {
   if (pageRows.length === 0) return [];
 
@@ -2306,8 +2309,10 @@ async function fetchSiblingEditions(
   )`;
 
   const band = sql<number>`CASE
-    WHEN ${buildShopBandCondition(SHOP_BAND.IN_STOCK)} THEN ${SHOP_BAND.IN_STOCK}
-    WHEN ${buildShopBandCondition(SHOP_BAND.TO_ORDER)} THEN ${SHOP_BAND.TO_ORDER}
+    ${sql.join(
+      SHOP_BAND_ORDER.map((b) => sql`WHEN ${buildShopBandCondition(b, restrictionRegions)} THEN ${b}`),
+      sql` `,
+    )}
     ELSE ${SHOP_BAND.UNSELLABLE}
   END`;
   // Mirrors formatRank in lib/dedupe.
@@ -2413,7 +2418,9 @@ export const booksService = {
     // v8: the edition picker now prefers in-stock, then order-in editions, then paperback > hardback > other, so v7 pages could hold the wrong edition of a title.
     // v9: hardback now leads paperback, and a deduped search lists every edition grouped
     // by work instead of one per title — a v8 page is the wrong rows in the wrong order.
-    const rowsCacheKey = `books:list:v9:${createHash('sha256').update(JSON.stringify(opts)).digest('hex')}`;
+    // v10: `shoppable=true` filters out unsellable books again and ranks market-restricted
+    // titles below unrestricted ones — a v9 page holds the unsellable tail and the old order.
+    const rowsCacheKey = `books:list:v10:${createHash('sha256').update(JSON.stringify(opts)).digest('hex')}`;
     // Keyed only on the fields that affect the count (not limit/offset/sort) so every
     // page of the same filter — and every sort direction — shares one cached total.
     //
@@ -2442,6 +2449,10 @@ export const booksService = {
       dedupe: _dedupe,
       cursor: _cursor,
       currency: _currency,
+      // Only decides which band a sellable book lands in, never whether it is listed,
+      // so the total is the same for every country. Kept out so each country does not
+      // pay for its own cold count; the band keys below add it back.
+      restrictionRegions: _restrictionRegions,
       ...countFilters
     } = opts;
     // v5: see the v6 note on the rows key — a blended total is wrong for either single
@@ -2451,7 +2462,10 @@ export const booksService = {
     // sellable slice of it, because nothing is excluded any more. A v5 entry would report
     // the old, smaller number against a listing that runs well past it — and the band
     // ladder pages by offset, so a total that stops short strands the tail.
-    const countCacheKey = `books:count:v6:${createHash('sha256')
+    // v7: and back — a shoppable total counts only the sellable books again, now that
+    // `shoppable=true` excludes the rest. A v6 entry would report the whole catalogue
+    // against a listing that ends well short of it.
+    const countCacheKey = `books:count:v7:${createHash('sha256')
       .update(JSON.stringify(countFilters))
       .digest('hex')}`;
 
@@ -2699,8 +2713,11 @@ export const booksService = {
     // search's band is measured against whichever match set the tier ladder settled on,
     // and two tiers are two different sets.
     const countShopBand = async (band: ShopBand): Promise<number> => {
-      const key = `books:shopband:v1:${band}:${rowsTier}:${createHash('sha256')
-        .update(JSON.stringify(countFilters))
+      // v2: four bands instead of three, and the numbers moved — v1's band 1 was
+      // to-order, which is now in-stock-but-restricted.
+      // A band's size does depend on the customer's regions, unlike the total.
+      const key = `books:shopband:v2:${band}:${rowsTier}:${createHash('sha256')
+        .update(JSON.stringify({ ...countFilters, restrictionRegions: opts.restrictionRegions }))
         .digest('hex')}`;
       const cached = await redis.get(key);
       if (cached != null) return parseInt(cached, 10);
@@ -2852,16 +2869,15 @@ export const booksService = {
                 // plan reached them.
                 let firstBand: number = SHOP_BAND.IN_STOCK;
                 if (effectiveOffset > 0) {
-                  const [inStock, toOrder] = await Promise.all([
-                    countShopBand(SHOP_BAND.IN_STOCK),
-                    countShopBand(SHOP_BAND.TO_ORDER),
-                  ]);
-                  for (const segment of planShopBands(effectiveOffset, want, {
-                    inStock,
-                    toOrder,
-                  })) {
+                  // Every band but the last: planShopBands treats the tail as
+                  // unbounded, so it never needs a count of its own.
+                  const sizes = await Promise.all(
+                    SHOP_BAND_ORDER.slice(0, -1).map((band) => countShopBand(band)),
+                  );
+                  for (const segment of planShopBands(effectiveOffset, want, sizes)) {
                     planned.set(segment.band, segment.offset);
                   }
+                  // An empty plan means nothing was asked for; skip every band.
                   firstBand = planned.size > 0
                     ? Math.min(...planned.keys())
                     : SHOP_BAND.UNSELLABLE;
@@ -2890,7 +2906,7 @@ export const booksService = {
           // fetchSiblingEditions. They only ever replace a page row of the same
           // title, never add a new position, and they do not advance the cursor:
           // pagination still runs on rawRows.
-          const siblings = opts.dedupe ? await fetchSiblingEditions(rawRows, siblingWhere) : [];
+          const siblings = opts.dedupe ? await fetchSiblingEditions(rawRows, siblingWhere, opts.restrictionRegions) : [];
           for (const sibling of siblings) bandByRow.set(sibling.row.id, sibling.band);
           const poolRows: ListRow[] = [...rawRows, ...siblings.map((sibling) => sibling.row)];
 

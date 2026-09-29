@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-09-29
+
+### Features
+
+* let customers buy books that are only restricted in other countries ([c18e88d](https://adl.github.com/adl-developer/kinkane-backend/commit/c18e88d39258571ed55931d09e009ea57fe1c4d5)) — [details](changelog/2026-09-29-books-restricted-elsewhere-can-be-bought.md)
+
+
 ## 2026-09-28
 
 ### Features

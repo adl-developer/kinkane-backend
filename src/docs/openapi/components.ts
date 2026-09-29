@@ -176,7 +176,7 @@ const bookSchemas = {
         type: 'boolean',
         example: true,
         description:
-          'Present only on `GET /books?shoppable=true`. Whether the shop can sell this book at all — it has an ISBN13, a live supplier price, and no unsuppliable report code. It exists because `shoppable=true` ranks rather than filters: the unsellable books are still in the response, at the end. `false` means no Add button, ever, and the other shop fields (`inStock`, `unitPriceMinor`, `compareAtMinor`, `currency`) are omitted on those rows — an unsellable book can still have a supplier price and even stock behind it, but neither is an offer. Absent on every other endpoint.',
+          'Present only on `GET /books?shoppable=true`. Whether the shop can sell this book at all — it has an ISBN13, a live supplier price, and no unsuppliable report code. `shoppable=true` excludes unsellable books, so this is `true` on every row you receive; it is kept for clients that already read it. If a row ever says `false`, give it no Add button — the other shop fields (`inStock`, `unitPriceMinor`, `compareAtMinor`, `currency`) are omitted on such a row. Absent on every other endpoint.',
       },
     },
   },

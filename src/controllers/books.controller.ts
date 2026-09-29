@@ -6,7 +6,8 @@ import { userBooksService } from '../services/user-books.service';
 import { interactionsService } from '../services/interactions.service';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 import { config } from '../config';
-import { fromPresentment, resolveCurrency } from '../services/commerce/pricing';
+import { fromPresentment, resolveCurrency, resolveRequestCountry } from '../services/commerce/pricing';
+import { gardnersRegionsForCountry } from '../services/commerce/gardners-regions';
 import { minorUnitsPerMajor } from '../lib/money';
 import { isbnFromQuery } from '../lib/isbn';
 
@@ -90,16 +91,10 @@ const listSchemaBase = z.object({
   // first — see dedupeParam above.
   dedupe: dedupeParam,
   /**
-   * Opt-in: orders the results the way a shop has to, rather than narrowing
-   * them. Three bands, in this order — in stock, orderable but unstocked, then
-   * everything the shop cannot sell at all (no ISBN13, no price, or an
-   * unsuppliable Gardners report code). Each row carries `shoppable` and
-   * `inStock` so a listing can badge the tail or cut it off itself.
-   *
-   * It used to *drop* that last band. Turning the filter into a ranking means
-   * `shoppable=true` and `shoppable=false` now return the same books in a
-   * different order, so a client that was relying on the exclusion — an Add
-   * button on every row, say — has to read `shoppable` per row instead.
+   * Opt-in: lists only what the shop can sell, ordered the way a shop has to.
+   * Books with no ISBN13, no price, or an unsuppliable Gardners report code are
+   * excluded; the rest come in stock first, then orderable but unstocked, with
+   * titles restricted in the customer's country after the rest inside each.
    *
    * Off by default: discovery, search and reading lists browse the whole
    * catalogue in its natural order, and only the e-commerce section wants the
@@ -125,10 +120,8 @@ const listSchemaBase = z.object({
   })
   // The price lives on the Gardners stock row, which only the shoppable path
   // consults. Rejecting rather than ignoring: a filtered page that quietly came
-  // back unfiltered is a bug the client cannot see. Still required now that
-  // `shoppable` ranks rather than filters — the bounds themselves remain a real
-  // filter (see buildPriceBoundsCondition), and they are only meaningful
-  // against the currency and live prices the shoppable path resolves.
+  // back unfiltered is a bug the client cannot see. The bounds are only
+  // meaningful against the currency and live prices the shoppable path resolves.
   .refine((v) => (v.priceMin === undefined && v.priceMax === undefined) || v.shoppable, {
     message: 'priceMin/priceMax require shoppable=true — only shoppable books have a price',
     path: ['priceMin'],
@@ -290,8 +283,18 @@ async function runList(
       }
     }
 
+    // Which market restrictions apply to this customer, for ranking the shop: a book
+    // restricted only somewhere else stays with the unrestricted ones. The country is
+    // the request's (trusted geo header, then MaxMind), resolved live as the cart
+    // does. Unknown country → no regions → any restriction counts. Only resolved for
+    // the shop, so other listings neither pay for the lookup nor split their cache
+    // by country.
+    const country = rest.shoppable ? await resolveRequestCountry(req) : null;
+    const regions = country ? gardnersRegionsForCountry(country) : [];
+
     const result = await booksService.list({
       ...rest,
+      ...(regions.length > 0 ? { restrictionRegions: [...regions] } : {}),
       // Spread before this line cannot contain searchType — listSchemaBase has no `type`
       // — so v1 never sets the key at all, which is what booksService.list keys the
       // blended path (and its cache entries) on.

@@ -3,10 +3,13 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import {
   buildShoppableCondition,
   buildShopBandCondition,
+  buildMarketRestrictedCondition,
   buildPriceBoundsCondition,
   planShopBands,
   isSellableBand,
   SHOP_BAND,
+  SHOP_BAND_ORDER,
+  type ShopBand,
   UNSUPPLIABLE_REPORT_CODES,
   UNSUPPLIABLE_REPORT_CODE_SET,
   availableQuantityFor,
@@ -117,62 +120,147 @@ describe('supply-to-order report codes', () => {
   });
 });
 
-// The bands are what `shoppable=true` now *orders* by, having stopped filtering.
-// Same reasoning as above: the interesting properties are properties of the SQL,
-// and the one that matters most is that the three bands partition the catalogue.
-// A book in no band vanishes from the listing entirely — a filter by accident,
-// which is the exact bug turning the filter into a ranking was meant to remove.
+// The bands are what `shoppable=true` orders the sellable books by, once the
+// unsellable ones have been filtered out. Same reasoning as above: the
+// interesting properties are properties of the SQL, and the one that matters
+// most is that the four listed bands partition the sellable catalogue. A
+// sellable book in no band vanishes from the listing entirely.
 describe('buildShopBandCondition', () => {
-  const bandSql = (band: 0 | 1 | 2) =>
+  const bandSql = (band: ShopBand) =>
     dialect.sqlToQuery(buildShopBandCondition(band)).sql.toLowerCase();
+  const restrictedProbe = /\band\s+\(select exists\s*\(\s*select 1 from "gardners_market_restrictions" mr/;
+  const unrestrictedProbe = /\bnot\s+\(select exists\s*\(\s*select 1 from "gardners_market_restrictions" mr/;
 
-  it('puts stocked, priced, suppliable books in band 0', () => {
-    const s = bandSql(SHOP_BAND.IN_STOCK);
-    expect(s).toContain('"books"."isbn13" is not null');
-    expect(s).toContain('gs.rrp_gbp > 0');
-    expect(s).toContain('coalesce(gs.stock_qty, 0) > 0');
-    expect(s).toContain('not in');
+  it('puts stocked, priced, suppliable books in the in-stock bands', () => {
+    for (const band of [SHOP_BAND.IN_STOCK, SHOP_BAND.IN_STOCK_RESTRICTED]) {
+      const s = bandSql(band);
+      expect(s).toContain('"books"."isbn13" is not null');
+      expect(s).toContain('gs.rrp_gbp > 0');
+      expect(s).toContain('coalesce(gs.stock_qty, 0) > 0');
+      expect(s).toContain('not in');
+    }
   });
 
-  it('puts suppliable-but-unstocked books in band 1, not out of the shop', () => {
-    const s = bandSql(SHOP_BAND.TO_ORDER);
-    // GXC and M/D live here: no shelf, still orderable. Band 1 is what keeps
-    // them listed behind the stocked titles instead of below the dead ones.
-    expect(s).toContain('coalesce(gs.stock_qty, 0) = 0');
-    expect(s).toContain('gs.rrp_gbp > 0');
+  it('puts suppliable-but-unstocked books in the to-order bands, not out of the shop', () => {
+    // GXC and M/D live here: no shelf, still orderable.
+    for (const band of [SHOP_BAND.TO_ORDER, SHOP_BAND.TO_ORDER_RESTRICTED]) {
+      const s = bandSql(band);
+      expect(s).toContain('coalesce(gs.stock_qty, 0) = 0');
+      expect(s).toContain('gs.rrp_gbp > 0');
+    }
   });
 
   it('treats a null stock_qty as no stock, not as stock', () => {
     // "The feed has never said" is not a shelf. Without the COALESCE those rows
     // satisfy neither band and disappear.
-    expect(bandSql(SHOP_BAND.IN_STOCK)).toContain('coalesce(gs.stock_qty, 0)');
-    expect(bandSql(SHOP_BAND.TO_ORDER)).toContain('coalesce(gs.stock_qty, 0)');
+    for (const band of SHOP_BAND_ORDER) {
+      expect(bandSql(band)).toContain('coalesce(gs.stock_qty, 0)');
+    }
   });
 
-  it('sweeps everything else into band 2, including books with no ISBN13', () => {
+  it('splits each stock band on the same restriction probe, one side each', () => {
+    // EXISTS and NOT EXISTS of one subquery: together they cover every row, so
+    // the restricted and unrestricted halves partition the stock band exactly.
+    for (const band of [SHOP_BAND.IN_STOCK_RESTRICTED, SHOP_BAND.TO_ORDER_RESTRICTED]) {
+      const s = bandSql(band);
+      expect(s).toMatch(restrictedProbe);
+      expect(s).not.toMatch(unrestrictedProbe);
+    }
+    for (const band of [SHOP_BAND.IN_STOCK, SHOP_BAND.TO_ORDER]) {
+      const s = bandSql(band);
+      expect(s).toMatch(unrestrictedProbe);
+      expect(s).not.toMatch(restrictedProbe);
+    }
+  });
+
+  it('probes restrictions per row, not as a join the planner can hash', () => {
+    // A bare NOT EXISTS became a hash anti-join over the whole restrictions table
+    // plus a sort — 714ms against 14ms for page 1 of band 0. See
+    // buildMarketRestrictedCondition.
+    const probe = dialect.sqlToQuery(buildMarketRestrictedCondition()).sql.toLowerCase();
+    expect(probe).toMatch(/^\(select exists \(/);
+  });
+
+  it('counts a restriction in any region when there is no customer country', () => {
+    // Nothing to test against, so the probe must not name a region or a flag —
+    // any restriction row at all is a restriction.
+    const probe = dialect.sqlToQuery(buildMarketRestrictedCondition()).sql.toLowerCase();
+    expect(probe).toContain('mr.isbn13 = "books"."isbn13"');
+    expect(probe).not.toContain('region_code');
+    expect(probe).not.toContain('flag');
+  });
+
+  describe('for a known customer country', () => {
+    const regions = ['AFR', 'GH'];
+    const compiledProbe = dialect.sqlToQuery(buildMarketRestrictedCondition(regions));
+    const probe = compiledProbe.sql.toLowerCase();
+
+    it('restricts on a denylist row naming the customer\'s region', () => {
+      expect(probe).toMatch(/mr\.flag = 'n' and upper\(mr\.region_code\) in \(\$1, \$2\)/);
+    });
+
+    it('restricts on an allowlist that names none of the customer\'s regions', () => {
+      expect(probe).toMatch(/mr\.flag = 'y'\s+and not exists/);
+      expect(probe).toMatch(/mr_allow\.flag = 'y'\s+and upper\(mr_allow\.region_code\) in \(\$3, \$4\)/);
+    });
+
+    it('binds the regions rather than inlining them', () => {
+      expect(compiledProbe.params).toEqual(['AFR', 'GH', 'AFR', 'GH']);
+    });
+
+    it('stays a per-row scalar probe', () => {
+      expect(probe).toMatch(/^\(select exists \(/);
+    });
+
+    it('reaches the band predicates', () => {
+      const band = dialect.sqlToQuery(buildShopBandCondition(SHOP_BAND.IN_STOCK, regions));
+      expect(band.params).toEqual([...UNSUPPLIABLE_REPORT_CODES, 'AFR', 'GH', 'AFR', 'GH']);
+    });
+
+    it('falls back to any restriction when the country is unknown', () => {
+      for (const unknown of [undefined, []]) {
+        const s = dialect.sqlToQuery(buildMarketRestrictedCondition(unknown)).sql.toLowerCase();
+        expect(s).not.toContain('region_code');
+      }
+    });
+  });
+
+  it('lists stock ahead of restriction', () => {
+    // Every book on the shelf, restricted or not, comes before any to-order book.
+    expect(SHOP_BAND_ORDER).toEqual([
+      SHOP_BAND.IN_STOCK,
+      SHOP_BAND.IN_STOCK_RESTRICTED,
+      SHOP_BAND.TO_ORDER,
+      SHOP_BAND.TO_ORDER_RESTRICTED,
+    ]);
+  });
+
+  it('never walks the unsellable band', () => {
+    // `shoppable=true` excludes what cannot be bought rather than sinking it.
+    expect(SHOP_BAND_ORDER).not.toContain(SHOP_BAND.UNSELLABLE);
+  });
+
+  it('defines UNSELLABLE as the complement of the supply test, including books with no ISBN13', () => {
     const s = bandSql(SHOP_BAND.UNSELLABLE);
     expect(s).toContain('"books"."isbn13" is null');
     expect(s).toContain('not exists');
-  });
-
-  it('defines band 2 as the complement of the supply test, not of the stock test', () => {
-    // Band 2 must not mention stock at all: an unstocked-but-orderable book is
-    // band 1, and a band 2 that tested stock would claim it too — putting one
-    // book in two bands, which double-counts it across a page boundary.
-    expect(bandSql(SHOP_BAND.UNSELLABLE)).not.toContain('stock_qty');
+    // It must not mention stock or restriction: an unstocked or restricted but
+    // orderable book belongs to a listed band, and claiming it here too would
+    // put one book in two bands.
+    expect(s).not.toContain('stock_qty');
+    expect(s).not.toContain('gardners_market_restrictions');
   });
 
   it('binds the same unsuppliable codes as the filter and the checkout gate', () => {
-    for (const band of [SHOP_BAND.IN_STOCK, SHOP_BAND.TO_ORDER, SHOP_BAND.UNSELLABLE]) {
+    for (const band of [...SHOP_BAND_ORDER, SHOP_BAND.UNSELLABLE]) {
       expect(dialect.sqlToQuery(buildShopBandCondition(band)).params).toEqual([
         ...UNSUPPLIABLE_REPORT_CODES,
       ]);
     }
   });
 
-  it('calls only band 2 unsellable', () => {
-    expect(isSellableBand(SHOP_BAND.IN_STOCK)).toBe(true);
-    expect(isSellableBand(SHOP_BAND.TO_ORDER)).toBe(true);
+  it('calls only UNSELLABLE unsellable', () => {
+    for (const band of SHOP_BAND_ORDER) expect(isSellableBand(band)).toBe(true);
     expect(isSellableBand(SHOP_BAND.UNSELLABLE)).toBe(false);
   });
 });
@@ -202,7 +290,8 @@ describe('buildPriceBoundsCondition', () => {
 });
 
 describe('planShopBands', () => {
-  const sizes = { inStock: 100, toOrder: 50 };
+  // Sizes of bands 0, 1 and 2; band 3 is the tail and is never counted.
+  const sizes = [100, 20, 50];
 
   it('answers a first page from one band', () => {
     // The common case, and the one the whole predicate-not-sort-key design
@@ -218,32 +307,36 @@ describe('planShopBands', () => {
   });
 
   it('skips bands that are entirely behind the offset', () => {
-    expect(planShopBands(150, 10, sizes)).toEqual([{ band: 2, offset: 0, take: 10 }]);
+    expect(planShopBands(125, 10, sizes)).toEqual([{ band: 2, offset: 5, take: 10 }]);
   });
 
-  it('can span all three bands at once', () => {
-    expect(planShopBands(95, 100, { inStock: 100, toOrder: 5 })).toEqual([
+  it('can span all four bands at once', () => {
+    expect(planShopBands(95, 100, [100, 5, 5])).toEqual([
       { band: 0, offset: 95, take: 5 },
       { band: 1, offset: 0, take: 5 },
-      { band: 2, offset: 0, take: 90 },
+      { band: 2, offset: 0, take: 5 },
+      { band: 3, offset: 0, take: 85 },
     ]);
   });
 
-  it('never runs out of band 2, which is unbounded', () => {
-    // Band 2 is the tail of the catalogue and has no count of its own — a plan
-    // that stopped short there would truncate the last page of every listing.
+  it('treats the last band as unbounded, so it never needs a count', () => {
+    // Planning past its real end just fetches fewer rows, which ends the listing.
     const [segment] = planShopBands(1_000_000, 20, sizes);
-    expect(segment).toEqual({ band: 2, offset: 999_850, take: 20 });
+    expect(segment).toEqual({ band: 3, offset: 999_830, take: 20 });
   });
 
-  it('offsets into band 2 by what the earlier bands actually held', () => {
-    expect(planShopBands(200, 5, sizes)).toEqual([{ band: 2, offset: 50, take: 5 }]);
-  });
-
-  it('starts at band 0 when the earlier bands are empty', () => {
-    expect(planShopBands(0, 10, { inStock: 0, toOrder: 0 })).toEqual([
-      { band: 2, offset: 0, take: 10 },
+  it('ignores a size given for the last band', () => {
+    expect(planShopBands(180, 20, [100, 20, 50, 5])).toEqual([
+      { band: 3, offset: 10, take: 20 },
     ]);
+  });
+
+  it('treats a band with no size as unbounded', () => {
+    expect(planShopBands(150, 10, [100])).toEqual([{ band: 1, offset: 50, take: 10 }]);
+  });
+
+  it('skips empty leading bands', () => {
+    expect(planShopBands(0, 10, [0, 0, 0])).toEqual([{ band: 3, offset: 0, take: 10 }]);
   });
 });
 
