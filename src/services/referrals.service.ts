@@ -10,7 +10,7 @@ import {
   userSubscriptions,
 } from '../db/schema';
 import type { Referral } from '../db/schema';
-import { config } from '../config';
+import { appLink } from '../lib/app-link';
 import { logger } from '../lib/logger';
 import { isBotUserAgent } from '../lib/user-agent';
 import { randomCode } from '../lib/random-code';
@@ -82,7 +82,7 @@ export function slugifyName(name: string): string {
 
 /** The canonical link. Token first and authoritative, name slug last. */
 export function buildReferralLink(code: string, name: string, channel?: string): string {
-  const base = `${config.appUrl}/r/${code}/${slugifyName(name)}`;
+  const base = appLink(`/r/${code}/${slugifyName(name)}`);
   return channel ? `${base}?c=${encodeURIComponent(channel)}` : base;
 }
 

@@ -92,7 +92,7 @@ const errorSchemas = {
       upgradeUrl: {
         type: 'string',
         format: 'uri',
-        example: 'https://kinkane.app/account/subscription',
+        example: 'https://kinkane.app/redirect/account/subscription',
       },
     },
   },

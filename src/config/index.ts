@@ -200,7 +200,8 @@ const envSchema = z.object({
 
   // Base client URL, and the single source of truth for every user-facing link
   // this server builds: email CTAs, password reset, Stripe return URLs, and
-  // referral links (`APP_URL/r/CODE/name-slug`).
+  // referral links. Links meant to open the mobile app go through `appLink()`
+  // (lib/app-link), which puts them under `APP_URL/redirect/...`.
   //
   // Kinkané lives on **kinkane.app**, not .com. Anything that hardcodes a
   // domain instead of reading this is a bug — it will keep pointing at the old

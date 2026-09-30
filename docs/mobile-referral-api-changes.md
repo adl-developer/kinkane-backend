@@ -56,7 +56,7 @@ would expose the user list.
 The real link looks like this, and comes back ready-made from the API:
 
 ```
-https://kinkane.app/r/K7M3QP9XVT/elisabeth-green?c=whatsapp
+https://kinkane.app/redirect/r/K7M3QP9XVT/elisabeth-green?c=whatsapp
 ```
 
 **Render `link` from `GET /referrals/me` verbatim.** Do not construct it in the
@@ -137,25 +137,28 @@ debugging in the wrong direction.
 ### 4.1 The link
 
 ```
-https://kinkane.app/r/K7M3QP9XVT/elisabeth-green?c=whatsapp
+https://kinkane.app/redirect/r/K7M3QP9XVT/elisabeth-green?c=whatsapp
 ```
 
 The code is the only meaningful part. The trailing name slug is decorative and
-is never used to resolve anything, so **`/r/CODE` with no slug must work
-identically** — chat clients sometimes clip the last path segment. `?c=` is the
+is never used to resolve anything, so **`/redirect/r/CODE` with no slug must
+work identically** — chat clients sometimes clip the last path segment. `?c=` is the
 share channel and should be passed through wherever the app forwards the code.
 
 ### 4.2 Register the link patterns
 
-Handle both `/r/:code` and `/r/:code/:slug` on `kinkane.app`.
+Every app link is sent under `/redirect` (see [deep-links.md](deep-links.md)),
+so register `/redirect/*` and route on what follows it. Referral links are
+`/redirect/r/:code` and `/redirect/r/:code/:slug`. Also keep `/r/*` registered
+for links shared before the prefix existed.
 
 - **iOS** — Associated Domains entitlement `applinks:kinkane.app`, matching an
   `apple-app-site-association` file served from
   `https://kinkane.app/.well-known/apple-app-site-association` (JSON, **no file
-  extension**, `Content-Type: application/json`, no redirects) with a path
-  component matching `/r/*`.
+  extension**, `Content-Type: application/json`, no redirects) with path
+  components matching `/redirect/*` and `/r/*`.
 - **Android** — an intent filter with `android:autoVerify="true"` for
-  `https://kinkane.app/r/*`, matching
+  `https://kinkane.app/redirect/*` and `https://kinkane.app/r/*`, matching
   `https://kinkane.app/.well-known/assetlinks.json` containing the package name
   and the SHA-256 fingerprints of **every** signing certificate, release and
   upload.

@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import { eq, and, gt } from 'drizzle-orm';
 import { db } from '../db';
 import { users, refreshTokens, emailChangeRequests } from '../db/schema';
-import { config } from '../config';
+import { appLink } from '../lib/app-link';
 import { logger } from '../lib/logger';
 import { enqueueEmail } from '../lib/email-queue';
 
@@ -81,7 +81,7 @@ export const emailChangeService = {
       throw err;
     }
 
-    const cancelUrl = `${config.appUrl}/cancel-email-change?token=${rawCancelToken}`;
+    const cancelUrl = appLink(`/cancel-email-change?token=${rawCancelToken}`);
 
     // OTP goes to the new email so the user can verify they own it
     enqueueEmail('email-change-otp', { to: normalizedEmail, name: user.name, otp }).catch((err) => {
@@ -229,7 +229,7 @@ export const emailChangeService = {
       })
       .where(eq(emailChangeRequests.id, pending.id));
 
-    const cancelUrl = `${config.appUrl}/cancel-email-change?token=${rawCancelToken}`;
+    const cancelUrl = appLink(`/cancel-email-change?token=${rawCancelToken}`);
 
     enqueueEmail('email-change-otp', { to: pending.newEmail, name: user.name, otp }).catch((err) => {
       logger.error('Failed to enqueue resend OTP email', {

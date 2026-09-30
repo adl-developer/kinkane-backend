@@ -1,6 +1,6 @@
 import { sendEmail, FROM } from '../../lib/resend';
 import { emailLayout, ctaButton, greeting, signOff, escapeHtml, p } from '../lib/layout';
-import { config } from '../../config';
+import { appLink } from '../../lib/app-link';
 
 /**
  * Sent when a renewal charge fails.
@@ -37,7 +37,7 @@ export async function sendSubscriptionPaymentFailedEmail(
     p(
       'This is usually just an expired or replaced card. <strong>Your Plus access is still active</strong> — we’ll retry over the next few days, and updating your card takes a moment.',
     ),
-    ctaButton('Update payment details', `${config.appUrl}/account/subscription`),
+    ctaButton('Update payment details', appLink('/account/subscription')),
     signOff('If you think this is a mistake, just reply to this email.'),
   ].join('\n');
 
@@ -46,6 +46,6 @@ export async function sendSubscriptionPaymentFailedEmail(
     from: FROM,
     subject: title,
     html: emailLayout(title, body),
-    text: `Hi ${name},\n\n${amount ? `We tried to charge ${amount} for your membership, and it didn't go through.` : "We tried to charge for your membership, and it didn't go through."}\n\nThis is usually just an expired or replaced card. Your Plus access is still active — we'll retry over the next few days, and updating your card takes a moment.\n\n${config.appUrl}/account/subscription\n\nIf you think this is a mistake, just reply to this email.\n\nThe Kinkané Team`,
+    text: `Hi ${name},\n\n${amount ? `We tried to charge ${amount} for your membership, and it didn't go through.` : "We tried to charge for your membership, and it didn't go through."}\n\nThis is usually just an expired or replaced card. Your Plus access is still active — we'll retry over the next few days, and updating your card takes a moment.\n\n${appLink('/account/subscription')}\n\nIf you think this is a mistake, just reply to this email.\n\nThe Kinkané Team`,
   });
 }
