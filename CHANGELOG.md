@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-09-30
+
+### Features
+
+* send every link that should open the app under kinkane.app/redirect ([9439426](https://adl.github.com/adl-developer/kinkane-backend/commit/943942685b5a98ed479316bfceccb5468c3843b7)) — [details](changelog/2026-09-30-app-links-redirect-prefix.md)
+
+
 ## 2026-09-29
 
 ### Features

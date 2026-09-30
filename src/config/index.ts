@@ -826,8 +826,8 @@ export const config = {
       annualFounding: env.STRIPE_PRICE_PLUS_ANNUAL_FOUNDING,
     },
     foundingOfferEndsAt: env.FOUNDING_OFFER_ENDS_AT,
-    checkoutSuccessUrl: env.STRIPE_CHECKOUT_SUCCESS_URL ?? `${env.APP_URL}/redirect/account/subscription?checkout=success`,
-    checkoutCancelUrl: env.STRIPE_CHECKOUT_CANCEL_URL ?? `${env.APP_URL}/redirect/account/subscription?checkout=cancelled`,
+    checkoutSuccessUrl: env.STRIPE_CHECKOUT_SUCCESS_URL ?? `${env.APP_URL}/account/subscription?checkout=success`,
+    checkoutCancelUrl: env.STRIPE_CHECKOUT_CANCEL_URL ?? `${env.APP_URL}/account/subscription?checkout=cancelled`,
   },
   gatingEnabled: env.GATING_ENABLED,
   gardnersDropship: {
@@ -873,8 +873,8 @@ export const config = {
       maxItems: env.CART_MAX_ITEMS,
       guestTtlDays: env.GUEST_CART_TTL_DAYS,
     },
-    orderSuccessUrl: env.STRIPE_ORDER_SUCCESS_URL ?? `${env.APP_URL}/redirect/cart?checkout=success`,
-    orderCancelUrl: env.STRIPE_ORDER_CANCEL_URL ?? `${env.APP_URL}/redirect/cart?checkout=cancelled`,
+    orderSuccessUrl: env.STRIPE_ORDER_SUCCESS_URL ?? `${env.APP_URL}/cart?checkout=success`,
+    orderCancelUrl: env.STRIPE_ORDER_CANCEL_URL ?? `${env.APP_URL}/cart?checkout=cancelled`,
   },
   nielsen: {
     // Credentials are part of the switch: without them every lookup would

@@ -6,8 +6,8 @@ Every link this server sends that should open the mobile app is now built as
 `https://kinkane.app/redirect/<path>` instead of `https://kinkane.app/<path>`.
 That covers referral links, the links in the welcome, follow-request,
 weekly-digest, trial-ending, subscription and new-recommendation emails, the
-password-reset and email-change links, the `upgradeUrl` on 402 responses, and
-the default Stripe return URLs for subscriptions and book orders.
+password-reset and email-change links, and the `upgradeUrl` on 402 responses.
+Stripe return URLs keep their plain paths.
 
 A new public route, `GET /redirect/*`, handles the same links when they are
 opened in a browser rather than the app: it answers `302` to the same path
@@ -24,7 +24,7 @@ association files register `/redirect/*` once.
 
 ## Decisions
 
-- **Path prefix, not a `?to=` parameter.** Stripe returns and token links
+- **Path prefix, not a `?to=` parameter.** Token links and referral links
   already carry query strings; nesting them inside an encoded parameter is
   harder to read and easy to double-encode.
 - **The forward builds its target by setting path and query on `APP_URL`,**
@@ -44,8 +44,8 @@ association files register `/redirect/*` once.
   API — see `docs/referral-link-routing.md`.
 - **Old links.** Links already sent have no prefix. The association files should
   keep the old paths registered for now; `docs/deep-links.md` lists them.
-- **Environment overrides.** `STRIPE_CHECKOUT_*_URL` and `STRIPE_ORDER_*_URL`
-  still win when set. An override without `/redirect` returns to the web.
+- **Stripe return URLs.** Checkout returns keep their unprefixed paths
+  (`/account/subscription?checkout=...`, `/cart?checkout=...`).
 
 ## Verification
 

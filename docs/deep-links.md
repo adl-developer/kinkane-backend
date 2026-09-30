@@ -37,10 +37,6 @@ generator goes through `appLink()` rather than `config.appUrl`.
 | `/redirect/explore` | subscription-confirmed email | |
 | `/redirect/subscribe` | trial-ending email | |
 | `/redirect/account/subscription` | payment-failed and cancellation emails, `upgradeUrl` on 402 responses | |
-| `/redirect/account/subscription?checkout=success` | Stripe subscription checkout return | |
-| `/redirect/account/subscription?checkout=cancelled` | Stripe subscription checkout return | |
-| `/redirect/cart?checkout=success&orderId=N` | Stripe order checkout return | default; `STRIPE_ORDER_SUCCESS_URL` overrides it |
-| `/redirect/cart?checkout=cancelled&orderId=N` | Stripe order checkout return | |
 | `/redirect/reset-password?token=TOKEN` | password-reset email | |
 | `/redirect/cancel-email-change?token=TOKEN` | email-change notice to the old address | |
 
@@ -49,9 +45,20 @@ server-side referral redirect lands a browser that *didn't* open the app, so it
 stays unprefixed. The app should still handle it (see below) in case a reader
 taps it again from their history.
 
-The Stripe return URLs are only built this way when `STRIPE_CHECKOUT_*_URL` and
-`STRIPE_ORDER_*_URL` are **unset**. An override in the environment wins, and one
-without `/redirect` sends the return to the web.
+### Stripe returns — no prefix
+
+Stripe sends the buyer back to plain `APP_URL` paths, without `/redirect`:
+
+| Path | Where it comes from |
+| --- | --- |
+| `/account/subscription?checkout=success` | Stripe subscription checkout return |
+| `/account/subscription?checkout=cancelled` | Stripe subscription checkout return |
+| `/cart?checkout=success&orderId=N` | Stripe order checkout return |
+| `/cart?checkout=cancelled&orderId=N` | Stripe order checkout return |
+
+These are the defaults; `STRIPE_CHECKOUT_*_URL` and `STRIPE_ORDER_*_URL` override
+them when set. They open the app only while `/account/subscription` and `/cart`
+stay registered in the association files (below).
 
 ## Old links, still registered
 
@@ -62,9 +69,9 @@ association files alongside `/redirect/*` so those links still open the app:
 `/account/subscription`, `/cart`, `/orders`, `/reset-password`,
 `/cancel-email-change`
 
-They can come out once nothing sent before the switch is still live. Password
-reset and email-change tokens expire within the hour, and Stripe return URLs only
-matter mid-checkout. Referral links are the long tail — they sit in chat
+They can come out once nothing sent before the switch is still live — except
+`/account/subscription` and `/cart`, which the Stripe returns still use. Password
+reset and email-change tokens expire within the hour. Referral links are the long tail — they sit in chat
 histories indefinitely — so `/r/*` is the one worth keeping longest.
 
 ## Deliberately *not* deep links
@@ -82,8 +89,8 @@ would be worse than no deep linking at all. None of them is sent with the
 
 ## Things that are easy to get wrong
 
-**Strip the prefix, keep the query.** The app should route on everything after
-`/redirect`, with the query string. The Stripe returns carry state there:
+**Keep the query string.** The app should route on everything after `/redirect`,
+query string included. The Stripe returns carry state there too:
 `?checkout=success` and `?orderId=` are the only signal the app gets that a
 payment completed — the webhook is what actually updates the account, but the
 redirect is what tells the UI to stop showing a spinner. A handler that matches

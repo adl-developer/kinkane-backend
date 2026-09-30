@@ -47,10 +47,7 @@ describe('GET /redirect/*', () => {
     });
   });
 
-  it('keeps the query string, which is where Stripe returns and tokens live', async () => {
-    const { location } = await follow('/redirect/account/subscription?checkout=success');
-    expect(location).toBe('https://kinkane.app/account/subscription?checkout=success');
-
+  it('keeps the query string, which is where the tokens live', async () => {
     const reset = await follow('/redirect/reset-password?token=abc%2B123');
     expect(reset.location).toBe('https://kinkane.app/reset-password?token=abc%2B123');
   });
