@@ -137,8 +137,8 @@ export const billingPaths = {
       ].join('\n'),
       requestBody: body(object({
         plan: { type: 'string', enum: ['monthly', 'annual'], example: 'annual' },
-        successUrl: { type: 'string', format: 'uri', description: 'Must be on the Kinkané origin.', example: 'https://kinkane.app/account/subscription?checkout=success' },
-        cancelUrl: { type: 'string', format: 'uri', description: 'Must be on the Kinkané origin.', example: 'https://kinkane.app/account/subscription?checkout=cancelled' },
+        successUrl: { type: 'string', format: 'uri', description: 'Must be on the Kinkané origin.', example: 'https://kinkane.app/redirect/account/subscription?checkout=success' },
+        cancelUrl: { type: 'string', format: 'uri', description: 'Must be on the Kinkané origin.', example: 'https://kinkane.app/redirect/account/subscription?checkout=cancelled' },
       }, ['plan'])),
       responses: {
         200: json('Send the user to `url`.',

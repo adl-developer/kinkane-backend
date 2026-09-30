@@ -13,6 +13,7 @@ import { config } from './config';
 import apiRoutes from './routes';
 import gardnersDropshipRoutes from './routes/gardners-dropship.routes';
 import referralRedirectRoutes from './routes/referral-redirect.routes';
+import appLinkRedirectRoutes from './routes/app-link-redirect.routes';
 import adminReferralsRoutes from './routes/admin-referrals.routes';
 import adminConsoleRoutes from './routes/admin';
 import { referralsController } from './controllers/referrals.controller';
@@ -117,6 +118,14 @@ app.patch('/admin/users/:id/country', requireAdminToken, wrap(referralsControlle
 // path registered as the universal/app link, so an installed app opens straight
 // through with the code.
 app.use('/r', referralRedirectRoutes);
+
+// ── App links ─────────────────────────────────────────────────────────────────
+// Every link meant to open the mobile app is sent under /redirect, so the
+// association files register one pattern. A tap that opens the app never gets
+// here; a browser does, and is forwarded to the same path without the prefix.
+// Referral links go to the referral handler first so the click is counted.
+app.use('/redirect/r', referralRedirectRoutes);
+app.use('/redirect', appLinkRedirectRoutes);
 
 // ── API documentation ─────────────────────────────────────────────────────────
 // Interactive OpenAPI reference at /docs, behind a password (SWAGGER_PASSWORD).

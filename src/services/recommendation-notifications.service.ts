@@ -19,7 +19,7 @@ import {
 import { buildFeedCondition } from './books.service';
 import { enqueueEmail } from '../lib/email-queue';
 import { enqueuePush } from '../lib/push-queue';
-import { config } from '../config';
+import { appLink } from '../lib/app-link';
 import { logger } from '../lib/logger';
 
 const SIMILARITY_THRESHOLD = 0.5;
@@ -150,7 +150,7 @@ export async function sendRecommendationEmail(
       title: pick.title,
       author: pick.author,
       reason: "Based on your reading preferences, we think you'll enjoy this one.",
-      url: `${config.appUrl}/books/${pick.bookId}`,
+      url: appLink(`/books/${pick.bookId}`),
       coverUrl: pick.coverUrl,
     },
   });

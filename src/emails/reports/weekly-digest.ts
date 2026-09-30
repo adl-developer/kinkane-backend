@@ -1,5 +1,5 @@
 import { sendEmail, FROM } from '../../lib/resend';
-import { config } from '../../config';
+import { appLink } from '../../lib/app-link';
 import { emailLayout, ctaButton, greeting, signOff, escapeHtml, p } from '../lib/layout';
 import { unsubscribeUrl } from '../../lib/unsubscribe-token';
 
@@ -46,7 +46,7 @@ export async function sendWeeklyDigestEmail(to: string, payload: WeeklyDigestPay
     p("Here's your reading summary for the week:"),
     statsTable,
     p("Keep exploring, saving, and discovering stories you'll love."),
-    ctaButton('Open Kinkané', config.appUrl),
+    ctaButton('Open Kinkané', appLink()),
     signOff('Happy reading,'),
   ].join('\n');
 
@@ -55,6 +55,6 @@ export async function sendWeeklyDigestEmail(to: string, payload: WeeklyDigestPay
     from: FROM,
     subject: 'Your week in books',
     html: emailLayout(title, body, unsubscribeUrl(to)),
-    text: `Hi ${name},\n\nHere's your reading summary for the week:\n\nBooks added to your shelf: ${booksAdded}\nNew recommendations waiting: ${newRecommendations}\nTrending among readers: ${trendingBook}\nRecommended for you this week: ${featuredBook} by ${featuredAuthor}\n\nKeep exploring, saving, and discovering stories you'll love.\n\n${config.appUrl}\n\nHappy reading,\nThe Kinkané Team`,
+    text: `Hi ${name},\n\nHere's your reading summary for the week:\n\nBooks added to your shelf: ${booksAdded}\nNew recommendations waiting: ${newRecommendations}\nTrending among readers: ${trendingBook}\nRecommended for you this week: ${featuredBook} by ${featuredAuthor}\n\nKeep exploring, saving, and discovering stories you'll love.\n\n${appLink()}\n\nHappy reading,\nThe Kinkané Team`,
   });
 }

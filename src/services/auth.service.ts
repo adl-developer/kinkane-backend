@@ -5,6 +5,7 @@ import { eq, and, gt, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { users, refreshTokens, userProviders, guestSessions, userPreferences, userInteractions, userBooks, userSubscriptions, subscriptionEvents, passwordResetTokens, emailVerificationTokens, books, bookContributors, notificationPreferences } from '../db/schema';
 import { config } from '../config';
+import { appLink } from '../lib/app-link';
 import { admin } from '../lib/firebase';
 import { adminNotificationsService } from './admin/notifications.service';
 import { logger } from '../lib/logger';
@@ -714,7 +715,7 @@ export const authService = {
       expiresAt,
     });
 
-    const resetUrl = `${config.appUrl}/reset-password?token=${rawToken}`;
+    const resetUrl = appLink(`/reset-password?token=${rawToken}`);
 
     enqueueEmail('password-reset', { to: user.email, name: user.name, resetUrl }).catch((err) => {
       logger.error('Failed to enqueue password reset email', {

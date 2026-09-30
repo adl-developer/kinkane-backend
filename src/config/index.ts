@@ -200,7 +200,8 @@ const envSchema = z.object({
 
   // Base client URL, and the single source of truth for every user-facing link
   // this server builds: email CTAs, password reset, Stripe return URLs, and
-  // referral links (`APP_URL/r/CODE/name-slug`).
+  // referral links. Links meant to open the mobile app go through `appLink()`
+  // (lib/app-link), which puts them under `APP_URL/redirect/...`.
   //
   // Kinkané lives on **kinkane.app**, not .com. Anything that hardcodes a
   // domain instead of reading this is a bug — it will keep pointing at the old
@@ -825,8 +826,8 @@ export const config = {
       annualFounding: env.STRIPE_PRICE_PLUS_ANNUAL_FOUNDING,
     },
     foundingOfferEndsAt: env.FOUNDING_OFFER_ENDS_AT,
-    checkoutSuccessUrl: env.STRIPE_CHECKOUT_SUCCESS_URL ?? `${env.APP_URL}/account/subscription?checkout=success`,
-    checkoutCancelUrl: env.STRIPE_CHECKOUT_CANCEL_URL ?? `${env.APP_URL}/account/subscription?checkout=cancelled`,
+    checkoutSuccessUrl: env.STRIPE_CHECKOUT_SUCCESS_URL ?? `${env.APP_URL}/redirect/account/subscription?checkout=success`,
+    checkoutCancelUrl: env.STRIPE_CHECKOUT_CANCEL_URL ?? `${env.APP_URL}/redirect/account/subscription?checkout=cancelled`,
   },
   gatingEnabled: env.GATING_ENABLED,
   gardnersDropship: {
@@ -872,8 +873,8 @@ export const config = {
       maxItems: env.CART_MAX_ITEMS,
       guestTtlDays: env.GUEST_CART_TTL_DAYS,
     },
-    orderSuccessUrl: env.STRIPE_ORDER_SUCCESS_URL ?? `${env.APP_URL}/cart?checkout=success`,
-    orderCancelUrl: env.STRIPE_ORDER_CANCEL_URL ?? `${env.APP_URL}/cart?checkout=cancelled`,
+    orderSuccessUrl: env.STRIPE_ORDER_SUCCESS_URL ?? `${env.APP_URL}/redirect/cart?checkout=success`,
+    orderCancelUrl: env.STRIPE_ORDER_CANCEL_URL ?? `${env.APP_URL}/redirect/cart?checkout=cancelled`,
   },
   nielsen: {
     // Credentials are part of the switch: without them every lookup would

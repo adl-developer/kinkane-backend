@@ -8,8 +8,12 @@ production.**
 Referral links are built from `APP_URL`, so they look like:
 
 ```
-https://kinkane.app/r/K7M3QP9XVT/jason-appiatu
+https://kinkane.app/redirect/r/K7M3QP9XVT/jason-appiatu
 ```
+
+Every link meant to open the app now sits under `/redirect` (see
+[deep-links.md](deep-links.md)); older referral links without the prefix are
+still in circulation as `/r/...`. Both paths are handled by this API.
 
 But the handler that resolves the code, records the click and issues the
 redirect lives on **this API server**, which is deployed separately (Render).
@@ -29,7 +33,10 @@ a routing problem.
 
 ## The fix
 
-Proxy `/r/*` from the client host to the API host. This keeps the public link on
+Proxy **both `/redirect/*` and `/r/*`** from the client host to the API host.
+`/redirect/r/*` records the referral click; every other `/redirect/*` path is
+answered with a `302` to the same path without the prefix, so a reader without
+the app still lands on the right web page. This keeps the public link on
 `kinkane.app`, which matters: the link is pasted into WhatsApp and read by
 humans, and `kinkane-server.onrender.com/r/...` looks like something you
 shouldn't click.
@@ -44,6 +51,10 @@ module.exports = {
   async rewrites() {
     return [
       {
+        source: '/redirect/:path*',
+        destination: 'https://kinkane-server.onrender.com/redirect/:path*',
+      },
+      {
         source: '/r/:path*',
         destination: 'https://kinkane-server.onrender.com/r/:path*',
       },
@@ -57,6 +68,7 @@ module.exports = {
 ```json
 {
   "rewrites": [
+    { "source": "/redirect/:path*", "destination": "https://kinkane-server.onrender.com/redirect/:path*" },
     { "source": "/r/:path*", "destination": "https://kinkane-server.onrender.com/r/:path*" }
   ]
 }
@@ -65,6 +77,8 @@ module.exports = {
 ### Netlify (`_redirects`)
 
 ```
+/redirect  https://kinkane-server.onrender.com/redirect  200
+/redirect/*  https://kinkane-server.onrender.com/redirect/:splat  200
 /r/*  https://kinkane-server.onrender.com/r/:splat  200
 ```
 
@@ -81,20 +95,26 @@ rewrite/proxy keeps both hidden.
 a CDN caching the response would serve the redirect without the request ever
 reaching the API, and tracking would silently under-report. The handler sets no
 cache headers, but if the frontend host applies a blanket cache policy to
-proxied paths, exclude `/r/*`.
+proxied paths, exclude `/r/*` and `/redirect/*` — the
+`/redirect` forwards carry single-use tokens and are sent `no-store` for that
+reason.
 
 ## Verifying it works
 
 Once applied, from anywhere:
 
 ```bash
-curl -sI "https://kinkane.app/r/<a-real-code>/anything?c=whatsapp" | head -3
+curl -sI "https://kinkane.app/redirect/r/<a-real-code>/anything?c=whatsapp" | head -3
 ```
 
 Expect `HTTP/1.1 302` and a `Location:` header pointing at
 `https://kinkane.app/invite?ref=<CODE>&c=whatsapp`. A `404` means the rewrite
-isn't in place. Then check the owning user's `GET /api/v1/referrals/me/stats` —
-`clicks` should have gone up by one.
+isn't in place. Then check the owning user's
+`GET /api/v1/referrals/me/stats` — `clicks` should have gone up by one.
+
+For the non-referral forward,
+`curl -sI https://kinkane.app/redirect/books/1` should answer `302` with
+`Location: https://kinkane.app/books/1`.
 
 Note that `curl` will **not** move the counter: its user agent is flagged as a
 bot and excluded from the figure. Use a real browser to test the count, or

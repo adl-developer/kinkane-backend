@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { config } from '../config';
+import { appLink } from '../lib/app-link';
 import { logger } from '../lib/logger';
 import { entitlementsService } from '../services/subscriptions/entitlements.service';
 import type { AuthenticatedRequest } from './auth.middleware';
@@ -42,7 +43,7 @@ export function requirePlus(req: Request, res: Response, next: NextFunction): vo
         code: 'PLUS_REQUIRED',
         tier: entitlement.tier,
         status: entitlement.status,
-        upgradeUrl: `${config.appUrl}/account/subscription`,
+        upgradeUrl: appLink('/account/subscription'),
       });
     })
     .catch((err: Error) => {

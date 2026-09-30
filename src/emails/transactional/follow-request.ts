@@ -1,5 +1,5 @@
 import { sendEmail, FROM } from '../../lib/resend';
-import { config } from '../../config';
+import { appLink } from '../../lib/app-link';
 import { emailLayout, ctaButton, greeting, signOff, escapeHtml, p } from '../lib/layout';
 
 // No unsubscribe link: follow-request mail is not part of the promotional set
@@ -15,7 +15,7 @@ export async function sendFollowRequestEmail(to: string, receiverName: string, s
   const body = [
     greeting(safeReceiver),
     p(`<strong>${safeSender}</strong> has sent you a follow request on Kinkané.`),
-    ctaButton('Open Kinkané', config.appUrl),
+    ctaButton('Open Kinkané', appLink()),
     signOff(),
   ].join('\n');
 
@@ -37,7 +37,7 @@ export async function sendFollowAcceptedEmail(to: string, senderName: string, ac
     greeting(safeSender),
     p(`<strong>${safeAccepter}</strong> has accepted your follow request on Kinkané.`),
     p('You can now see their reading activity.'),
-    ctaButton('View Their Shelf', config.appUrl),
+    ctaButton('View Their Shelf', appLink()),
     signOff(),
   ].join('\n');
 
@@ -46,6 +46,6 @@ export async function sendFollowAcceptedEmail(to: string, senderName: string, ac
     from: FROM,
     subject: `${accepterName} accepted your follow request`,
     html: emailLayout(title, body),
-    text: `Hi ${senderName},\n\n${accepterName} has accepted your follow request on Kinkané.\n\nYou can now see their reading activity.\n\n${config.appUrl}\n\nThe Kinkané Team`,
+    text: `Hi ${senderName},\n\n${accepterName} has accepted your follow request on Kinkané.\n\nYou can now see their reading activity.\n\n${appLink()}\n\nThe Kinkané Team`,
   });
 }

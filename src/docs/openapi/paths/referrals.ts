@@ -10,7 +10,7 @@ const shareResponse = object({
     description: 'The caller’s referral code. Minted on first call to `/me` and stable from then on.',
     example: 'K7M2QX',
   },
-  link: { type: 'string', format: 'uri', example: 'https://kinkane.app/r/K7M2QX/ama-boateng' },
+  link: { type: 'string', format: 'uri', example: 'https://kinkane.app/redirect/r/K7M2QX/ama-boateng' },
   message: {
     type: 'string',
     description: 'Generic prewritten share text.',
@@ -23,7 +23,7 @@ const shareResponse = object({
     body: { type: 'string', example: 'I’ve been using Kinkané…' },
     mailto: { type: 'string', format: 'uri', example: 'mailto:?subject=…&body=…' },
   }),
-  copy: { type: 'string', description: 'Plain text for a copy-to-clipboard button.', example: 'https://kinkane.app/r/K7M2QX/ama-boateng' },
+  copy: { type: 'string', description: 'Plain text for a copy-to-clipboard button.', example: 'https://kinkane.app/redirect/r/K7M2QX/ama-boateng' },
   videoUrl: {
     type: 'string', format: 'uri',
     description: 'The marketing video linked from every invite. Configurable without a deploy.',

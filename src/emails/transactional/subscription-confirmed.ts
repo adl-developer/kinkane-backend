@@ -1,6 +1,6 @@
 import { sendEmail, FROM } from '../../lib/resend';
 import { emailLayout, ctaButton, greeting, signOff, escapeHtml, p } from '../lib/layout';
-import { config } from '../../config';
+import { appLink } from '../../lib/app-link';
 
 export interface SubscriptionConfirmedPayload {
   plan: 'monthly' | 'annual';
@@ -49,7 +49,7 @@ export async function sendSubscriptionConfirmedEmail(
     p(
       'Your bookshelf, your reading history and your personalised Explore page are all unlocked — and every book you save teaches Kinkané a little more about what you love.',
     ),
-    ctaButton('Start exploring', `${config.appUrl}/explore`),
+    ctaButton('Start exploring', appLink('/explore')),
     signOff('Happy reading.'),
   ]
     .filter(Boolean)
@@ -67,6 +67,6 @@ export async function sendSubscriptionConfirmedEmail(
     from: FROM,
     subject: title,
     html: emailLayout(title, body),
-    text: `Hi ${name},\n\nYour Kinkané Plus membership is live. From here on, Kinkané remembers.${textFounding}\n\n${textRenewal}\n\nYour bookshelf, your reading history and your personalised Explore page are all unlocked — and every book you save teaches Kinkané a little more about what you love.\n\n${config.appUrl}/explore\n\nHappy reading.\n\nThe Kinkané Team`,
+    text: `Hi ${name},\n\nYour Kinkané Plus membership is live. From here on, Kinkané remembers.${textFounding}\n\n${textRenewal}\n\nYour bookshelf, your reading history and your personalised Explore page are all unlocked — and every book you save teaches Kinkané a little more about what you love.\n\n${appLink('/explore')}\n\nHappy reading.\n\nThe Kinkané Team`,
   });
 }
