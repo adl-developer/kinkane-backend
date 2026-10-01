@@ -7,6 +7,10 @@
 
 * send every link that should open the app under kinkane.app/redirect ([9439426](https://adl.github.com/adl-developer/kinkane-backend/commit/943942685b5a98ed479316bfceccb5468c3843b7)) — [details](changelog/2026-09-30-app-links-redirect-prefix.md)
 
+### Bug Fixes
+
+* send Stripe checkout returns to their plain pages, without /redirect ([0208969](https://adl.github.com/adl-developer/kinkane-backend/commit/0208969610919a057eba06792566d73f98d8d580)) — [details](changelog/2026-09-30-app-links-redirect-prefix.md)
+
 
 ## 2026-09-29
 

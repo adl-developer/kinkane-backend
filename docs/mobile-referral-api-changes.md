@@ -267,7 +267,7 @@ stable from then on.
   "campaign": "launch",                    // "launch" | "evergreen"
   "link": "https://kinkane.app/r/K7M3QP9XVT/elisabeth-green",
   "message": "📚 Come on a reading adventure with me! …",
-  "whatsapp": "https://wa.me/?text=…",     // open directly
+  "whatsapp": "https://api.whatsapp.com/send?text=…",     // open directly
   "sms": "sms:?&body=…",                   // open directly
   "email": {
     "subject": "Come on a reading adventure with me 🌍📚",
