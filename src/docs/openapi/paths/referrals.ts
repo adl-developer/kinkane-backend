@@ -16,7 +16,7 @@ const shareResponse = object({
     description: 'Generic prewritten share text.',
     example: 'I’ve been using Kinkané to find my next read — join me:',
   },
-  whatsapp: { type: 'string', format: 'uri', description: 'Ready-to-open WhatsApp share URL.', example: 'https://wa.me/?text=…' },
+  whatsapp: { type: 'string', format: 'uri', description: 'Ready-to-open WhatsApp share URL.', example: 'https://api.whatsapp.com/send?text=…' },
   sms: { type: 'string', format: 'uri', example: 'sms:?body=…' },
   email: object({
     subject: { type: 'string', example: 'Something for your reading list' },

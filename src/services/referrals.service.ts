@@ -120,7 +120,9 @@ export function buildSharePayloads(code: string, name: string): SharePayloads {
     link: buildReferralLink(code, name),
     campaign,
     message: message('copy'),
-    whatsapp: `https://wa.me/?text=${encodeURIComponent(message('whatsapp'))}`,
+    // api.whatsapp.com directly, not wa.me: wa.me's redirect re-encodes the
+    // query and mangles 4-byte characters, so the 📚/🌍 arrive as �.
+    whatsapp: `https://api.whatsapp.com/send?text=${encodeURIComponent(message('whatsapp'))}`,
     sms: `sms:?&body=${encodeURIComponent(message('sms'))}`,
     email: {
       subject: copy.subject,
