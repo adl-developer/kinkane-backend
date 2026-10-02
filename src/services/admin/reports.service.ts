@@ -1,6 +1,6 @@
 import { aliasedTable, and, desc, eq, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
-import { userReports, users, groups } from '../../db/schema';
+import { userReports, users, groups, groupBookComments } from '../../db/schema';
 import { adminCustomersService } from './customers.service';
 import { adminNotificationsService } from './notifications.service';
 
@@ -41,6 +41,10 @@ export const adminReportsService = {
           status: userReports.status,
           reason: userReports.reason,
           postId: userReports.postId,
+          groupCommentId: userReports.groupCommentId,
+          // The text itself, so a moderator can judge a comment report without
+          // a second lookup. Null once the comment is deleted (SET NULL above).
+          groupCommentBody: groupBookComments.body,
           targetType: userReports.targetType,
           filedAt: userReports.createdAt,
           resolvedAt: userReports.resolvedAt,
@@ -64,6 +68,7 @@ export const adminReportsService = {
         // a total, invisible moderation failure rather than a visible error.
         .leftJoin(reported, eq(reported.id, userReports.reportedUserId))
         .leftJoin(groups, eq(groups.id, userReports.reportedGroupId))
+        .leftJoin(groupBookComments, eq(groupBookComments.id, userReports.groupCommentId))
         // leftJoin, though reporter_id is NOT NULL and cascades — so this
         // returns exactly the same rows an innerJoin would. It is a typing
         // accommodation: drizzle cannot infer a select that mixes inner and
@@ -92,6 +97,8 @@ export const adminReportsService = {
         status: r.status,
         reason: r.reason,
         postId: r.postId,
+        groupComment:
+          r.groupCommentId !== null ? { id: r.groupCommentId, body: r.groupCommentBody } : null,
         targetType: r.targetType,
         // Whichever target this report is about, named. Lets the queue render a
         // row without branching on targetType, and without dereferencing a

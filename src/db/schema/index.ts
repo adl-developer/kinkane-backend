@@ -19,6 +19,7 @@ export * from './email-verification-tokens';
 export * from './email-change-requests';
 export * from './community';
 export * from './groups';
+export * from './group-books';
 export * from './notification-preferences';
 export * from './notifications';
 export * from './recommendation-email-log';

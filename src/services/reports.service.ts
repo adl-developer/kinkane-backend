@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm';
 import { db } from '../db';
-import { users, posts, groups, userReports } from '../db/schema';
+import { users, posts, groups, groupBookComments, userReports } from '../db/schema';
 import type { UserReport } from '../db/schema';
 import { adminReportsService } from './admin/reports.service';
 
@@ -9,7 +9,15 @@ import { adminReportsService } from './admin/reports.service';
  * ids, so "a group report carrying a reportedUserId" cannot be expressed.
  */
 export type CreateReportInput =
-  | { targetType: 'user'; reporterId: number; reportedUserId: number; reason: string; postId?: number }
+  | {
+      targetType: 'user';
+      reporterId: number;
+      reportedUserId: number;
+      reason: string;
+      postId?: number;
+      /** A group book-club comment the report is about — the comment's "…" menu. */
+      groupCommentId?: number;
+    }
   | { targetType: 'group'; reporterId: number; reportedGroupId: number; reason: string };
 
 export const reportsService = {
@@ -48,7 +56,13 @@ export const reportsService = {
       return { ...row, reference };
     }
 
-    const { reportedUserId, postId } = input;
+    const { reportedUserId, postId, groupCommentId } = input;
+
+    // One piece of content per report. Naming a post and a comment at once is
+    // ambiguous about which one the moderator is meant to read.
+    if (postId !== undefined && groupCommentId !== undefined) {
+      throw Object.assign(new Error('A report can name a post or a group comment, not both'), { statusCode: 400 });
+    }
 
     if (reporterId === reportedUserId) {
       throw Object.assign(new Error('You cannot report yourself'), { statusCode: 400 });
@@ -75,9 +89,22 @@ export const reportsService = {
       }
     }
 
+    if (groupCommentId !== undefined) {
+      const [comment] = await db
+        .select({ id: groupBookComments.id, userId: groupBookComments.userId })
+        .from(groupBookComments)
+        .where(eq(groupBookComments.id, groupCommentId));
+      if (!comment) {
+        throw Object.assign(new Error('Comment not found'), { statusCode: 404 });
+      }
+      if (comment.userId !== reportedUserId) {
+        throw Object.assign(new Error('Comment does not belong to the reported user'), { statusCode: 400 });
+      }
+    }
+
     const [row] = await db
       .insert(userReports)
-      .values({ targetType: 'user', reporterId, reportedUserId, postId, reason })
+      .values({ targetType: 'user', reporterId, reportedUserId, postId, groupCommentId, reason })
       .returning();
 
     // Stamp the display reference and put it in front of a moderator. Awaited

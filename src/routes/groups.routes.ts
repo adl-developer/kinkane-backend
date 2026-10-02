@@ -1,8 +1,9 @@
 import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.middleware';
 import { requirePlus } from '../middleware/require-plus.middleware';
-import { groupCreateLimiter, groupInviteLimiter } from '../middleware/rate-limit.middleware';
+import { groupCreateLimiter, groupInviteLimiter, groupCommentLimiter } from '../middleware/rate-limit.middleware';
 import { groupsController } from '../controllers/groups.controller';
+import { groupBooksController } from '../controllers/group-books.controller';
 import { wrapHttp } from '../lib/route-helpers';
 
 const router = Router();
@@ -40,5 +41,28 @@ router.post('/:groupId/invites/decline', wrapHttp(groupsController.declineInvite
 // Owner-only. Covers both removing a member and withdrawing a pending
 // invitation — the owner is severing the same link either way.
 router.delete('/:groupId/members/:userId', wrapHttp(groupsController.removeMember));
+
+// Bookshelf. Reading follows the member-list rule (anyone for a public group,
+// members for a private one); every write is owner-only. The service decides
+// both — see canSeeShelf / canManageShelf.
+router.get('/:groupId/books', wrapHttp(groupBooksController.list));
+router.post('/:groupId/books', wrapHttp(groupBooksController.add));
+// Static path before /:groupBookId.
+router.put('/:groupId/books/current', wrapHttp(groupBooksController.setCurrent));
+router.get('/:groupId/books/:groupBookId', wrapHttp(groupBooksController.get));
+router.patch('/:groupId/books/:groupBookId', wrapHttp(groupBooksController.update));
+router.delete('/:groupId/books/:groupBookId', wrapHttp(groupBooksController.remove));
+router.post('/:groupId/books/:groupBookId/finish', wrapHttp(groupBooksController.finish));
+
+// Discussion of a shelf book. Members only for writing, and not Plus-gated —
+// see canComment. The limiter is on creation only; editing and liking are
+// bounded by what already exists.
+router.get('/:groupId/books/:groupBookId/comments', wrapHttp(groupBooksController.listComments));
+router.post('/:groupId/books/:groupBookId/comments', groupCommentLimiter, wrapHttp(groupBooksController.addComment));
+router.get('/:groupId/comments/:commentId/replies', wrapHttp(groupBooksController.listReplies));
+router.patch('/:groupId/comments/:commentId', wrapHttp(groupBooksController.updateComment));
+router.delete('/:groupId/comments/:commentId', wrapHttp(groupBooksController.deleteComment));
+router.post('/:groupId/comments/:commentId/like', wrapHttp(groupBooksController.likeComment));
+router.delete('/:groupId/comments/:commentId/like', wrapHttp(groupBooksController.unlikeComment));
 
 export default router;

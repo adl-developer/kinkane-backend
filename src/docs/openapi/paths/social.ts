@@ -582,7 +582,7 @@ export const socialPaths = {
       summary: 'Report a user or a group',
       description:
         'Files a moderation report. `targetType` selects what is being reported and which other fields apply.\n\n' +
-        '**`targetType: "user"`** (the default when the field is omitted, so clients written before groups were reportable keep working) takes `reportedUserId` and optionally `postId` citing the post that prompted it. If `postId` is given it must actually belong to `reportedUserId` — a mismatch is a 400 rather than a silently mis-filed report. Self-reports are rejected.\n\n' +
+        '**`targetType: "user"`** (the default when the field is omitted, so clients written before groups were reportable keep working) takes `reportedUserId` and optionally **one** of `postId` (a community post) or `groupCommentId` (a comment in a group book club, from its "…" menu) citing what prompted it. Whichever is given must actually belong to `reportedUserId` — a mismatch is a 400 rather than a silently mis-filed report — and naming both is a 400. Self-reports are rejected.\n\n' +
         '**`targetType: "group"`** takes `reportedGroupId` and nothing else. Sending a `reportedUserId` or a `postId` alongside it is a 400: naming both a group and a user is ambiguous, and the server will not guess which one you meant. There is no self-report rule — reporting a group you own is pointless rather than harmful.\n\n' +
         'Both kinds share one `R###` reference series, since the reference is only ever shown next to the report it belongs to.',
       requestBody: body(object({
@@ -595,6 +595,11 @@ export const socialPaths = {
           description: 'User reports only. The post being reported about; must belong to `reportedUserId`.',
           example: 3310,
         },
+        groupCommentId: {
+          type: 'integer', minimum: 1,
+          description: 'User reports only, and not together with `postId`. The group book-club comment being reported; must belong to `reportedUserId`.',
+          example: 581,
+        },
       }, ['reason'])),
       responses: {
         201: json('Report filed.',
@@ -605,13 +610,14 @@ export const socialPaths = {
               reportedUserId: { type: 'integer', nullable: true, example: 4412 },
               reportedGroupId: { type: 'integer', nullable: true, example: null },
               postId: { type: 'integer', nullable: true, example: 3310 },
+              groupCommentId: { type: 'integer', nullable: true, example: null },
               reason: { type: 'string', example: 'Harassment in the comments.' },
               createdAt: { type: 'string', format: 'date-time', example: '2026-08-13T11:00:00.000Z' },
             }),
           })),
         400: json('Validation failed, a self-report, or the post does not belong to that user.',
           ref('ValidationError')),
-        404: json('No such user, group or post.', ref('Error'), { error: 'User not found' }),
+        404: json('No such user, group, post or comment.', ref('Error'), { error: 'User not found' }),
         ...authErrors,
       },
     },
