@@ -621,7 +621,8 @@ export const groupPaths = {
     delete: {
       tags: [GROUPS],
       summary: 'Delete a comment',
-      description: 'The author, or the group owner (moderation). Deleting a top-level comment deletes its replies.',
+      description:
+        'The group owner may delete any comment (moderation). The author may delete their own only while they can still see the shelf: on a private group, someone who has left or been removed gets a 403 (the same as every other read), while a former member of a public group can still delete theirs. Anyone else who can see the shelf gets a 404 for a comment that is not theirs. Deleting a top-level comment deletes its replies.',
       parameters: [groupIdParam, commentIdParam],
       responses: { 200: successResponse, ...shelfErrors },
     },

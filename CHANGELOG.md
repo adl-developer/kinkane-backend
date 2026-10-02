@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-10-02
+
+### Features
+
+* give book clubs a shared bookshelf and a discussion ([223f8a5](https://adl.github.com/adl-developer/kinkane-backend/commit/223f8a5d70a072920b5bd933dc0e6bb052f2c140)) — [details](changelog/2026-10-02-group-bookshelf.md)
+
+
 ## 2026-09-30
 
 ### Features

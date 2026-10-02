@@ -4,6 +4,7 @@ import {
   decideFinish,
   decideEdit,
   decideComment,
+  decideDeleteComment,
 } from '../services/group-books.service';
 import { groupViewerCapabilities } from '../services/groups.service';
 import {
@@ -121,6 +122,34 @@ describe('decideComment', () => {
   it('refuses a reply to a comment on another book, and a missing parent', () => {
     expect(decideComment('currently_reading', 1, { groupBookId: 2, parentId: null })).toMatchObject({ statusCode: 400 });
     expect(decideComment('currently_reading', 1, null)).toMatchObject({ statusCode: 404 });
+  });
+});
+
+describe('decideDeleteComment', () => {
+  it('refuses an author who has left or been removed from a private group', () => {
+    // Leaving deletes the membership row; removal does too — either way, no status.
+    expect(decideDeleteComment(caps('private', null, OTHER), true)).toMatchObject({ statusCode: 403 });
+    expect(decideDeleteComment(caps('private', 'invited', OTHER), true)).toMatchObject({ statusCode: 403 });
+    expect(decideDeleteComment(caps('private', 'requested', OTHER), true)).toMatchObject({ statusCode: 403 });
+  });
+
+  it('still lets a former member of a public group delete their own comment', () => {
+    expect(decideDeleteComment(caps('public', null, OTHER), true)).toEqual({ allowed: true });
+  });
+
+  it('lets a current member delete their own comment in either kind of group', () => {
+    expect(decideDeleteComment(caps('private', 'active', OTHER), true)).toEqual({ allowed: true });
+    expect(decideDeleteComment(caps('public', 'active', OTHER), true)).toEqual({ allowed: true });
+  });
+
+  it('lets the owner delete anyone’s comment', () => {
+    expect(decideDeleteComment(caps('private', 'active', OWNER), false)).toEqual({ allowed: true });
+    expect(decideDeleteComment(caps('public', null, OWNER), false)).toEqual({ allowed: true });
+  });
+
+  it('hides someone else’s comment from a non-owner who can see the shelf', () => {
+    expect(decideDeleteComment(caps('private', 'active', OTHER), false)).toMatchObject({ statusCode: 404 });
+    expect(decideDeleteComment(caps('public', null, OTHER), false)).toMatchObject({ statusCode: 404 });
   });
 });
 

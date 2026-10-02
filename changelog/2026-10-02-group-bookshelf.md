@@ -77,6 +77,11 @@ The full shapes are in the OpenAPI docs (`/docs`, under Groups).
   that. Instead, creating a comment is rate limited (60 per 10 minutes per user).
 - **The shelf is hidden where the member list is hidden.** A private group's shelf is
   members-only, matching the locked screen in the design, which shows neither.
+- **Leaving a private group ends your hold on its discussion.** The owner can delete any comment.
+  You can delete your own only while you can still see the shelf, so once you leave or are removed
+  from a private group you get a 403 there, the same as on every other read. On a public group
+  everyone can see the shelf, so a former member can still delete their own comments, matching
+  the rule for taking back a like.
 - **Dates can be up to tomorrow (UTC)**, so an owner ahead of UTC can still pick their own today.
 - **Group deletion still needs a password or a fresh sign-in.** The newer design shows a
   type-"Delete" box, but the stricter check is kept on purpose.
@@ -89,8 +94,8 @@ The full shapes are in the OpenAPI docs (`/docs`, under Groups).
 ## How it was verified
 
 - Unit tests in `src/__tests__/group-bookshelf.test.ts` cover the shelf capabilities and every
-  state rule (set current, finish, edit, comment and reply), the date window, and the request
-  shapes. The full unit suite passes.
+  state rule (set current, finish, edit, comment and reply, deleting a comment), the date
+  window, and the request shapes. The full unit suite passes.
 - An end-to-end script ran against a throwaway local Postgres and Redis in Docker, with migration
   0069 applied. It covered every endpoint, the private-group 403s, cross-group ids, the
   concurrent set-current race, `added_at` surviving a move, comments cascading on removal, and a

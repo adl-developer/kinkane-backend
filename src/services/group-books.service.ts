@@ -209,6 +209,31 @@ export function decideComment(
   return ALLOW;
 }
 
+/**
+ * Whether the viewer may delete a comment.
+ *
+ * The owner may delete any comment — the owner is the only moderator a book
+ * club has. The author may delete their own, but only while they can still see
+ * the shelf: someone who left or was removed from a private group has lost
+ * sight of its discussion, and reaching back into a room you can no longer see
+ * to rewrite its record is not something the design offers. On a public group
+ * everyone can see the shelf, so a former member can still take their words
+ * back — the same line `unlikeComment` draws.
+ *
+ * Not seeing the shelf is a 403, as on every other read; seeing it but being
+ * neither author nor owner is a 404, since deleting someone else's comment is
+ * not a capability there is anything to explain about.
+ */
+export function decideDeleteComment(
+  caps: Pick<ViewerCapabilities, 'canSeeShelf' | 'canManageShelf'>,
+  isAuthor: boolean,
+): ShelfDecision {
+  if (caps.canManageShelf) return ALLOW;
+  if (!caps.canSeeShelf) return deny(403, 'Only members can see a private group’s bookshelf');
+  if (!isAuthor) return deny(404, 'Comment not found');
+  return ALLOW;
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function fail(statusCode: number, message: string, code?: string): HttpError {
@@ -805,15 +830,19 @@ export const groupBooksService = {
   },
 
   /**
-   * Deletes a comment and, if it is top-level, its replies. The author may
-   * delete their own; the group owner may delete any — the owner is the only
-   * moderator a book club has.
+   * Deletes a comment and, if it is top-level, its replies. The group owner may
+   * delete any comment. The author may delete their own only while they can
+   * still see the shelf — so someone who left or was removed from a private
+   * group gets a 403 here, as on every other read, while a former member of a
+   * public group can still delete theirs. See `decideDeleteComment`.
    */
   async deleteComment(groupId: number, commentId: number, viewerId: number): Promise<void> {
     const caps = await loadAccess(groupId, viewerId);
+    // Before the lookup, so a private ex-member learns nothing about which
+    // comment ids exist — the same 403 they get everywhere else.
+    requireSee(caps);
     const comment = await loadComment(groupId, commentId);
-    const isAuthor = comment.userId === viewerId;
-    if (!isAuthor && !caps.canManageShelf) throw fail(404, 'Comment not found');
+    enforce(decideDeleteComment(caps, comment.userId === viewerId));
 
     await db.delete(groupBookComments).where(eq(groupBookComments.id, commentId));
   },
