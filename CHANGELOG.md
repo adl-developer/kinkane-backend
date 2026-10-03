@@ -1,6 +1,25 @@
 # Changelog
 
 
+## 2026-10-03
+
+### Bug Fixes
+
+* stop delisted books being added to a book club's shelf ([258e9f4](https://adl.github.com/adl-developer/kinkane-backend/commit/258e9f46354f8e6c369b68a596fd44f5a5440329)) — [details](changelog/2026-10-03-group-comment-report-privacy.md)
+* stop comment reports revealing who wrote what in private book clubs ([2fd0ffe](https://adl.github.com/adl-developer/kinkane-backend/commit/2fd0ffe6a9b7ad560075f8dfb73e4de3141f3f22)) — [details](changelog/2026-10-03-group-comment-report-privacy.md)
+
+
+## 2026-10-02
+
+### Features
+
+* give book clubs a shared bookshelf and a discussion ([223f8a5](https://adl.github.com/adl-developer/kinkane-backend/commit/223f8a5d70a072920b5bd933dc0e6bb052f2c140)) — [details](changelog/2026-10-02-group-bookshelf.md)
+
+### Bug Fixes
+
+* stop people who left a private book club from deleting their old comments there ([e6e882e](https://adl.github.com/adl-developer/kinkane-backend/commit/e6e882e72eb727ce90625ee1f8644d0d4d3df051)) — [details](changelog/2026-10-02-group-bookshelf.md)
+
+
 ## 2026-09-30
 
 ### Features

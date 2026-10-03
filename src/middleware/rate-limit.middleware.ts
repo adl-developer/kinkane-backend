@@ -251,3 +251,17 @@ export const groupInviteLimiter = rateLimit({
   keyGenerator: byUser,
   store: new RedisStore({ prefix: 'rl:group-invite:', sendCommand }),
 });
+
+// Group book-club comments: 60 per 10 minutes per user. Community comments have
+// no limiter because posting one is Plus-gated; these are free to every member,
+// so this is what stands between one account and a flooded discussion. Sixty is
+// a lively conversation; a script wants thousands.
+export const groupCommentLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: json429,
+  keyGenerator: byUser,
+  store: new RedisStore({ prefix: 'rl:group-comment:', sendCommand }),
+});

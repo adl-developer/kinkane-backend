@@ -31,6 +31,12 @@ export interface ViewerCapabilities {
   canInvite: boolean;
   canEdit: boolean;
   canJoin: boolean;
+  /** The bookshelf and its discussion. Same line as the member list. */
+  canSeeShelf: boolean;
+  /** Add, move, edit and remove books on the group's shelf. */
+  canManageShelf: boolean;
+  /** Post, reply to and like comments on the group's books. */
+  canComment: boolean;
 }
 
 export interface GroupSummary {
@@ -207,6 +213,16 @@ export function groupViewerCapabilities(
     canInvite: isMember,
     canEdit: isOwner,
     canJoin: !isMember && membership !== 'invited' && group.privacy === 'public',
+    // The shelf is withheld exactly where the member list is: the locked
+    // private-group screen shows neither. Reading a public group's discussion
+    // is how a passer-by decides whether to join.
+    canSeeShelf: isMember || group.privacy === 'public',
+    // Every shelf flow in the design sits under the "Groups / Owner" pill.
+    canManageShelf: isOwner,
+    // Talking is for members. Not gated on Plus, unlike community comments:
+    // joining is free so a Plus owner's invites work for free friends, and a
+    // book club those friends could not talk in would undo that.
+    canComment: isMember,
   };
 }
 

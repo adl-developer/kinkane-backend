@@ -112,6 +112,11 @@ async function call(route: RouteRef): Promise<{ status: number; body: string }> 
     // An empty JSON body on a mutating route is the "validate, don't crash"
     // probe: it must come back 400/401, never 500.
     body: route.method === 'GET' || route.method === 'HEAD' ? undefined : '{}',
+    // Judge the route's own response, not wherever it points. The /redirect/*
+    // app-link routes answer 302 to APP_URL; following that made this suite
+    // fail with ECONNREFUSED whenever no web client happened to be listening
+    // there, which has nothing to do with whether the endpoint works.
+    redirect: 'manual',
   });
   return { status: res.status, body: (await res.text()).slice(0, 300) };
 }
@@ -210,8 +215,10 @@ describe('endpoint contract', () => {
 
     for (const route of routes.filter((r) => r.method === 'GET' && !hasParams(r.path))) {
       if (route.path.startsWith('/admin') || route.path.startsWith('/docs')) continue;
-      const res = await fetch(`${harness.baseUrl}${route.path}`);
+      const res = await fetch(`${harness.baseUrl}${route.path}`, { redirect: 'manual' });
       if (res.status >= 400) continue; // protected or absent is another test's job
+      // A redirect has no body of its own to be JSON; where it leads is not this API.
+      if (res.status >= 300) continue;
       const type = res.headers.get('content-type') ?? '';
       if (!type.includes('json')) bad.push(`${route.path} -> ${type || 'no content-type'}`);
     }

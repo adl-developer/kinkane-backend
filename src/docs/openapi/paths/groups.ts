@@ -35,7 +35,85 @@ const viewerSchema = object({
   canInvite: { type: 'boolean', description: 'True for any member, not only the owner.', example: false },
   canEdit: { type: 'boolean', description: 'Owner only.', example: false },
   canJoin: { type: 'boolean', description: 'Public groups only, and only when not already involved.', example: true },
+  canSeeShelf: { type: 'boolean', description: 'The bookshelf and its discussion. Same rule as `canSeeMembers`.', example: true },
+  canManageShelf: { type: 'boolean', description: 'Add, move, edit and remove shelf books. Owner only.', example: false },
+  canComment: { type: 'boolean', description: 'Post, reply to and like comments. Any member; not Plus-gated.', example: false },
 });
+
+// ── Bookshelf ────────────────────────────────────────────────────────────────
+
+const groupBookIdParam = param('groupBookId', 'path', { type: 'integer' },
+  'The shelf entry id (`id` on a shelf item) — not the book id.', { example: 88 });
+const commentIdParam = param('commentId', 'path', { type: 'integer' }, 'Comment id.', { example: 581 });
+
+const readingDate = (description: string) => ({
+  type: 'string', format: 'date', example: '2026-09-20',
+  description: `${description} A calendar day, \`YYYY-MM-DD\`, no later than tomorrow (UTC) so an owner ahead of UTC can still pick their own today.`,
+});
+
+const bookCardSchema = object({
+  id: { type: 'integer', example: 50211 },
+  isbn13: { type: 'string', nullable: true, example: '9780008521837' },
+  title: { type: 'string', example: 'Land' },
+  subtitle: { type: 'string', nullable: true },
+  coverUrl: { type: 'string', nullable: true },
+  authors: arrayOf({ type: 'string', example: 'Maggie O’Farrell' }, 'A01 contributors; the first listed contributor when there are none.'),
+  genres: arrayOf(object({ name: { type: 'string', example: 'Fiction' }, slug: { type: 'string', example: 'fiction' } }),
+    'Top-level display genres — the chips on the shelf rows.'),
+});
+
+const shelfItemSchema = object({
+  id: { type: 'integer', description: 'Shelf entry id — what edit, finish, remove and comment routes take.', example: 88 },
+  status: { type: 'string', enum: ['want_to_read', 'currently_reading', 'finished'], example: 'currently_reading' },
+  book: bookCardSchema,
+  description: { type: 'string', nullable: true, description: "The owner's note on the read." },
+  startedOn: { type: 'string', format: 'date', nullable: true, example: '2026-09-20' },
+  finishedOn: { type: 'string', format: 'date', nullable: true, example: null },
+  addedAt: { type: 'string', format: 'date-time' },
+  commentCount: { type: 'integer', description: 'All comments and replies — the 💬 count.', example: 34 },
+});
+
+const shelfSummarySchema = {
+  ...object({
+    currentlyReading: { ...shelfItemSchema, nullable: true, description: 'Null → the "Give your group a book to start reading" empty state.' },
+    wantToReadCount: { type: 'integer', description: '0 → the "Add books that your group wants to read" empty state.', example: 5 },
+    finishedCount: { type: 'integer', example: 1 },
+  }),
+  nullable: true,
+  description: 'Null when the caller may not see the shelf (a private group they are not in) — distinct from an empty shelf.',
+};
+
+const commentSchema = object({
+  id: { type: 'integer', example: 581 },
+  groupBookId: { type: 'integer', example: 88 },
+  parentId: { type: 'integer', nullable: true, description: 'Null on a top-level comment.', example: null },
+  userId: { type: 'integer', example: 4412 },
+  userName: { type: 'string', example: 'Amara Okafor' },
+  userPhotoUrl: { type: 'string', nullable: true },
+  body: { type: 'string', example: 'Love this book! Would love to discuss it.' },
+  likeCount: { type: 'integer', example: 1 },
+  replyCount: { type: 'integer', description: 'Always 0 on a reply — replies cannot be replied to.', example: 2 },
+  likedByMe: { type: 'boolean', example: false },
+  createdAt: { type: 'string', format: 'date-time' },
+  updatedAt: { type: 'string', format: 'date-time' },
+});
+
+const shelfErrors = {
+  403: json('Private group and not a member (reads), not the owner (shelf writes), or not a member (comment writes).',
+    object({ error: { type: 'string' } })),
+  404: json('No such group, or that entry/comment is not in this group.', object({ error: { type: 'string' } })),
+  ...authErrors,
+};
+
+const conflict = (codes: string) =>
+  json(`State conflict. \`code\` is one of ${codes}.`, object({ error: { type: 'string' }, code: { type: 'string' } }));
+
+const commentPage = (description: string) => json(description, object({
+  comments: arrayOf(commentSchema),
+  total: { type: 'integer', example: 2 },
+  limit: { type: 'integer', example: 20 },
+  offset: { type: 'integer', example: 0 },
+}));
 
 function groupListResponse(description: string) {
   return json(description,
@@ -321,11 +399,11 @@ export const groupPaths = {
     get: {
       tags: [GROUPS],
       summary: 'One group, plus what you may do with it',
-      description: `Returns the group and a \`viewer\` block describing the caller's relationship and permissions. The app picks which of the four detail layouts to draw from \`viewer\` rather than re-deriving the privacy rules.\n\n${PRIVACY_NOTE}`,
+      description: `Returns the group and a \`viewer\` block describing the caller's relationship and permissions. The app picks which of the four detail layouts to draw from \`viewer\` rather than re-deriving the privacy rules.\n\nAlso carries a \`shelf\` block — the current read and the Want to Read / Finished counts — so the group page draws in one request.\n\n${PRIVACY_NOTE}`,
       parameters: [groupIdParam],
       responses: {
         200: json('The group and the caller’s capabilities.',
-          object({ group: groupSchema, viewer: viewerSchema })),
+          object({ group: groupSchema, viewer: viewerSchema, shelf: shelfSummarySchema })),
         404: json('No such group.', object({ error: { type: 'string', example: 'Group not found' } })),
         ...authErrors,
       },
@@ -367,6 +445,203 @@ export const groupPaths = {
         429: { $ref: '#/components/responses/RateLimited' },
         500: { $ref: '#/components/responses/ServerError' },
       },
+    },
+  },
+
+  '/api/v1/groups/{groupId}/books': {
+    get: {
+      tags: [GROUPS],
+      summary: 'One shelf of a group',
+      description:
+        'A page of one shelf. `sort` takes the same four values as `/user-books`; "date" means when the book was **finished** on the Finished shelf and when it was **added** everywhere else.\n\n' +
+        'Readable by anyone for a public group and by members for a private one (`viewer.canSeeShelf`).',
+      parameters: [
+        groupIdParam,
+        param('status', 'query', { type: 'string', enum: ['want_to_read', 'currently_reading', 'finished'] }, 'Which shelf.', { required: true, example: 'want_to_read' }),
+        param('sort', 'query', { type: 'string', enum: ['title_asc', 'title_desc', 'date_asc', 'date_desc'], default: 'date_desc' }, 'Order.'),
+        ...pagination(50),
+      ],
+      responses: {
+        200: json('A page of the shelf.', object({
+          books: arrayOf(shelfItemSchema),
+          total: { type: 'integer', example: 5 },
+          status: { type: 'string' }, sort: { type: 'string' },
+          limit: { type: 'integer' }, offset: { type: 'integer' },
+        })),
+        400: json('Invalid query.', object({ error: { type: 'object' } })),
+        ...shelfErrors,
+      },
+    },
+    post: {
+      tags: [GROUPS],
+      summary: 'Add books to Want to Read',
+      description:
+        'Owner only. The multi-select picker ("Add 2 books"). Up to 50 ids.\n\n' +
+        '**Partial success**, like invitations: each id that could not be added comes back in `skipped` with a reason — `not_found` (no such book, or a title delisted from the catalogue), or `already_on_shelf` with the shelf it is on — and the rest are added. 201 even if everything was skipped.',
+      parameters: [groupIdParam],
+      requestBody: body(object({ bookIds: arrayOf({ type: 'integer', minimum: 1 }) }, ['bookIds'])),
+      responses: {
+        201: json('Added (possibly partially).', object({
+          added: arrayOf(object({ id: { type: 'integer', example: 89 }, bookId: { type: 'integer', example: 50211 } })),
+          skipped: arrayOf(object({
+            bookId: { type: 'integer' },
+            reason: { type: 'string', enum: ['not_found', 'already_on_shelf'] },
+            status: { type: 'string', enum: ['want_to_read', 'currently_reading', 'finished'], description: 'Present for already_on_shelf.' },
+          })),
+        })),
+        400: json('Invalid body.', object({ error: { type: 'object' } })),
+        ...shelfErrors,
+      },
+    },
+  },
+
+  '/api/v1/groups/{groupId}/books/current': {
+    put: {
+      tags: [GROUPS],
+      summary: 'Set the current read',
+      description:
+        'Owner only. "Mark as Currently Reading": a book, the start date and an optional description.\n\n' +
+        'A book already on Want to Read **moves** (keeping when it was added); one on Finished becomes a **re-read** and its finish date is cleared; anything else is added.\n\n' +
+        '**One current book per group.** If another book is current this is a 409 `CURRENT_BOOK_EXISTS` — mark it finished or remove it first. The design has no "replace" screen, so the server never demotes the current read on its own.',
+      parameters: [groupIdParam],
+      requestBody: body(object({
+        bookId: { type: 'integer', minimum: 1, example: 50211 },
+        startedOn: readingDate('Start date.'),
+        description: { type: 'string', maxLength: 2000, nullable: true },
+      }, ['bookId', 'startedOn'])),
+      responses: {
+        200: json('The new current read.', object({ book: shelfItemSchema })),
+        400: json('Invalid body or date.', object({ error: { type: 'object' } })),
+        409: conflict('`CURRENT_BOOK_EXISTS`, `ALREADY_CURRENT`'),
+        ...shelfErrors,
+      },
+    },
+  },
+
+  '/api/v1/groups/{groupId}/books/{groupBookId}': {
+    get: {
+      tags: [GROUPS],
+      summary: 'One shelf entry',
+      description: 'The Currently Reading screen: book, dates, description and comment count.',
+      parameters: [groupIdParam, groupBookIdParam],
+      responses: { 200: json('The entry.', object({ book: shelfItemSchema })), ...shelfErrors },
+    },
+    patch: {
+      tags: [GROUPS],
+      summary: 'Edit a shelf entry',
+      description:
+        'Owner only. "Edit book": change the start date, the finish date (finished books only) or the description. At least one field.\n\n' +
+        'Want to Read entries have nothing to edit — 409 `NOT_EDITABLE`. The finish date can never end up before the start date.',
+      parameters: [groupIdParam, groupBookIdParam],
+      requestBody: body(object({
+        startedOn: readingDate('New start date.'),
+        finishedOn: readingDate('New finish date. Finished books only.'),
+        description: { type: 'string', maxLength: 2000, nullable: true },
+      })),
+      responses: {
+        200: json('Updated.', object({ book: shelfItemSchema })),
+        400: json('Invalid body, a finish date on an unfinished book, or dates out of order.', object({ error: { type: 'object' } })),
+        409: conflict('`NOT_EDITABLE`'),
+        ...shelfErrors,
+      },
+    },
+    delete: {
+      tags: [GROUPS],
+      summary: 'Remove a book from the shelf',
+      description: 'Owner only. Works on any shelf, including the current read. **Its discussion is deleted with it** — confirm in the client.',
+      parameters: [groupIdParam, groupBookIdParam],
+      responses: { 200: successResponse, ...shelfErrors },
+    },
+  },
+
+  '/api/v1/groups/{groupId}/books/{groupBookId}/finish': {
+    post: {
+      tags: [GROUPS],
+      summary: 'Mark the current read as finished',
+      description: 'Owner only. Moves the current read to Finished with the picked date. Its discussion stays readable but closes to new comments.',
+      parameters: [groupIdParam, groupBookIdParam],
+      requestBody: body(object({ finishedOn: readingDate('Finish date; not before the start date.') }, ['finishedOn'])),
+      responses: {
+        200: json('Now on Finished.', object({ book: shelfItemSchema })),
+        400: json('Invalid date, or before the start date.', object({ error: { type: 'object' } })),
+        409: conflict('`NOT_CURRENT`'),
+        ...shelfErrors,
+      },
+    },
+  },
+
+  '/api/v1/groups/{groupId}/books/{groupBookId}/comments': {
+    get: {
+      tags: [GROUPS],
+      summary: 'Comments on a shelf book',
+      description: 'Top-level comments, newest first, each with `likeCount`, `replyCount` and `likedByMe`. Fetch a thread with `/comments/{commentId}/replies`.',
+      parameters: [groupIdParam, groupBookIdParam, ...pagination(50)],
+      responses: { 200: commentPage('A page of top-level comments.'), ...shelfErrors },
+    },
+    post: {
+      tags: [GROUPS],
+      summary: 'Comment, or reply to a comment',
+      description:
+        'Members only (`viewer.canComment`); **not** Plus-gated.\n\n' +
+        'Only the **current read** takes new comments — elsewhere it is 409 `DISCUSSION_CLOSED`. Pass `parentId` to reply; replies are one level deep, so `parentId` must be a top-level comment on the same book.\n\n' +
+        'Rate limited to 60 per 10 minutes per user.',
+      parameters: [groupIdParam, groupBookIdParam],
+      requestBody: body(object({
+        body: { type: 'string', minLength: 1, maxLength: 2000 },
+        parentId: { type: 'integer', minimum: 1, description: 'Reply to this top-level comment.' },
+      }, ['body'])),
+      responses: {
+        201: json('Created.', object({ comment: commentSchema })),
+        400: json('Invalid body, or a reply to a reply / to a comment on another book.', object({ error: { type: 'object' } })),
+        409: conflict('`DISCUSSION_CLOSED`'),
+        ...shelfErrors,
+      },
+    },
+  },
+
+  '/api/v1/groups/{groupId}/comments/{commentId}/replies': {
+    get: {
+      tags: [GROUPS],
+      summary: 'Replies to a comment',
+      description: 'Oldest first, so the thread reads as a conversation. 400 if `commentId` is itself a reply.',
+      parameters: [groupIdParam, commentIdParam, ...pagination(50)],
+      responses: { 200: commentPage('A page of replies.'), ...shelfErrors },
+    },
+  },
+
+  '/api/v1/groups/{groupId}/comments/{commentId}': {
+    patch: {
+      tags: [GROUPS],
+      summary: 'Edit your comment',
+      description: 'Author only, and only while still a member. Someone else’s comment is a 404.',
+      parameters: [groupIdParam, commentIdParam],
+      requestBody: body(object({ body: { type: 'string', minLength: 1, maxLength: 2000 } }, ['body'])),
+      responses: { 200: successResponse, 400: json('Invalid body.', object({ error: { type: 'object' } })), ...shelfErrors },
+    },
+    delete: {
+      tags: [GROUPS],
+      summary: 'Delete a comment',
+      description:
+        'The group owner may delete any comment (moderation). The author may delete their own only while they can still see the shelf: on a private group, someone who has left or been removed gets a 403 (the same as every other read), while a former member of a public group can still delete theirs. Anyone else who can see the shelf gets a 404 for a comment that is not theirs. Deleting a top-level comment deletes its replies.',
+      parameters: [groupIdParam, commentIdParam],
+      responses: { 200: successResponse, ...shelfErrors },
+    },
+  },
+
+  '/api/v1/groups/{groupId}/comments/{commentId}/like': {
+    post: {
+      tags: [GROUPS],
+      summary: 'Like a comment',
+      description: 'Members only. Idempotent.',
+      parameters: [groupIdParam, commentIdParam],
+      responses: { 200: successResponse, ...shelfErrors },
+    },
+    delete: {
+      tags: [GROUPS],
+      summary: 'Unlike a comment',
+      description: 'Anyone who can see the shelf may take back their own like. Idempotent.',
+      parameters: [groupIdParam, commentIdParam],
+      responses: { 200: successResponse, ...shelfErrors },
     },
   },
 };

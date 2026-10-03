@@ -14,6 +14,7 @@ import { sql } from 'drizzle-orm';
 import { users } from './users';
 import { posts } from './community';
 import { groups } from './groups';
+import { groupBookComments } from './group-books';
 
 /**
  * Where a report ended up. `pending` is the moderation queue; the other two are
@@ -52,6 +53,12 @@ export const userReports = pgTable(
     // complaint about it, the same way postId keeps the report when a post goes.
     reportedGroupId: integer('reported_group_id').references(() => groups.id, { onDelete: 'set null' }),
     postId: integer('post_id').references(() => posts.id, { onDelete: 'set null' }),
+    // A user report filed from the "…" menu on a group book-club comment. Same
+    // role and same SET NULL as postId: names what was said, and the report
+    // outlives the comment if it is deleted.
+    groupCommentId: integer('group_comment_id').references(() => groupBookComments.id, {
+      onDelete: 'set null',
+    }),
     reason: text('reason').notNull(),
     // Customer-facing-ish identity for the moderation queue: the console shows
     // "R003", not a database id. Generated from the id at read time would break
@@ -70,6 +77,7 @@ export const userReports = pgTable(
     reportedUserIdIdx: index('idx_user_reports_reported_user_id').on(t.reportedUserId),
     reporterIdIdx: index('idx_user_reports_reporter_id').on(t.reporterId),
     postIdIdx: index('idx_user_reports_post_id').on(t.postId),
+    groupCommentIdIdx: index('idx_user_reports_group_comment_id').on(t.groupCommentId),
     reportedGroupIdIdx: index('idx_user_reports_reported_group_id').on(t.reportedGroupId),
     targetTypeIdx: index('idx_user_reports_target_type').on(t.targetType),
     // A user report must name a user and no group; a group report must name no
