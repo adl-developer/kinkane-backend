@@ -1,8 +1,9 @@
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
-import { users, posts, groups, groupBookComments, userReports } from '../db/schema';
+import { users, posts, groups, groupBooks, groupBookComments, groupMemberships, userReports } from '../db/schema';
 import type { UserReport } from '../db/schema';
 import { adminReportsService } from './admin/reports.service';
+import { groupViewerCapabilities } from './groups.service';
 
 /**
  * What is being reported. A discriminated union rather than a bag of optional
@@ -90,11 +91,27 @@ export const reportsService = {
     }
 
     if (groupCommentId !== undefined) {
+      // The comment's group and the reporter's standing in it, in one round
+      // trip, so a comment the reporter cannot see is indistinguishable from
+      // one that does not exist. Without this, a stranger to a private club
+      // could walk comment ids and user ids and learn from 404 / 400 / 201
+      // who said what in there — filing a report on every hit.
       const [comment] = await db
-        .select({ id: groupBookComments.id, userId: groupBookComments.userId })
+        .select({
+          userId: groupBookComments.userId,
+          ownerId: groups.ownerId,
+          privacy: groups.privacy,
+          reporterStatus: groupMemberships.status,
+        })
         .from(groupBookComments)
+        .innerJoin(groupBooks, eq(groupBooks.id, groupBookComments.groupBookId))
+        .innerJoin(groups, eq(groups.id, groupBooks.groupId))
+        .leftJoin(
+          groupMemberships,
+          and(eq(groupMemberships.groupId, groups.id), eq(groupMemberships.userId, reporterId)),
+        )
         .where(eq(groupBookComments.id, groupCommentId));
-      if (!comment) {
+      if (!comment || !groupViewerCapabilities(comment, comment.reporterStatus ?? null, reporterId).canSeeShelf) {
         throw Object.assign(new Error('Comment not found'), { statusCode: 404 });
       }
       if (comment.userId !== reportedUserId) {
