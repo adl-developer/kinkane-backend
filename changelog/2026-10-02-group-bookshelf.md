@@ -63,6 +63,10 @@ The full shapes are in the OpenAPI docs (`/docs`, under Groups).
 
 ## Decisions worth knowing
 
+- **Delisted books can't be shelved.** A title withdrawn from the catalogue (`books.is_removed`)
+  is reported as `not_found` when adding to Want to Read and is a 404 when setting the current read,
+  matching saved books. A book delisted after it was shelved stays on the shelf, the same way
+  reading lists keep such books.
 - **One current book at a time.** If another book is current, setting a new one returns a 409
   with code `CURRENT_BOOK_EXISTS`. The owner has to finish or remove the current book first. The
   design has no "replace" screen, and quietly moving the current read back to Want to Read would

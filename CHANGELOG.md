@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-10-03
+
+### Bug Fixes
+
+* stop comment reports revealing who wrote what in private book clubs ([2fd0ffe](https://adl.github.com/adl-developer/kinkane-backend/commit/2fd0ffe6a9b7ad560075f8dfb73e4de3141f3f22)) — [details](changelog/2026-10-03-group-comment-report-privacy.md)
+
+
 ## 2026-10-02
 
 ### Features

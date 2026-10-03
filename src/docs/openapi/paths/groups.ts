@@ -477,7 +477,7 @@ export const groupPaths = {
       summary: 'Add books to Want to Read',
       description:
         'Owner only. The multi-select picker ("Add 2 books"). Up to 50 ids.\n\n' +
-        '**Partial success**, like invitations: each id that could not be added comes back in `skipped` with a reason — `not_found`, or `already_on_shelf` with the shelf it is on — and the rest are added. 201 even if everything was skipped.',
+        '**Partial success**, like invitations: each id that could not be added comes back in `skipped` with a reason — `not_found` (no such book, or a title delisted from the catalogue), or `already_on_shelf` with the shelf it is on — and the rest are added. 201 even if everything was skipped.',
       parameters: [groupIdParam],
       requestBody: body(object({ bookIds: arrayOf({ type: 'integer', minimum: 1 }) }, ['bookIds'])),
       responses: {

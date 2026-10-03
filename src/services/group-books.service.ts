@@ -572,7 +572,9 @@ export const groupBooksService = {
     const existing = await db
       .select({ id: books.id })
       .from(books)
-      .where(inArray(books.id, requested));
+      // A delisted title is gone from search and from saved books; it should not
+      // be addable here either, even from a stale search result in the app.
+      .where(and(inArray(books.id, requested), eq(books.isRemoved, false)));
     const found = new Set(existing.map((b) => b.id));
     const candidates = requested.filter((id) => {
       if (!found.has(id)) skipped.push({ bookId: id, reason: 'not_found' });
@@ -615,7 +617,11 @@ export const groupBooksService = {
   async setCurrent(groupId: number, viewerId: number, input: SetCurrentInput): Promise<GroupShelfItem> {
     requireManage(await loadAccess(groupId, viewerId));
 
-    const [book] = await db.select({ id: books.id }).from(books).where(eq(books.id, input.bookId)).limit(1);
+    const [book] = await db
+      .select({ id: books.id })
+      .from(books)
+      .where(and(eq(books.id, input.bookId), eq(books.isRemoved, false)))
+      .limit(1);
     if (!book) throw fail(404, 'Book not found');
 
     const relevant = await db
