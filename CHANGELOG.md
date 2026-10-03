@@ -5,6 +5,7 @@
 
 ### Bug Fixes
 
+* stop delisted books being added to a book club's shelf ([258e9f4](https://adl.github.com/adl-developer/kinkane-backend/commit/258e9f46354f8e6c369b68a596fd44f5a5440329)) — [details](changelog/2026-10-03-group-comment-report-privacy.md)
 * stop comment reports revealing who wrote what in private book clubs ([2fd0ffe](https://adl.github.com/adl-developer/kinkane-backend/commit/2fd0ffe6a9b7ad560075f8dfb73e4de3141f3f22)) — [details](changelog/2026-10-03-group-comment-report-privacy.md)
 
 
