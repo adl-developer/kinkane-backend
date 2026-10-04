@@ -125,6 +125,48 @@ describe('getUserExclusions', () => {
     expect(works).toEqual([{ title: 'dune', author: 'frank herbert' }]);
   });
 
+  it('anchors a co-written shelf book on every author, not just the first', async () => {
+    // So an edition credited only to the second author still matches.
+    rowsByTable.set(userDislikedBooks, []);
+    rowsByTable.set(userBooks, [{ bookId: 20 }]);
+    rowsByTable.set(books, [{ id: 20, title: 'Good Omens' }]);
+    rowsByTable.set(bookContributors, [
+      { bookId: 20, personName: 'Terry Pratchett' },
+      { bookId: 20, personName: 'Neil Gaiman' },
+    ]);
+
+    const { works } = await getUserExclusions(7);
+
+    expect(works).toEqual(
+      expect.arrayContaining([
+        { title: 'good omens', author: 'terry pratchett' },
+        { title: 'good omens', author: 'neil gaiman' },
+      ]),
+    );
+    expect(works).toHaveLength(2);
+  });
+
+  it("widens a dislike's frozen first-author snapshot with its live co-authors", async () => {
+    rowsByTable.set(userDislikedBooks, [{ bookId: 21, title: 'good omens', author: 'terry pratchett' }]);
+    rowsByTable.set(userBooks, []);
+    rowsByTable.set(books, [{ id: 21, title: 'Good Omens' }]);
+    rowsByTable.set(bookContributors, [
+      { bookId: 21, personName: 'Terry Pratchett' },
+      { bookId: 21, personName: 'Neil Gaiman' },
+    ]);
+
+    const { bookIds, works } = await getUserExclusions(7);
+
+    expect(bookIds).toEqual([21]);
+    expect(works).toEqual(
+      expect.arrayContaining([
+        { title: 'good omens', author: 'terry pratchett' },
+        { title: 'good omens', author: 'neil gaiman' },
+      ]),
+    );
+    expect(works).toHaveLength(2);
+  });
+
   it('degrades to no exclusions rather than throwing when the load fails', async () => {
     // Stands in for a dropped connection mid-query.
     const { db } = await import('../db');

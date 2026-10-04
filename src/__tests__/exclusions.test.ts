@@ -119,6 +119,16 @@ describe('titleKeysForMatch', () => {
     // A year is not a volume; a lone "I" is not a numeral.
     ['Devon 2026 Calendar', '#devon 2026 calendar', '#devon 2026 calendar'],
     ['The King and I', '#king and i', '#king and i'],
+    // A series number in an edition note is not a volume…
+    ['Moby Dick (Penguin Classics 100)', '#moby dick', '#moby dick'],
+    // …but one after a volume word is, Roman numerals included.
+    ['Moby Dick (Vol 1 of 2)', '1#moby dick', '1#moby dick'],
+    ['Lord of the Rings (Book I)', 'i#lord of the rings', 'i#lord of the rings'],
+    ['Tokyo Ghoul (No. 7)', '7#tokyo ghoul', '7#tokyo ghoul'],
+    // A non-breaking space after the colon still marks a subtitle.
+    ['Bel Canto:\u00a0A Novel', '#bel canto a novel', '#bel canto'],
+    // A separator inside a bracket goes with the bracket.
+    ['Bel Canto (Penguin: Modern Classics) Edition', '#bel canto edition', '#bel canto edition'],
   ])('%s', (input, full, core) => {
     expect(titleKeysForMatch(input)).toEqual({ full, core });
   });
@@ -384,6 +394,24 @@ describe('filterExcludedWorks', () => {
       }),
     );
     expect(kept).toHaveLength(0);
+  });
+
+  it('drops an edition whose note carries a series number', () => {
+    const kept = filterExcludedWorks(
+      [item(1, 'Moby Dick (Penguin Classics 100)', ['Herman Melville'])],
+      exclusions({ works: [{ title: 'moby dick', author: 'herman melville' }] }),
+    );
+    expect(kept).toHaveLength(0);
+  });
+
+  it('keeps an exclusion whose author folds to nothing author-qualified', () => {
+    // A feed contributor recorded as "." is still a recorded author: it must
+    // not widen into a title-only exclusion that drops every same-titled book.
+    const kept = filterExcludedWorks(
+      [item(1, 'Dune', ['Frank Herbert']), item(2, 'Dune', ['.'])],
+      exclusions({ works: [{ title: 'dune', author: '.' }] }),
+    );
+    expect(kept.map((b) => b.id)).toEqual([1]);
   });
 
   it('returns the list untouched when the user has rejected nothing', () => {

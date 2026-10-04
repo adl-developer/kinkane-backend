@@ -1,6 +1,6 @@
 # Quiz: keep books the user has already read out of the results
 
-**Status:** built 2026-10-04, not yet committed or deployed.
+**Status:** built and committed 2026-10-04 (plus code-review fixes the same day); not yet deployed.
 
 ## Goal
 
@@ -21,7 +21,7 @@ When a user types in a book they've already read, that book (in any edition or s
 
 Two titles match when one's *full* key equals the other's *full* or *core* key. Core is never compared with core. So "Bel Canto: A Novel", "Bel Canto (Harper Perennial Modern Classics)" and "Bel Canto [Large Print]" all match "Bel Canto". "Warriors: Fading Echoes" does not match "Warriors: A Warrior's Choice".
 
-**Volume guard.** Any volume or part numbers in the two titles must be the same: up to three digits, or Roman numerals like ii or xiv, anywhere in the title, including inside brackets. So "Tokyo Ghoul (Vol. 3)" and "Tokyo Ghoul (Vol. 9)" stay separate.
+**Volume guard.** Any volume or part numbers in the two titles must be the same. Outside brackets, that means any number up to three digits or Roman numeral like ii or xiv. Inside brackets, it means only a number after a volume word (vol, volume, book, part, no, tome, level). So "Tokyo Ghoul (Vol. 3)" and "Tokyo Ghoul (Vol. 9)" stay separate, but "Moby Dick (Penguin Classics 100)" still matches "Moby Dick".
 
 **Author name cleanup** (both sides): lowercase, full stops turned into spaces, runs of spaces collapsed, and a single "Surname, First" flipped. Suffixes like "King, Jr." and names with several commas are not flipped.
 
@@ -38,7 +38,9 @@ Two titles match when one's *full* key equals the other's *full* or *core* key. 
   - New `WORK_MATCH_VERSION`.
   - Personalized feed cache prefix bumped to `v6`.
 - `src/services/recommendations.service.ts`: the typed-in book becomes one exclusion per author, not just the first author. The quiz cache key includes `WORK_MATCH_VERSION`.
-- `src/services/books.service.ts`: personalized feed cache key bumped to `v6` (only change there).
+- Shelf books, disliked books and the basket also exclude every named author (`resolveAllAuthorWorks`). Exclusions cache key bumped to `exclusions:v3`.
+- `src/services/books.service.ts`: personalized feed cache key bumped to `v6`; the readers-like-you rail groups editions on the same title key and author fold the filter uses.
+- `src/__tests__/exclusions.integration.test.ts`: runs the SQL filter on a real Postgres and checks it against the in-memory filter.
 - The filter is shared, so books the user disliked or already has on their shelf get the same matching across the home feed, "you may also like", the readers-like-you rail and recommendation emails.
 
 ## Verification
@@ -46,11 +48,10 @@ Two titles match when one's *full* key equals the other's *full* or *core* key. 
 - **TypeScript and SQL agree.** Across the local catalogue, the two versions of the title keys and the author cleanup agree on all 83,706 titles and 88,395 author names. The one difference is a synthetic "Ⅻ" glyph, which the existing title fold already treats differently.
 - **Full filter, SQL vs in memory:** 301 exclusions (including Bel Canto / Ann Patchett) run over all 83,688 books. Both versions remove the same 380 books, and Toft's *Bel Canto* is kept.
 - **Effect:** the new rule matches 739 more pairs of books by the same author than the old rule did. In a sample of 40, most are genuine editions (*The Little Prince (Collector's Edition)*, *Handmaid's Tale (Movie Tie-in)*). About 1 in 10 is a different book (*Hedgewitch: Stonewitch*, *Meaning of Marriage: A Couple's Devotional*). That leans toward over-excluding, which is the existing design choice.
-- **Speed:** 200 exclusions over all 83k books took about 630ms, against about 310ms for the old rule, or roughly 7.5µs per row. The quiz search uses pgvector's iterative index scan, so the filter only runs on the rows the index returns.
-- **Tests:** `npx vitest run` passes, 1,195 tests. New cases in `src/__tests__/exclusions.test.ts`.
+- **Speed:** 200 exclusions over all 83k books took about 750ms, against about 310ms for the old rule, or roughly 9µs per row. The quiz search uses pgvector's iterative index scan, so the filter only runs on the rows the index returns.
+- **Tests:** `npx vitest run` passes (1,205 tests), and the new integration test passes against a scratch database (13 checks).
 
 ## Not in scope
 
 - Fixing the doubled spaces in stored author names at the source (ONIX ingester).
 - Catching typos in catalogue titles.
-- Changing how the readers-like-you rail groups editions (it still groups on the plain title fold).

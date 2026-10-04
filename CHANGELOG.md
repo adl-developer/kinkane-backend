@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-10-04
+
+### Bug Fixes
+
+* keep every edition of a book you've already read out of your quiz results ([2f39465](https://adl.github.com/adl-developer/kinkane-backend/commit/2f39465cc988145fb937b48842fcb17fbd7904f4)) — [details](changelog/2026-10-04-quiz-hides-books-already-read.md)
+
+
 ## 2026-10-03
 
 ### Bug Fixes

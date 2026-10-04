@@ -127,8 +127,14 @@ const TITLE_BRACKETS_SQL = '\\s+[\\(\\[][^\\)\\]]*[\\)\\]]';
 
 // A subtitle: everything after "Title: " or "Title - ". The space after the
 // colon is required, so "Re:ZERO" keeps its name.
-const TITLE_SUBTITLE = /(?::\s| [-–—]\s).*$/s;
 const TITLE_SUBTITLE_SQL = '(:\\s| [-–—]\\s).*$';
+
+// Brackets and subtitle in one pass, for the core title: whichever starts first
+// wins at each point, so a separator inside a bracket goes with the bracket and
+// a separator before one takes everything after it. One regex rather than
+// stripping brackets and then cutting, so SQL runs one replace per row, not two.
+const TITLE_CORE_CUT = /(?::\s| [-–—]\s).*$|\s+[([][^)\]]*[)\]]/gs;
+const TITLE_CORE_CUT_SQL = `${TITLE_SUBTITLE_SQL}|${TITLE_BRACKETS_SQL}`;
 
 // Volume, level and part numbers, written as digits or Roman numerals: up to
 // three digits (so a year on a calendar is not a volume) or a run of two or
@@ -139,15 +145,30 @@ const TITLE_SUBTITLE_SQL = '(:\\s| [-–—]\\s).*$';
 const VOLUME_WORD = /(?<![\p{Alphabetic}\p{Nd}])(\d{1,3}|[ivx]{2,})(?![\p{Alphabetic}\p{Nd}])/gu;
 const VOLUME_WORD_SQL = '(?<![[:alnum:]])([0-9]{1,3}|[ivx]{2,})(?![[:alnum:]])';
 
+// Inside an edition note only a number that follows a volume word counts:
+// "(Vol. 3)" and "(Book II)" are volumes, the "100" in "(Penguin Classics 100)"
+// is not. Any Roman numeral is allowed here, since "Book I" is unambiguous.
+const BRACKET_VOLUME =
+  /(?<![\p{Alphabetic}\p{Nd}])(?:vol|volume|book|part|no|tome|level)\.?\s*(\d{1,3}|[ivx]+)(?![\p{Alphabetic}\p{Nd}])/gu;
+const BRACKET_VOLUME_SQL =
+  '(?<![[:alnum:]])(?:vol|volume|book|part|no|tome|level)\\.?\\s*([0-9]{1,3}|[ivx]+)(?![[:alnum:]])';
+const BRACKET_SEGMENT = /\s+[([][^)\]]*[)\]]/g;
+
 /**
- * The numbers in a title, sorted, as one string. Two titles can only be the
- * same work when these agree — that is what keeps "Tokyo Ghoul (Vol. 3)" and
- * "Tokyo Ghoul (Vol. 9)" apart once the brackets are ignored. Taken from the
- * whole title, brackets and subtitle included, so nothing the match ignores
- * can hide a volume. Two titles that fold identically always agree here.
+ * The volume numbers in a title, sorted, as one string. Two titles can only be
+ * the same work when these agree — that is what keeps "Tokyo Ghoul (Vol. 3)"
+ * and "Tokyo Ghoul (Vol. 9)" apart once the brackets are ignored. Every number
+ * outside the brackets counts (subtitle included); inside them, only one that
+ * follows a volume word, so a series number in an edition note does not stop
+ * two editions matching. Two titles that fold identically always agree here.
  */
 function titleVolumes(value: string): string {
-  return [...value.toLowerCase().matchAll(VOLUME_WORD)]
+  const lowered = value.toLowerCase();
+  const outside = [...lowered.replace(BRACKET_SEGMENT, '').matchAll(VOLUME_WORD)];
+  const inside = (lowered.match(BRACKET_SEGMENT) ?? []).flatMap((segment) => [
+    ...segment.matchAll(BRACKET_VOLUME),
+  ]);
+  return [...outside, ...inside]
     .map(([, word]) => (/^\d+$/.test(word) ? word.replace(/^0+(?=\d)/, '') : word))
     .sort()
     .join(' ');
@@ -156,14 +177,23 @@ function titleVolumes(value: string): string {
 function titleVolumesSql(title: SQL | PgColumn): SQL {
   const lowered = sql`lower(${title} COLLATE "und-x-icu")`;
   // Most titles have no volume number. A plain regex test lets them skip the
-  // set-returning subquery below, which is most of what this costs.
-  return sql`CASE WHEN ${lowered} !~ ${VOLUME_WORD_SQL} THEN '' ELSE coalesce((
+  // set-returning subquery below, which is most of what this costs. Both
+  // patterns are tested because a bracketed "Book I" matches only the second.
+  return sql`CASE WHEN ${lowered} !~ ${VOLUME_WORD_SQL} AND ${lowered} !~ ${BRACKET_VOLUME_SQL}
+    THEN '' ELSE coalesce((
     SELECT string_agg(volume, ' ' ORDER BY volume COLLATE "C")
     FROM (
-      SELECT CASE WHEN m[1] ~ '^[0-9]+$'
-                  THEN regexp_replace(m[1], '^0+(?=[0-9])', '')
-                  ELSE m[1] END AS volume
-      FROM regexp_matches(${lowered}, ${VOLUME_WORD_SQL}, 'g') AS m
+      SELECT CASE WHEN word ~ '^[0-9]+$'
+                  THEN regexp_replace(word, '^0+(?=[0-9])', '')
+                  ELSE word END AS volume
+      FROM (
+        SELECT m[1] AS word
+        FROM regexp_matches(regexp_replace(${lowered}, ${TITLE_BRACKETS_SQL}, '', 'g'), ${VOLUME_WORD_SQL}, 'g') AS m
+        UNION ALL
+        SELECT v[1]
+        FROM regexp_matches(${lowered}, ${TITLE_BRACKETS_SQL}, 'g') AS seg,
+             regexp_matches(seg[1], ${BRACKET_VOLUME_SQL}, 'g') AS v
+      ) AS words
     ) AS volumes
   ), '') END`;
 }
@@ -192,20 +222,18 @@ function titleVolumesSql(title: SQL | PgColumn): SQL {
  */
 export function titleKeysForMatch(value: string): { full: string; core: string } {
   const volumes = titleVolumes(value);
-  const unbracketed = value.toLowerCase().replace(TITLE_BRACKETS, '');
-  const full = normalizeTitleForMatch(unbracketed) || normalizeTitleForMatch(value);
-  const core = normalizeTitleForMatch(unbracketed.replace(TITLE_SUBTITLE, '')) || full;
+  const lowered = value.toLowerCase();
+  const full = normalizeTitleForMatch(lowered.replace(TITLE_BRACKETS, '')) || normalizeTitleForMatch(value);
+  const core = normalizeTitleForMatch(lowered.replace(TITLE_CORE_CUT, '')) || full;
   return { full: `${volumes}#${full}`, core: `${volumes}#${core}` };
 }
 
 /** {@link titleKeysForMatch} in SQL. */
 export function titleKeysSql(title: SQL | PgColumn): { full: SQL; core: SQL } {
   const unbracketed = sql`regexp_replace(${title} COLLATE "und-x-icu", ${TITLE_BRACKETS_SQL}, '', 'g')`;
+  const cut = sql`regexp_replace(${title} COLLATE "und-x-icu", ${TITLE_CORE_CUT_SQL}, '', 'g')`;
   const full = sql`coalesce(nullif(${titleMatchSql(unbracketed)}, ''), ${titleMatchSql(title)})`;
-  const core = sql`coalesce(
-    nullif(${titleMatchSql(sql`regexp_replace(${unbracketed}, ${TITLE_SUBTITLE_SQL}, '')`)}, ''),
-    ${full}
-  )`;
+  const core = sql`coalesce(nullif(${titleMatchSql(cut)}, ''), ${full})`;
   const volumes = titleVolumesSql(title);
   return {
     full: sql`(${volumes} || '#' || ${full})`,
@@ -224,7 +252,9 @@ function workMatchRows(works: ExcludedWork[]) {
   const againstCore = new Map<string, { key: string; author: string | null }>();
   for (const work of works) {
     const { full, core } = titleKeysForMatch(work.title);
-    const author = work.author === null ? null : normalizeAuthorForMatch(work.author) || null;
+    // Not `|| null`: a name that folds to nothing ("." in the feed) is still a
+    // recorded author, so it must not widen into a title-only exclusion.
+    const author = work.author === null ? null : normalizeAuthorForMatch(work.author);
     for (const key of [full, core]) againstFull.set(`${key}\u0000${author}`, { key, author });
     againstCore.set(`${full}\u0000${author}`, { key: full, author });
   }
@@ -280,7 +310,9 @@ export function buildWorkExclusionCondition(works: ExcludedWork[]): SQL | undefi
   // folded again. Done inside the key, not as an OR around the clause: an OR
   // stops Postgres turning NOT EXISTS into a hashed anti-join, and the query
   // then folds the title once per excluded work — minutes, not milliseconds.
-  const coreKey = sql`CASE WHEN ${books.title} ~ ${TITLE_SUBTITLE_SQL} THEN ${candidate.core} END`;
+  // Under the ICU collation like every other regex here: in ctype C, \s misses
+  // a non-breaking space after the colon, which the JS twin's \s matches.
+  const coreKey = sql`CASE WHEN ${books.title} COLLATE "und-x-icu" ~ ${TITLE_SUBTITLE_SQL} THEN ${candidate.core} END`;
   return sql`(${workMatchClause(againstFull, candidate.full)}
     AND ${workMatchClause(againstCore, coreKey)})`;
 }
@@ -400,7 +432,9 @@ export function filterExcludedWorks<
   const group = (rows: { key: string; author: string | null }[]) => {
     const authorsByKey = new Map<string, (string | null)[]>();
     for (const { key, author } of rows) {
-      authorsByKey.set(key, [...(authorsByKey.get(key) ?? []), author]);
+      const authors = authorsByKey.get(key);
+      if (authors) authors.push(author);
+      else authorsByKey.set(key, [author]);
     }
     return authorsByKey;
   };
@@ -489,9 +523,14 @@ export async function getUserExclusions(userId: number): Promise<UserExclusions>
         .where(eq(userBooks.userId, userId)),
     ]);
 
-    // Shelf books need the same normalized title/author shape a dislike stores,
-    // built through the same helper so the two sources can't drift apart.
-    const shelfSnapshots = await resolveWorkSnapshots(shelfRows.map((r) => r.bookId));
+    // Shelf books need the same normalized title/author shape a dislike stores.
+    // Resolved live with every named author, not just the first, so an edition
+    // credited only to a co-author still matches. Disliked books get the same
+    // treatment on top of their frozen first-author snapshot, which on its own
+    // would miss that edition too.
+    const liveWorks = await resolveAllAuthorWorks([
+      ...new Set([...shelfRows.map((r) => r.bookId), ...dislikedRows.map((r) => r.bookId)]),
+    ]);
 
     // A book can be on the shelf and disliked at once (added, then rejected in
     // a later quiz), and two shelf editions of one work collapse to the same
@@ -503,7 +542,7 @@ export async function getUserExclusions(userId: number): Promise<UserExclusions>
       ],
       works: dedupeWorks([
         ...dislikedRows.map((r) => ({ title: r.title, author: r.author })),
-        ...shelfSnapshots.values(),
+        ...liveWorks,
       ]),
     };
 
@@ -577,14 +616,7 @@ export async function resolveWorkSnapshots(
   const snapshots = new Map<number, ExcludedWork>();
   if (bookIds.length === 0) return snapshots;
 
-  const [bookRows, contributors] = await Promise.all([
-    db.select({ id: books.id, title: books.title }).from(books).where(inArray(books.id, bookIds)),
-    db
-      .select({ bookId: bookContributors.bookId, personName: bookContributors.personName })
-      .from(bookContributors)
-      .where(and(inArray(bookContributors.bookId, bookIds), eq(bookContributors.role, 'A01')))
-      .orderBy(bookContributors.sequenceNumber),
-  ]);
+  const { bookRows, contributors } = await loadTitlesAndAuthors(bookIds);
 
   // First *named* A01 contributor wins — sequence-ordered above, and the
   // exclusion only needs one author to anchor the match. A blank name is
@@ -609,6 +641,45 @@ export async function resolveWorkSnapshots(
   return snapshots;
 }
 
+/**
+ * Resolves book IDs to one excluded work per named A01 author — the live form
+ * used for books that are excluded but have no single stored author (shelf
+ * books, a basket), and to widen a dislike's frozen first-author snapshot. A
+ * book with no named author becomes one title-only work.
+ */
+export async function resolveAllAuthorWorks(bookIds: number[]): Promise<ExcludedWork[]> {
+  if (bookIds.length === 0) return [];
+
+  const { bookRows, contributors } = await loadTitlesAndAuthors(bookIds);
+  const authorsByBook = new Map<number, string[]>();
+  for (const c of contributors) {
+    if (!c.personName?.trim()) continue;
+    const authors = authorsByBook.get(c.bookId);
+    if (authors) authors.push(c.personName);
+    else authorsByBook.set(c.bookId, [c.personName]);
+  }
+
+  return bookRows.flatMap((row): ExcludedWork[] => {
+    const title = normalizeForMatch(row.title);
+    const authors = authorsByBook.get(row.id) ?? [];
+    return authors.length > 0
+      ? authors.map((author) => ({ title, author: normalizeForMatch(author) }))
+      : [{ title, author: null }];
+  });
+}
+
+async function loadTitlesAndAuthors(bookIds: number[]) {
+  const [bookRows, contributors] = await Promise.all([
+    db.select({ id: books.id, title: books.title }).from(books).where(inArray(books.id, bookIds)),
+    db
+      .select({ bookId: bookContributors.bookId, personName: bookContributors.personName })
+      .from(bookContributors)
+      .where(and(inArray(bookContributors.bookId, bookIds), eq(bookContributors.role, 'A01')))
+      .orderBy(bookContributors.sequenceNumber),
+  ]);
+  return { bookRows, contributors };
+}
+
 /** Collapses works to one entry per normalized title/author pair. */
 function dedupeWorks(works: ExcludedWork[]): ExcludedWork[] {
   const byKey = new Map<string, ExcludedWork>();
@@ -627,6 +698,7 @@ const PERSONALIZED_CACHE_MAX_LIMIT = 20;
 // v2 — shelf books joined the set. The bump retires v1 entries, which held
 // dislikes only and would otherwise keep serving shelf books for up to an hour
 // after deploy.
+// v3 — every named author of a shelf or disliked book, not just the first.
 function exclusionsCacheKey(userId: number): string {
-  return `exclusions:v2:${userId}`;
+  return `exclusions:v3:${userId}`;
 }
