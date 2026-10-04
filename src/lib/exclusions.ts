@@ -121,20 +121,41 @@ export function authorMatchSql(name: SQL | PgColumn): SQL {
 
 // Bracketed text after the title proper — "(Harper Perennial Modern Classics)",
 // "[Large Print]", "(light novel)" — is edition dressing, not part of the work's
-// name. A bracket that opens the title ("(Un)Natural") is left alone.
-const TITLE_BRACKETS = /\s+[([][^)\]]*[)\]]/g;
-const TITLE_BRACKETS_SQL = '\\s+[\\(\\[][^\\)\\]]*[\\)\\]]';
+// name. Either set off by a space, or glued to the end of the title
+// ("Bel Canto(Large Print)"). A bracket that opens the title ("(Un)Natural") or
+// sits glued inside it ("Friend(s) Forever") is part of the name.
+const TITLE_BRACKETS =
+  /\s+[([][^)\]]*[)\]]|(?<=[\p{Alphabetic}\p{Nd}])[([][^)\]]*[)\]](?=\s*$)/gu;
+const TITLE_BRACKETS_SQL =
+  '\\s+[\\(\\[][^\\)\\]]*[\\)\\]]|(?<=[[:alnum:]])[\\(\\[][^\\)\\]]*[\\)\\]](?=\\s*$)';
 
-// A subtitle: everything after "Title: " or "Title - ". The space after the
-// colon is required, so "Re:ZERO" keeps its name.
-const TITLE_SUBTITLE_SQL = '(:\\s| [-–—]\\s).*$';
+// A subtitle: everything after the first "Title: ", "Title - " or "Title—".
+// The space after the colon is required, so "Re:ZERO" keeps its name; an
+// unspaced hyphen ("Catch-22") or en dash ("1914–1918") is not a separator, an
+// em dash is. One source string serves both twins — the syntax is common to JS
+// (with the s flag) and Postgres AREs.
+const TITLE_SUBTITLE_SOURCE = '(?::\\s| [-–]\\s|—).*$';
+const TITLE_SUBTITLE = new RegExp(TITLE_SUBTITLE_SOURCE, 's');
 
-// Brackets and subtitle in one pass, for the core title: whichever starts first
-// wins at each point, so a separator inside a bracket goes with the bracket and
-// a separator before one takes everything after it. One regex rather than
-// stripping brackets and then cutting, so SQL runs one replace per row, not two.
-const TITLE_CORE_CUT = /(?::\s| [-–—]\s).*$|\s+[([][^)\]]*[)\]]/gs;
-const TITLE_CORE_CUT_SQL = `${TITLE_SUBTITLE_SQL}|${TITLE_BRACKETS_SQL}`;
+// The words that mark a subtitle as edition dressing rather than part of the
+// work's name: "Bel Canto: A Novel", "Wonder: Illustrated Edition", "Mad Honey:
+// A GMA Book Club Pick", "A Game of Thrones: Book 1 of A Song of Ice and Fire".
+// Only such a subtitle is cut for the core title. Cutting every subtitle hid
+// sequels and companions that share a series name — "Hedgewitch: Stonewitch"
+// once "Hedgewitch" was read — which is a different book, not another edition.
+const EDITION_MARKERS = [
+  'novel', 'novella', 'memoir', 'thriller', 'edition', 'illustrated', 'anniversary',
+  'book club', 'adapted', 'deluxe', 'classics?', 'translation', 'translated',
+  'tie-in', 'tie in', 'collector.?s', 'graphic', 'unabridged', 'abridged', 'annotated',
+  'large print', 'paperback', 'hardback', 'hardcover', 'reissue', 'revised', 'expanded',
+  'unexpurgated', 'young readers', 'movie', 'film', 'motion picture', 'winner', 'prize',
+  'bestseller', 'facsimile', 'centenary', 'oprah', 'book (?:1|one) of',
+].join('|');
+const EDITION_SUBTITLE = new RegExp(
+  `${TITLE_SUBTITLE_SOURCE.slice(0, -1)}(?<![\\p{Alphabetic}\\p{Nd}])(?:${EDITION_MARKERS})(?![\\p{Alphabetic}\\p{Nd}])`,
+  'su',
+);
+const EDITION_SUBTITLE_SQL = `${TITLE_SUBTITLE_SOURCE.slice(0, -1)}(?<![[:alnum:]])(?:${EDITION_MARKERS})(?![[:alnum:]])`;
 
 // Volume, level and part numbers, written as digits or Roman numerals: up to
 // three digits (so a year on a calendar is not a volume) or a run of two or
@@ -152,49 +173,71 @@ const BRACKET_VOLUME =
   /(?<![\p{Alphabetic}\p{Nd}])(?:vol|volume|book|part|no|tome|level)\.?\s*(\d{1,3}|[ivx]+)(?![\p{Alphabetic}\p{Nd}])/gu;
 const BRACKET_VOLUME_SQL =
   '(?<![[:alnum:]])(?:vol|volume|book|part|no|tome|level)\\.?\\s*([0-9]{1,3}|[ivx]+)(?![[:alnum:]])';
-const BRACKET_SEGMENT = /\s+[([][^)\]]*[)\]]/g;
+
+const stripLeadingZeros = (word: string) => (/^\d+$/.test(word) ? word.replace(/^0+(?=\d)/, '') : word);
 
 /**
  * The volume numbers in a title, sorted, as one string. Two titles can only be
  * the same work when these agree — that is what keeps "Tokyo Ghoul (Vol. 3)"
  * and "Tokyo Ghoul (Vol. 9)" apart once the brackets are ignored. Every number
- * outside the brackets counts (subtitle included); inside them, only one that
+ * outside the brackets counts, subtitle included; inside them, only one that
  * follows a volume word, so a series number in an edition note does not stop
  * two editions matching. Two titles that fold identically always agree here.
+ *
+ * `forCore` is the set for the core key, which only exists when an edition
+ * subtitle is cut: there a "1" in the subtitle is dropped, because "Book 1 of
+ * A Song of Ice and Fire" describes the same book as the plain "A Game of
+ * Thrones" rather than a different volume.
  */
-function titleVolumes(value: string): string {
+function titleVolumes(value: string, forCore = false): string {
   const lowered = value.toLowerCase();
-  const outside = [...lowered.replace(BRACKET_SEGMENT, '').matchAll(VOLUME_WORD)];
-  const inside = (lowered.match(BRACKET_SEGMENT) ?? []).flatMap((segment) => [
-    ...segment.matchAll(BRACKET_VOLUME),
-  ]);
-  return [...outside, ...inside]
-    .map(([, word]) => (/^\d+$/.test(word) ? word.replace(/^0+(?=\d)/, '') : word))
-    .sort()
-    .join(' ');
+  const unbracketed = lowered.replace(TITLE_BRACKETS, '');
+  const words = (text: string) => [...text.matchAll(VOLUME_WORD)].map(([, w]) => stripLeadingZeros(w));
+  const inBrackets = (lowered.match(TITLE_BRACKETS) ?? []).flatMap((segment) =>
+    [...segment.matchAll(BRACKET_VOLUME)].map(([, w]) => stripLeadingZeros(w)),
+  );
+  // The title and subtitle split only matters for the core set; the full set
+  // reads the unbracketed title in one pass, which gives the same words.
+  const outside = forCore
+    ? [
+        ...words(unbracketed.replace(TITLE_SUBTITLE, '')),
+        ...words(unbracketed.match(TITLE_SUBTITLE)?.[0] ?? '').filter((w) => w !== '1'),
+      ]
+    : words(unbracketed);
+  return [...outside, ...inBrackets].sort().join(' ');
 }
 
-function titleVolumesSql(title: SQL | PgColumn): SQL {
-  const lowered = sql`lower(${title} COLLATE "und-x-icu")`;
+function titleVolumesSql(lowered: SQL, unbracketed: SQL, forCore: boolean): SQL {
   // Most titles have no volume number. A plain regex test lets them skip the
   // set-returning subquery below, which is most of what this costs. Both
-  // patterns are tested because a bracketed "Book I" matches only the second.
-  return sql`CASE WHEN ${lowered} !~ ${VOLUME_WORD_SQL} AND ${lowered} !~ ${BRACKET_VOLUME_SQL}
+  // patterns are in the test because a bracketed "Book I" matches only the
+  // second; one alternation is one scan of the title rather than two.
+  const outside = forCore
+    ? sql`SELECT 'main' AS part, m[1] AS word
+        FROM regexp_matches(regexp_replace(${unbracketed}, ${TITLE_SUBTITLE_SOURCE}, ''), ${VOLUME_WORD_SQL}, 'g') AS m
+        UNION ALL
+        SELECT 'sub', m[1]
+        FROM regexp_matches((regexp_match(${unbracketed}, ${`(${TITLE_SUBTITLE_SOURCE})`}))[1], ${VOLUME_WORD_SQL}, 'g') AS m`
+    : sql`SELECT 'main' AS part, m[1] AS word
+        FROM regexp_matches(${unbracketed}, ${VOLUME_WORD_SQL}, 'g') AS m`;
+  const dropSubtitleOne = forCore ? sql`WHERE NOT (part = 'sub' AND volume = '1')` : sql``;
+  return sql`CASE WHEN ${lowered} !~ ${`${VOLUME_WORD_SQL}|${BRACKET_VOLUME_SQL}`}
     THEN '' ELSE coalesce((
     SELECT string_agg(volume, ' ' ORDER BY volume COLLATE "C")
     FROM (
-      SELECT CASE WHEN word ~ '^[0-9]+$'
+      SELECT part,
+             CASE WHEN word ~ '^[0-9]+$'
                   THEN regexp_replace(word, '^0+(?=[0-9])', '')
                   ELSE word END AS volume
       FROM (
-        SELECT m[1] AS word
-        FROM regexp_matches(regexp_replace(${lowered}, ${TITLE_BRACKETS_SQL}, '', 'g'), ${VOLUME_WORD_SQL}, 'g') AS m
+        ${outside}
         UNION ALL
-        SELECT v[1]
+        SELECT 'bracket', v[1]
         FROM regexp_matches(${lowered}, ${TITLE_BRACKETS_SQL}, 'g') AS seg,
              regexp_matches(seg[1], ${BRACKET_VOLUME_SQL}, 'g') AS v
       ) AS words
     ) AS volumes
+    ${dropSubtitleOne}
   ), '') END`;
 }
 
@@ -202,16 +245,17 @@ function titleVolumesSql(title: SQL | PgColumn): SQL {
  * The two keys a title is matched on — "is this the same work?" for titles.
  *
  *  - `full`: the title with trailing brackets dropped, then folded.
- *  - `core`: the same with its subtitle cut off too (or `full` again when
- *    cutting would leave nothing).
+ *  - `core`: the same with an edition subtitle ("…: A Novel", "…: Illustrated
+ *    Edition") cut off too. Equal to `full` when there is no such subtitle, or
+ *    when cutting would leave nothing.
  *
  * Both are prefixed with {@link titleVolumes}. Two titles match when one's
  * `full` equals the other's `full` or `core` — never `core` against `core`.
  * That one-sidedness is the point: "Bel Canto: A Novel" matches "Bel Canto",
- * but "Warriors: A Warrior's Choice" does not match "Warriors: Fading Echoes",
- * which a core-to-core match would merge. Measured on the catalogue, the
- * core-to-core version merged 15,609 same-author pairs that were nearly all
- * different books in one series.
+ * but "Bel Canto: A Novel" and "Bel Canto: Illustrated Edition" only match
+ * through the plain title, never through each other's leftovers. Measured on
+ * the catalogue, a core-to-core match over every subtitle merged 15,609
+ * same-author pairs that were nearly all different books in one series.
  *
  * A fuzzy similarity score was tried and rejected: among books by one author,
  * every pg_trgm cutoff from 0.6 to 0.95 matched mostly different books
@@ -221,24 +265,30 @@ function titleVolumesSql(title: SQL | PgColumn): SQL {
  * plain {@link normalizeTitleForMatch} fold still matches here.
  */
 export function titleKeysForMatch(value: string): { full: string; core: string } {
-  const volumes = titleVolumes(value);
-  const lowered = value.toLowerCase();
-  const full = normalizeTitleForMatch(lowered.replace(TITLE_BRACKETS, '')) || normalizeTitleForMatch(value);
-  const core = normalizeTitleForMatch(lowered.replace(TITLE_CORE_CUT, '')) || full;
-  return { full: `${volumes}#${full}`, core: `${volumes}#${core}` };
+  const unbracketed = value.toLowerCase().replace(TITLE_BRACKETS, '');
+  const fullTitle = normalizeTitleForMatch(unbracketed) || normalizeTitleForMatch(value);
+  const full = `${titleVolumes(value)}#${fullTitle}`;
+  if (!EDITION_SUBTITLE.test(unbracketed)) return { full, core: full };
+  const coreTitle = normalizeTitleForMatch(unbracketed.replace(TITLE_SUBTITLE, ''));
+  return { full, core: coreTitle ? `${titleVolumes(value, true)}#${coreTitle}` : full };
 }
 
 /** {@link titleKeysForMatch} in SQL. */
 export function titleKeysSql(title: SQL | PgColumn): { full: SQL; core: SQL } {
-  const unbracketed = sql`regexp_replace(${title} COLLATE "und-x-icu", ${TITLE_BRACKETS_SQL}, '', 'g')`;
-  const cut = sql`regexp_replace(${title} COLLATE "und-x-icu", ${TITLE_CORE_CUT_SQL}, '', 'g')`;
-  const full = sql`coalesce(nullif(${titleMatchSql(unbracketed)}, ''), ${titleMatchSql(title)})`;
-  const core = sql`coalesce(nullif(${titleMatchSql(cut)}, ''), ${full})`;
-  const volumes = titleVolumesSql(title);
-  return {
-    full: sql`(${volumes} || '#' || ${full})`,
-    core: sql`(${volumes} || '#' || ${core})`,
-  };
+  const lowered = sql`lower(${title} COLLATE "und-x-icu")`;
+  const unbracketed = sql`regexp_replace(${lowered}, ${TITLE_BRACKETS_SQL}, '', 'g')`;
+  const full = sql`(${titleVolumesSql(lowered, unbracketed, false)} || '#' ||
+    coalesce(nullif(${titleMatchSql(unbracketed)}, ''), ${titleMatchSql(title)}))`;
+  // NULL anywhere in the CASE branch (no edition subtitle, or nothing left
+  // after the cut) falls through to the full key, as in the JS twin.
+  const core = sql`coalesce(
+    CASE WHEN ${unbracketed} ~ ${EDITION_SUBTITLE_SQL}
+      THEN ${titleVolumesSql(lowered, unbracketed, true)} || '#' ||
+           nullif(${titleMatchSql(sql`regexp_replace(${unbracketed}, ${TITLE_SUBTITLE_SOURCE}, '')`)}, '')
+    END,
+    ${full}
+  )`;
+  return { full, core };
 }
 
 /**
@@ -305,14 +355,19 @@ export function buildWorkExclusionCondition(works: ExcludedWork[]): SQL | undefi
   // Two lists rather than one OR'd condition, because each stays a plain
   // equality Postgres can hash: a candidate's full title against the works'
   // full and core titles, then its core title against the works' full titles.
-  // A candidate with no subtitle has core = full, which the first list already
+  // A candidate with no edition subtitle has core = full, which the first list already
   // covers, so its core key is left NULL (never equal to anything) rather than
   // folded again. Done inside the key, not as an OR around the clause: an OR
   // stops Postgres turning NOT EXISTS into a hashed anti-join, and the query
   // then folds the title once per excluded work — minutes, not milliseconds.
   // Under the ICU collation like every other regex here: in ctype C, \s misses
   // a non-breaking space after the colon, which the JS twin's \s matches.
-  const coreKey = sql`CASE WHEN ${books.title} COLLATE "und-x-icu" ~ ${TITLE_SUBTITLE_SQL} THEN ${candidate.core} END`;
+  // Nested so the cheap separator test runs first and the edition-word regex
+  // (with its backtracking) only on the minority of titles that have one —
+  // that ordering halves the cost of this clause.
+  const coreKey = sql`CASE WHEN ${books.title} COLLATE "und-x-icu" ~ ${TITLE_SUBTITLE_SOURCE}
+    THEN CASE WHEN lower(${books.title} COLLATE "und-x-icu") ~ ${EDITION_SUBTITLE_SQL} THEN ${candidate.core} END
+  END`;
   return sql`(${workMatchClause(againstFull, candidate.full)}
     AND ${workMatchClause(againstCore, coreKey)})`;
 }
@@ -680,13 +735,18 @@ async function loadTitlesAndAuthors(bookIds: number[]) {
   return { bookRows, contributors };
 }
 
-/** Collapses works to one entry per normalized title/author pair. */
+/** Collapses works to one entry per set of match keys and folded author. */
 function dedupeWorks(works: ExcludedWork[]): ExcludedWork[] {
   const byKey = new Map<string, ExcludedWork>();
   for (const work of works) {
     // Explicit NUL separator so a title/author pair can't collide with a
     // differently-split pair whose title happens to contain the separator.
-    byKey.set(`${normalizeTitleForMatch(work.title)}\u0000${work.author ?? ''}`, work);
+    // Keyed on what the match actually compares — the title keys and the
+    // folded author — so two works that look alike under the plain fold but
+    // match different editions ("X (Vol. 2)" and "X Vol 2") both survive.
+    const { full, core } = titleKeysForMatch(work.title);
+    const author = work.author === null ? '\u0001' : normalizeAuthorForMatch(work.author);
+    byKey.set(`${full}\u0000${core}\u0000${author}`, work);
   }
   return [...byKey.values()];
 }

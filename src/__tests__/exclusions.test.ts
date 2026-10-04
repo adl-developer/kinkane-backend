@@ -111,7 +111,24 @@ describe('titleKeysForMatch', () => {
     // Volume numbers survive the brackets being ignored, and lose leading zeros.
     ['Tokyo Ghoul (Vol. 3)', '3#tokyo ghoul', '3#tokyo ghoul'],
     ['Tokyo Ghoul (Vol. 03)', '3#tokyo ghoul', '3#tokyo ghoul'],
-    ['Les Misérables: Tome II', 'ii#les misérables tome ii', 'ii#les misérables'],
+    // Not edition dressing, so the subtitle stays: a second volume is not the plain title.
+    ['Les Misérables: Tome II', 'ii#les misérables tome ii', 'ii#les misérables tome ii'],
+    // "Book 1 of …" is: it describes the plain title, and its "1" is not a volume.
+    [
+      'A Game of Thrones: Book 1 of A Song of Ice and Fire',
+      '1#game of thrones book 1 of a song of ice and fire',
+      '#game of thrones',
+    ],
+    // A series name followed by another title is a different book.
+    ['Hedgewitch: Stonewitch', '#hedgewitch stonewitch', '#hedgewitch stonewitch'],
+    // An edition note glued to the end of the title, or after an em dash.
+    ['Bel Canto(Large Print)', '#bel canto', '#bel canto'],
+    ['Bel Canto—A Novel', '#bel canto a novel', '#bel canto'],
+    // An unspaced hyphen or en dash is part of the title.
+    ['Catch-22: 50th Anniversary Edition', '22#catch 22 50th anniversary edition', '22#catch 22'],
+    ['The War 1914–1918', '#war 1914 1918', '#war 1914 1918'],
+    // A bracket glued inside the title is part of it.
+    ['Friend(s) Forever', '#friend s forever', '#friend s forever'],
     // No space after the colon, so not a subtitle.
     ['Re:ZERO', '#re zero', '#re zero'],
     // A bracket that opens the title is part of it.
@@ -354,13 +371,42 @@ describe('filterExcludedWorks', () => {
     });
   });
 
-  it('cuts a subtitle on one side only, so books in one series stay apart', () => {
-    // A core-to-core match would merge every "Warriors: …" title.
+  it('keeps other books in a series that share its name', () => {
+    // "Warriors: …" subtitles are titles, not edition dressing, so neither the
+    // other books nor a book called just "Warriors" go.
     const kept = filterExcludedWorks(
       [item(1, 'Warriors: Fading Echoes', ['Erin Hunter']), item(2, 'Warriors', ['Erin Hunter'])],
       exclusions({ works: [{ title: "warriors: a warrior's choice", author: 'erin hunter' }] }),
     );
+    expect(kept.map((b) => b.id)).toEqual([1, 2]);
+  });
+
+  it('keeps a sequel whose title starts with the book that was read', () => {
+    const kept = filterExcludedWorks(
+      [item(1, 'Hedgewitch: Stonewitch', ['Skye McKenna'])],
+      exclusions({ works: [{ title: 'hedgewitch', author: 'skye mckenna' }] }),
+    );
     expect(kept.map((b) => b.id)).toEqual([1]);
+  });
+
+  it('matches a "Book 1 of …" edition and the plain title in both directions', () => {
+    const plain = item(1, 'A Game of Thrones', ['George R. R. Martin']);
+    const bookOne = item(2, 'A Game of Thrones: Book 1 of A Song of Ice and Fire', ['George R.R. Martin']);
+    const bookTwo = item(3, 'A Clash of Kings: Book 2 of A Song of Ice and Fire', ['George R. R. Martin']);
+    expect(
+      filterExcludedWorks([bookOne, bookTwo], exclusions({ works: [{ title: 'a game of thrones', author: 'george r. r. martin' }] })).map((b) => b.id),
+    ).toEqual([3]);
+    expect(
+      filterExcludedWorks([plain], exclusions({ works: [{ title: 'a game of thrones: book 1 of a song of ice and fire', author: 'martin, george r. r.' }] })),
+    ).toHaveLength(0);
+  });
+
+  it('drops an edition whose note is glued to the title', () => {
+    const kept = filterExcludedWorks(
+      [item(1, 'Bel Canto(Large Print)', ['Ann Patchett']), item(2, 'Bel Canto—A Novel', ['Ann Patchett'])],
+      exclusions({ works: [{ title: 'bel canto', author: 'ann patchett' }] }),
+    );
+    expect(kept).toHaveLength(0);
   });
 
   it('keeps a different volume even when the volume is in brackets', () => {

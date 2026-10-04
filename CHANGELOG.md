@@ -5,7 +5,9 @@
 
 ### Bug Fixes
 
-* keep every edition of a book you've already read out of your quiz results ([2f39465](https://adl.github.com/adl-developer/kinkane-backend/commit/2f39465cc988145fb937b48842fcb17fbd7904f4)) — [details](changelog/2026-10-04-quiz-hides-books-already-read.md)
+* stop co-written and specially-labelled editions of books you've read slipping back into recommendations ([0dc56ba](https://adl.github.com/adl-developer/kinkane-backend/commit/0dc56ba7a2edc42b2893a78278df209320f0ec9e)) — [details](changelog/2026-10-04-quiz-hides-books-already-read.md)
+* keep every edition of a book you've already read out of your quiz results ([5c1a6c8](https://adl.github.com/adl-developer/kinkane-backend/commit/5c1a6c8f11454fe018fbe594143a5a1a8f7b4246)) — [details](changelog/2026-10-04-quiz-hides-books-already-read.md)
+* search shows each book once, in its best edition ([1073c67](https://adl.github.com/adl-developer/kinkane-backend/commit/1073c67c3aba372d1b1a20882812d121db08a137)) — [details](changelog/2026-10-04-search-one-edition-per-book.md)
 
 
 ## 2026-10-03

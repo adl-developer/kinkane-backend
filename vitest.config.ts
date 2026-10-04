@@ -17,6 +17,7 @@ export default defineConfig({
       '**/node_modules/**',
       '**/dist/**',
       'src/__tests__/endpoints.contract.test.ts',
+      'src/__tests__/exclusions.contract.test.ts',
       'src/__tests__/**/*.integration.test.ts',
     ],
     // Runs before every test file. See the file for why: without it the suite

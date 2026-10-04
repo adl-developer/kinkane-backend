@@ -167,6 +167,20 @@ describe('getUserExclusions', () => {
     expect(works).toHaveLength(2);
   });
 
+  it('keeps two works that fold alike but match different editions', async () => {
+    // Both fold to "tokyo ghoul vol 2" under the plain fold, but only the
+    // bracketed one matches "Tokyo Ghoul (Vol. 2) (Collector's Edition)", so
+    // collapsing them on that fold could throw the useful one away.
+    rowsByTable.set(userDislikedBooks, [{ bookId: 31, title: 'tokyo ghoul vol 2', author: 'sui ishida' }]);
+    stageShelf([{ bookId: 30, title: 'Tokyo Ghoul (Vol. 2)', author: 'Sui Ishida' }]);
+
+    const { works } = await getUserExclusions(7);
+
+    expect(works.map((w) => w.title)).toEqual(
+      expect.arrayContaining(['tokyo ghoul vol 2', 'tokyo ghoul (vol. 2)']),
+    );
+  });
+
   it('degrades to no exclusions rather than throwing when the load fails', async () => {
     // Stands in for a dropped connection mid-query.
     const { db } = await import('../db');

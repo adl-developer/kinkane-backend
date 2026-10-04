@@ -1,8 +1,15 @@
-import { readFileSync } from 'fs';
-import * as dotenv from 'dotenv';
-import { describe, it, expect, beforeAll } from 'vitest';
-import type { SQL } from 'drizzle-orm';
-import type { ExcludedWork } from '../lib/exclusions';
+import { describe, it, expect } from 'vitest';
+import { sql, type SQL } from 'drizzle-orm';
+import { db } from '../db';
+import {
+  authorMatchSql,
+  buildWorkExclusionCondition,
+  filterExcludedWorks,
+  normalizeAuthorForMatch,
+  titleKeysForMatch,
+  titleKeysSql,
+  type ExcludedWork,
+} from '../lib/exclusions';
 
 /**
  * The work-exclusion rule, run by a real Postgres and checked against its
@@ -16,51 +23,13 @@ import type { ExcludedWork } from '../lib/exclusions';
  * two drift, the same book is hidden on one screen and shown on the next, and
  * nothing fails.
  *
- * WRITES NOTHING. `books` and `book_contributors` are shadowed by CTEs of the
- * same name, so the predicate runs against the fixtures below and no table is
- * touched. It still follows the integration-suite convention — TEST_DATABASE_URL
- * only, skipped when unset — so it never runs against the database in `.env`.
- * No migrations are needed: any Postgres with ICU (every standard build) works.
- *
- *   TEST_DATABASE_URL=postgres://localhost:5432/kinkane_test npm run test:integration
+ * WHERE IT RUNS. Part of the endpoint contract suite (vitest.endpoints.config.ts),
+ * so the pre-commit hook runs it against the `.env` database on every commit.
+ * That is safe because it READS NOTHING AND WRITES NOTHING: `books` and
+ * `book_contributors` are shadowed by CTEs of the same name, so the predicate
+ * runs against the fixtures below and only needs a Postgres with ICU (every
+ * standard build).
  */
-
-const testUrl = process.env.TEST_DATABASE_URL;
-
-function configuredUrl(): string | undefined {
-  try {
-    return dotenv.parse(readFileSync('.env')).DATABASE_URL;
-  } catch {
-    return undefined;
-  }
-}
-
-function targetOf(url: string): string {
-  try {
-    const u = new URL(url);
-    return `${u.host}${u.pathname}`;
-  } catch {
-    return url;
-  }
-}
-
-if (testUrl) {
-  const configured = configuredUrl();
-  if (configured && targetOf(configured) === targetOf(testUrl)) {
-    throw new Error(
-      `TEST_DATABASE_URL points at the same database as .env (${targetOf(testUrl)}). ` +
-        'Point the integration suite at a scratch database.',
-    );
-  }
-  process.env.DATABASE_URL = testUrl;
-}
-
-type Lib = typeof import('../lib/exclusions');
-let lib: Lib;
-let db: typeof import('../db').db;
-let sql: typeof import('drizzle-orm').sql;
-
-const describeIfDb = testUrl ? describe : describe.skip;
 
 interface Fixture {
   id: number;
@@ -94,6 +63,16 @@ const CATALOGUE: Fixture[] = [
   { id: 20, title: "Dracula's Guest", authors: ['Bram Stoker'] },
   { id: 21, title: 'Dune', authors: ['.'] },
   { id: 22, title: 'Dune', authors: ['Frank Herbert'] },
+  { id: 23, title: 'A Game of Thrones', authors: ['George R. R. Martin'] },
+  { id: 24, title: 'A Game of Thrones: Book 1 of A Song of Ice and Fire', authors: ['George R.R. Martin'] },
+  { id: 25, title: 'A Clash of Kings: Book 2 of A Song of Ice and Fire', authors: ['George R. R. Martin'] },
+  { id: 26, title: 'Hedgewitch: Stonewitch', authors: ['Skye McKenna'] },
+  { id: 27, title: 'Bel Canto(Large Print)', authors: ['Ann Patchett'] },
+  { id: 28, title: 'Bel Canto—A Novel', authors: ['Ann Patchett'] },
+  { id: 29, title: 'Catch-22: 50th Anniversary Edition', authors: ['Joseph Heller'] },
+  { id: 30, title: 'The War 1914–1918', authors: ['A. Historian'] },
+  { id: 31, title: 'Friend(s) Forever', authors: ['A. N. Author'] },
+  { id: 32, title: 'Tokyo Ghoul (Vol. 2) (Collector\'s Edition)', authors: ['Sui Ishida'] },
 ];
 
 const EXCLUSION_SETS: { name: string; works: ExcludedWork[] }[] = [
@@ -113,15 +92,23 @@ const EXCLUSION_SETS: { name: string; works: ExcludedWork[] }[] = [
   { name: 'Lord of the Rings', works: [{ title: 'lord of the rings', author: 'tolkien, j. r. r.' }] },
   { name: "Dracula", works: [{ title: 'dracula', author: 'bram stoker' }] },
   { name: 'Dune with a blank-folding author', works: [{ title: 'dune', author: '.' }] },
+  { name: 'A Game of Thrones', works: [{ title: 'a game of thrones', author: 'george r. r. martin' }] },
+  {
+    name: 'the "Book 1 of" edition',
+    works: [{ title: 'a game of thrones: book 1 of a song of ice and fire', author: 'martin, george r. r.' }],
+  },
+  { name: 'Hedgewitch', works: [{ title: 'hedgewitch', author: 'skye mckenna' }] },
+  { name: 'Catch-22', works: [{ title: 'catch-22', author: 'joseph heller' }] },
+  {
+    name: 'two works that fold alike',
+    works: [
+      { title: 'tokyo ghoul vol 2', author: 'sui ishida' },
+      { title: 'tokyo ghoul (vol. 2)', author: 'sui ishida' },
+    ],
+  },
 ];
 
-describeIfDb('work exclusion — SQL agrees with its in-memory twin', () => {
-  beforeAll(async () => {
-    ({ sql } = await import('drizzle-orm'));
-    ({ db } = await import('../db'));
-    lib = await import('../lib/exclusions');
-  });
-
+describe('work exclusion — SQL agrees with its in-memory twin', () => {
   /** Runs `cond` against the fixture catalogue and returns the ids it keeps. */
   async function keptBySql(cond: SQL): Promise<number[]> {
     const bookRows = CATALOGUE.map((b) => sql`(${b.id}::int, ${b.title}::text)`);
@@ -144,32 +131,47 @@ describeIfDb('work exclusion — SQL agrees with its in-memory twin', () => {
       title: b.title,
       contributors: b.authors.map((personName) => ({ role: 'A01', personName })),
     }));
-    return lib.filterExcludedWorks(items, { bookIds: [], works }).map((b) => b.id);
+    return filterExcludedWorks(items, { bookIds: [], works }).map((b) => b.id);
   }
 
   it.each(EXCLUSION_SETS)('keeps the same books for $name', async ({ works }) => {
-    const cond = lib.buildWorkExclusionCondition(works)!;
+    const cond = buildWorkExclusionCondition(works)!;
     expect(await keptBySql(cond)).toEqual(keptInMemory(works));
   });
 
   it('drops every Patchett edition of Bel Canto and nothing else of hers', async () => {
-    const cond = lib.buildWorkExclusionCondition(EXCLUSION_SETS[0].works)!;
+    const cond = buildWorkExclusionCondition(EXCLUSION_SETS[0].works)!;
     const kept = await keptBySql(cond);
     for (const dropped of [1, 2, 3, 4, 7]) expect(kept).not.toContain(dropped);
+    // Glued-on edition notes go too.
+    for (const dropped of [27, 28]) expect(kept).not.toContain(dropped);
     // Toft's same-titled book, her other books, and an edition note that is
     // not a subtitle all stay.
     for (const stays of [5, 6, 19]) expect(kept).toContain(stays);
   });
 
+  it('matches "Book 1 of" with the plain title but keeps the next book', async () => {
+    const kept = await keptBySql(buildWorkExclusionCondition(
+      [{ title: 'a game of thrones', author: 'george r. r. martin' }],
+    )!);
+    expect(kept).not.toContain(24);
+    expect(kept).toContain(25);
+  });
+
+  it('keeps a sequel that starts with the title that was read', async () => {
+    const kept = await keptBySql(buildWorkExclusionCondition([{ title: 'hedgewitch', author: 'skye mckenna' }])!);
+    expect(kept).toContain(26);
+  });
+
   it('folds every title the same way in SQL as in TypeScript', async () => {
     const titles = CATALOGUE.map((b) => b.title);
-    const keys = lib.titleKeysSql(sql`t.title`);
+    const keys = titleKeysSql(sql`t.title`);
     const rows = (await db.execute(sql`
       SELECT t.title, ${keys.full} AS full, ${keys.core} AS core
       FROM (VALUES ${sql.join(titles.map((t) => sql`(${t}::text)`), sql`, `)}) AS t(title)
     `)) as unknown as { title: string; full: string; core: string }[];
     for (const row of rows) {
-      expect({ title: row.title, ...lib.titleKeysForMatch(row.title) }).toEqual(row);
+      expect({ title: row.title, ...titleKeysForMatch(row.title) }).toEqual(row);
     }
   });
 
@@ -183,11 +185,11 @@ describeIfDb('work exclusion — SQL agrees with its in-memory twin', () => {
       'Élodie Durand',
     ];
     const rows = (await db.execute(sql`
-      SELECT n.name, ${lib.authorMatchSql(sql`n.name`)} AS folded
+      SELECT n.name, ${authorMatchSql(sql`n.name`)} AS folded
       FROM (VALUES ${sql.join(names.map((n) => sql`(${n}::text)`), sql`, `)}) AS n(name)
     `)) as unknown as { name: string; folded: string }[];
     for (const row of rows) {
-      expect(lib.normalizeAuthorForMatch(row.name)).toBe(row.folded);
+      expect(normalizeAuthorForMatch(row.name)).toBe(row.folded);
     }
   });
 });
