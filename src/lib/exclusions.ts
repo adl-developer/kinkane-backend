@@ -78,6 +78,167 @@ export function titleMatchSql(title: SQL | PgColumn): SQL {
 }
 
 /**
+ * The author half of "is this the same work?": the form both sides of every
+ * author comparison are reduced to before they meet.
+ *
+ * The feeds spell one person several ways — about one A01 name in five carries
+ * a doubled space ("Robert  Toft"), initials come with and without full stops
+ * ("A. S. Byatt", "A S Byatt"), and some rows are surname-first ("Patchett,
+ * Ann"). A plain lower/trim left those as different people, so the same book
+ * could slip past an author-qualified exclusion. This folds full stops to
+ * spaces, flips a single "Surname, First" (but not a "King, Jr." suffix) and
+ * collapses whitespace. A name with more than one comma is left unflipped —
+ * there is no telling which part is the surname.
+ *
+ * {@link authorMatchSql} is its SQL twin and the two must agree character for
+ * character. Idempotent, and accepts a stored normalizeForMatch snapshot.
+ */
+export function normalizeAuthorForMatch(value: string): string {
+  return value
+    .toLowerCase()
+    .trim()
+    .replace(/^([^,]+),(?!\s*(?:jr|sr|ii|iii|iv)\.?$)\s*([^,]+)$/, '$2 $1')
+    .replace(/\./g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** {@link normalizeAuthorForMatch} in SQL — see titleMatchSql for why ICU. */
+export function authorMatchSql(name: SQL | PgColumn): SQL {
+  // Postgres treats parentheses inside a lookahead as non-capturing, so the
+  // name halves are \1 and \2 here exactly as they are $1 and $2 in JS.
+  return sql`btrim(regexp_replace(
+    replace(
+      regexp_replace(
+        btrim(lower(${name} COLLATE "und-x-icu")),
+        '^([^,]+),(?!\\s*(jr|sr|ii|iii|iv)\\.?$)\\s*([^,]+)$', '\\2 \\1'
+      ),
+      '.', ' '
+    ),
+    '\\s+', ' ', 'g'
+  ))`;
+}
+
+// Bracketed text after the title proper — "(Harper Perennial Modern Classics)",
+// "[Large Print]", "(light novel)" — is edition dressing, not part of the work's
+// name. A bracket that opens the title ("(Un)Natural") is left alone.
+const TITLE_BRACKETS = /\s+[([][^)\]]*[)\]]/g;
+const TITLE_BRACKETS_SQL = '\\s+[\\(\\[][^\\)\\]]*[\\)\\]]';
+
+// A subtitle: everything after "Title: " or "Title - ". The space after the
+// colon is required, so "Re:ZERO" keeps its name.
+const TITLE_SUBTITLE = /(?::\s| [-–—]\s).*$/s;
+const TITLE_SUBTITLE_SQL = '(:\\s| [-–—]\\s).*$';
+
+// Volume, level and part numbers, written as digits or Roman numerals: up to
+// three digits (so a year on a calendar is not a volume) or a run of two or
+// more of i/v/x. A lone "i" or "x" is too often a word ("The King and I").
+// Matched as a whole word — the lookarounds use the same letter-or-digit class
+// as normalizeTitleForMatch, so this finds exactly the words that fold would
+// split out, without paying for the fold.
+const VOLUME_WORD = /(?<![\p{Alphabetic}\p{Nd}])(\d{1,3}|[ivx]{2,})(?![\p{Alphabetic}\p{Nd}])/gu;
+const VOLUME_WORD_SQL = '(?<![[:alnum:]])([0-9]{1,3}|[ivx]{2,})(?![[:alnum:]])';
+
+/**
+ * The numbers in a title, sorted, as one string. Two titles can only be the
+ * same work when these agree — that is what keeps "Tokyo Ghoul (Vol. 3)" and
+ * "Tokyo Ghoul (Vol. 9)" apart once the brackets are ignored. Taken from the
+ * whole title, brackets and subtitle included, so nothing the match ignores
+ * can hide a volume. Two titles that fold identically always agree here.
+ */
+function titleVolumes(value: string): string {
+  return [...value.toLowerCase().matchAll(VOLUME_WORD)]
+    .map(([, word]) => (/^\d+$/.test(word) ? word.replace(/^0+(?=\d)/, '') : word))
+    .sort()
+    .join(' ');
+}
+
+function titleVolumesSql(title: SQL | PgColumn): SQL {
+  const lowered = sql`lower(${title} COLLATE "und-x-icu")`;
+  // Most titles have no volume number. A plain regex test lets them skip the
+  // set-returning subquery below, which is most of what this costs.
+  return sql`CASE WHEN ${lowered} !~ ${VOLUME_WORD_SQL} THEN '' ELSE coalesce((
+    SELECT string_agg(volume, ' ' ORDER BY volume COLLATE "C")
+    FROM (
+      SELECT CASE WHEN m[1] ~ '^[0-9]+$'
+                  THEN regexp_replace(m[1], '^0+(?=[0-9])', '')
+                  ELSE m[1] END AS volume
+      FROM regexp_matches(${lowered}, ${VOLUME_WORD_SQL}, 'g') AS m
+    ) AS volumes
+  ), '') END`;
+}
+
+/**
+ * The two keys a title is matched on — "is this the same work?" for titles.
+ *
+ *  - `full`: the title with trailing brackets dropped, then folded.
+ *  - `core`: the same with its subtitle cut off too (or `full` again when
+ *    cutting would leave nothing).
+ *
+ * Both are prefixed with {@link titleVolumes}. Two titles match when one's
+ * `full` equals the other's `full` or `core` — never `core` against `core`.
+ * That one-sidedness is the point: "Bel Canto: A Novel" matches "Bel Canto",
+ * but "Warriors: A Warrior's Choice" does not match "Warriors: Fading Echoes",
+ * which a core-to-core match would merge. Measured on the catalogue, the
+ * core-to-core version merged 15,609 same-author pairs that were nearly all
+ * different books in one series.
+ *
+ * A fuzzy similarity score was tried and rejected: among books by one author,
+ * every pg_trgm cutoff from 0.6 to 0.95 matched mostly different books
+ * ("Theory A" / "Theory B", "Workbook with Key" / "without Key").
+ *
+ * {@link titleKeysSql} is the SQL twin. Every title that matched under the
+ * plain {@link normalizeTitleForMatch} fold still matches here.
+ */
+export function titleKeysForMatch(value: string): { full: string; core: string } {
+  const volumes = titleVolumes(value);
+  const unbracketed = value.toLowerCase().replace(TITLE_BRACKETS, '');
+  const full = normalizeTitleForMatch(unbracketed) || normalizeTitleForMatch(value);
+  const core = normalizeTitleForMatch(unbracketed.replace(TITLE_SUBTITLE, '')) || full;
+  return { full: `${volumes}#${full}`, core: `${volumes}#${core}` };
+}
+
+/** {@link titleKeysForMatch} in SQL. */
+export function titleKeysSql(title: SQL | PgColumn): { full: SQL; core: SQL } {
+  const unbracketed = sql`regexp_replace(${title} COLLATE "und-x-icu", ${TITLE_BRACKETS_SQL}, '', 'g')`;
+  const full = sql`coalesce(nullif(${titleMatchSql(unbracketed)}, ''), ${titleMatchSql(title)})`;
+  const core = sql`coalesce(
+    nullif(${titleMatchSql(sql`regexp_replace(${unbracketed}, ${TITLE_SUBTITLE_SQL}, '')`)}, ''),
+    ${full}
+  )`;
+  const volumes = titleVolumesSql(title);
+  return {
+    full: sql`(${volumes} || '#' || ${full})`,
+    core: sql`(${volumes} || '#' || ${core})`,
+  };
+}
+
+/**
+ * The excluded works as the two lists the match runs on: the keys a
+ * candidate's `full` is checked against (the work's `full` and `core`), and
+ * the keys its `core` is checked against (the work's `full` only). One row per
+ * key and author, so a book with two authors is anchored by either.
+ */
+function workMatchRows(works: ExcludedWork[]) {
+  const againstFull = new Map<string, { key: string; author: string | null }>();
+  const againstCore = new Map<string, { key: string; author: string | null }>();
+  for (const work of works) {
+    const { full, core } = titleKeysForMatch(work.title);
+    const author = work.author === null ? null : normalizeAuthorForMatch(work.author) || null;
+    for (const key of [full, core]) againstFull.set(`${key}\u0000${author}`, { key, author });
+    againstCore.set(`${full}\u0000${author}`, { key: full, author });
+  }
+  return { againstFull: [...againstFull.values()], againstCore: [...againstCore.values()] };
+}
+
+/**
+ * Bumped whenever the rule for "same work" changes, so caches holding lists
+ * filtered by an older rule (quiz results, keyed through hashInput) are
+ * retired rather than served until they expire.
+ */
+export const WORK_MATCH_VERSION = 2;
+
+/**
  * Builds the "none of these works" predicate.
  *
  * Written as a single NOT EXISTS over a VALUES list rather than one AND'd
@@ -85,17 +246,19 @@ export function titleMatchSql(title: SQL | PgColumn): SQL {
  * list grows — a reader who has rejected 200 books gets the same shape of
  * query as one who has rejected 3.
  *
- * The match is by title — folded by normalizeTitleForMatch, so a leading
- * "The" or a stray comma does not make a second work — with the author acting as a tie-breaker that only
- * gets to *rescue* a same-titled book — never to let one through on a
+ * The match is by title — "the same title" as {@link titleKeysForMatch}
+ * defines it, so a leading "The", a subtitle or an edition note in brackets
+ * does not make a second work — with the author acting as a tie-breaker that
+ * only gets to *rescue* a same-titled book, never to let one through on a
  * technicality. So a candidate is excluded when its title matches and any of:
  *
  *  - the rejection has no author recorded (we don't know who wrote the book
  *    the user rejected), or
  *  - the candidate has no A01 author recorded (an untagged catalogue row), or
- *  - the two authors match.
+ *  - the two authors match, as {@link normalizeAuthorForMatch} folds them.
  *
- * Only a same-titled book by a *known, different* author survives. Both
+ * Only a same-titled book by a *known, different* author survives, and other
+ * books by the same author are untouched unless their title matches. Both
  * unknown-author branches deliberately err towards over-excluding: one missing
  * book in a list of a hundred costs nothing, while re-recommending the book
  * someone just told us they'd read reads as the quiz not listening.
@@ -106,26 +269,43 @@ export function titleMatchSql(title: SQL | PgColumn): SQL {
 export function buildWorkExclusionCondition(works: ExcludedWork[]): SQL | undefined {
   if (works.length === 0) return undefined;
 
+  const { againstFull, againstCore } = workMatchRows(works);
+  const candidate = titleKeysSql(books.title);
+
+  // Two lists rather than one OR'd condition, because each stays a plain
+  // equality Postgres can hash: a candidate's full title against the works'
+  // full and core titles, then its core title against the works' full titles.
+  // A candidate with no subtitle has core = full, which the first list already
+  // covers, so its core key is left NULL (never equal to anything) rather than
+  // folded again. Done inside the key, not as an OR around the clause: an OR
+  // stops Postgres turning NOT EXISTS into a hashed anti-join, and the query
+  // then folds the title once per excluded work — minutes, not milliseconds.
+  const coreKey = sql`CASE WHEN ${books.title} ~ ${TITLE_SUBTITLE_SQL} THEN ${candidate.core} END`;
+  return sql`(${workMatchClause(againstFull, candidate.full)}
+    AND ${workMatchClause(againstCore, coreKey)})`;
+}
+
+function workMatchClause(
+  rows: { key: string; author: string | null }[],
+  candidateKey: SQL,
+): SQL {
   // The ::text casts are load-bearing, not decoration: these are bind
   // parameters inside a VALUES list, and Postgres cannot always infer a type
   // for an untyped parameter there — it fails the whole query with "could not
   // determine data type of parameter". Naming the type sidesteps the inference
   // entirely, and matters most in the all-null-author case where there is no
   // sibling row to infer from.
-  const rows = works.map(
-    (w) =>
-      sql`(${normalizeTitleForMatch(w.title)}::text, ${w.author === null ? null : normalizeForMatch(w.author)}::text)`,
-  );
+  const values = rows.map((r) => sql`(${r.key}::text, ${r.author}::text)`);
 
-  // Folding the candidate's title costs about 3µs a row. Postgres hashes the
+  // Folding the candidate's title costs a few µs a row. Postgres hashes the
   // VALUES list and folds each candidate once per probe, so this stays one fold
-  // per row however long the list is — measured at 68ms for 200 works over 20k
-  // rows. Hoisting the fold into its own OFFSET 0 subquery looks cheaper and
-  // measured ten times slower, since it defeats the hashing.
+  // per row however long the list is. Hoisting the fold into its own OFFSET 0
+  // subquery looks cheaper and measured ten times slower, since it defeats the
+  // hashing.
   return sql`NOT EXISTS (
     SELECT 1
-    FROM (VALUES ${sql.join(rows, sql`, `)}) AS excluded_work(title, author)
-    WHERE excluded_work.title = ${titleMatchSql(books.title)}
+    FROM (VALUES ${sql.join(values, sql`, `)}) AS excluded_work(title, author)
+    WHERE excluded_work.title = ${candidateKey}
       AND (
         excluded_work.author IS NULL
         OR NOT EXISTS (${namedAuthorSubquery()})
@@ -134,7 +314,7 @@ export function buildWorkExclusionCondition(works: ExcludedWork[]): SQL | undefi
           FROM book_contributors bc
           WHERE bc.book_id = ${books.id}
             AND bc.role = 'A01'
-            AND lower(btrim(bc.person_name)) = excluded_work.author
+            AND ${authorMatchSql(sql`bc.person_name`)} = excluded_work.author
         )
       )
   )`;
@@ -213,21 +393,29 @@ export function filterExcludedWorks<
 
   const excludedIds = new Set(exclusions.bookIds);
 
-  // Grouped by title so each item is one map lookup rather than a scan of the
-  // whole rejection list.
-  const authorsByTitle = new Map<string, (string | null)[]>();
-  for (const work of exclusions.works) {
-    const title = normalizeTitleForMatch(work.title);
-    const authors = authorsByTitle.get(title) ?? [];
-    authors.push(work.author);
-    authorsByTitle.set(title, authors);
-  }
+  // Keyed by title so each item is two map lookups rather than a scan of the
+  // whole rejection list — the same two lists, matched the same way, as the
+  // SQL twin.
+  const { againstFull, againstCore } = workMatchRows(exclusions.works);
+  const group = (rows: { key: string; author: string | null }[]) => {
+    const authorsByKey = new Map<string, (string | null)[]>();
+    for (const { key, author } of rows) {
+      authorsByKey.set(key, [...(authorsByKey.get(key) ?? []), author]);
+    }
+    return authorsByKey;
+  };
+  const authorsByFull = group(againstFull);
+  const authorsByCore = group(againstCore);
 
   return items.filter((item) => {
     if (excludedIds.has(item.id)) return false;
 
-    const excludedAuthors = authorsByTitle.get(normalizeTitleForMatch(item.title));
-    if (!excludedAuthors) return true;
+    const keys = titleKeysForMatch(item.title);
+    const excludedAuthors = [
+      ...(authorsByFull.get(keys.full) ?? []),
+      ...(authorsByCore.get(keys.core) ?? []),
+    ];
+    if (excludedAuthors.length === 0) return true;
 
     // An untagged catalogue row has nothing to disprove the title match with,
     // so the title alone decides — mirrors the NOT EXISTS branch in the SQL.
@@ -237,7 +425,7 @@ export function filterExcludedWorks<
 
     const itemAuthors = item.contributors
       .filter((c) => c.role === 'A01' && !!c.personName?.trim())
-      .map((c) => normalizeForMatch(c.personName as string));
+      .map((c) => normalizeAuthorForMatch(c.personName as string));
 
     return !excludedAuthors.some(
       (author) => author === null || itemAuthors.includes(author),
@@ -361,7 +549,7 @@ export async function bustUserExclusions(userId: number): Promise<void> {
  * whole life of the v2 key, so it matched nothing and a user's rejected books
  * stayed in their feed for the full hour. Bump both together.
  */
-const PERSONALIZED_CACHE_PREFIX = 'personalized:v5:';
+const PERSONALIZED_CACHE_PREFIX = 'personalized:v6:';
 
 /**
  * Busts the personalized feed cache for all limit variants. `limit` is bounded

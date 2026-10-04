@@ -3859,7 +3859,9 @@ export const booksService = {
     // v4: the edition picker now prefers in-stock, then order-in editions, then paperback > hardback > other.
     // v5: one card per work, picked by cover > newest > price > data. Bumped in
     // step with PERSONALIZED_CACHE_PREFIX in lib/exclusions.ts.
-    const cacheKey = `personalized:v5:${userId}:${limit}`;
+    // v6: the work-exclusion match got looser (subtitles, edition brackets,
+    // author spellings), so v5 pools may still hold books it now excludes.
+    const cacheKey = `personalized:v6:${userId}:${limit}`;
     const cached = await redis.get(cacheKey);
     if (cached) {
       return attachShopFields(JSON.parse(cached) as TrendingBookItem[], currency);

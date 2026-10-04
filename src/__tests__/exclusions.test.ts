@@ -5,8 +5,10 @@ import {
   buildWorkExclusionCondition,
   filterExcludedWorks,
   hasNamedAuthor,
+  normalizeAuthorForMatch,
   normalizeForMatch,
   normalizeTitleForMatch,
+  titleKeysForMatch,
   type UserExclusions,
 } from '../lib/exclusions';
 
@@ -73,12 +75,71 @@ describe('normalizeTitleForMatch', () => {
   });
 });
 
+describe('normalizeAuthorForMatch', () => {
+  it.each([
+    ['Ann Patchett', 'ann patchett'],
+    ['Patchett, Ann', 'ann patchett'],
+    ['  PATCHETT ,  Ann ', 'ann patchett'],
+    // About one catalogue author name in five carries a doubled space.
+    ['Robert  Toft', 'robert toft'],
+    ['A. S. Byatt', 'a s byatt'],
+    ['A S Byatt', 'a s byatt'],
+    ['Durand,\tÉlodie', 'élodie durand'],
+    // A suffix after the comma is not a first name.
+    ['Martin Luther King, Jr.', 'martin luther king, jr'],
+    ['Smith, III', 'smith, iii'],
+    // More than one comma: no telling which part is the surname, so no flip.
+    ['X, Y, Z', 'x, y, z'],
+  ])('%s -> %s', (input, expected) => {
+    expect(normalizeAuthorForMatch(input)).toBe(expected);
+  });
+
+  it('is idempotent and accepts a stored normalizeForMatch snapshot', () => {
+    const once = normalizeAuthorForMatch('Patchett, Ann');
+    expect(normalizeAuthorForMatch(once)).toBe(once);
+    expect(normalizeAuthorForMatch(normalizeForMatch('  A. S.  Byatt '))).toBe('a s byatt');
+  });
+});
+
+describe('titleKeysForMatch', () => {
+  it.each([
+    ['Bel Canto', '#bel canto', '#bel canto'],
+    ['Bel Canto: A Novel', '#bel canto a novel', '#bel canto'],
+    ['Bel Canto (Harper Perennial Modern Classics)', '#bel canto', '#bel canto'],
+    ['Bel Canto [Large Print]', '#bel canto', '#bel canto'],
+    ['Bel Canto - 20th Anniversary Edition', '#bel canto 20th anniversary edition', '#bel canto'],
+    // Volume numbers survive the brackets being ignored, and lose leading zeros.
+    ['Tokyo Ghoul (Vol. 3)', '3#tokyo ghoul', '3#tokyo ghoul'],
+    ['Tokyo Ghoul (Vol. 03)', '3#tokyo ghoul', '3#tokyo ghoul'],
+    ['Les Misérables: Tome II', 'ii#les misérables tome ii', 'ii#les misérables'],
+    // No space after the colon, so not a subtitle.
+    ['Re:ZERO', '#re zero', '#re zero'],
+    // A bracket that opens the title is part of it.
+    ['(Un)Natural', '#un natural', '#un natural'],
+    // A year is not a volume; a lone "I" is not a numeral.
+    ['Devon 2026 Calendar', '#devon 2026 calendar', '#devon 2026 calendar'],
+    ['The King and I', '#king and i', '#king and i'],
+  ])('%s', (input, full, core) => {
+    expect(titleKeysForMatch(input)).toEqual({ full, core });
+  });
+
+  it('keys every title the plain fold would have matched identically', () => {
+    for (const [a, b] of [
+      ['The Hobbit', 'Hobbit, The'],
+      ['Bridget & Gabe', 'Bridget and Gabe'],
+    ]) {
+      expect(normalizeTitleForMatch(a)).toBe(normalizeTitleForMatch(b));
+      expect(titleKeysForMatch(a)).toEqual(titleKeysForMatch(b));
+    }
+  });
+});
+
 describe('buildWorkExclusionCondition', () => {
   it('folds a leading article out of the excluded title, matching the SQL fold', () => {
     const { sql, params } = compile(
       buildWorkExclusionCondition([{ title: "the secret lives of baba segi's wives", author: null }]),
     );
-    expect(params).toContain('secret lives of baba segi s wives');
+    expect(params).toContain('#secret lives of baba segi s wives');
     expect(sql).toContain('und-x-icu');
   });
 
@@ -90,13 +151,13 @@ describe('buildWorkExclusionCondition', () => {
     const { params } = compile(
       buildWorkExclusionCondition([{ title: '  Dune ', author: 'Frank HERBERT' }]),
     );
-    expect(params).toContain('dune');
+    expect(params).toContain('#dune');
     expect(params).toContain('frank herbert');
   });
 
   it('passes a null author through rather than dropping the work', () => {
     const { params } = compile(buildWorkExclusionCondition([{ title: 'Dune', author: null }]));
-    expect(params).toContain('dune');
+    expect(params).toContain('#dune');
     expect(params).toContain(null);
   });
 
@@ -228,6 +289,99 @@ describe('filterExcludedWorks', () => {
     const kept = filterExcludedWorks(
       [{ id: 99, title: 'Dune', contributors: [{ role: 'A01', personName: '   ' }] }],
       exclusions({ works: [{ title: 'dune', author: 'frank herbert' }] }),
+    );
+    expect(kept).toHaveLength(0);
+  });
+
+  describe('a book the user said they have read: Bel Canto by Ann Patchett', () => {
+    const read = exclusions({ works: [{ title: 'bel canto', author: 'ann patchett' }] });
+    const keptIds = (items: ReturnType<typeof item>[]) =>
+      filterExcludedWorks(items, read).map((b) => b.id);
+
+    it.each([
+      'Bel Canto',
+      'BEL CANTO',
+      'Bel Canto, The',
+      'Bel Canto: A Novel',
+      'Bel Canto (Harper Perennial Modern Classics)',
+      'Bel Canto [Large Print]',
+      'Bel Canto - 20th Anniversary Edition',
+    ])('drops the edition "%s"', (title) => {
+      expect(keptIds([item(1, title, ['Ann Patchett'])])).toEqual([]);
+    });
+
+    it('drops an edition whose author is spelled differently', () => {
+      expect(
+        keptIds([
+          item(1, 'Bel Canto', ['Patchett, Ann']),
+          item(2, 'Bel Canto', ['Ann  Patchett']),
+          item(3, 'Bel Canto', ['ANN PATCHETT']),
+        ]),
+      ).toEqual([]);
+    });
+
+    it("keeps her other books — only a matching title is dropped", () => {
+      expect(
+        keptIds([
+          item(1, 'Whistler', ['Ann Patchett']),
+          item(2, "The Magician's Assistant", ['Ann Patchett']),
+        ]),
+      ).toEqual([1, 2]);
+    });
+
+    it('keeps a different book with the same title by someone else', () => {
+      // Robert Toft's singing guide is in the catalogue under this exact title.
+      expect(keptIds([item(1, 'Bel Canto', ['Robert  Toft'])])).toEqual([1]);
+    });
+
+    it('keeps titles that merely start the same way', () => {
+      expect(
+        keptIds([
+          item(1, 'Bel Canto Arias for Soprano', ['Ann Patchett']),
+          item(2, 'Canto', ['Ann Patchett']),
+        ]),
+      ).toEqual([1, 2]);
+    });
+  });
+
+  it('cuts a subtitle on one side only, so books in one series stay apart', () => {
+    // A core-to-core match would merge every "Warriors: …" title.
+    const kept = filterExcludedWorks(
+      [item(1, 'Warriors: Fading Echoes', ['Erin Hunter']), item(2, 'Warriors', ['Erin Hunter'])],
+      exclusions({ works: [{ title: "warriors: a warrior's choice", author: 'erin hunter' }] }),
+    );
+    expect(kept.map((b) => b.id)).toEqual([1]);
+  });
+
+  it('keeps a different volume even when the volume is in brackets', () => {
+    const kept = filterExcludedWorks(
+      [
+        item(1, 'Tokyo Ghoul (Vol. 9)', ['Sui Ishida']),
+        item(2, 'Tokyo Ghoul (Vol. 3) (Deluxe)', ['Sui Ishida']),
+      ],
+      exclusions({ works: [{ title: 'tokyo ghoul (vol. 3)', author: 'sui ishida' }] }),
+    );
+    expect(kept.map((b) => b.id)).toEqual([1]);
+  });
+
+  it("keeps Dracula's Guest when Dracula was read", () => {
+    const kept = filterExcludedWorks(
+      [item(1, "Dracula's Guest", ['Bram Stoker'])],
+      exclusions({ works: [{ title: 'dracula', author: 'bram stoker' }] }),
+    );
+    expect(kept.map((b) => b.id)).toEqual([1]);
+  });
+
+  it('drops an edition credited to only one of several authors', () => {
+    // likedBooksToWorks emits one work per author for exactly this case.
+    const kept = filterExcludedWorks(
+      [item(1, 'Good Omens', ['Neil Gaiman'])],
+      exclusions({
+        works: [
+          { title: 'good omens', author: 'terry pratchett' },
+          { title: 'good omens', author: 'neil gaiman' },
+        ],
+      }),
     );
     expect(kept).toHaveLength(0);
   });
