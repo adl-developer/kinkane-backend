@@ -184,7 +184,8 @@ export function dedupeByTitle<T extends DedupeCandidate>(rows: T[]): T[] {
 /**
  * Folds a title or author name down to the form two listings of the same work share,
  * whatever the feed did to the spelling: case, accents, punctuation, "&" for "and", and a
- * leading or trailing article ("The Hobbit", "Hobbit, The", "hobbit") all collapse.
+ * leading or trailing article ("The Hobbit", "Hobbit, The", "hobbit") and a trailing format
+ * tag ("Bel Canto PB") all collapse.
  *
  * Deliberately stops short of dropping subtitles. Measured on the catalogue, cutting at the
  * colon or dash merges far more distinct books than duplicates — mostly numbered series by
@@ -203,7 +204,20 @@ export function normalizeWorkText(value: string): string {
     .replace(/[^\p{L}\p{N}]+/gu, ' ')
     .trim()
     .replace(/^(the|a|an) /, '')
-    .replace(/ (the|a|an)$/, '');
+    .replace(/ (the|a|an)$/, '')
+    // Some feed titles carry their format: "BEL CANTO PB" is the paperback of "Bel Canto".
+    .replace(/ (pb|pbk|hb|hbk)$/, '');
+}
+
+/**
+ * {@link normalizeWorkText} for a person's name, which the feeds store either way round:
+ * "Patchett, Ann" and "Ann Patchett" are the same author. A single comma marks the inverted
+ * form; anything else is left as written.
+ */
+export function normalizeAuthorText(name: string): string {
+  const parts = name.split(',');
+  const natural = parts.length === 2 && parts[1].trim() ? `${parts[1]} ${parts[0]}` : name;
+  return normalizeWorkText(natural);
 }
 
 /**
@@ -214,7 +228,7 @@ export function normalizeWorkText(value: string): string {
  */
 export function workKey(title: string, author: string | null): string {
   // NUL separator so a title/author pair can't collide with a differently-split one.
-  return `${normalizeWorkText(title)}\u0000${author ? normalizeWorkText(author) : ''}`;
+  return `${normalizeWorkText(title)}\u0000${author ? normalizeAuthorText(author) : ''}`;
 }
 
 /**

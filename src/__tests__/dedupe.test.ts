@@ -292,6 +292,21 @@ describe('workKey', () => {
   it('separates same-titled books by different authors', () => {
     expect(workKey('Home', 'Toni Morrison')).not.toBe(workKey('Home', 'Marilynne Robinson'));
   });
+
+  it('matches an author stored surname-first', () => {
+    expect(workKey('Bel Canto', 'Patchett, Ann')).toBe(workKey('Bel Canto', 'Ann Patchett'));
+  });
+
+  it('ignores a format tag on the end of the title', () => {
+    expect(workKey('BEL CANTO PB', 'Ann Patchett')).toBe(workKey('Bel Canto', 'Ann Patchett'));
+    expect(workKey('Isadora Moon and the Shooting Star HBK', null)).toBe(
+      workKey('Isadora Moon and the Shooting Star', null),
+    );
+  });
+
+  it('keeps a title that only contains a format tag as a word', () => {
+    expect(workKey('PB and J', null)).not.toBe(workKey('and J', null));
+  });
 });
 
 describe('dedupeByWork', () => {

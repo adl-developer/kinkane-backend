@@ -20,7 +20,7 @@ import {
   type BookSubject,
   type BookPrice,
 } from '../db/schema';
-import { dedupeByTitle, dedupeCardsByWork, firstNamedAuthor, groupEditions, normalizeWorkText, workKey } from '../lib/dedupe';
+import { dedupeByTitle, dedupeCardsByWork, firstNamedAuthor, groupEditions, workKey } from '../lib/dedupe';
 import {
   buildHasAuthorCondition,
   buildWorkExclusionCondition,
@@ -268,8 +268,8 @@ export interface ListBooksOptions {
   offset: number;
   // Opt-in. Without `q`: collapses same-titled editions down to the best one (on the shelf >
   // hardback > paperback > cover > complete dataset > newest > has a price) — see
-  // dedupeByTitle in lib/dedupe.ts. With `q`: every edition is listed, but each work's
-  // editions are brought together in that same order — see groupEditions.
+  // dedupeByTitle in lib/dedupe.ts. With `q`: the same, but one edition per work rather than
+  // per exact title, so "Bel Canto" and "BEL CANTO PB" by one author collapse — see workKey.
   dedupe?: boolean;
   /**
    * Opt-in: lists only what a customer can buy, in the order a shop has to —
@@ -311,18 +311,12 @@ export interface ListBooksOptions {
 export interface DedupeCursor {
   /** The raw-row offset to resume scanning at. */
   o: number;
-  /** Case-folded titles carried from the previous page's tail, to filter here. */
+  /** Case-folded titles (or, for a search, work keys) carried from the previous page's tail, to filter here. */
   t: string[];
 }
 
 /** How many recent titles to remember in the cursor for cross-page filtering. */
 const CURSOR_TAIL_TITLES = 100;
-/**
- * The same for a grouped search, which remembers row ids instead (see list()).
- * Larger because a page's siblings count too: up to SIBLING_EDITIONS_PER_TITLE
- * per work on top of the page itself.
- */
-const CURSOR_TAIL_IDS = 300;
 
 export function encodeDedupeCursor(cursor: DedupeCursor): string {
   return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
@@ -2450,7 +2444,9 @@ export const booksService = {
     // v10: `shoppable=true` filters out unsellable books again and ranks market-restricted
     // titles below unrestricted ones — a v9 page holds the unsellable tail and the old order.
     // v11: every row now carries `mainGenre`; a v10 page has no such field at all.
-    const rowsCacheKey = `books:list:v11:${createHash('sha256').update(JSON.stringify(opts)).digest('hex')}`;
+    // v12: a deduped search shows one edition per work again instead of every edition
+    // grouped — a v11 page lists the editions this version hides.
+    const rowsCacheKey = `books:list:v12:${createHash('sha256').update(JSON.stringify(opts)).digest('hex')}`;
     // Keyed only on the fields that affect the count (not limit/offset/sort) so every
     // page of the same filter — and every sort direction — shares one cached total.
     //
@@ -3025,16 +3021,17 @@ export const booksService = {
           let nextCursor: string | null = null;
 
           if (opts.dedupe && opts.q) {
-            // A search lists every edition, grouped by work with the preferred
-            // one first — on the shelf, then hardback, then paperback. Siblings
-            // pulled in above join their work's group rather than waiting for
-            // a later page.
+            // A search shows each work once, as its preferred edition — on the
+            // shelf, then hardback, then paperback (see groupEditions). Siblings
+            // pulled in above compete for that slot, so a work's hardback can
+            // lead even when only its paperback matched the scan.
             //
-            // The cursor tail carries row ids here, not titles: nothing is
-            // collapsed, so what must not repeat is a row, and a title filter
-            // would drop a later edition of a shown work for good.
-            const idKey = (id: number) => `#${id}`;
-            const carryOverFiltered = enriched.filter((r) => !carryOverTitles.has(idKey(r.id)));
+            // The cursor tail carries work keys, not titles: "Bel Canto" and
+            // "BEL CANTO PB" are one work, and a later page must skip every
+            // edition of a work already shown, under any spelling.
+            const workOf = (r: { title: string; contributors: BookListItem['contributors'] }) =>
+              `w:${workKey(r.title, firstNamedAuthor(r.contributors))}`;
+            const carryOverFiltered = enriched.filter((r) => !carryOverTitles.has(workOf(r)));
             const scored = withPickerTier(await withStockTier(
               carryOverFiltered.map((r) => ({
                 ...r,
@@ -3043,35 +3040,26 @@ export const booksService = {
                 hasPrice: r.prices.length > 0,
               })),
             ));
-            const groups = groupEditions(scored, (r) => workKey(r.title, firstNamedAuthor(r.contributors)));
-            // Whole groups only, so a work's editions never straddle a page
-            // break. A page can run past `limit` by the tail of its last group;
-            // that is the price of never splitting one.
-            const taken: typeof scored = [];
-            let groupsTaken = 0;
-            for (const group of groups) {
-              if (taken.length >= opts.limit) break;
-              taken.push(...group);
-              groupsTaken++;
-            }
-            hasMore = hasMore || groupsTaken < groups.length;
-            result = taken.map(({ shortDescription: _shortDescription, genreCount: _genreCount, hasPrice: _hasPrice, stockTier: _stockTier, ...item }) => item);
+            const picked = groupEditions(scored, workOf).map((group) => group[0]);
+            hasMore = hasMore || picked.length > opts.limit;
+            result = picked.slice(0, opts.limit).map(({ shortDescription: _shortDescription, genreCount: _genreCount, hasPrice: _hasPrice, stockTier: _stockTier, ...item }) => item);
 
             if (hasMore) {
-              // Resume at the first scanned row this page did not show. Every
-              // row before it was shown or carried over; shown rows after it
-              // (and shown siblings, which sit anywhere in the scan) ride
-              // forward in the tail so the next page skips them.
-              const shownIds = new Set(result.map((r) => r.id));
-              let resumeAt = rawRows.findIndex(
-                (r) => !shownIds.has(r.id) && !carryOverTitles.has(idKey(r.id)),
-              );
+              // Resume at the first scanned row of a work this page did not
+              // show. Rows before it belong to shown or carried-over works,
+              // and the shown works ride forward in the tail so their other
+              // editions are filtered wherever they turn up later.
+              const shownWorks = result.map(workOf);
+              const shown = new Set(shownWorks);
+              const scannedWork = new Map(enriched.map((r) => [r.id, workOf(r)]));
+              let resumeAt = rawRows.findIndex((r) => {
+                const work = scannedWork.get(r.id);
+                return work === undefined || (!shown.has(work) && !carryOverTitles.has(work));
+              });
               if (resumeAt <= 0) resumeAt = rawRows.length;
-              const scannedBefore = new Set(rawRows.slice(0, resumeAt).map((r) => r.id));
-              const stillAhead = result.filter((r) => !scannedBefore.has(r.id)).map((r) => idKey(r.id));
               const nextTail = Array.from(
-                new Set([...(opts.cursor?.t ?? []), ...stillAhead]),
-              ).slice(-CURSOR_TAIL_IDS);
+                new Set([...(opts.cursor?.t ?? []), ...shownWorks]),
+              ).slice(-CURSOR_TAIL_TITLES);
               nextCursor = encodeDedupeCursor({
                 o: effectiveOffset + resumeAt,
                 t: nextTail,
@@ -3269,7 +3257,8 @@ export const booksService = {
     // and were always deduped, so they'd be wrongly served as the non-deduped default.
     // v4: the edition picker now prefers in-stock, then order-in editions, then paperback > hardback > other.
     // v5: dedupe now lists every edition grouped by work, hardback first, instead of one per title.
-    const cacheKey = `suggestions:v5:${type}:${dedupe}:${createHash('sha256').update(`${q}:${limit}`).digest('hex')}`;
+    // v6: dedupe shows one edition per work (hardback first) again.
+    const cacheKey = `suggestions:v6:${type}:${dedupe}:${createHash('sha256').update(`${q}:${limit}`).digest('hex')}`;
     const cached = await redis.get(cacheKey);
     if (cached) return JSON.parse(cached) as SuggestionItem[];
 
@@ -3408,17 +3397,15 @@ export const booksService = {
       });
     }
 
-    // Edition grouping only runs when the caller opts in: every edition stays, but each
-    // work's editions sit together, on the shelf first, then hardback, then paperback (see
-    // groupEditions). Plain id-overlap between the two branches still gets collapsed either
-    // way, since that's the same book appearing twice, not different editions of a work.
-    // Authors aren't known yet at this point, so the key is the folded title plus subtitle —
-    // which can only over-group, and grouping reorders without dropping anything.
+    // Edition collapsing only runs when the caller opts in: each work shows once, as its
+    // preferred edition — on the shelf first, then hardback, then paperback (see
+    // groupEditions and workKey). Plain id-overlap between the two branches still gets
+    // collapsed either way, since that's the same book appearing twice.
     let titleRows: SuggestionRow[];
     let authorRows: SuggestionRow[];
     if (dedupe) {
       const poolIds = [...new Set([...titlePool, ...authorPool].map((r) => r.id))];
-      const [genreCounts, priceRows] = poolIds.length > 0
+      const [genreCounts, priceRows, authorRowsForPool] = poolIds.length > 0
         ? await Promise.all([
             db
               .select({ bookId: bookGenres.bookId, count: sql<number>`COUNT(*)::int` })
@@ -3426,8 +3413,23 @@ export const booksService = {
               .where(inArray(bookGenres.bookId, poolIds))
               .groupBy(bookGenres.bookId),
             db.selectDistinct({ bookId: bookPrices.bookId }).from(bookPrices).where(inArray(bookPrices.bookId, poolIds)),
+            db
+              .select({
+                bookId: bookContributors.bookId,
+                role: bookContributors.role,
+                personName: bookContributors.personName,
+                sequenceNumber: bookContributors.sequenceNumber,
+              })
+              .from(bookContributors)
+              .where(and(inArray(bookContributors.bookId, poolIds), eq(bookContributors.role, 'A01'))),
           ])
-        : [[], []];
+        : [[], [], []];
+      const contributorsById = new Map<number, typeof authorRowsForPool>();
+      for (const c of authorRowsForPool) {
+        const list = contributorsById.get(c.bookId);
+        if (list) list.push(c);
+        else contributorsById.set(c.bookId, [c]);
+      }
       const genreCountById = new Map(genreCounts.map((g) => [g.bookId, g.count]));
       const priceIds = new Set(priceRows.map((p) => p.bookId));
       const withScoring = (r: SuggestionRow) => ({
@@ -3436,12 +3438,12 @@ export const booksService = {
         hasPrice: priceIds.has(r.id),
       });
 
-      const editionKey = (r: SuggestionRow) => `${normalizeWorkText(r.title)}|${normalizeWorkText(r.subtitle ?? '')}`;
-      const groupedTitle = groupEditions(await withStockTier(titlePool.map(withScoring)), editionKey).flat();
-      const titleIds = new Set(groupedTitle.map((r) => r.id));
+      const editionKey = (r: SuggestionRow) => workKey(r.title, firstNamedAuthor(contributorsById.get(r.id) ?? []));
+      const groupedTitle = groupEditions(await withStockTier(titlePool.map(withScoring)), editionKey).map((g) => g[0]);
+      const titleWorks = new Set(groupedTitle.map(editionKey));
       const groupedAuthor = groupEditions(await withStockTier(authorPool.map(withScoring)), editionKey)
-        .flat()
-        .filter((r) => !titleIds.has(r.id));
+        .map((g) => g[0])
+        .filter((r) => !titleWorks.has(editionKey(r)));
       titleRows = groupedTitle;
       authorRows = groupedAuthor;
     } else {
