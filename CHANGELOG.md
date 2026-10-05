@@ -10,6 +10,7 @@
 
 ### Bug Fixes
 
+* new book pick notifications no longer name the book ([fe20f38](https://adl.github.com/adl-developer/kinkane-backend/commit/fe20f38b22b74ab50d5394549b53c332595dedf4)) — [details](changelog/2026-10-05-feeds-only-in-stock-books.md)
 * keep web and App Store memberships from overriding each other, and stop losing Apple updates ([67cd0d6](https://adl.github.com/adl-developer/kinkane-backend/commit/67cd0d63295e6c3bc9378ff22afb44f2bb9a3e28)) — [details](changelog/2026-10-05-apple-in-app-purchase-plus.md)
 * recommendations only show books that are in stock right now ([f1ed938](https://adl.github.com/adl-developer/kinkane-backend/commit/f1ed938a9662986f9b7b88c06834c2cc5be96a80)) — [details](changelog/2026-10-05-feeds-only-in-stock-books.md)
 * search and other editions only show sellable books ([db5da12](https://adl.github.com/adl-developer/kinkane-backend/commit/db5da124343634f858291e5d3fe22bb3da466c06)) — [details](changelog/2026-10-05-feeds-only-in-stock-books.md)

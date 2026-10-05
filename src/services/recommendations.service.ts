@@ -1578,16 +1578,22 @@ async function saveUserPreferenceFields(
   userId: number,
   input: Omit<RecommendationInput, 'displayName'>,
 ): Promise<void> {
+  // Upsert, not update: a reader who registered without doing the guest quiz
+  // has no row yet, and a bare UPDATE would match nothing and report success.
+  // The embedding write below then found no row either, leaving them with an
+  // empty personalized feed. The embedding is left out of the conflict set so
+  // an existing one keeps serving until regeneratePreferenceEmbedding lands.
+  const fields = {
+    feelings: input.feelings,
+    bookIds: input.bookIds,
+    genres: input.genres,
+    dislikes: input.dislikes,
+    updatedAt: new Date(),
+  };
   await db
-    .update(userPreferences)
-    .set({
-      feelings: input.feelings,
-      bookIds: input.bookIds,
-      genres: input.genres,
-      dislikes: input.dislikes,
-      updatedAt: new Date(),
-    })
-    .where(eq(userPreferences.userId, userId));
+    .insert(userPreferences)
+    .values({ userId, ...fields })
+    .onConflictDoUpdate({ target: userPreferences.userId, set: fields });
 
   // Append to the preference audit log. Deliberately not awaited into the
   // user's failure path: the save above already succeeded, and losing one
@@ -1624,7 +1630,7 @@ async function saveUserPreferenceFields(
  * Gemini's availability/latency should fire this off and .catch() it rather
  * than awaiting it directly.
  */
-async function regeneratePreferenceEmbedding(
+export async function regeneratePreferenceEmbedding(
   userId: number,
   input: Omit<RecommendationInput, 'displayName'>,
 ): Promise<void> {
