@@ -77,7 +77,7 @@ function cacheKey(window: BestsellerWindow, limit: number): string {
   // "nothing sold in this window" — the trending fallback is resolved after the
   // cache read, so it keeps its own freshness instead of being frozen for an
   // hour behind a bestsellers key.
-  return `bestsellers:v4:${window}:${limit}`;
+  return `bestsellers:v5:${window}:${limit}`;
 }
 
 export const bestsellersService = {

@@ -5,13 +5,16 @@
 
 ### Bug Fixes
 
-* search and other editions only show sellable books ([db5da12](https://adl.github.com/adl-developer/kinkane-backend/commit/db5da124343634f858291e5d3fe22bb3da466c06))
+* search and other editions only show sellable books ([db5da12](https://adl.github.com/adl-developer/kinkane-backend/commit/db5da124343634f858291e5d3fe22bb3da466c06)) — [details](changelog/2026-10-05-feeds-only-in-stock-books.md)
 
 
 ## 2026-10-04
 
 ### Bug Fixes
 
+* stop hiding sequels of a book you've read, and catch more of its editions ([eb53896](https://adl.github.com/adl-developer/kinkane-backend/commit/eb538968d19c30fc9fc5418e9ed808605f6f0a1d)) — [details](changelog/2026-10-04-quiz-hides-books-already-read.md)
+* stop co-written and specially-labelled editions of books you've read slipping back into recommendations ([0dc56ba](https://adl.github.com/adl-developer/kinkane-backend/commit/0dc56ba7a2edc42b2893a78278df209320f0ec9e)) — [details](changelog/2026-10-04-quiz-hides-books-already-read.md)
+* keep every edition of a book you've already read out of your quiz results ([5c1a6c8](https://adl.github.com/adl-developer/kinkane-backend/commit/5c1a6c8f11454fe018fbe594143a5a1a8f7b4246)) — [details](changelog/2026-10-04-quiz-hides-books-already-read.md)
 * search shows each book once, in its best edition ([1073c67](https://adl.github.com/adl-developer/kinkane-backend/commit/1073c67c3aba372d1b1a20882812d121db08a137)) — [details](changelog/2026-10-04-search-one-edition-per-book.md)
 
 

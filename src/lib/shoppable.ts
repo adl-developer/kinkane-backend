@@ -204,6 +204,48 @@ export function buildShoppableCondition(): SQL {
 }
 
 /**
+ * Sellable *and* on Gardners' shelf right now: buildShoppableCondition plus
+ * `stock_qty > 0`. The discovery feeds' filter — see buildFeedCondition.
+ *
+ * Stricter than the shop listing on purpose. `GET /books?shoppable=true` keeps
+ * order-in titles (GXC, M/D, and anything out of stock today) and ranks them
+ * last, because a customer searching for a specific book wants to find it even
+ * if it takes longer to arrive. A feed is a handful of tiles we chose to put in
+ * front of someone, and a recommendation that cannot ship this week is a poor
+ * one — roughly 72% of the sellable catalogue is order-in, so without this a
+ * shelf of classics can come back mostly "order in".
+ *
+ * The stock test is the same one the IN_STOCK band and inStockByIsbns use, so
+ * every row a feed returns carries `inStock: true`. Index-only via
+ * idx_gardners_stock_shoppable_stock, whose predicate matches the supply half.
+ *
+ * The flip side of `stock_qty` moving hourly (see buildShoppableCondition): a
+ * book can drop out of a feed between requests when its last copy goes. That
+ * is fine for a feed, which is not paginated and is re-ranked on every cache
+ * refresh anyway.
+ */
+export function buildInStockCondition(): SQL {
+  const codes = sql.join(
+    UNSUPPLIABLE_REPORT_CODES.map((code) => sql`${code}`),
+    sql`, `,
+  );
+
+  return sql`(
+    ${books.isbn13} IS NOT NULL
+    AND EXISTS (
+      SELECT 1 FROM ${gardnersStock} gs
+      WHERE gs.isbn13 = ${books.isbn13}
+        AND gs.rrp_gbp > 0
+        AND (
+          gs.report_code IS NULL
+          OR upper(btrim(gs.report_code)) NOT IN (${codes})
+        )
+        AND COALESCE(gs.stock_qty, 0) > 0
+    )
+  )`;
+}
+
+/**
  * Where a book sits in the shop's ordering when `GET /books?shoppable=true`.
  *
  * `shoppable=true` filters, then ranks. Anything buildShoppableCondition
