@@ -43,6 +43,25 @@ describe('buildFeedCondition', () => {
     expect(feedSql).toContain('"gardners_stock"');
   });
 
+  it('excludes what is not on the shelf, including order-in titles', () => {
+    // A feed is a shelf of picks, not a search: extended-catalogue and
+    // print-on-demand titles (stock_qty 0 by definition) and anything out of
+    // stock today are left out, so every feed row carries `inStock: true`.
+    expect(feedSql).toContain('coalesce(gs.stock_qty, 0) > 0');
+  });
+
+  it('keeps order-in titles in search typeahead and other editions', () => {
+    // Those are a reader looking for a specific book, which GET /books also
+    // lets them find when it has to be ordered in.
+    const suggestions = booksService.slice(
+      booksService.indexOf('const excluding = (rows: SuggestionRow[])'),
+      booksService.indexOf('// Ranks author matches by name-match tier'),
+    );
+    expect(suggestions).toContain('buildCatalogueCondition()');
+    const editions = booksService.slice(booksService.indexOf('async function fetchOtherEditions('));
+    expect(editions.slice(0, editions.indexOf('\n}\n'))).toContain('buildCatalogueCondition()');
+  });
+
   it('carries the shared unsuppliable code list rather than its own', () => {
     // A second copy of these codes is the drift lib/shoppable exists to prevent:
     // a code added to one list and not the other leaves a title recommended and

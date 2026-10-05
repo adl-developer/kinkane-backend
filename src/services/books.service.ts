@@ -55,6 +55,7 @@ import { TRENDING_SCORED_TYPES, trendingScoreSql } from './interactions.service'
 import { availabilityService } from './commerce/availability.service';
 import {
   buildShoppableCondition,
+  buildInStockCondition,
   buildShopBandCondition,
   buildPriceBoundsCondition,
   planShopBands,
@@ -692,14 +693,16 @@ export interface BookDetail extends BookListItem {
  *    the browse fix, but trending, personalized and similar each build their
  *    own query and none of them did — so a book Gardners had withdrawn could
  *    still headline the homepage.
- *  - **Unsellable titles are never recommended.** Recommending a book the shop
+ *  - **Only books on the shelf are recommended.** Recommending a book the shop
  *    cannot sell is a dead end wherever it appears — an Add button that 409s, or
- *    a tap-through to a product page with no price and no way to buy. So the
- *    sellable filter (buildShoppableCondition) is unconditional here, *not*
- *    gated on a caller's `shoppable` flag — which the feeds no longer take at
- *    all. Their rows are always sellable and always priced. The flag survives
- *    only on `GET /books`, where it applies this same filter and then ranks what
- *    is left into shop bands.
+ *    a tap-through to a product page with no price and no way to buy — and one
+ *    that can only be ordered in is a weak pick to lead with. So the in-stock
+ *    filter (buildInStockCondition: sellable *and* `stock_qty > 0`) is
+ *    unconditional here, *not* gated on a caller's `shoppable` flag — which the
+ *    feeds no longer take at all. Their rows are always in stock and always
+ *    priced. The flag survives only on `GET /books`, which applies the looser
+ *    buildShoppableCondition and ranks order-in titles after in-stock ones
+ *    instead of dropping them.
  *
  * Exported because the bestseller chart is a feed too, and lives in
  * commerce/bestsellers.service.ts — it ranks off `order_items` rather than off
@@ -708,15 +711,25 @@ export interface BookDetail extends BookListItem {
  * prevent.
  */
 export function buildFeedCondition(): SQL {
+  return and(eq(books.isRemoved, false), buildInStockCondition())!;
+}
+
+/**
+ * buildFeedCondition's looser sibling, for the places a reader is looking for a
+ * particular book rather than being offered one — search typeahead and a book's
+ * other editions. Withdrawn and unsellable titles are excluded; order-in titles
+ * are kept, matching `GET /books?shoppable=true`.
+ */
+function buildCatalogueCondition(): SQL {
   return and(eq(books.isRemoved, false), buildShoppableCondition())!;
 }
 
 /**
  * How wide to cast the net before filtering.
  *
- * Roughly a fifth of the catalogue is unsellable, and these feeds fetch a
- * bounded pool then trim — so filtering afterwards can leave a "top 10" holding
- * three. The pool is always widened because the sellable filter now always
+ * Most of the catalogue is not on the shelf (only ~26% of books with an
+ * embedding pass buildFeedCondition), and these feeds fetch a bounded pool then
+ * trim — so filtering afterwards can leave a "top 10" holding three. The pool is always widened because the sellable filter now always
  * applies (see buildFeedCondition), on top of the per-viewer exclusion headroom
  * the base pool already carries.
  */
@@ -2262,7 +2275,10 @@ async function fetchOtherEditions(
       and(
         eq(books.title, title),
         // An edition the shop cannot sell is a dead link from the book page.
-        buildFeedCondition(),
+        // The catalogue's sellable test, not the feeds' in-stock one: an
+        // order-in hardback is still a real alternative to the edition being
+        // viewed, and that page itself may be an order-in title.
+        buildCatalogueCondition(),
         ne(books.id, id),
         sql`(
           (${notGeneric(CANDIDATE_NAME)} AND ${CANDIDATE_NAME} IN (SELECT name FROM ${ownNames} AS own_names))
@@ -3320,9 +3336,11 @@ export const booksService = {
     // slots in the pool. notInArray rejects an empty list, hence the guard.
     const excluding = (rows: SuggestionRow[]): SQL | undefined =>
       rows.length > 0 ? notInArray(books.id, rows.map((r) => r.id)) : undefined;
-    // Every suggestion is a tap through to a product page, so it gets the same
-    // sellable predicate as the discovery feeds — removed and unsellable books never show.
-    const sellable = buildFeedCondition();
+    // Every suggestion is a tap through to a product page, so removed and
+    // unsellable books never show. Typeahead is search, though, not a feed: it
+    // keeps order-in titles like GET /books does, so a reader typing a specific
+    // title can still find it when it is not on the shelf.
+    const sellable = buildCatalogueCondition();
 
     // Ranks author matches by name-match tier, then fetches those books — the same two-step
     // as fetchAuthorBranch, and for the same reason: ordering these by title alone would
@@ -3715,7 +3733,7 @@ export const booksService = {
     // type; v1 was the flat unweighted ranking.)
     // v6: the edition picker now prefers in-stock, then order-in editions, then paperback > hardback > other.
     // v7: one card per work ("The X" and "X" by one author collapse), picked by cover > newest > price > data.
-    const cacheKey = `trending:v7:${limit}`;
+    const cacheKey = `trending:v8:${limit}`;
     const cached = await redis.get(cacheKey);
     if (cached) {
       return attachShopFields(
@@ -3867,7 +3885,7 @@ export const booksService = {
     // step with PERSONALIZED_CACHE_PREFIX in lib/exclusions.ts.
     // v6: the work-exclusion match got looser (subtitles, edition brackets,
     // author spellings), so v5 pools may still hold books it now excludes.
-    const cacheKey = `personalized:v6:${userId}:${limit}`;
+    const cacheKey = `personalized:v7:${userId}:${limit}`;
     const cached = await redis.get(cacheKey);
     if (cached) {
       return attachShopFields(JSON.parse(cached) as TrendingBookItem[], currency);
@@ -4330,7 +4348,7 @@ export const booksService = {
     // items so per-user filtering has spare rows to eat.)
     // v5: the edition picker now prefers in-stock, then order-in editions, then paperback > hardback > other.
     // v6: one card per work, picked by cover > newest > price > data.
-    const cacheKey = `similar:v6:${bookId}:${limit}`;
+    const cacheKey = `similar:v7:${bookId}:${limit}`;
     const cached = await redis.get(cacheKey);
     if (cached) {
       return attachShopFields(
