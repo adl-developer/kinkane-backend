@@ -22,13 +22,14 @@ import {
 } from '../db/schema';
 import { dedupeByTitle, dedupeCardsByWork, firstNamedAuthor, groupEditions, workKey } from '../lib/dedupe';
 import {
+  authorMatchSql,
   buildHasAuthorCondition,
   buildWorkExclusionCondition,
   EMPTY_EXCLUSIONS,
   filterExcludedWorks,
   getUserExclusions,
-  resolveWorkSnapshots,
-  titleMatchSql,
+  resolveAllAuthorWorks,
+  titleKeysSql,
 } from '../lib/exclusions';
 import { logger } from '../lib/logger';
 import {
@@ -3864,7 +3865,9 @@ export const booksService = {
     // v4: the edition picker now prefers in-stock, then order-in editions, then paperback > hardback > other.
     // v5: one card per work, picked by cover > newest > price > data. Bumped in
     // step with PERSONALIZED_CACHE_PREFIX in lib/exclusions.ts.
-    const cacheKey = `personalized:v5:${userId}:${limit}`;
+    // v6: the work-exclusion match got looser (subtitles, edition brackets,
+    // author spellings), so v5 pools may still hold books it now excludes.
+    const cacheKey = `personalized:v6:${userId}:${limit}`;
     const cached = await redis.get(cacheKey);
     if (cached) {
       return attachShopFields(JSON.parse(cached) as TrendingBookItem[], currency);
@@ -4112,12 +4115,15 @@ export const booksService = {
                ${books.productForm}     AS product_form,
                ${books.publicationDate} AS publication_date,
                cohort.user_id           AS user_id,
-               -- The work this row is an edition of, folded by the same
-               -- titleMatchSql the exclusion filter uses. Identical on purpose:
-               -- two spellings of "the same book" in one codebase is how a filter
-               -- quietly stops matching. So "The X" and "X" count as one work.
-               ${titleMatchSql(books.title)} AS work_title,
-               (SELECT lower(btrim(bc.person_name))
+               -- The work this row is an edition of, keyed by the same title
+               -- and author folds the exclusion filter uses. Identical on
+               -- purpose: two spellings of "the same book" in one codebase is how
+               -- a filter quietly stops matching. So "The X", "X" and "X (Movie
+               -- Tie-in)" count as one work, as do "Robert  Toft" and "Robert
+               -- Toft". The full title key, not the core one: grouping needs one
+               -- key per row, and the one-sided subtitle match is not one.
+               ${titleKeysSql(books.title).full} AS work_title,
+               (SELECT ${authorMatchSql(sql`bc.person_name`)}
                   FROM book_contributors bc
                  WHERE bc.book_id = ${books.id}
                    AND bc.role = 'A01'
@@ -4273,7 +4279,7 @@ export const booksService = {
 
     const [hydrated, basketWorks] = await Promise.all([
       booksService.listByIds(rows.map((row) => row.id)),
-      resolveWorkSnapshots(bookIds),
+      resolveAllAuthorWorks(bookIds),
     ]);
     // listByIds makes no ordering promise, so re-impose similarity order.
     const byId = new Map(hydrated.map((book) => [book.id, book]));
@@ -4303,7 +4309,7 @@ export const booksService = {
     return attachShopFields(
       filterExcludedWorks(ordered, {
         bookIds: exclusions.bookIds,
-        works: [...exclusions.works, ...basketWorks.values()],
+        works: [...exclusions.works, ...basketWorks],
       }).slice(0, limit),
       currency,
     );

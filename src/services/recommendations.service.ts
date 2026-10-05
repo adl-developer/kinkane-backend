@@ -25,6 +25,7 @@ import {
   getUserExclusions,
   normalizeForMatch,
   EMPTY_EXCLUSIONS,
+  WORK_MATCH_VERSION,
   type ExcludedWork,
   type UserExclusions,
 } from '../lib/exclusions';
@@ -178,6 +179,9 @@ function hashInput(input: RecommendationInput, dislikedBookIds: number[] = []): 
     // way a prompt change does. Without this, tuning a weight would appear to
     // do nothing for up to 48 hours.
     retrieval: retrievalFingerprint(),
+    // Also not a preference: which books count as "the one you already read"
+    // decides what is filtered out, so a change to that rule retires entries.
+    workMatch: WORK_MATCH_VERSION,
     feelings: [...input.feelings].sort(),
     bookIds: [...input.bookIds].sort((a, b) => a - b),
     genres: [...input.genres].sort(),
@@ -314,17 +318,21 @@ async function fetchLikedBooks(bookIds: number[]): Promise<LikedBook[]> {
 }
 
 /**
- * Turns the books a user named in the quiz into work-level exclusions.
- * Only the first author is used — one author is enough to anchor the match,
- * and requiring all of them would miss editions credited differently.
+ * Turns the books a user named in the quiz into work-level exclusions — one
+ * per author, so an edition that credits only the second author of a
+ * co-written book still matches. A book with no author recorded becomes a
+ * title-only exclusion.
  */
 function likedBooksToWorks(
   likedBooks: { title: string; authors: string[] }[],
 ): ExcludedWork[] {
-  return likedBooks.map((b) => ({
-    title: normalizeForMatch(b.title),
-    author: b.authors[0] ? normalizeForMatch(b.authors[0]) : null,
-  }));
+  return likedBooks.flatMap((b): ExcludedWork[] => {
+    const title = normalizeForMatch(b.title);
+    const authors = b.authors.filter((a) => a.trim());
+    return authors.length > 0
+      ? authors.map((a) => ({ title, author: normalizeForMatch(a) }))
+      : [{ title, author: null }];
+  });
 }
 
 /**

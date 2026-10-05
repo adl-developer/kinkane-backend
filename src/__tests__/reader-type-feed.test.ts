@@ -119,12 +119,12 @@ describe('reader-type cohort feed', () => {
     expect(method).toContain('IS NOT DISTINCT FROM');
   });
 
-  it('normalises works exactly the way the exclusion filter does', () => {
+  it('keys works exactly the way the exclusion filter does', () => {
     // Two spellings of "the same book" in one codebase is how a filter quietly
-    // stops matching. lib/exclusions.ts is the definition; this must copy it.
-    const exclusions = readFileSync(join(__dirname, '..', 'lib/exclusions.ts'), 'utf8');
-    expect(exclusions).toContain('WHERE excluded_work.title = ${titleMatchSql(books.title)}');
-    expect(method).toContain('${titleMatchSql(books.title)} AS work_title');
+    // stops matching. lib/exclusions.ts is the definition; the rail groups
+    // editions on its title key and its author fold rather than its own.
+    expect(method).toContain('${titleKeysSql(books.title).full} AS work_title');
+    expect(method).toContain('SELECT ${authorMatchSql(sql`bc.person_name`)}');
   });
 
   it('orders deterministically so offset pagination is stable', () => {

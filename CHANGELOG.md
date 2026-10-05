@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-10-05
+
+### Bug Fixes
+
+* search and other editions only show sellable books ([db5da12](https://adl.github.com/adl-developer/kinkane-backend/commit/db5da124343634f858291e5d3fe22bb3da466c06))
+
+
 ## 2026-10-04
 
 ### Bug Fixes
