@@ -43,6 +43,12 @@ export const subscriptionEventTypeEnum = pgEnum('subscription_event_type', [
 
 export const subscriptionPlanEnum = pgEnum('subscription_plan', ['monthly', 'annual']);
 
+// Who takes the money. Null for anyone who has never paid (trialing, or a
+// lapsed trial). Stripe bills web checkouts; Apple bills purchases made inside
+// the iOS app, and only Apple can cancel or change those — the client reads
+// this to decide whether to show our cancel button or send them to Settings.
+export const billingProviderEnum = pgEnum('billing_provider', ['stripe', 'apple']);
+
 // ── User Subscriptions ─────────────────────────────────────────────────────────
 // One row per user, holding *current* state only. Created synchronously at
 // account creation with tier=plus, status=trialing, trial_ends_at=NOW()+90 days.
@@ -97,10 +103,25 @@ export const userSubscriptions = pgTable(
     // trial-expiry sweep from downgrading someone who has paid. Never write it
     // speculatively — only from a confirmed Stripe subscription.
     stripeSubscriptionId: varchar('stripe_subscription_id', { length: 256 }),
+    // Which of the two billing systems the current (or most recent) paid
+    // subscription lives in. Stripe and Apple writers each refuse to touch a
+    // row the other one currently owns, so a late event from a subscription
+    // the user has moved away from can't revoke what they now pay for.
+    billingProvider: billingProviderEnum('billing_provider'),
+    // Apple's id for the whole subscription chain — every renewal shares it.
+    // Same load-bearing role as stripe_subscription_id: its presence stops the
+    // trial sweep, and the unique index stops one Apple purchase unlocking
+    // Plus on more than one account.
+    appleOriginalTransactionId: varchar('apple_original_transaction_id', { length: 64 }),
+    // 'Production' or 'Sandbox', as Apple reports it.
+    appleEnvironment: varchar('apple_environment', { length: 20 }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({
+    appleOriginalTransactionUniq: uniqueIndex(
+      'idx_user_subscriptions_apple_original_transaction_id',
+    ).on(t.appleOriginalTransactionId),
     stripeCustomerIdx: index('idx_user_subscriptions_stripe_customer_id').on(t.stripeCustomerId),
     stripeSubscriptionUniq: uniqueIndex('idx_user_subscriptions_stripe_subscription_id').on(
       t.stripeSubscriptionId,
@@ -140,12 +161,16 @@ export const subscriptionStateHistory = pgTable(
     cancelAtPeriodEnd: boolean('cancel_at_period_end').notNull().default(false),
     pendingPlan: subscriptionPlanEnum('pending_plan'),
     stripeSubscriptionId: varchar('stripe_subscription_id', { length: 256 }),
+    billingProvider: billingProviderEnum('billing_provider'),
+    appleOriginalTransactionId: varchar('apple_original_transaction_id', { length: 64 }),
     // Why this state began — 'signup', 'trial_expired', 'checkout_completed',
     // 'invoice_paid', 'subscription_updated', 'subscription_deleted',
-    // 'payment_failed', 'admin_extended', 'reconciliation'.
+    // 'payment_failed', 'admin_extended', 'reconciliation', 'apple_verified',
+    // 'apple_notification'.
     reason: varchar('reason', { length: 100 }).notNull(),
-    // Stripe event id that caused the transition, when one did. Lets a state
-    // row be traced back to the exact webhook delivery in stripeWebhookEvents.
+    // Stripe event id (or Apple notificationUUID) that caused the transition,
+    // when one did. Traces a state row back to its delivery in
+    // stripeWebhookEvents / appleNotificationEvents.
     sourceEventId: varchar('source_event_id', { length: 256 }),
     effectiveFrom: timestamp('effective_from', { withTimezone: true }).defaultNow().notNull(),
     // Null means "still in force". Closed out when the next state is written.
@@ -189,6 +214,9 @@ export const subscriptionEvents = pgTable(
     currency: varchar('currency', { length: 10 }),
     stripeInvoiceId: varchar('stripe_invoice_id', { length: 256 }),
     stripeEventId: varchar('stripe_event_id', { length: 256 }),
+    // The Apple equivalents, for events from in-app purchases.
+    appleTransactionId: varchar('apple_transaction_id', { length: 64 }),
+    appleNotificationId: varchar('apple_notification_id', { length: 64 }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({
@@ -223,11 +251,40 @@ export const stripeWebhookEvents = pgTable(
   }),
 );
 
+// ── Apple Notification Events ──────────────────────────────────────────────────
+// The App Store Server Notifications counterpart of stripeWebhookEvents, keyed
+// by Apple's notificationUUID and claimed the same way. Apple also retries
+// (up to five times over three days) and also delivers out of order.
+
+export const appleNotificationEvents = pgTable(
+  'apple_notification_events',
+  {
+    notificationId: varchar('notification_id', { length: 64 }).primaryKey(),
+    // e.g. DID_RENEW, with the subtype appended when there is one
+    // (DID_CHANGE_RENEWAL_STATUS/AUTO_RENEW_DISABLED).
+    type: varchar('type', { length: 100 }).notNull(),
+    originalTransactionId: varchar('original_transaction_id', { length: 64 }),
+    environment: varchar('environment', { length: 20 }),
+    // The decoded notification, kept for replay and debugging.
+    payload: jsonb('payload'),
+    error: varchar('error', { length: 1000 }),
+    receivedAt: timestamp('received_at', { withTimezone: true }).defaultNow().notNull(),
+    processedAt: timestamp('processed_at', { withTimezone: true }),
+  },
+  (t) => ({
+    originalTransactionIdx: index('idx_apple_notification_events_original_transaction_id').on(
+      t.originalTransactionId,
+    ),
+    receivedAtIdx: index('idx_apple_notification_events_received_at').on(t.receivedAt),
+  }),
+);
+
 // ── Tier helper ────────────────────────────────────────────────────────────────
 
 export type SubscriptionTier = 'free' | 'plus';
 export type SubscriptionStatus = (typeof subscriptionStatusEnum.enumValues)[number];
 export type SubscriptionPlan = (typeof subscriptionPlanEnum.enumValues)[number];
+export type BillingProvider = (typeof billingProviderEnum.enumValues)[number];
 
 /**
  * Returns the user's effective subscription tier.
@@ -241,6 +298,19 @@ export function getEffectiveTier(sub: typeof userSubscriptions.$inferSelect): Su
     return 'free';
   }
   return sub.tier;
+}
+
+/**
+ * Who bills this subscription. `billing_provider` is only written by code that
+ * knows about it, so a Stripe row created before the column existed — or
+ * written by a path that predates it — can still be null. Such a row is billed
+ * by Stripe if it carries a Stripe subscription id, and every ownership check
+ * must read it that way, or an unlabelled web subscriber looks unowned.
+ */
+export function getBillingProvider(
+  sub: Pick<typeof userSubscriptions.$inferSelect, 'billingProvider' | 'stripeSubscriptionId'>,
+): BillingProvider | null {
+  return sub.billingProvider ?? (sub.stripeSubscriptionId ? 'stripe' : null);
 }
 
 export type UserSubscription = typeof userSubscriptions.$inferSelect;

@@ -6,6 +6,7 @@ import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
 import { ExpressAdapter } from '@bull-board/express';
 import { logger } from './lib/logger';
 import { requestLogger } from './middleware/request-logger.middleware';
+import { appleNotificationLimiter } from './middleware/rate-limit.middleware';
 import { emailQueue } from './lib/email-queue';
 import { pushQueue } from './lib/push-queue';
 import { fulfilmentQueue } from './lib/fulfilment-queue';
@@ -18,7 +19,10 @@ import adminReferralsRoutes from './routes/admin-referrals.routes';
 import adminConsoleRoutes from './routes/admin';
 import { referralsController } from './controllers/referrals.controller';
 import { wrap } from './lib/route-helpers';
-import { webhookRouter as stripeWebhookRouter } from './routes/subscriptions.routes';
+import {
+  webhookRouter as stripeWebhookRouter,
+  appleNotificationRouter,
+} from './routes/subscriptions.routes';
 import docsRoutes from './routes/docs.routes';
 
 const app = express();
@@ -54,6 +58,18 @@ app.use(cors({
 // is the authentication — and outside the API rate limiter, since Stripe's
 // delivery volume is not abuse.
 app.use('/api/v1/user/subscription/webhook', stripeWebhookRouter);
+
+// ── App Store Server Notifications ───────────────────────────────────────────
+// Apple's counterpart of the Stripe webhook. Needs its own, larger JSON limit
+// (a signed notification carries three certificates and two nested JWS
+// blobs, well past the 50kb API default) and its own per-IP limit rather than
+// the API's, which is sized for app users.
+app.use(
+  '/api/v1/user/subscription/apple/notifications',
+  appleNotificationLimiter,
+  express.json({ limit: '256kb' }),
+  appleNotificationRouter,
+);
 
 app.use(express.json({ limit: '50kb' }));
 app.use(express.urlencoded({ extended: false, limit: '50kb' }));

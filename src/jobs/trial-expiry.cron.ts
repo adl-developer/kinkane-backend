@@ -20,7 +20,7 @@ import { logger } from '../lib/logger';
  * simultaneously, and a user can convert to paid in the gap between the SELECT
  * below and the UPDATE. Neither can double-flip a row or downgrade a payer.
  *
- * The candidate query also filters out rows with Stripe billing attached — the
+ * The candidate query also filters out rows with Stripe or Apple billing attached — the
  * guard inside the service is the correctness boundary, this is just avoiding
  * pointless work.
  */
@@ -35,6 +35,7 @@ export function startTrialExpiryCron(): ScheduledTask {
             eq(userSubscriptions.status, 'trialing'),
             lt(userSubscriptions.trialEndsAt, new Date()),
             isNull(userSubscriptions.stripeSubscriptionId),
+            isNull(userSubscriptions.appleOriginalTransactionId),
           ),
         );
 

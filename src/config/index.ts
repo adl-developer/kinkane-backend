@@ -256,6 +256,25 @@ const envSchema = z.object({
   STRIPE_CHECKOUT_SUCCESS_URL: z.string().url().optional(),
   STRIPE_CHECKOUT_CANCEL_URL: z.string().url().optional(),
 
+  // Apple In-App Purchase — Kinkané Plus bought inside the iOS app.
+  // Optional for the same reason as Stripe: without them the Apple routes
+  // answer 503 and everything else works. The key is an App Store Connect
+  // "In-App Purchase" key (.p8); paste its contents with newlines as \n.
+  APPLE_IAP_ISSUER_ID: z.string().min(1).optional(),
+  APPLE_IAP_KEY_ID: z.string().min(1).optional(),
+  APPLE_IAP_PRIVATE_KEY: z.string().min(1).optional(),
+  APPLE_BUNDLE_ID: z.string().min(1).optional(),
+  APPLE_PRODUCT_PLUS_MONTHLY: z.string().min(1).optional(),
+  APPLE_PRODUCT_PLUS_ANNUAL: z.string().min(1).optional(),
+  // Sandbox purchases cost nothing, but App Review tests against the
+  // production server with sandbox accounts, so they must be accepted there.
+  // Sandbox accounts are only creatable by the team, and TestFlight builds use
+  // them, so the exposure is testers getting Plus — set false to refuse.
+  APPLE_IAP_ALLOW_SANDBOX: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
+
   // ── Referrals & the "Around the World" competition ─────────────────────────
   // Marketing video linked from every invite. Placeholder default until the
   // real video exists — it is an env var precisely so swapping it needs no
@@ -828,6 +847,17 @@ export const config = {
     foundingOfferEndsAt: env.FOUNDING_OFFER_ENDS_AT,
     checkoutSuccessUrl: env.STRIPE_CHECKOUT_SUCCESS_URL ?? `${env.APP_URL}/account/subscription?checkout=success`,
     checkoutCancelUrl: env.STRIPE_CHECKOUT_CANCEL_URL ?? `${env.APP_URL}/account/subscription?checkout=cancelled`,
+  },
+  apple: {
+    issuerId: env.APPLE_IAP_ISSUER_ID,
+    keyId: env.APPLE_IAP_KEY_ID,
+    privateKey: env.APPLE_IAP_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+    bundleId: env.APPLE_BUNDLE_ID,
+    products: {
+      monthly: env.APPLE_PRODUCT_PLUS_MONTHLY,
+      annual: env.APPLE_PRODUCT_PLUS_ANNUAL,
+    },
+    allowSandbox: env.APPLE_IAP_ALLOW_SANDBOX,
   },
   gatingEnabled: env.GATING_ENABLED,
   gardnersDropship: {

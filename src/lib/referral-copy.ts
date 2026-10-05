@@ -33,7 +33,7 @@ export function activeCampaign(now: Date = new Date()): Campaign {
 /** The one-liner for SMS, WhatsApp and the copy-to-clipboard button. */
 export function shortMessage(link: string, campaign: Campaign): string {
   return campaign === 'launch'
-    ? `📚 Come on a reading adventure with me! Find your next great read on Kinkané — and help me travel Around the World in 80 Days 🌍 ${link}`
+    ? `📚 Help take Kinkané App Around the World in 80 Days! Join the challenge, discover your next great read, and get a chance to win along the way. 🌍 ${link}`
     : `📚 Fellow book lover — you have to try this. Kinkané helps you find books based on your taste + mood. See what it picks for you: ${link}`;
 }
 
@@ -49,7 +49,7 @@ export interface EmailCopy {
 export function emailCopy(campaign: Campaign): EmailCopy {
   if (campaign === 'launch') {
     return {
-      subject: 'Come on a reading adventure with me 🌍📚',
+      subject: '📚Help take Kinkané App Around the World in 80 Days!🌍',
       before: [
         'Hey!',
         'I’m taking Kinkané’s Around the World in 80 Days challenge, and I’d love for you to join me.',
@@ -70,7 +70,7 @@ export function emailCopy(campaign: Campaign): EmailCopy {
       'Hey!',
       // One paragraph, two lines — as written. The line break before "Take the
       // quiz" is part of the copy, not an accident of formatting.
-      'I found Kinkané, a fun way to discover your next read based on your taste, mood, and what you actually like to read.\nTake the quiz and see what books it picks for you:',
+      'I found Kinkané, a fun way to discover your next read based on your taste, mood, and what you actually like to read.\nUse my link to take the quiz and see what books it picks for you:',
     ],
     ctaLabel: 'Find your next read →',
     after: ['Happy reading! 📖'],

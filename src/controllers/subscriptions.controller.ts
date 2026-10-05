@@ -9,6 +9,9 @@ import { subscriptionStateService } from '../services/subscriptions/state.servic
 import { checkoutService } from '../services/subscriptions/checkout.service';
 import { webhooksService } from '../services/subscriptions/webhooks.service';
 import { authService } from '../services/auth.service';
+import { appleSubscriptionsService } from '../services/subscriptions/apple.service';
+import { appAccountTokenFor, assertAppleConfigured, isAppleConfigured } from '../lib/apple-store';
+import { getBillingProvider, type UserSubscription } from '../db/schema';
 
 const checkoutSchema = z.object({
   plan: z.enum(['monthly', 'annual']),
@@ -62,6 +65,50 @@ const changePlanSchema = z
     path: ['reason'],
   });
 
+// StoreKit transaction ids are decimal strings. Anything else is a client bug,
+// and refusing it here keeps junk out of the App Store API path.
+const appleVerifySchema = z.object({
+  transactionId: z.string().regex(/^\d{1,32}$/, 'transactionId must be an App Store transaction id'),
+});
+
+const appleNotificationSchema = z.object({
+  signedPayload: z.string().min(1).max(100_000),
+});
+
+/**
+ * The subscription as the client sees it — the body of GET /user/subscription
+ * and of the Apple verify response, so the app updates its paywall from either
+ * without a second call.
+ */
+function serializeSubscription(userId: number, sub: UserSubscription) {
+  let trialDaysLeft: number | null = null;
+  if (sub.status === 'trialing' && sub.trialEndsAt) {
+    const msLeft = sub.trialEndsAt.getTime() - Date.now();
+    trialDaysLeft = Math.max(0, Math.ceil(msLeft / (1000 * 60 * 60 * 24)));
+  }
+
+  return {
+    tier: sub.tier,
+    status: sub.status,
+    plan: sub.plan,
+    // 'stripe' | 'apple' | null. Decides which cancel/manage UI the client
+    // shows: only Apple can change an App Store subscription.
+    provider: getBillingProvider(sub),
+    trialEndsAt: sub.trialEndsAt,
+    trialDaysLeft,
+    currentPeriodEnd: sub.currentPeriodEnd,
+    cancelAtPeriodEnd: sub.cancelAtPeriodEnd,
+    pendingPlan: sub.pendingPlan,
+    isFoundingMember: sub.isFoundingMember,
+    hasBillingAccount: Boolean(sub.stripeCustomerId),
+    foundingOfferActive: isFoundingWindowOpen(),
+    paymentsAvailable: isStripeConfigured(),
+    appleIapAvailable: isAppleConfigured(),
+    // Pass as `appAccountToken` when starting an App Store purchase.
+    appleAppAccountToken: appAccountTokenFor(userId),
+  };
+}
+
 function assertSameOrigin(url: string | undefined, label: string): string | undefined {
   if (!url) return undefined;
   const allowed = new URL(config.appUrl).origin;
@@ -84,26 +131,7 @@ export const subscriptionsController = {
       return;
     }
 
-    let trialDaysLeft: number | null = null;
-    if (sub.status === 'trialing' && sub.trialEndsAt) {
-      const msLeft = sub.trialEndsAt.getTime() - Date.now();
-      trialDaysLeft = Math.max(0, Math.ceil(msLeft / (1000 * 60 * 60 * 24)));
-    }
-
-    res.status(200).json({
-      tier: sub.tier,
-      status: sub.status,
-      plan: sub.plan,
-      trialEndsAt: sub.trialEndsAt,
-      trialDaysLeft,
-      currentPeriodEnd: sub.currentPeriodEnd,
-      cancelAtPeriodEnd: sub.cancelAtPeriodEnd,
-      pendingPlan: sub.pendingPlan,
-      isFoundingMember: sub.isFoundingMember,
-      hasBillingAccount: Boolean(sub.stripeCustomerId),
-      foundingOfferActive: isFoundingWindowOpen(),
-      paymentsAvailable: isStripeConfigured(),
-    });
+    res.status(200).json(serializeSubscription(req.user.id, sub));
   },
 
   /**
@@ -213,6 +241,67 @@ export const subscriptionsController = {
   async reactivate(req: AuthenticatedRequest, res: Response): Promise<void> {
     const result = await checkoutService.reactivate(req.user.id);
     res.status(200).json(result);
+  },
+
+  /**
+   * POST /api/v1/user/subscription/apple/verify
+   *
+   * The iOS app has completed or restored an App Store purchase. The
+   * transaction id is only a pointer: what was bought is read from Apple.
+   */
+  async appleVerify(req: AuthenticatedRequest, res: Response): Promise<void> {
+    assertAppleConfigured();
+    const parsed = appleVerifySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Invalid request', details: parsed.error.flatten().fieldErrors });
+      return;
+    }
+
+    const sub = await appleSubscriptionsService.verifyPurchase(req.user.id, parsed.data.transactionId);
+    res.status(200).json(serializeSubscription(req.user.id, sub));
+  },
+
+  /**
+   * POST /api/v1/user/subscription/apple/notifications
+   *
+   * App Store Server Notifications V2. Unauthenticated by design, like the
+   * Stripe webhook — but where Stripe's signature is the authentication, here
+   * nothing in the body is trusted at all: it only names a transaction, which
+   * is then re-read from Apple with our own credentials.
+   *
+   * Answers 200 once the notification is handled or deliberately ignored, and
+   * for handler bugs (stored on the row), since a redelivery would fail the
+   * same way. A 503 only when Apple itself was unreachable, so Apple retries;
+   * a 400 only for a body that isn't a notification at all.
+   */
+  async appleNotification(req: Request, res: Response): Promise<void> {
+    const parsed = appleNotificationSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Missing signedPayload' });
+      return;
+    }
+    if (!isAppleConfigured()) {
+      res.status(503).json({ error: 'App Store purchases are not configured' });
+      return;
+    }
+
+    try {
+      const { duplicate } = await appleSubscriptionsService.handleNotification(parsed.data.signedPayload);
+      res.status(200).json({ received: true, ...(duplicate && { duplicate: true }) });
+    } catch (err) {
+      const e = err as Error & { statusCode?: number };
+      if (e.statusCode === 400) {
+        res.status(400).json({ error: e.message });
+        return;
+      }
+      // Apple was unreachable: the claim was left open, and a non-2xx makes
+      // Apple redeliver later. See handleNotification.
+      if (e.statusCode && e.statusCode >= 500) {
+        res.status(503).json({ error: e.message });
+        return;
+      }
+      throw err;
+    }
   },
 
   /**

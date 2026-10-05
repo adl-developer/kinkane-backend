@@ -845,6 +845,21 @@ const commerceSchemas = {
         description: 'Null while free or trialing — there is no purchased plan yet.',
         example: 'annual',
       },
+      provider: {
+        type: 'string',
+        nullable: true,
+        enum: ['stripe', 'apple', null],
+        description:
+          'Who bills the current (or most recent) paid subscription; null if they have never paid. With `apple`, hide the cancel / change / reactivate buttons — those return 409 `MANAGED_BY_APPLE` — and link to https://apps.apple.com/account/subscriptions instead. With `stripe` and an active subscription, do not offer an App Store purchase.',
+        example: 'stripe',
+      },
+      pendingPlan: {
+        type: 'string',
+        nullable: true,
+        enum: ['monthly', 'annual', null],
+        description: 'A plan switch already scheduled for `currentPeriodEnd`.',
+        example: null,
+      },
       trialEndsAt: { type: 'string', format: 'date-time', nullable: true, example: null },
       trialDaysLeft: { type: 'integer', nullable: true, example: null },
       currentPeriodEnd: {
@@ -871,6 +886,19 @@ const commerceSchemas = {
         description:
           'False when Stripe is not configured on this deployment. Hide the upgrade button rather than letting it 503.',
         example: true,
+      },
+      appleIapAvailable: {
+        type: 'boolean',
+        description:
+          'False when App Store purchases are not configured on this deployment. The iOS app should hide its purchase button rather than letting verify 503.',
+        example: true,
+      },
+      appleAppAccountToken: {
+        type: 'string',
+        format: 'uuid',
+        description:
+          'Pass as `appAccountToken` when starting an App Store purchase. Stable per account. Lets `/apple/verify` refuse a purchase made while signed in to a different Kinkané account.',
+        example: '3f1c2a9e-7b4d-4e2a-9c1f-5d6e7f8a9b0c',
       },
     },
   },

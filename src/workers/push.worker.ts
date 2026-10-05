@@ -49,10 +49,10 @@ async function processPushJob(job: Job): Promise<void> {
       break;
     }
     case 'new-recommendation': {
-      const { userId, bookId, bookTitle } = job.data as PushJobMap['new-recommendation'];
+      const { userId, bookId } = job.data as PushJobMap['new-recommendation'];
       await sendPush(userId, {
         title: 'A new book pick for you',
-        body: `We think you'll like ${bookTitle}.`,
+        body: `We think you'll like it!`,
         data: { type: 'new_recommendation', bookId: String(bookId) },
       });
       break;
