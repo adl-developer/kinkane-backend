@@ -2,7 +2,7 @@ import type Stripe from 'stripe';
 import { eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { users, userSubscriptions, subscriptionEvents } from '../../db/schema';
-import type { SubscriptionPlan } from '../../db/schema';
+import type { SubscriptionPlan, UserSubscription } from '../../db/schema';
 import { config } from '../../config';
 import {
   stripe,
@@ -12,6 +12,7 @@ import {
   isFoundingWindowOpen,
 } from '../../lib/stripe';
 import { logger } from '../../lib/logger';
+import { APPLE_MANAGE_URL } from '../../lib/apple-store';
 import { subscriptionStateService } from './state.service';
 import { entitlementsService } from './entitlements.service';
 import { schedulesService } from './schedules.service';
@@ -65,6 +66,26 @@ export interface CheckoutSessionResult {
   paymentReference: string;
   plan: SubscriptionPlan;
   isFounding: boolean;
+}
+
+/**
+ * Refuses a Stripe action on a subscription Apple bills. Apple gives us no way
+ * to cancel, reactivate or change a customer's App Store subscription — they do
+ * it in iPhone Settings — so the honest answer is a 409 that says where to go,
+ * rather than a misleading NO_PAID_SUBSCRIPTION.
+ */
+function assertNotAppleBilled(
+  sub: UserSubscription,
+  opts: { onlyWhileEntitled?: boolean } = {},
+): void {
+  if (sub.billingProvider !== 'apple') return;
+  if (opts.onlyWhileEntitled && sub.tier !== 'plus') return;
+  throw Object.assign(
+    new Error(
+      'Your Kinkané Plus membership is billed by Apple. Manage it in Settings → your name → Subscriptions on your iPhone.',
+    ),
+    { statusCode: 409, code: 'MANAGED_BY_APPLE', details: { manageUrl: APPLE_MANAGE_URL } },
+  );
 }
 
 export const checkoutService = {
@@ -138,6 +159,9 @@ export const checkoutService = {
     if (!sub) {
       throw Object.assign(new Error('Subscription not found'), { statusCode: 404 });
     }
+
+    // Already paying through the App Store — a web checkout would bill them twice.
+    assertNotAppleBilled(sub, { onlyWhileEntitled: true });
 
     // Already paying — send them to the portal to change plans instead, so we
     // never create a second subscription for the same person.
@@ -283,6 +307,9 @@ export const checkoutService = {
       throw Object.assign(new Error('Subscription not found'), { statusCode: 404 });
     }
 
+    // Only Apple can cancel or change an App Store subscription.
+    assertNotAppleBilled(sub);
+
     if (!sub.stripeSubscriptionId) {
       // Trialing or free. The 90-day trial is ours, not Stripe's, so there is
       // nothing to cancel — and saying so plainly is better than a 500 from
@@ -382,6 +409,22 @@ export const checkoutService = {
    */
   async terminateForAccountDeletion(userId: number): Promise<boolean> {
     const sub = await subscriptionStateService.get(userId);
+
+    // Apple offers no way for us to cancel someone's App Store subscription.
+    // It keeps billing until they turn it off in iPhone Settings, so the app
+    // has to tell them before they delete. Logged so support can explain it.
+    // Any leftover stripe_subscription_id on such a row belongs to a Stripe
+    // subscription that already ended, so there is nothing to stop there either.
+    if (sub?.billingProvider === 'apple') {
+      if (sub.tier === 'plus' && !sub.cancelAtPeriodEnd) {
+        logger.warn('Deleted account still has a renewing App Store subscription', {
+          userId,
+          appleOriginalTransactionId: sub.appleOriginalTransactionId,
+        });
+      }
+      return false;
+    }
+
     if (!sub?.stripeSubscriptionId) return false;
 
     // Already over — Stripe would reject a second cancellation, and there is
@@ -439,6 +482,9 @@ export const checkoutService = {
     if (!sub) {
       throw Object.assign(new Error('Subscription not found'), { statusCode: 404 });
     }
+
+    // Only Apple can cancel or change an App Store subscription.
+    assertNotAppleBilled(sub);
 
     if (!sub.stripeSubscriptionId) {
       throw Object.assign(
@@ -527,6 +573,9 @@ export const checkoutService = {
     if (!sub) {
       throw Object.assign(new Error('Subscription not found'), { statusCode: 404 });
     }
+
+    // Only Apple can cancel or change an App Store subscription.
+    assertNotAppleBilled(sub);
 
     if (!sub.stripeSubscriptionId || (sub.status !== 'active' && sub.status !== 'past_due')) {
       throw Object.assign(

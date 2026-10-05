@@ -133,6 +133,31 @@ router.post(
  */
 router.post('/reactivate', requireAuth, wrapHttp(subscriptionsController.reactivate));
 
+/**
+ * POST /api/v1/user/subscription/apple/verify
+ *
+ * Called by the iOS app after an App Store purchase or restore. The server asks
+ * Apple about the transaction, links the App Store subscription to this account
+ * and switches Plus on. Call it before finishing the StoreKit transaction, so
+ * StoreKit redelivers the purchase if this request never lands.
+ *
+ * Body: { transactionId }  (StoreKit's transaction id; any in the chain works)
+ * Returns 200: the same body as GET /user/subscription, with provider 'apple'
+ * Errors: 400 validation | 401 unauthenticated |
+ *         404 APPLE_TRANSACTION_NOT_FOUND |
+ *         409 APPLE_SUBSCRIPTION_IN_USE (linked to another Kinkané account) |
+ *         409 APPLE_ACCOUNT_MISMATCH (bought while signed in as someone else) |
+ *         409 APPLE_SUBSCRIPTION_INACTIVE (expired or refunded) |
+ *         409 STRIPE_SUBSCRIPTION_ACTIVE (already paying on the web) |
+ *         429 rate limit | 502 APPLE_IAP_UPSTREAM | 503 APPLE_IAP_UNAVAILABLE
+ */
+router.post(
+  '/apple/verify',
+  requireAuth,
+  checkoutLimiter,
+  wrapHttp(subscriptionsController.appleVerify),
+);
+
 export default router;
 
 /**
@@ -142,6 +167,20 @@ export default router;
  * body parser and no rate limiter (Stripe's delivery volume is not abuse).
  */
 export const webhookRouter = Router();
+
+/**
+ * App Store Server Notifications V2 — renewals, cancellations, refunds and
+ * failed payments for subscriptions bought in the iOS app. Mounted in app.ts
+ * outside the API rate limiter, like the Stripe webhook. Plain JSON: nothing
+ * in the body is trusted, so there is no signature to check against raw bytes.
+ */
+export const appleNotificationRouter = Router();
+
+appleNotificationRouter.post('/', (req: Request, res: Response) => {
+  subscriptionsController.appleNotification(req, res).catch((err: Error) => {
+    res.status(500).json({ error: err.message });
+  });
+});
 
 webhookRouter.post(
   '/',

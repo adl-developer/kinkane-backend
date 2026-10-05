@@ -88,6 +88,27 @@ function customerId(value: string | Stripe.Customer | Stripe.DeletedCustomer | n
   return typeof value === 'string' ? value : value.id;
 }
 
+/**
+ * True when the user's billing now lives with Apple. A Stripe event reaching
+ * such a row is from a Stripe subscription they've since left — its ending,
+ * or a late retry — and acting on it would revoke what Apple is billing for.
+ * Checkout completion is the one exception: a brand-new Stripe purchase
+ * legitimately moves them back.
+ */
+function ownedByApple(
+  sub: { billingProvider: string | null } | null,
+  event: Stripe.Event,
+  userId: number,
+): boolean {
+  if (sub?.billingProvider !== 'apple') return false;
+  logger.info('Ignoring Stripe event for a user billed by Apple', {
+    eventId: event.id,
+    type: event.type,
+    userId,
+  });
+  return true;
+}
+
 export const webhooksService = {
   /**
    * Verifies the signature and returns the parsed event.
@@ -301,6 +322,7 @@ export const webhooksService = {
         cancelAtPeriodEnd: subscription.cancel_at_period_end,
         stripeCustomerId,
         stripeSubscriptionId: subscription.id,
+        billingProvider: 'stripe',
         // trial_ends_at is deliberately left alone — it's the historical record
         // of the in-app trial, not a live billing field.
       },
@@ -386,6 +408,7 @@ export const webhooksService = {
     }
 
     const existing = await subscriptionStateService.get(userId);
+    if (ownedByApple(existing, event, userId)) return;
     // Out-of-order delivery for a subscription they've since replaced. Writing
     // it would resurrect dead state.
     if (
@@ -512,6 +535,7 @@ export const webhooksService = {
     }
 
     const existing = await subscriptionStateService.get(userId);
+    if (ownedByApple(existing, event, userId)) return;
     // They already resubscribed — this is the old subscription ending, and
     // acting on it would revoke access they've paid for.
     if (existing?.stripeSubscriptionId && existing.stripeSubscriptionId !== subscription.id) {
@@ -562,6 +586,8 @@ export const webhooksService = {
 
     const subscriptionId = this.invoiceSubscriptionId(invoice);
     if (!subscriptionId) return;
+
+    if (ownedByApple(await subscriptionStateService.get(userId), event, userId)) return;
 
     const subscription = await stripe().subscriptions.retrieve(subscriptionId);
     const priceId = firstPriceId(subscription);
@@ -620,6 +646,7 @@ export const webhooksService = {
 
     const existing = await subscriptionStateService.get(userId);
     if (!existing) return;
+    if (ownedByApple(existing, event, userId)) return;
 
     const updated = await subscriptionStateService.applyState(
       userId,

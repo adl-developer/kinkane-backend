@@ -12,6 +12,7 @@ import type {
   SubscriptionTier,
   SubscriptionStatus,
   SubscriptionPlan,
+  BillingProvider,
 } from '../../db/schema';
 import { logger } from '../../lib/logger';
 
@@ -40,6 +41,10 @@ export type StateChangeReason =
   | 'subscription_updated'
   | 'subscription_deleted'
   | 'reconciliation'
+  // The iOS app handed us a purchase and Apple confirmed it.
+  | 'apple_verified'
+  // An App Store Server Notification (renewal, cancellation, refund, ...).
+  | 'apple_notification'
   // Only written by migration 0030, which opened an interval for every
   // subscription that existed before this table did.
   | 'backfill';
@@ -59,11 +64,14 @@ export interface SubscriptionState {
   pendingPlan?: SubscriptionPlan | null;
   stripeCustomerId?: string | null;
   stripeSubscriptionId?: string | null;
+  billingProvider?: BillingProvider | null;
+  appleOriginalTransactionId?: string | null;
+  appleEnvironment?: string | null;
 }
 
 export interface ApplyStateOptions {
   reason: StateChangeReason;
-  /** Stripe event id that caused this, when one did. */
+  /** Stripe event id or Apple notificationUUID that caused this, when one did. */
   sourceEventId?: string | null;
   /** Transaction to join. Defaults to the root handle. */
   tx?: DbHandle;
@@ -73,8 +81,8 @@ export interface ApplyStateOptions {
    * same moment) resolve without locking. Returns null when it doesn't match.
    */
   expectStatus?: SubscriptionStatus;
-  /** Only write if the row has no Stripe subscription attached. */
-  expectNoStripeSubscription?: boolean;
+  /** Only write if the row has no paid subscription attached — Stripe or Apple. */
+  expectNoPaidSubscription?: boolean;
   /**
    * Side effects that must succeed or fail together with the state write.
    *
@@ -101,6 +109,8 @@ function isSameState(row: SubscriptionStateHistory, next: UserSubscription): boo
     row.cancelAtPeriodEnd === next.cancelAtPeriodEnd &&
     row.pendingPlan === next.pendingPlan &&
     row.stripeSubscriptionId === next.stripeSubscriptionId &&
+    row.billingProvider === next.billingProvider &&
+    row.appleOriginalTransactionId === next.appleOriginalTransactionId &&
     sameTime(row.currentPeriodEnd, next.currentPeriodEnd) &&
     sameTime(row.trialEndsAt, next.trialEndsAt)
   );
@@ -133,8 +143,9 @@ export const subscriptionStateService = {
       if (options.expectStatus) {
         guards.push(eq(userSubscriptions.status, options.expectStatus));
       }
-      if (options.expectNoStripeSubscription) {
+      if (options.expectNoPaidSubscription) {
         guards.push(isNull(userSubscriptions.stripeSubscriptionId));
+        guards.push(isNull(userSubscriptions.appleOriginalTransactionId));
       }
 
       const [updated] = await tx
@@ -154,6 +165,11 @@ export const subscriptionStateService = {
           ...(next.stripeSubscriptionId !== undefined && {
             stripeSubscriptionId: next.stripeSubscriptionId,
           }),
+          ...(next.billingProvider !== undefined && { billingProvider: next.billingProvider }),
+          ...(next.appleOriginalTransactionId !== undefined && {
+            appleOriginalTransactionId: next.appleOriginalTransactionId,
+          }),
+          ...(next.appleEnvironment !== undefined && { appleEnvironment: next.appleEnvironment }),
           updatedAt: now,
         })
         .where(and(...guards))
@@ -223,6 +239,8 @@ export const subscriptionStateService = {
       cancelAtPeriodEnd: row.cancelAtPeriodEnd,
       pendingPlan: row.pendingPlan,
       stripeSubscriptionId: row.stripeSubscriptionId,
+      billingProvider: row.billingProvider,
+      appleOriginalTransactionId: row.appleOriginalTransactionId,
       reason,
       sourceEventId,
       effectiveFrom: at,
@@ -239,7 +257,8 @@ export const subscriptionStateService = {
    * Two guards make it safe to call from anywhere, at any time:
    *   • status must still be 'trialing' — so two concurrent callers can't both
    *     write the flip and both log an 'expired' event.
-   *   • stripe_subscription_id must be null — so a user who paid mid-trial is
+   *   • stripe_subscription_id and apple_original_transaction_id must both be
+   *     null — so a user who paid mid-trial, on the web or in the iOS app, is
    *     never downgraded by a sweep that read their row a moment earlier.
    *
    * Returns the updated row, or null when there was nothing to do.
@@ -255,10 +274,11 @@ export const subscriptionStateService = {
     // checkout webhook. If it happens, a webhook was lost or arrived out of
     // order — say so loudly rather than skipping silently, because the daily
     // reconciliation is what needs to repair it.
-    if (sub.stripeSubscriptionId) {
-      logger.warn('Skipping trial expiry for a subscription that has Stripe billing attached', {
+    if (sub.stripeSubscriptionId || sub.appleOriginalTransactionId) {
+      logger.warn('Skipping trial expiry for a subscription that has paid billing attached', {
         userId: sub.userId,
         stripeSubscriptionId: sub.stripeSubscriptionId,
+        appleOriginalTransactionId: sub.appleOriginalTransactionId,
         trialEndsAt: sub.trialEndsAt,
       });
       return null;
@@ -276,7 +296,7 @@ export const subscriptionStateService = {
           reason: 'trial_expired',
           tx,
           expectStatus: 'trialing',
-          expectNoStripeSubscription: true,
+          expectNoPaidSubscription: true,
         },
       );
 
@@ -311,6 +331,18 @@ export const subscriptionStateService = {
       .select()
       .from(userSubscriptions)
       .where(eq(userSubscriptions.stripeCustomerId, customerId))
+      .limit(1);
+    return sub ?? null;
+  },
+
+  /** Looks a subscription up by the Apple subscription chain it is bound to. */
+  async getByAppleOriginalTransactionId(
+    originalTransactionId: string,
+  ): Promise<UserSubscription | null> {
+    const [sub] = await db
+      .select()
+      .from(userSubscriptions)
+      .where(eq(userSubscriptions.appleOriginalTransactionId, originalTransactionId))
       .limit(1);
     return sub ?? null;
   },

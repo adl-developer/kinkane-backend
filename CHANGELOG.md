@@ -5,6 +5,7 @@
 
 ### Bug Fixes
 
+* recommendations only show books that are in stock right now ([f1ed938](https://adl.github.com/adl-developer/kinkane-backend/commit/f1ed938a9662986f9b7b88c06834c2cc5be96a80)) — [details](changelog/2026-10-05-feeds-only-in-stock-books.md)
 * search and other editions only show sellable books ([db5da12](https://adl.github.com/adl-developer/kinkane-backend/commit/db5da124343634f858291e5d3fe22bb3da466c06)) — [details](changelog/2026-10-05-feeds-only-in-stock-books.md)
 
 

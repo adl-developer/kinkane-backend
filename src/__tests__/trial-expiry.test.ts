@@ -83,6 +83,9 @@ function subscription(overrides: Partial<UserSubscription> = {}): UserSubscripti
     cancelAtPeriodEnd: false,
     stripeCustomerId: null,
     stripeSubscriptionId: null,
+    billingProvider: null,
+    appleOriginalTransactionId: null,
+    appleEnvironment: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
@@ -125,6 +128,19 @@ describe('expireTrialIfDue', () => {
 
     const result = await subscriptionStateService.expireTrialIfDue(
       subscription({ stripeSubscriptionId: 'sub_123' }),
+    );
+
+    expect(result).toBeNull();
+    expect(updateCalls).toBe(0);
+    expect(eventsInserted()).toHaveLength(0);
+  });
+
+  // Same rule for a purchase made in the iOS app: Apple billing is just as paid.
+  it('refuses to expire a trial once App Store billing is attached', async () => {
+    updateResult = [subscription()];
+
+    const result = await subscriptionStateService.expireTrialIfDue(
+      subscription({ appleOriginalTransactionId: '2000000123456789', billingProvider: 'apple' }),
     );
 
     expect(result).toBeNull();

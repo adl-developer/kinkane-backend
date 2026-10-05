@@ -18,7 +18,10 @@ import adminReferralsRoutes from './routes/admin-referrals.routes';
 import adminConsoleRoutes from './routes/admin';
 import { referralsController } from './controllers/referrals.controller';
 import { wrap } from './lib/route-helpers';
-import { webhookRouter as stripeWebhookRouter } from './routes/subscriptions.routes';
+import {
+  webhookRouter as stripeWebhookRouter,
+  appleNotificationRouter,
+} from './routes/subscriptions.routes';
 import docsRoutes from './routes/docs.routes';
 
 const app = express();
@@ -54,6 +57,16 @@ app.use(cors({
 // is the authentication — and outside the API rate limiter, since Stripe's
 // delivery volume is not abuse.
 app.use('/api/v1/user/subscription/webhook', stripeWebhookRouter);
+
+// ── App Store Server Notifications ───────────────────────────────────────────
+// Apple's counterpart of the Stripe webhook. Needs its own, larger JSON limit
+// (a signed notification carries three certificates and two nested JWS
+// blobs, well past the 50kb API default) and sits outside the rate limiter.
+app.use(
+  '/api/v1/user/subscription/apple/notifications',
+  express.json({ limit: '256kb' }),
+  appleNotificationRouter,
+);
 
 app.use(express.json({ limit: '50kb' }));
 app.use(express.urlencoded({ extended: false, limit: '50kb' }));

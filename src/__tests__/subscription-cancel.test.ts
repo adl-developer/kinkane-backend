@@ -189,6 +189,26 @@ describe('cancel', () => {
     await expect(service.cancel(7)).rejects.toMatchObject({ statusCode: 404 });
   });
 
+  // Only Apple can cancel an App Store subscription. Saying where to go beats
+  // a NO_PAID_SUBSCRIPTION that tells a paying member they don't pay.
+  it('sends an App Store subscriber to Apple instead of calling Stripe', async () => {
+    getCurrent.mockResolvedValue({
+      ...PAYING,
+      billingProvider: 'apple',
+      stripeSubscriptionId: null,
+      appleOriginalTransactionId: '2000000111111111',
+    });
+    const service = await loadService();
+
+    await expect(service.cancel(7)).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'MANAGED_BY_APPLE',
+      details: { manageUrl: 'https://apps.apple.com/account/subscriptions' },
+    });
+    await expect(service.reactivate(7)).rejects.toMatchObject({ code: 'MANAGED_BY_APPLE' });
+    expect(stripeUpdate).not.toHaveBeenCalled();
+  });
+
   // A double-tap on a Cancel button is not a mistake worth surfacing.
   it('is idempotent for an already-cancelling subscription', async () => {
     getCurrent.mockResolvedValue({ ...PAYING, cancelAtPeriodEnd: true });

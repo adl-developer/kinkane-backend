@@ -267,4 +267,83 @@ export const billingPaths = {
       },
     },
   },
+
+  '/api/v1/user/subscription/apple/verify': {
+    post: {
+      tags: [TAG],
+      summary: 'Verify an App Store purchase',
+      description: [
+        'Called by the iOS app after an App Store purchase or a restore. The server asks Apple about the transaction, links that App Store subscription to this account and switches Plus on.',
+        '',
+        '### Client flow',
+        '1. Read `appleAppAccountToken` from `GET /user/subscription` and pass it as the purchase’s `appAccountToken`.',
+        '2. After the purchase succeeds, send its `transactionId` here.',
+        '3. **Finish the StoreKit transaction only after this returns 200.** If the request never lands, StoreKit redelivers the transaction on the next launch and the app can retry.',
+        '',
+        'The transaction id is only a pointer: what was bought, and whether it is still active, is read from Apple with the server’s own credentials. Calling again with the same transaction is harmless. Sandbox purchases (TestFlight, App Review) are accepted.',
+        '',
+        'Renewals, cancellations and refunds after this arrive from Apple directly at `/apple/notifications`, so the app does not need to call this again on every launch, though doing so on restore is fine.',
+        '',
+        '**Rate limit:** 20 per hour.',
+      ].join('\n'),
+      requestBody: body(object({
+        transactionId: {
+          type: 'string',
+          pattern: '^\\d{1,32}$',
+          description: 'StoreKit’s transaction id. Any transaction in the subscription works.',
+          example: '2000000123456789',
+        },
+      }, ['transactionId'])),
+      responses: {
+        200: json('Verified; the subscription now, with `provider: "apple"`.', ref('Subscription')),
+        400: json('`transactionId` missing or not a StoreKit id.', ref('ValidationError')),
+        401: resp('Unauthorized'),
+        404: json('Apple has no such Kinkané Plus transaction.', ref('Error'),
+          { error: 'That purchase could not be found with the App Store', code: 'APPLE_TRANSACTION_NOT_FOUND' }),
+        409: json(
+          [
+            'One of:',
+            '- `APPLE_SUBSCRIPTION_IN_USE`: this App Store subscription is already linked to another Kinkané account.',
+            '- `APPLE_ACCOUNT_MISMATCH`: it was bought while signed in to a different Kinkané account (its `appAccountToken` belongs to someone else).',
+            '- `APPLE_SUBSCRIPTION_INACTIVE`: it has expired or been refunded, so there is nothing to restore.',
+            '- `STRIPE_SUBSCRIPTION_ACTIVE`: this account already pays on the website. The App Store purchase is not applied; the user should ask Apple for a refund.',
+          ].join('\n'),
+          ref('Error'),
+          { error: 'This App Store subscription is already linked to a different Kinkané account', code: 'APPLE_SUBSCRIPTION_IN_USE' }),
+        429: resp('RateLimited'),
+        502: json('The App Store could not be reached. Retry later; do not finish the transaction.', ref('Error'),
+          { error: 'The App Store could not be reached — please try again', code: 'APPLE_IAP_UPSTREAM' }),
+        503: json('App Store purchases are not configured on this deployment.', ref('Error'),
+          { error: 'App Store purchases are not available right now', code: 'APPLE_IAP_UNAVAILABLE' }),
+        500: resp('ServerError'),
+      },
+    },
+  },
+
+  '/api/v1/user/subscription/apple/notifications': {
+    post: {
+      tags: [TAG],
+      summary: 'App Store Server Notifications (Apple only)',
+      description: [
+        'Apple’s App Store Server Notifications **V2** endpoint. Not for clients. Enter this URL in App Store Connect for both Production and Sandbox.',
+        '',
+        'Nothing in the body is trusted. The notification only names a transaction, and the server re-reads that subscription from Apple before writing anything, so a forged request can at most trigger a refresh. Deliveries are de-duplicated by `notificationUUID`.',
+        '',
+        'Always answers 200 once a notification is recorded, including ones that are ignored or whose handling failed (those are stored and repaired by the daily reconciliation). Only a body that is not a notification gets a 400, since Apple retries any non-2xx.',
+      ].join('\n'),
+      security: [],
+      requestBody: body(object({
+        signedPayload: { type: 'string', description: 'The JWS Apple sends.' },
+      }, ['signedPayload'])),
+      responses: {
+        200: json('Recorded.', object({
+          received: { type: 'boolean', example: true },
+          duplicate: { type: 'boolean', description: 'Present on a redelivery.', example: true },
+        })),
+        400: json('Not an App Store notification.', ref('Error'), { error: 'Missing signedPayload' }),
+        503: json('App Store purchases are not configured.', ref('Error'),
+          { error: 'App Store purchases are not configured' }),
+      },
+    },
+  },
 };
