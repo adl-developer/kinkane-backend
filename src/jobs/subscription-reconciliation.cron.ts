@@ -1,5 +1,5 @@
 import cron, { ScheduledTask } from 'node-cron';
-import { and, eq, isNotNull, inArray } from 'drizzle-orm';
+import { and, eq, isNotNull, isNull, inArray, or } from 'drizzle-orm';
 import { db } from '../db';
 import { userSubscriptions } from '../db/schema';
 import { stripe, isStripeConfigured, planForPriceId, isFoundingPriceId } from '../lib/stripe';
@@ -36,16 +36,20 @@ async function reconcileStripe(): Promise<void> {
   if (!isStripeConfigured()) return;
 
   try {
-    // Stripe-billed rows only. A row now billed by Apple may still carry the
-    // id of a Stripe subscription that ended — re-reading that would "repair"
-    // the user down to cancelled.
+    // Every row with a Stripe subscription except those now billed by Apple,
+    // which may still carry the id of a Stripe subscription that ended —
+    // re-reading that would "repair" the user down to cancelled. A null
+    // provider counts as Stripe (see getBillingProvider) and is labelled below.
     const rows = await db
       .select()
       .from(userSubscriptions)
       .where(
         and(
           isNotNull(userSubscriptions.stripeSubscriptionId),
-          eq(userSubscriptions.billingProvider, 'stripe'),
+          or(
+            isNull(userSubscriptions.billingProvider),
+            eq(userSubscriptions.billingProvider, 'stripe'),
+          ),
         ),
       );
 
@@ -76,7 +80,8 @@ async function reconcileStripe(): Promise<void> {
           row.tier !== tier ||
           row.priceId !== priceId ||
           row.cancelAtPeriodEnd !== remote.cancel_at_period_end ||
-          row.currentPeriodEnd?.getTime() !== currentPeriodEnd?.getTime();
+          row.currentPeriodEnd?.getTime() !== currentPeriodEnd?.getTime() ||
+          row.billingProvider !== 'stripe';
 
         if (!drifted) continue;
 
@@ -97,6 +102,7 @@ async function reconcileStripe(): Promise<void> {
             isFoundingMember: row.isFoundingMember || isFoundingPriceId(priceId),
             currentPeriodEnd,
             cancelAtPeriodEnd: remote.cancel_at_period_end,
+            billingProvider: 'stripe',
           },
           { reason: 'reconciliation' },
         );

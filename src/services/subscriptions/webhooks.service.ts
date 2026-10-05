@@ -12,15 +12,8 @@ import { entitlementsService } from './entitlements.service';
 import { schedulesService, scheduleIdOf } from './schedules.service';
 import { orderWebhooksService } from '../commerce/order-webhooks.service';
 import { paymentsService } from '../payments.service';
+import { reclaimableClaim } from '../../lib/delivery-claim';
 
-/**
- * How long a claim can hold before it's considered abandoned and re-runnable.
- * Set to comfortably longer than any handler could plausibly take (the slowest
- * involve a small handful of Stripe API calls, well under 30s), and shorter
- * than Stripe's redelivery cadence, so a still-running instance is never
- * preempted by a redelivery that races with it.
- */
-const STALE_CLAIM_SECONDS = 60;
 
 /**
  * Stripe webhook ingestion.
@@ -143,8 +136,8 @@ export const webhooksService = {
    *   2. Row exists with `processed_at` set → skip (handler already ran to
    *      completion — this is a genuine duplicate).
    *   3. Row exists with `processed_at` NULL — a prior attempt started but
-   *      didn't reach `markProcessed`. If it's older than STALE_CLAIM_SECONDS,
-   *      the process holding it has almost certainly died (Stripe's own
+   *      didn't reach `markProcessed`. If it's older than STALE_CLAIM_SECONDS
+   *      (lib/delivery-claim), the process holding it has almost certainly died (Stripe's own
    *      redelivery cadence is > that), so reclaim and re-run. Otherwise
    *      another instance is currently processing this event, so skip.
    *
@@ -164,7 +157,7 @@ export const webhooksService = {
       .onConflictDoUpdate({
         target: stripeWebhookEvents.eventId,
         set: { receivedAt: sql`now()`, payload: sql`EXCLUDED.payload` },
-        setWhere: sql`${stripeWebhookEvents.processedAt} IS NULL AND ${stripeWebhookEvents.receivedAt} < now() - interval '${sql.raw(String(STALE_CLAIM_SECONDS))} seconds'`,
+        setWhere: reclaimableClaim(stripeWebhookEvents.processedAt, stripeWebhookEvents.receivedAt),
       })
       .returning({ eventId: stripeWebhookEvents.eventId });
 
@@ -458,6 +451,7 @@ export const webhooksService = {
         pendingPlan: nextPendingPlan,
         stripeCustomerId,
         stripeSubscriptionId: subscription.id,
+        billingProvider: 'stripe',
       },
       {
         reason: 'subscription_updated',
@@ -604,6 +598,7 @@ export const webhooksService = {
         cancelAtPeriodEnd: subscription.cancel_at_period_end,
         stripeCustomerId,
         stripeSubscriptionId: subscription.id,
+        billingProvider: 'stripe',
       },
       {
         reason: 'invoice_paid',
@@ -654,6 +649,7 @@ export const webhooksService = {
         // Tier deliberately stays plus — see tierForStatus.
         tier: 'plus',
         status: 'past_due',
+        billingProvider: 'stripe',
       },
       {
         reason: 'payment_failed',

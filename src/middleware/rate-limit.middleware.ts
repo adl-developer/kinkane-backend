@@ -137,6 +137,22 @@ export const contactLimiter = rateLimit({
   store: new RedisStore({ prefix: 'rl:contact:', sendCommand }),
 });
 
+/**
+ * App Store Server Notifications. Unauthenticated, so bounded per IP. Apple
+ * sends from a handful of addresses, and even a large subscriber base renews in
+ * the low hundreds a minute — this is a ceiling against a script, not a
+ * throttle on Apple. A 429 is safe: Apple treats it like any non-2xx and
+ * redelivers later.
+ */
+export const appleNotificationLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 600,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: json429,
+  store: new RedisStore({ prefix: 'rl:apple-notify:', sendCommand }),
+});
+
 export const checkoutLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 20,

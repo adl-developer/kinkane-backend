@@ -3,6 +3,10 @@
 
 ## 2026-10-05
 
+### Features
+
+* let people buy Kinkané Plus inside the iPhone app through the App Store ([2040b8f](https://adl.github.com/adl-developer/kinkane-backend/commit/2040b8f9c508fde56a075bd957a37e81388f27e1)) — [details](changelog/2026-10-05-apple-in-app-purchase-plus.md)
+
 ### Bug Fixes
 
 * recommendations only show books that are in stock right now ([f1ed938](https://adl.github.com/adl-developer/kinkane-backend/commit/f1ed938a9662986f9b7b88c06834c2cc5be96a80)) — [details](changelog/2026-10-05-feeds-only-in-stock-books.md)

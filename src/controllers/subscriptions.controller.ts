@@ -11,7 +11,7 @@ import { webhooksService } from '../services/subscriptions/webhooks.service';
 import { authService } from '../services/auth.service';
 import { appleSubscriptionsService } from '../services/subscriptions/apple.service';
 import { appAccountTokenFor, assertAppleConfigured, isAppleConfigured } from '../lib/apple-store';
-import type { UserSubscription } from '../db/schema';
+import { getBillingProvider, type UserSubscription } from '../db/schema';
 
 const checkoutSchema = z.object({
   plan: z.enum(['monthly', 'annual']),
@@ -93,7 +93,7 @@ function serializeSubscription(userId: number, sub: UserSubscription) {
     plan: sub.plan,
     // 'stripe' | 'apple' | null. Decides which cancel/manage UI the client
     // shows: only Apple can change an App Store subscription.
-    provider: sub.billingProvider,
+    provider: getBillingProvider(sub),
     trialEndsAt: sub.trialEndsAt,
     trialDaysLeft,
     currentPeriodEnd: sub.currentPeriodEnd,
@@ -269,9 +269,10 @@ export const subscriptionsController = {
    * nothing in the body is trusted at all: it only names a transaction, which
    * is then re-read from Apple with our own credentials.
    *
-   * Answers 200 once the notification is recorded, failures included (they're
-   * stored on the row and reconciliation repairs them). Apple retries any
-   * non-2xx, so only a body that isn't a notification at all gets a 400.
+   * Answers 200 once the notification is handled or deliberately ignored, and
+   * for handler bugs (stored on the row), since a redelivery would fail the
+   * same way. A 503 only when Apple itself was unreachable, so Apple retries;
+   * a 400 only for a body that isn't a notification at all.
    */
   async appleNotification(req: Request, res: Response): Promise<void> {
     const parsed = appleNotificationSchema.safeParse(req.body);
@@ -291,6 +292,12 @@ export const subscriptionsController = {
       const e = err as Error & { statusCode?: number };
       if (e.statusCode === 400) {
         res.status(400).json({ error: e.message });
+        return;
+      }
+      // Apple was unreachable: the claim was left open, and a non-2xx makes
+      // Apple redeliver later. See handleNotification.
+      if (e.statusCode && e.statusCode >= 500) {
+        res.status(503).json({ error: e.message });
         return;
       }
       throw err;

@@ -80,6 +80,29 @@ Migration `0070_apple_in_app_purchase`:
   after verify succeeds, so StoreKit redelivers the purchase until it's
   linked.
 
+## Fixes from code review
+
+- **Stripe members with no label are still treated as Stripe-billed.**
+  `billing_provider` can be null on a Stripe row written before this change.
+  `getBillingProvider()` reads a null provider with a Stripe subscription id as
+  `stripe`, and every ownership check uses it. Every Stripe write now sets the
+  label, and the Stripe reconciliation covers unlabelled rows and labels them.
+- **Apple retries notifications that failed because Apple was unreachable.**
+  The claim is left open and Apple gets a 503, so it redelivers. Handler bugs
+  are still recorded and answered 200, because a retry would fail the same way.
+- **Unlinked notifications cost no Apple API call.** The subscription's link
+  to an account is checked before anything is written or fetched. The endpoint
+  also has its own per-IP rate limit of 600 a minute.
+- **Billing recovery counts as a renewal.** A conversion is now detected from
+  the subscription's status, not its tier, so a member recovering from billing
+  retry doesn't get a second welcome email.
+- **Two accounts linking the same purchase at once** get 409
+  `APPLE_SUBSCRIPTION_IN_USE` instead of a 500 from the unique index.
+- **Apple writes clear `isFoundingMember`.** A former Stripe founding member
+  doesn't show founding pricing on an App Store subscription.
+- **The claim/reclaim logic is shared.** It lives in `lib/delivery-claim.ts`
+  and is used by both the Stripe and Apple endpoints.
+
 ## What's explicitly out of scope (for now)
 
 - **The iOS app itself:** the purchase screen, StoreKit, `appAccountToken`,
@@ -121,7 +144,16 @@ Connect, set the Server Notifications V2 URL for both Production and Sandbox to
 - `trial-expiry.test.ts`: an App Store payer is never expired.
 - `subscription-cancel.test.ts`: an App Store subscriber gets
   `MANAGED_BY_APPLE` from cancel and reactivate, and Stripe is never called.
-- Full unit suite: 77 files, 1,241 tests passing. `tsc --noEmit` is clean.
+- `billing-provider-guards.test.ts`: covers both directions.
+  - Stripe webhooks don't touch an Apple-billed member.
+  - An unlabelled Stripe row gets labelled.
+  - Web checkout is refused while an App Store subscription is live, and
+    allowed once it has ended.
+
+  Removing a guard makes the matching test fail.
+- The Apple suite has 29 cases, now also covering retries, unlinked chains,
+  billing recovery, the linking race and the founding flag.
+- Full unit suite: 78 files, 1,255 tests passing. `tsc --noEmit` is clean.
 - The ES256 API token was checked with a generated key: header `kid`, claims
   `iss`, `aud=appstoreconnect-v1`, `bid`, `iat` and `exp`.
 - **Not yet tested against Apple.** That needs the App Store Connect key,

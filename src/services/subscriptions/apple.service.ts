@@ -1,6 +1,7 @@
 import { eq, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { users, subscriptionEvents, appleNotificationEvents } from '../../db/schema';
+import { getBillingProvider } from '../../db/schema';
 import type { UserSubscription, NewSubscriptionEvent } from '../../db/schema';
 import { config } from '../../config';
 import {
@@ -14,6 +15,7 @@ import {
   type AppleTransaction,
 } from '../../lib/apple-store';
 import { logger } from '../../lib/logger';
+import { reclaimableClaim } from '../../lib/delivery-claim';
 import { enqueueEmail } from '../../lib/email-queue';
 import { subscriptionStateService, type StateChangeReason } from './state.service';
 import { entitlementsService } from './entitlements.service';
@@ -30,12 +32,9 @@ import { entitlementsService } from './entitlements.service';
  *     subscription from Apple and writes the state Apple reports now.
  *  3. **Never guess whose subscription this is.** A chain is bound to a user
  *     only by the verify endpoint, which is authenticated. A notification for
- *     a chain nobody has verified yet is recorded and skipped; the app's
+ *     a chain nobody has verified yet is skipped; the app's
  *     verify call (which StoreKit keeps retrying until it succeeds) binds it.
  */
-
-/** Same window as the Stripe claim — see STALE_CLAIM_SECONDS there. */
-const STALE_CLAIM_SECONDS = 60;
 
 interface SyncContext {
   reason: StateChangeReason;
@@ -56,11 +55,16 @@ function httpError(message: string, statusCode: number, code: string): Error {
 function hasLiveStripe(sub: UserSubscription | null): boolean {
   return Boolean(
     sub &&
-      sub.billingProvider === 'stripe' &&
+      getBillingProvider(sub) === 'stripe' &&
       sub.stripeSubscriptionId &&
       sub.tier === 'plus' &&
       (sub.status === 'active' || sub.status === 'past_due'),
   );
+}
+
+/** Postgres unique-violation. */
+function isUniqueViolation(err: unknown): boolean {
+  return (err as { code?: string })?.code === '23505';
 }
 
 /** Apple reports price in milliunits (8990 = 8.99); we store minor units. */
@@ -156,64 +160,112 @@ export const appleSubscriptionsService = {
       return { duplicate: false };
     }
 
+    if (notification.notificationType === 'TEST') {
+      logger.info('App Store test notification received', { notificationId: notification.notificationUUID });
+      return { duplicate: false };
+    }
+
     const transaction = notification.data?.signedTransactionInfo
       ? decodeJws<AppleTransaction>(notification.data.signedTransactionInfo)
       : null;
+
+    if (!transaction?.originalTransactionId || !transaction.transactionId) {
+      logger.info('App Store notification carries no transaction — nothing to sync', { type });
+      return { duplicate: false };
+    }
+
+    if (notification.data?.environment === 'Sandbox' && !config.apple.allowSandbox) {
+      logger.info('Ignoring sandbox App Store notification', { type });
+      return { duplicate: false };
+    }
+
+    // Only a chain some account has verified is worth asking Apple about —
+    // nobody else's state could change. Checked before anything is written or
+    // fetched, so a stream of forged notifications costs one indexed read
+    // each, rather than a log row and a call on our App Store API quota. It is
+    // also the common case for SUBSCRIBED, which usually beats the app's
+    // verify call; verify reads the full state anyway.
+    const bound = await subscriptionStateService.getByAppleOriginalTransactionId(
+      transaction.originalTransactionId,
+    );
+    if (!bound) {
+      logger.info('App Store subscription not linked to an account yet — skipping', {
+        type,
+        originalTransactionId: transaction.originalTransactionId,
+      });
+      return { duplicate: false };
+    }
 
     const claimed = await db
       .insert(appleNotificationEvents)
       .values({
         notificationId: notification.notificationUUID,
         type,
-        originalTransactionId: transaction?.originalTransactionId ?? null,
+        originalTransactionId: transaction.originalTransactionId,
         environment: notification.data?.environment ?? null,
         payload: { ...notification, transaction } as unknown as Record<string, unknown>,
       })
       .onConflictDoUpdate({
         target: appleNotificationEvents.notificationId,
         set: { receivedAt: sql`now()` },
-        setWhere: sql`${appleNotificationEvents.processedAt} IS NULL AND ${appleNotificationEvents.receivedAt} < now() - interval '${sql.raw(String(STALE_CLAIM_SECONDS))} seconds'`,
+        setWhere: reclaimableClaim(appleNotificationEvents.processedAt, appleNotificationEvents.receivedAt),
       })
       .returning({ id: appleNotificationEvents.notificationId });
 
     if (claimed.length === 0) return { duplicate: true };
 
-    let error: string | undefined;
     try {
-      if (notification.notificationType === 'TEST') {
-        logger.info('App Store test notification received', { notificationId: notification.notificationUUID });
-      } else if (!transaction) {
-        logger.info('App Store notification carries no transaction — nothing to sync', { type });
-      } else if (notification.data?.environment === 'Sandbox' && !config.apple.allowSandbox) {
-        logger.info('Ignoring sandbox App Store notification', { type });
+      // The notification only tells us which subscription to look at. What
+      // it says happened is re-read from Apple, never taken from the body.
+      const snapshot = await appleStore.getSubscription(transaction.transactionId);
+      if (snapshot) {
+        await this.sync(snapshot, { reason: 'apple_notification', notification });
       } else {
-        // The notification only tells us which subscription to look at. What
-        // it says happened is re-read from Apple, never taken from the body.
-        const snapshot = await appleStore.getSubscription(transaction.transactionId);
-        if (snapshot) {
-          await this.sync(snapshot, { reason: 'apple_notification', notification });
-        } else {
-          logger.warn('App Store notification for a transaction Apple does not recognise as Plus', {
-            type,
-            transactionId: transaction.transactionId,
-          });
-        }
+        logger.warn('App Store notification for a transaction Apple does not recognise as Plus', {
+          type,
+          transactionId: transaction.transactionId,
+        });
       }
+      await this.markNotification(notification.notificationUUID, { processed: true });
     } catch (err) {
-      error = err instanceof Error ? err.message : String(err);
+      const message = err instanceof Error ? err.message : String(err);
+      const transient = ((err as { statusCode?: number }).statusCode ?? 0) >= 500;
       logger.error('App Store notification handler failed', {
         notificationId: notification.notificationUUID,
         type,
-        error,
+        error: message,
+        willRetry: transient,
       });
+
+      if (transient) {
+        // Apple was unreachable or refused our key. Leave the claim open and
+        // answer non-2xx, so Apple redelivers (1h, 12h, 24h, 48h, 72h) and the
+        // stale claim is taken again. Answering 200 here would lose it for
+        // good: reconciliation never looks at ended subscriptions, so a
+        // resubscribe made in iPhone Settings would never reach us.
+        await this.markNotification(notification.notificationUUID, { processed: false, error: message });
+        throw httpError('App Store unavailable — retry later', 503, 'APPLE_IAP_UPSTREAM');
+      }
+
+      // A bug, not an outage: a redelivery would fail the same way. Record it
+      // and answer 200, as the Stripe webhook does.
+      await this.markNotification(notification.notificationUUID, { processed: true, error: message });
     }
 
+    return { duplicate: false };
+  },
+
+  async markNotification(
+    notificationId: string,
+    outcome: { processed: boolean; error?: string },
+  ): Promise<void> {
     await db
       .update(appleNotificationEvents)
-      .set({ processedAt: new Date(), ...(error && { error: error.slice(0, 1000) }) })
-      .where(eq(appleNotificationEvents.notificationId, notification.notificationUUID));
-
-    return { duplicate: false };
+      .set({
+        ...(outcome.processed && { processedAt: new Date() }),
+        ...(outcome.error && { error: outcome.error.slice(0, 1000) }),
+      })
+      .where(eq(appleNotificationEvents.notificationId, notificationId));
   },
 
   /**
@@ -319,11 +371,16 @@ export const appleSubscriptionsService = {
     const pendingPlan = entitled && willRenew && renewsTo && renewsTo !== plan ? renewsTo : null;
     const currentPeriodEnd = transaction.expiresDate ? new Date(transaction.expiresDate) : null;
 
-    const wasEntitledHere =
+    // A conversion is this chain starting, or starting again after it ended.
+    // Keyed on status rather than tier: a subscription in billing retry is
+    // still running (past_due, tier free), and its recovery is a renewal —
+    // not a new conversion with a second welcome email.
+    const wasRunningHere =
       existing?.billingProvider === 'apple' &&
       existing.appleOriginalTransactionId === originalTransactionId &&
-      existing.tier === 'plus';
-    const converted = entitled && !wasEntitledHere;
+      existing.status !== 'cancelled' &&
+      existing.status !== 'expired';
+    const converted = entitled && !wasRunningHere;
     const startedCancelling = !converted && cancelAtPeriodEnd && !existing?.cancelAtPeriodEnd;
     const resumed = !converted && entitled && !cancelAtPeriodEnd && !!existing?.cancelAtPeriodEnd;
     const planChanged = !converted && Boolean(existing?.plan && plan && existing.plan !== plan);
@@ -331,56 +388,73 @@ export const appleSubscriptionsService = {
       ? eventForNotification(ctx.notification, transaction)
       : null;
 
-    const updated = await subscriptionStateService.applyState(
-      userId,
-      {
-        tier,
-        status,
-        plan,
-        priceId: transaction.productId,
-        currentPeriodEnd,
-        cancelAtPeriodEnd,
-        pendingPlan,
-        billingProvider: 'apple',
-        appleOriginalTransactionId: originalTransactionId,
-        appleEnvironment: snapshot.environment,
-        // Stripe fields and trial_ends_at are deliberately left alone: the
-        // former are another provider's history, the latter the in-app trial's.
-      },
-      {
-        reason: ctx.reason,
-        sourceEventId: ctx.notification?.notificationUUID ?? null,
-        inSameTx: async (tx) => {
-          const base = {
-            userId,
-            appleTransactionId: transaction.transactionId,
-            appleNotificationId: ctx.notification?.notificationUUID ?? null,
-          };
-          const rows: NewSubscriptionEvent[] = [];
-          if (converted) {
-            rows.push({
-              ...base,
-              event: 'converted',
-              amountCents: amountCents(transaction),
-              currency: transaction.currency ?? null,
-              reason: 'App Store purchase',
-            });
-          } else if (notificationEvent) {
-            rows.push({ ...base, ...notificationEvent });
-          }
-          if (planChanged) {
-            rows.push({ ...base, event: 'plan_changed', reason: `App Store plan changed from ${existing?.plan} to ${plan}` });
-          }
-          if (startedCancelling) {
-            rows.push({ ...base, event: 'cancelled', reason: 'Auto-renew turned off in the App Store' });
-          }
-          if (resumed) {
-            rows.push({ ...base, event: 'resumed', reason: 'Auto-renew turned back on in the App Store' });
-          }
-          if (rows.length) await tx.insert(subscriptionEvents).values(rows);
+    let updated: UserSubscription | null;
+    try {
+      updated = await subscriptionStateService.applyState(
+        userId,
+        {
+          tier,
+          status,
+          plan,
+          priceId: transaction.productId,
+          currentPeriodEnd,
+          cancelAtPeriodEnd,
+          pendingPlan,
+          // Founding pricing is a Stripe price; nothing on the App Store grants
+          // it yet. A former Stripe founding member keeps the flag otherwise.
+          isFoundingMember: false,
+          billingProvider: 'apple',
+          appleOriginalTransactionId: originalTransactionId,
+          appleEnvironment: snapshot.environment,
+          // Stripe fields and trial_ends_at are deliberately left alone: the
+          // former are another provider's history, the latter the in-app trial's.
         },
-      },
-    );
+        {
+          reason: ctx.reason,
+          sourceEventId: ctx.notification?.notificationUUID ?? null,
+          inSameTx: async (tx) => {
+            const base = {
+              userId,
+              appleTransactionId: transaction.transactionId,
+              appleNotificationId: ctx.notification?.notificationUUID ?? null,
+            };
+            const rows: NewSubscriptionEvent[] = [];
+            if (converted) {
+              rows.push({
+                ...base,
+                event: 'converted',
+                amountCents: amountCents(transaction),
+                currency: transaction.currency ?? null,
+                reason: 'App Store purchase',
+              });
+            } else if (notificationEvent) {
+              rows.push({ ...base, ...notificationEvent });
+            }
+            if (planChanged) {
+              rows.push({ ...base, event: 'plan_changed', reason: `App Store plan changed from ${existing?.plan} to ${plan}` });
+            }
+            if (startedCancelling) {
+              rows.push({ ...base, event: 'cancelled', reason: 'Auto-renew turned off in the App Store' });
+            }
+            if (resumed) {
+              rows.push({ ...base, event: 'resumed', reason: 'Auto-renew turned back on in the App Store' });
+            }
+            if (rows.length) await tx.insert(subscriptionEvents).values(rows);
+          },
+        },
+      );
+    } catch (err) {
+      // Two accounts verifying the same unlinked chain at the same moment both
+      // pass the `bound` check above; the unique index lets only one link it.
+      if (isUniqueViolation(err)) {
+        throw httpError(
+          'This App Store subscription is already linked to a different Kinkané account',
+          409,
+          'APPLE_SUBSCRIPTION_IN_USE',
+        );
+      }
+      throw err;
+    }
 
     if (!updated) {
       logger.error('App Store sync could not update the subscription row', { userId, originalTransactionId });

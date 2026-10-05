@@ -25,6 +25,7 @@ const invalidate = vi.fn();
 const enqueueEmail = vi.fn();
 const eventsInserted: unknown[] = [];
 let claimResult: unknown[] = [{ id: 'n-1' }];
+const notificationUpdates: Record<string, unknown>[] = [];
 
 vi.mock('../lib/apple-store', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/apple-store')>();
@@ -55,7 +56,12 @@ vi.mock('../db', () => ({
         onConflictDoUpdate: () => ({ returning: async () => claimResult }),
       }),
     }),
-    update: () => ({ set: () => ({ where: async () => undefined }) }),
+    update: () => ({
+      set: (values: Record<string, unknown>) => {
+        notificationUpdates.push(values);
+        return { where: async () => undefined };
+      },
+    }),
     select: () => ({
       from: () => ({
         where: () => ({ limit: async () => [{ email: 'reader@example.com', name: 'Ada' }] }),
@@ -134,6 +140,7 @@ beforeEach(() => {
     fn.mockReset();
   }
   eventsInserted.length = 0;
+  notificationUpdates.length = 0;
   claimResult = [{ id: 'n-1' }];
   enqueueEmail.mockResolvedValue(undefined);
   getByAppleOriginalTransactionId.mockResolvedValue(null);
@@ -230,6 +237,39 @@ describe('verifyPurchase', () => {
       code: 'STRIPE_SUBSCRIPTION_ACTIVE',
     });
     expect(applyState).not.toHaveBeenCalled();
+  });
+
+  // Stripe rows written before billing_provider existed have it null. They are
+  // still Stripe-billed, and must be protected just the same.
+  it('treats an unlabelled row with a live Stripe subscription as Stripe-billed', async () => {
+    getSubscription.mockResolvedValue(snapshot());
+    get.mockResolvedValue({ ...TRIALING, tier: 'plus', status: 'active', billingProvider: null, stripeSubscriptionId: 'sub_1' });
+    const { service } = await load();
+
+    await expect(service.verifyPurchase(7, '2000000999999999')).rejects.toMatchObject({
+      code: 'STRIPE_SUBSCRIPTION_ACTIVE',
+    });
+    expect(applyState).not.toHaveBeenCalled();
+  });
+
+  it('turns a lost race to link the same purchase into a 409, not a 500', async () => {
+    getSubscription.mockResolvedValue(snapshot());
+    applyState.mockRejectedValue(Object.assign(new Error('duplicate key'), { code: '23505' }));
+    const { service } = await load();
+
+    await expect(service.verifyPurchase(7, '2000000999999999')).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'APPLE_SUBSCRIPTION_IN_USE',
+    });
+  });
+
+  it('never carries a Stripe Founding Member flag onto an App Store subscription', async () => {
+    getSubscription.mockResolvedValue(snapshot());
+    get.mockResolvedValue({ ...TRIALING, tier: 'free', status: 'cancelled', billingProvider: 'stripe', stripeSubscriptionId: 'sub_old', isFoundingMember: true });
+    const { service } = await load();
+
+    await service.verifyPurchase(7, '2000000999999999');
+    expect(written()).toMatchObject({ isFoundingMember: false });
   });
 
   // Moving from an ended web subscription to the App Store is fine.
@@ -356,16 +396,64 @@ describe('handleNotification', () => {
     expect(events()).toEqual(['expired']);
   });
 
-  // SUBSCRIBED usually beats the app's verify call. Nobody to credit yet.
-  it('skips a subscription no account has verified yet', async () => {
+  // SUBSCRIBED usually beats the app's verify call. Nobody to credit yet — and
+  // a forged notification naming an unknown chain must cost no Apple API call.
+  it('skips a subscription no account has verified yet, without calling Apple', async () => {
     getSubscription.mockResolvedValue(snapshot());
     const { service } = await load();
 
     await service.handleNotification(notification('SUBSCRIBED', 'INITIAL_BUY'));
+    expect(getSubscription).not.toHaveBeenCalled();
     expect(applyState).not.toHaveBeenCalled();
   });
 
+  // Recovery from billing retry is a renewal, not a second welcome.
+  it('records billing recovery as a renewal, not a new conversion', async () => {
+    getByAppleOriginalTransactionId.mockResolvedValue({ ...bound, tier: 'free', status: 'past_due' });
+    getSubscription.mockResolvedValue(snapshot());
+    const { service } = await load();
+
+    await service.handleNotification(notification('DID_RENEW', 'BILLING_RECOVERY'));
+
+    expect(written()).toMatchObject({ tier: 'plus', status: 'active' });
+    expect(events()).toEqual(['renewed']);
+    expect(enqueueEmail).not.toHaveBeenCalled();
+  });
+
+  it('counts a resubscribe after the subscription ended as a conversion', async () => {
+    getByAppleOriginalTransactionId.mockResolvedValue({ ...bound, tier: 'free', status: 'cancelled' });
+    getSubscription.mockResolvedValue(snapshot());
+    const { service } = await load();
+
+    await service.handleNotification(notification('SUBSCRIBED', 'RESUBSCRIBE'));
+    expect(events()).toEqual(['converted']);
+  });
+
+  // Answering 200 would lose it: Apple stops retrying, and reconciliation
+  // never looks at ended subscriptions.
+  it('leaves the claim open and asks Apple to retry when Apple is unreachable', async () => {
+    getByAppleOriginalTransactionId.mockResolvedValue(bound);
+    getSubscription.mockRejectedValue(Object.assign(new Error('timeout'), { statusCode: 502, code: 'APPLE_IAP_UPSTREAM' }));
+    const { service } = await load();
+
+    await expect(service.handleNotification(notification('DID_RENEW'))).rejects.toMatchObject({ statusCode: 503 });
+    expect(notificationUpdates).toHaveLength(1);
+    expect(notificationUpdates[0]).not.toHaveProperty('processedAt');
+    expect(notificationUpdates[0]).toMatchObject({ error: 'timeout' });
+  });
+
+  it('records a handler bug and answers normally, since a retry would fail the same way', async () => {
+    getByAppleOriginalTransactionId.mockResolvedValue(bound);
+    getSubscription.mockRejectedValue(new Error('boom'));
+    const { service } = await load();
+
+    await expect(service.handleNotification(notification('DID_RENEW'))).resolves.toEqual({ duplicate: false });
+    expect(notificationUpdates[0]).toMatchObject({ error: 'boom' });
+    expect(notificationUpdates[0]).toHaveProperty('processedAt');
+  });
+
   it('skips a redelivered notification without calling Apple', async () => {
+    getByAppleOriginalTransactionId.mockResolvedValue(bound);
     claimResult = [];
     const { service } = await load();
 
@@ -386,6 +474,15 @@ describe('handleNotification', () => {
   it('rejects a body that is not a notification', async () => {
     const { service } = await load();
     await expect(service.handleNotification('not-a-jws')).rejects.toMatchObject({ statusCode: 400 });
+  });
+});
+
+describe('getBillingProvider', () => {
+  it('reads an unlabelled row with a Stripe subscription as Stripe', async () => {
+    const { getBillingProvider } = await import('../db/schema');
+    expect(getBillingProvider({ billingProvider: null, stripeSubscriptionId: 'sub_1' })).toBe('stripe');
+    expect(getBillingProvider({ billingProvider: null, stripeSubscriptionId: null })).toBeNull();
+    expect(getBillingProvider({ billingProvider: 'apple', stripeSubscriptionId: 'sub_old' })).toBe('apple');
   });
 });
 

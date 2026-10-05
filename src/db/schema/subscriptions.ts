@@ -300,6 +300,19 @@ export function getEffectiveTier(sub: typeof userSubscriptions.$inferSelect): Su
   return sub.tier;
 }
 
+/**
+ * Who bills this subscription. `billing_provider` is only written by code that
+ * knows about it, so a Stripe row created before the column existed — or
+ * written by a path that predates it — can still be null. Such a row is billed
+ * by Stripe if it carries a Stripe subscription id, and every ownership check
+ * must read it that way, or an unlabelled web subscriber looks unowned.
+ */
+export function getBillingProvider(
+  sub: Pick<typeof userSubscriptions.$inferSelect, 'billingProvider' | 'stripeSubscriptionId'>,
+): BillingProvider | null {
+  return sub.billingProvider ?? (sub.stripeSubscriptionId ? 'stripe' : null);
+}
+
 export type UserSubscription = typeof userSubscriptions.$inferSelect;
 export type SubscriptionEvent = typeof subscriptionEvents.$inferSelect;
 export type NewSubscriptionEvent = typeof subscriptionEvents.$inferInsert;
