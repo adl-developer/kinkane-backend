@@ -17,7 +17,9 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    include: ['src/__tests__/endpoints.contract.test.ts'],
+    // exclusions.contract.test.ts rides along: it needs a real Postgres for its
+    // regex behaviour but touches no table, so the same `.env` database is safe.
+    include: ['src/__tests__/endpoints.contract.test.ts', 'src/__tests__/exclusions.contract.test.ts'],
     // No hermetic-env setup here — the real .env is wanted.
     pool: 'forks',
     poolOptions: { forks: { singleFork: true } },

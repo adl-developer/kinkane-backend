@@ -5,8 +5,10 @@ import {
   buildWorkExclusionCondition,
   filterExcludedWorks,
   hasNamedAuthor,
+  normalizeAuthorForMatch,
   normalizeForMatch,
   normalizeTitleForMatch,
+  titleKeysForMatch,
   type UserExclusions,
 } from '../lib/exclusions';
 
@@ -73,12 +75,98 @@ describe('normalizeTitleForMatch', () => {
   });
 });
 
+describe('normalizeAuthorForMatch', () => {
+  it.each([
+    ['Ann Patchett', 'ann patchett'],
+    ['Patchett, Ann', 'ann patchett'],
+    ['  PATCHETT ,  Ann ', 'ann patchett'],
+    // About one catalogue author name in five carries a doubled space.
+    ['Robert  Toft', 'robert toft'],
+    ['A. S. Byatt', 'a s byatt'],
+    ['A S Byatt', 'a s byatt'],
+    ['Durand,\tÉlodie', 'élodie durand'],
+    // A suffix after the comma is not a first name.
+    ['Martin Luther King, Jr.', 'martin luther king, jr'],
+    ['Smith, III', 'smith, iii'],
+    // More than one comma: no telling which part is the surname, so no flip.
+    ['X, Y, Z', 'x, y, z'],
+  ])('%s -> %s', (input, expected) => {
+    expect(normalizeAuthorForMatch(input)).toBe(expected);
+  });
+
+  it('is idempotent and accepts a stored normalizeForMatch snapshot', () => {
+    const once = normalizeAuthorForMatch('Patchett, Ann');
+    expect(normalizeAuthorForMatch(once)).toBe(once);
+    expect(normalizeAuthorForMatch(normalizeForMatch('  A. S.  Byatt '))).toBe('a s byatt');
+  });
+});
+
+describe('titleKeysForMatch', () => {
+  it.each([
+    ['Bel Canto', '#bel canto', '#bel canto'],
+    ['Bel Canto: A Novel', '#bel canto a novel', '#bel canto'],
+    ['Bel Canto (Harper Perennial Modern Classics)', '#bel canto', '#bel canto'],
+    ['Bel Canto [Large Print]', '#bel canto', '#bel canto'],
+    ['Bel Canto - 20th Anniversary Edition', '#bel canto 20th anniversary edition', '#bel canto'],
+    // Volume numbers survive the brackets being ignored, and lose leading zeros.
+    ['Tokyo Ghoul (Vol. 3)', '3#tokyo ghoul', '3#tokyo ghoul'],
+    ['Tokyo Ghoul (Vol. 03)', '3#tokyo ghoul', '3#tokyo ghoul'],
+    // Not edition dressing, so the subtitle stays: a second volume is not the plain title.
+    ['Les Misérables: Tome II', 'ii#les misérables tome ii', 'ii#les misérables tome ii'],
+    // "Book 1 of …" is: it describes the plain title, and its "1" is not a volume.
+    [
+      'A Game of Thrones: Book 1 of A Song of Ice and Fire',
+      '1#game of thrones book 1 of a song of ice and fire',
+      '#game of thrones',
+    ],
+    // A series name followed by another title is a different book.
+    ['Hedgewitch: Stonewitch', '#hedgewitch stonewitch', '#hedgewitch stonewitch'],
+    // An edition note glued to the end of the title, or after an em dash.
+    ['Bel Canto(Large Print)', '#bel canto', '#bel canto'],
+    ['Bel Canto—A Novel', '#bel canto a novel', '#bel canto'],
+    // An unspaced hyphen or en dash is part of the title.
+    ['Catch-22: 50th Anniversary Edition', '22#catch 22 50th anniversary edition', '22#catch 22'],
+    ['The War 1914–1918', '#war 1914 1918', '#war 1914 1918'],
+    // A bracket glued inside the title is part of it.
+    ['Friend(s) Forever', '#friend s forever', '#friend s forever'],
+    // No space after the colon, so not a subtitle.
+    ['Re:ZERO', '#re zero', '#re zero'],
+    // A bracket that opens the title is part of it.
+    ['(Un)Natural', '#un natural', '#un natural'],
+    // A year is not a volume; a lone "I" is not a numeral.
+    ['Devon 2026 Calendar', '#devon 2026 calendar', '#devon 2026 calendar'],
+    ['The King and I', '#king and i', '#king and i'],
+    // A series number in an edition note is not a volume…
+    ['Moby Dick (Penguin Classics 100)', '#moby dick', '#moby dick'],
+    // …but one after a volume word is, Roman numerals included.
+    ['Moby Dick (Vol 1 of 2)', '1#moby dick', '1#moby dick'],
+    ['Lord of the Rings (Book I)', 'i#lord of the rings', 'i#lord of the rings'],
+    ['Tokyo Ghoul (No. 7)', '7#tokyo ghoul', '7#tokyo ghoul'],
+    // A non-breaking space after the colon still marks a subtitle.
+    ['Bel Canto:\u00a0A Novel', '#bel canto a novel', '#bel canto'],
+    // A separator inside a bracket goes with the bracket.
+    ['Bel Canto (Penguin: Modern Classics) Edition', '#bel canto edition', '#bel canto edition'],
+  ])('%s', (input, full, core) => {
+    expect(titleKeysForMatch(input)).toEqual({ full, core });
+  });
+
+  it('keys every title the plain fold would have matched identically', () => {
+    for (const [a, b] of [
+      ['The Hobbit', 'Hobbit, The'],
+      ['Bridget & Gabe', 'Bridget and Gabe'],
+    ]) {
+      expect(normalizeTitleForMatch(a)).toBe(normalizeTitleForMatch(b));
+      expect(titleKeysForMatch(a)).toEqual(titleKeysForMatch(b));
+    }
+  });
+});
+
 describe('buildWorkExclusionCondition', () => {
   it('folds a leading article out of the excluded title, matching the SQL fold', () => {
     const { sql, params } = compile(
       buildWorkExclusionCondition([{ title: "the secret lives of baba segi's wives", author: null }]),
     );
-    expect(params).toContain('secret lives of baba segi s wives');
+    expect(params).toContain('#secret lives of baba segi s wives');
     expect(sql).toContain('und-x-icu');
   });
 
@@ -90,13 +178,13 @@ describe('buildWorkExclusionCondition', () => {
     const { params } = compile(
       buildWorkExclusionCondition([{ title: '  Dune ', author: 'Frank HERBERT' }]),
     );
-    expect(params).toContain('dune');
+    expect(params).toContain('#dune');
     expect(params).toContain('frank herbert');
   });
 
   it('passes a null author through rather than dropping the work', () => {
     const { params } = compile(buildWorkExclusionCondition([{ title: 'Dune', author: null }]));
-    expect(params).toContain('dune');
+    expect(params).toContain('#dune');
     expect(params).toContain(null);
   });
 
@@ -230,6 +318,146 @@ describe('filterExcludedWorks', () => {
       exclusions({ works: [{ title: 'dune', author: 'frank herbert' }] }),
     );
     expect(kept).toHaveLength(0);
+  });
+
+  describe('a book the user said they have read: Bel Canto by Ann Patchett', () => {
+    const read = exclusions({ works: [{ title: 'bel canto', author: 'ann patchett' }] });
+    const keptIds = (items: ReturnType<typeof item>[]) =>
+      filterExcludedWorks(items, read).map((b) => b.id);
+
+    it.each([
+      'Bel Canto',
+      'BEL CANTO',
+      'Bel Canto, The',
+      'Bel Canto: A Novel',
+      'Bel Canto (Harper Perennial Modern Classics)',
+      'Bel Canto [Large Print]',
+      'Bel Canto - 20th Anniversary Edition',
+    ])('drops the edition "%s"', (title) => {
+      expect(keptIds([item(1, title, ['Ann Patchett'])])).toEqual([]);
+    });
+
+    it('drops an edition whose author is spelled differently', () => {
+      expect(
+        keptIds([
+          item(1, 'Bel Canto', ['Patchett, Ann']),
+          item(2, 'Bel Canto', ['Ann  Patchett']),
+          item(3, 'Bel Canto', ['ANN PATCHETT']),
+        ]),
+      ).toEqual([]);
+    });
+
+    it("keeps her other books — only a matching title is dropped", () => {
+      expect(
+        keptIds([
+          item(1, 'Whistler', ['Ann Patchett']),
+          item(2, "The Magician's Assistant", ['Ann Patchett']),
+        ]),
+      ).toEqual([1, 2]);
+    });
+
+    it('keeps a different book with the same title by someone else', () => {
+      // Robert Toft's singing guide is in the catalogue under this exact title.
+      expect(keptIds([item(1, 'Bel Canto', ['Robert  Toft'])])).toEqual([1]);
+    });
+
+    it('keeps titles that merely start the same way', () => {
+      expect(
+        keptIds([
+          item(1, 'Bel Canto Arias for Soprano', ['Ann Patchett']),
+          item(2, 'Canto', ['Ann Patchett']),
+        ]),
+      ).toEqual([1, 2]);
+    });
+  });
+
+  it('keeps other books in a series that share its name', () => {
+    // "Warriors: …" subtitles are titles, not edition dressing, so neither the
+    // other books nor a book called just "Warriors" go.
+    const kept = filterExcludedWorks(
+      [item(1, 'Warriors: Fading Echoes', ['Erin Hunter']), item(2, 'Warriors', ['Erin Hunter'])],
+      exclusions({ works: [{ title: "warriors: a warrior's choice", author: 'erin hunter' }] }),
+    );
+    expect(kept.map((b) => b.id)).toEqual([1, 2]);
+  });
+
+  it('keeps a sequel whose title starts with the book that was read', () => {
+    const kept = filterExcludedWorks(
+      [item(1, 'Hedgewitch: Stonewitch', ['Skye McKenna'])],
+      exclusions({ works: [{ title: 'hedgewitch', author: 'skye mckenna' }] }),
+    );
+    expect(kept.map((b) => b.id)).toEqual([1]);
+  });
+
+  it('matches a "Book 1 of …" edition and the plain title in both directions', () => {
+    const plain = item(1, 'A Game of Thrones', ['George R. R. Martin']);
+    const bookOne = item(2, 'A Game of Thrones: Book 1 of A Song of Ice and Fire', ['George R.R. Martin']);
+    const bookTwo = item(3, 'A Clash of Kings: Book 2 of A Song of Ice and Fire', ['George R. R. Martin']);
+    expect(
+      filterExcludedWorks([bookOne, bookTwo], exclusions({ works: [{ title: 'a game of thrones', author: 'george r. r. martin' }] })).map((b) => b.id),
+    ).toEqual([3]);
+    expect(
+      filterExcludedWorks([plain], exclusions({ works: [{ title: 'a game of thrones: book 1 of a song of ice and fire', author: 'martin, george r. r.' }] })),
+    ).toHaveLength(0);
+  });
+
+  it('drops an edition whose note is glued to the title', () => {
+    const kept = filterExcludedWorks(
+      [item(1, 'Bel Canto(Large Print)', ['Ann Patchett']), item(2, 'Bel Canto—A Novel', ['Ann Patchett'])],
+      exclusions({ works: [{ title: 'bel canto', author: 'ann patchett' }] }),
+    );
+    expect(kept).toHaveLength(0);
+  });
+
+  it('keeps a different volume even when the volume is in brackets', () => {
+    const kept = filterExcludedWorks(
+      [
+        item(1, 'Tokyo Ghoul (Vol. 9)', ['Sui Ishida']),
+        item(2, 'Tokyo Ghoul (Vol. 3) (Deluxe)', ['Sui Ishida']),
+      ],
+      exclusions({ works: [{ title: 'tokyo ghoul (vol. 3)', author: 'sui ishida' }] }),
+    );
+    expect(kept.map((b) => b.id)).toEqual([1]);
+  });
+
+  it("keeps Dracula's Guest when Dracula was read", () => {
+    const kept = filterExcludedWorks(
+      [item(1, "Dracula's Guest", ['Bram Stoker'])],
+      exclusions({ works: [{ title: 'dracula', author: 'bram stoker' }] }),
+    );
+    expect(kept.map((b) => b.id)).toEqual([1]);
+  });
+
+  it('drops an edition credited to only one of several authors', () => {
+    // likedBooksToWorks emits one work per author for exactly this case.
+    const kept = filterExcludedWorks(
+      [item(1, 'Good Omens', ['Neil Gaiman'])],
+      exclusions({
+        works: [
+          { title: 'good omens', author: 'terry pratchett' },
+          { title: 'good omens', author: 'neil gaiman' },
+        ],
+      }),
+    );
+    expect(kept).toHaveLength(0);
+  });
+
+  it('drops an edition whose note carries a series number', () => {
+    const kept = filterExcludedWorks(
+      [item(1, 'Moby Dick (Penguin Classics 100)', ['Herman Melville'])],
+      exclusions({ works: [{ title: 'moby dick', author: 'herman melville' }] }),
+    );
+    expect(kept).toHaveLength(0);
+  });
+
+  it('keeps an exclusion whose author folds to nothing author-qualified', () => {
+    // A feed contributor recorded as "." is still a recorded author: it must
+    // not widen into a title-only exclusion that drops every same-titled book.
+    const kept = filterExcludedWorks(
+      [item(1, 'Dune', ['Frank Herbert']), item(2, 'Dune', ['.'])],
+      exclusions({ works: [{ title: 'dune', author: '.' }] }),
+    );
+    expect(kept.map((b) => b.id)).toEqual([1]);
   });
 
   it('returns the list untouched when the user has rejected nothing', () => {
