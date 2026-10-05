@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-10-04
+
+### Bug Fixes
+
+* search shows each book once, in its best edition ([1073c67](https://adl.github.com/adl-developer/kinkane-backend/commit/1073c67c3aba372d1b1a20882812d121db08a137)) — [details](changelog/2026-10-04-search-one-edition-per-book.md)
+
+
 ## 2026-10-03
 
 ### Bug Fixes

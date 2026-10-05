@@ -2260,7 +2260,8 @@ async function fetchOtherEditions(
     .where(
       and(
         eq(books.title, title),
-        eq(books.isRemoved, false),
+        // An edition the shop cannot sell is a dead link from the book page.
+        buildFeedCondition(),
         ne(books.id, id),
         sql`(
           (${notGeneric(CANDIDATE_NAME)} AND ${CANDIDATE_NAME} IN (SELECT name FROM ${ownNames} AS own_names))
@@ -3258,7 +3259,8 @@ export const booksService = {
     // v4: the edition picker now prefers in-stock, then order-in editions, then paperback > hardback > other.
     // v5: dedupe now lists every edition grouped by work, hardback first, instead of one per title.
     // v6: dedupe shows one edition per work (hardback first) again.
-    const cacheKey = `suggestions:v6:${type}:${dedupe}:${createHash('sha256').update(`${q}:${limit}`).digest('hex')}`;
+    // v7: only sellable, non-removed books — v6 entries can hold either.
+    const cacheKey = `suggestions:v7:${type}:${dedupe}:${createHash('sha256').update(`${q}:${limit}`).digest('hex')}`;
     const cached = await redis.get(cacheKey);
     if (cached) return JSON.parse(cached) as SuggestionItem[];
 
@@ -3317,6 +3319,9 @@ export const booksService = {
     // slots in the pool. notInArray rejects an empty list, hence the guard.
     const excluding = (rows: SuggestionRow[]): SQL | undefined =>
       rows.length > 0 ? notInArray(books.id, rows.map((r) => r.id)) : undefined;
+    // Every suggestion is a tap through to a product page, so it gets the same
+    // sellable predicate as the discovery feeds — removed and unsellable books never show.
+    const sellable = buildFeedCondition();
 
     // Ranks author matches by name-match tier, then fetches those books — the same two-step
     // as fetchAuthorBranch, and for the same reason: ordering these by title alone would
@@ -3333,7 +3338,7 @@ export const booksService = {
       const rows = await conn
         .select(selectColumns)
         .from(books)
-        .where(inArray(books.id, [...tierById.keys()]));
+        .where(and(inArray(books.id, [...tierById.keys()]), sellable));
       return rows.sort(byAuthorTierThenTitle(tierById)).slice(0, take);
     };
 
@@ -3344,7 +3349,7 @@ export const booksService = {
         ? db
             .select(selectColumns)
             .from(books)
-            .where(buildFastTitlePrefixCondition(q))
+            .where(and(buildFastTitlePrefixCondition(q), sellable))
             .orderBy(...buildFastTitlePrefixOrderBy())
             .limit(poolSize)
         : Promise.resolve([] as SuggestionRow[]),
@@ -3359,7 +3364,7 @@ export const booksService = {
       const midRows = await db
         .select(selectColumns)
         .from(books)
-        .where(exclude ? and(cheap, exclude) : cheap)
+        .where(and(cheap, sellable, exclude))
         .orderBy(...buildTitlePrefixOrderBy(q))
         .limit(poolSize - titlePool.length);
       titlePool = [...titlePool, ...midRows];
@@ -3383,7 +3388,7 @@ export const booksService = {
             ...(await conn
               .select(selectColumns)
               .from(books)
-              .where(exclude ? and(broad, exclude) : broad)
+              .where(and(broad, sellable, exclude))
               .orderBy(...buildSearchOrderBy(q))
               .limit(shortfall)),
           ];
