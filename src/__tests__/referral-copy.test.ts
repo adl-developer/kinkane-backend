@@ -23,7 +23,7 @@ const LINK = 'https://kinkane.app/r/K7M3QP9XVT/jason-appiatu';
 describe('shortMessage', () => {
   it('is the launch campaign copy, verbatim', () => {
     expect(shortMessage(LINK, 'launch')).toBe(
-      `📚 Come on a reading adventure with me! Find your next great read on Kinkané — and help me travel Around the World in 80 Days 🌍 ${LINK}`,
+      `📚 Help take Kinkané App Around the World in 80 Days! Join the challenge, discover your next great read, and get a chance to win along the way. 🌍 ${LINK}`,
     );
   });
 
@@ -44,7 +44,7 @@ describe('shortMessage', () => {
 describe('emailCopy', () => {
   it('uses the launch subject and closes on the journey line', () => {
     const copy = emailCopy('launch');
-    expect(copy.subject).toBe('Come on a reading adventure with me 🌍📚');
+    expect(copy.subject).toBe('📚Help take Kinkané App Around the World in 80 Days!🌍');
     expect(copy.before[0]).toBe('Hey!');
     expect(copy.before[1]).toBe(
       'I’m taking Kinkané’s Around the World in 80 Days challenge, and I’d love for you to join me.',
@@ -62,9 +62,9 @@ describe('emailCopy', () => {
   });
 
   it('keeps the deliberate line break in the evergreen body', () => {
-    // "Take the quiz..." runs on directly under the previous line rather than
+    // "Use my link to take the quiz..." runs on directly under the previous line rather than
     // starting a new paragraph — that is how the copy was written.
-    expect(emailCopy('evergreen').before[1]).toContain('\nTake the quiz');
+    expect(emailCopy('evergreen').before[1]).toContain('\nUse my link to take the quiz');
   });
 
   it('uses the same call to action in both sets', () => {
