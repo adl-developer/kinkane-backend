@@ -19,6 +19,7 @@
     "test:watch": "vitest",
     "admin:create": "tsx scripts/create-admin.ts",
     "seed:demo": "tsx scripts/seed-demo.ts",
+    "seed:referrals": "tsx scripts/seed-referrals.ts",
     "test:endpoints": "vitest run --config vitest.endpoints.config.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:all": "npm run test && npm run test:integration && npm run test:endpoints"
