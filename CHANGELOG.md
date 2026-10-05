@@ -5,6 +5,7 @@
 
 ### Features
 
+* new wording for referral invites during the Around the World campaign ([eacdbb0](https://adl.github.com/adl-developer/kinkane-backend/commit/eacdbb02484cead9257afed6882428aff54b4d45)) — [details](changelog/2026-10-05-apple-in-app-purchase-plus.md)
 * let people buy Kinkané Plus inside the iPhone app through the App Store ([2040b8f](https://adl.github.com/adl-developer/kinkane-backend/commit/2040b8f9c508fde56a075bd957a37e81388f27e1)) — [details](changelog/2026-10-05-apple-in-app-purchase-plus.md)
 
 ### Bug Fixes
