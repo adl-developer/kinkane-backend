@@ -1,16 +1,19 @@
-import { pgTable, serial, integer, varchar, jsonb, timestamp, index } from 'drizzle-orm/pg-core';
-import { users } from './users';
+import { pgTable, serial, integer, varchar, jsonb, timestamp, index, uniqueIndex } from 'drizzle-orm/pg-core';
+import { users, followRequests } from './users';
 
-// Types that already have a producer wired up. Incoming `friend_request`
-// notifications are not stored here — they're a live view over
-// `follow_requests` (see notifications.service.ts) since that table is already
-// the source of truth for pending/accepted/declined state. `follow_accepted`
-// is stored because it goes to the *sender*, whom that live view never covers,
-// and it needs its own read state.
+// Types that already have a producer wired up. `friend_request` rows go to the
+// receiver and are kept in step with their `follow_requests` row by
+// users.service.ts: written in the same transaction as the request, their
+// `data.status` updated on accept/decline/resend, and deleted by the FK
+// cascade when the request is withdrawn. The feed doesn't read them yet — it
+// still builds friend requests from `follow_requests` and skips these rows —
+// so a deploy or rollback can never show a request twice. Existing requests
+// are backfilled, and the feed switched over, in the following release.
 export const notificationTypes = [
   'post_like',
   'post_comment',
   'group_invite',
+  'friend_request',
   'follow_accepted',
   'new_recommendation',
 ] as const;
@@ -25,12 +28,16 @@ export const notifications = pgTable(
       .references(() => users.id, { onDelete: 'cascade' }),
     type: varchar('type', { length: 32 }).notNull(),
     data: jsonb('data').notNull(),
+    // Set only on `friend_request` rows. Unique so there is exactly one
+    // notification per request; NULLs don't collide, so other types are free.
+    followRequestId: integer('follow_request_id').references(() => followRequests.id, { onDelete: 'cascade' }),
     readAt: timestamp('read_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({
     userCreatedIdx: index('idx_notifications_user_created').on(t.userId, t.createdAt),
     userUnreadIdx: index('idx_notifications_user_unread').on(t.userId, t.readAt),
+    followRequestUniq: uniqueIndex('idx_notifications_follow_request_id').on(t.followRequestId),
   }),
 );
 

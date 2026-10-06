@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import { eq, and, sql, desc } from 'drizzle-orm';
-import { db } from '../db';
+import { db, type Tx } from '../db';
 import {
   referralCodes,
   referralClicks,
@@ -134,8 +134,6 @@ export function buildSharePayloads(code: string, name: string): SharePayloads {
 }
 
 // ── Service ───────────────────────────────────────────────────────────────────
-
-type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 function hashIp(ip: string): string {
   // Hashed, not stored raw: this table gets one row per click on an
