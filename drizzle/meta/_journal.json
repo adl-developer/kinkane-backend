@@ -498,6 +498,13 @@
       "when": 1791208786209,
       "tag": "0070_apple_in_app_purchase",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1791290662761,
+      "tag": "0071_friend_request_notifications",
+      "breakpoints": true
     }
   ]
 }

@@ -48,6 +48,23 @@ else
   echo "   Start Postgres and Redis and run 'npm run test:endpoints' before pushing."
 fi
 
+# The integration suites write to a database, so they only ever run against
+# TEST_DATABASE_URL (a scratch database — never the one in .env). When it is
+# set, a failure is a hard stop like any other; when it is not, say so rather
+# than letting the gap pass silently.
+if [ -n "${TEST_DATABASE_URL:-}" ]; then
+  echo "pre-commit: running integration tests against TEST_DATABASE_URL…"
+  if ! npm run --silent test:integration; then
+    echo ""
+    echo "✗ Integration tests failed. Commit aborted."
+    exit 1
+  fi
+  echo "✓ Integration tests passed."
+else
+  echo "⚠  SKIPPED integration tests — TEST_DATABASE_URL is not set."
+  echo "   Friend-request notification sync and the Nielsen budget guard are NOT being checked."
+fi
+
 echo "pre-commit: regenerating changelog…"
 npm run --silent changelog
 

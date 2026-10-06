@@ -1,4 +1,4 @@
-import { eq, and, desc, sql, isNull, inArray } from 'drizzle-orm';
+import { eq, ne, and, desc, sql, isNull, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { notifications, followRequests, users } from '../db/schema';
 import { mergeNotifications, type NotificationItem } from '../lib/merge-notifications';
@@ -14,13 +14,17 @@ export const notificationsService = {
     offset: number,
   ): Promise<{ notifications: NotificationItem[]; total: number; unreadCount: number }> {
     const fetchDepth = offset + limit;
+    // Stored `friend_request` rows are written alongside every follow request
+    // but not shown yet: friend requests still come from the live view below,
+    // and reading both would list each one twice.
+    const storedRows = and(eq(notifications.userId, userId), ne(notifications.type, 'friend_request'));
 
     const [notifRows, friendReqRows, [notifCount], [friendReqCount], [unreadNotifCount], [pendingFriendReqCount]] =
       await Promise.all([
         db
           .select()
           .from(notifications)
-          .where(eq(notifications.userId, userId))
+          .where(storedRows)
           .orderBy(desc(notifications.createdAt))
           .limit(fetchDepth),
         db
@@ -37,7 +41,7 @@ export const notificationsService = {
           .where(eq(followRequests.receiverId, userId))
           .orderBy(desc(followRequests.createdAt))
           .limit(fetchDepth),
-        db.select({ count: sql<number>`COUNT(*)::int` }).from(notifications).where(eq(notifications.userId, userId)),
+        db.select({ count: sql<number>`COUNT(*)::int` }).from(notifications).where(storedRows),
         db
           .select({ count: sql<number>`COUNT(*)::int` })
           .from(followRequests)
@@ -45,7 +49,7 @@ export const notificationsService = {
         db
           .select({ count: sql<number>`COUNT(*)::int` })
           .from(notifications)
-          .where(and(eq(notifications.userId, userId), isNull(notifications.readAt))),
+          .where(and(storedRows, isNull(notifications.readAt))),
         db
           .select({ count: sql<number>`COUNT(*)::int` })
           .from(followRequests)

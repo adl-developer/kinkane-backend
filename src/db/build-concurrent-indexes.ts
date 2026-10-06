@@ -148,6 +148,18 @@ const INDEXES: ConcurrentIndex[] = [
     column: 'main_genre_id',
     sql: `CREATE INDEX CONCURRENTLY IF NOT EXISTS "idx_books_main_genre" ON "books" USING btree ("main_genre_id", "updated_at") WHERE "books"."is_removed" = false`,
   },
+  {
+    // One friend-request notification per follow request, and the upsert key
+    // the re-send path relies on. `notifications` takes a row for every like,
+    // comment, invite and recommendation, so a locked build stalls all of those.
+    // The column is new in 0071, so that deploy builds it inline (over a column
+    // that is NULL everywhere); any later rebuild goes through here.
+    name: 'idx_notifications_follow_request_id',
+    table: 'notifications',
+    migration: '0071_friend_request_notifications',
+    column: 'follow_request_id',
+    sql: `CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "idx_notifications_follow_request_id" ON "notifications" USING btree ("follow_request_id")`,
+  },
 ];
 
 const sql = postgres(process.env.DATABASE_URL!, {

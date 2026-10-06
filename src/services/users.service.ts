@@ -1,10 +1,52 @@
 import { eq, and, sql, asc, desc } from 'drizzle-orm';
-import { db } from '../db';
+import { db, type Tx } from '../db';
 import { users, posts, followRequests, userBooks, books, notifications, ShelfVisibility } from '../db/schema';
 import { enqueueEmail } from '../lib/email-queue';
 import { enqueuePush } from '../lib/push-queue';
 import { notificationPreferencesService } from './notification-preferences.service';
 import { logger } from '../lib/logger';
+
+// ── Friend-request notifications ──────────────────────────────────────────────
+// Each follow request has exactly one `friend_request` notification for its
+// receiver (unique on follow_request_id). These helpers run inside the same
+// transaction as the follow-request write so the two can never disagree;
+// withdrawal needs no helper because the FK cascade deletes the row.
+
+/** Creates the request's notification, or revives it as unread at the top of the feed on a resend. */
+async function upsertFriendRequestNotification(
+  tx: Tx,
+  request: { id: number; receiverId: number; senderId: number; senderName: string; senderPhotoUrl: string | null },
+): Promise<void> {
+  const data = {
+    followRequestId: request.id,
+    senderId: request.senderId,
+    senderName: request.senderName,
+    senderPhotoUrl: request.senderPhotoUrl,
+    status: 'pending',
+  };
+  await tx
+    .insert(notifications)
+    .values({ userId: request.receiverId, type: 'friend_request', followRequestId: request.id, data })
+    .onConflictDoUpdate({
+      target: notifications.followRequestId,
+      set: { data, readAt: null, createdAt: new Date() },
+    });
+}
+
+/** Mirrors an accept/decline onto the notification. Acting on a request also counts as reading it. */
+async function setFriendRequestNotificationStatus(
+  tx: Tx,
+  requestId: number,
+  status: 'accepted' | 'declined',
+): Promise<void> {
+  await tx
+    .update(notifications)
+    .set({
+      data: sql`jsonb_set(${notifications.data}, '{status}', to_jsonb(${status}::text))`,
+      readAt: sql`COALESCE(${notifications.readAt}, now())`,
+    })
+    .where(eq(notifications.followRequestId, requestId));
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -334,7 +376,7 @@ export const usersService = {
     // Fetch sender and receiver in parallel — fail early with distinct labels
     const [[sender], [target]] = await Promise.all([
       db
-        .select({ name: users.name, emailVerified: users.emailVerified })
+        .select({ name: users.name, photoUrl: users.photoUrl, emailVerified: users.emailVerified })
         .from(users)
         .where(eq(users.id, senderId))
         .limit(1),
@@ -373,24 +415,46 @@ export const usersService = {
       throw Object.assign(new Error(message), rest);
     }
 
-    if (decision.action === 'resend') {
-      await db
-        .update(followRequests)
-        .set({ status: 'pending', updatedAt: new Date() })
-        .where(eq(followRequests.id, decision.requestId));
-    } else {
-      // onConflictDoNothing handles the concurrent-insert race; the first request wins
-      const [inserted] = await db
-        .insert(followRequests)
-        .values({ senderId, receiverId })
-        .onConflictDoNothing()
-        .returning({ id: followRequests.id });
+    await db.transaction(async (tx) => {
+      let requestId: number;
 
-      if (!inserted) {
-        // Another concurrent request already created this follow request
-        throw Object.assign(new Error('Follow request already sent'), { statusCode: 409 });
+      if (decision.action === 'resend') {
+        // Guarded on the status the decision was made from: if the request was
+        // withdrawn or answered in the meantime, there is nothing to re-send —
+        // and no row for the notification to point at.
+        const [resent] = await tx
+          .update(followRequests)
+          .set({ status: 'pending', updatedAt: new Date() })
+          .where(and(eq(followRequests.id, decision.requestId), eq(followRequests.status, 'declined')))
+          .returning({ id: followRequests.id });
+
+        if (!resent) {
+          throw Object.assign(new Error('This follow request just changed. Please try again.'), { statusCode: 409 });
+        }
+        requestId = resent.id;
+      } else {
+        // onConflictDoNothing handles the concurrent-insert race; the first request wins
+        const [inserted] = await tx
+          .insert(followRequests)
+          .values({ senderId, receiverId })
+          .onConflictDoNothing()
+          .returning({ id: followRequests.id });
+
+        if (!inserted) {
+          // Another concurrent request already created this follow request
+          throw Object.assign(new Error('Follow request already sent'), { statusCode: 409 });
+        }
+        requestId = inserted.id;
       }
-    }
+
+      await upsertFriendRequestNotification(tx, {
+        id: requestId,
+        receiverId,
+        senderId,
+        senderName: sender.name,
+        senderPhotoUrl: sender.photoUrl ?? null,
+      });
+    });
 
     notificationPreferencesService.isEnabled(receiverId, 'friendRequests').then((enabled) => {
       if (!enabled) return;
@@ -424,26 +488,28 @@ export const usersService = {
   },
 
   async acceptFollowRequest(requestId: number, receiverId: number): Promise<void> {
-    const [existing] = await db
-      .select({ id: followRequests.id, senderId: followRequests.senderId })
-      .from(followRequests)
-      .where(
-        and(
-          eq(followRequests.id, requestId),
-          eq(followRequests.receiverId, receiverId),
-          eq(followRequests.status, 'pending'),
-        ),
-      )
-      .limit(1);
+    // The pending check lives in the UPDATE itself so two concurrent accepts
+    // (or an accept racing a decline) can't both succeed.
+    const existing = await db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(followRequests)
+        .set({ status: 'accepted', updatedAt: new Date() })
+        .where(
+          and(
+            eq(followRequests.id, requestId),
+            eq(followRequests.receiverId, receiverId),
+            eq(followRequests.status, 'pending'),
+          ),
+        )
+        .returning({ senderId: followRequests.senderId });
 
-    if (!existing) {
-      throw Object.assign(new Error('Follow request not found'), { statusCode: 404 });
-    }
+      if (!updated) {
+        throw Object.assign(new Error('Follow request not found'), { statusCode: 404 });
+      }
 
-    await db
-      .update(followRequests)
-      .set({ status: 'accepted', updatedAt: new Date() })
-      .where(eq(followRequests.id, requestId));
+      await setFriendRequestNotificationStatus(tx, requestId, 'accepted');
+      return updated;
+    });
 
     const [[sender], [receiver]] = await Promise.all([
       db.select({ name: users.name, email: users.email }).from(users).where(eq(users.id, existing.senderId)).limit(1),
@@ -486,21 +552,25 @@ export const usersService = {
   },
 
   async declineFollowRequest(requestId: number, receiverId: number): Promise<void> {
-    const result = await db
-      .update(followRequests)
-      .set({ status: 'declined', updatedAt: new Date() })
-      .where(
-        and(
-          eq(followRequests.id, requestId),
-          eq(followRequests.receiverId, receiverId),
-          eq(followRequests.status, 'pending'),
-        ),
-      )
-      .returning({ id: followRequests.id });
+    await db.transaction(async (tx) => {
+      const result = await tx
+        .update(followRequests)
+        .set({ status: 'declined', updatedAt: new Date() })
+        .where(
+          and(
+            eq(followRequests.id, requestId),
+            eq(followRequests.receiverId, receiverId),
+            eq(followRequests.status, 'pending'),
+          ),
+        )
+        .returning({ id: followRequests.id });
 
-    if (result.length === 0) {
-      throw Object.assign(new Error('Follow request not found'), { statusCode: 404 });
-    }
+      if (result.length === 0) {
+        throw Object.assign(new Error('Follow request not found'), { statusCode: 404 });
+      }
+
+      await setFriendRequestNotificationStatus(tx, requestId, 'declined');
+    });
   },
 
   async getUserBooks(

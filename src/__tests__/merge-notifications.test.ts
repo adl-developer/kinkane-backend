@@ -8,6 +8,7 @@ function notif(overrides: Partial<Notification>): Notification {
     userId: 1,
     type: 'post_like',
     data: {},
+    followRequestId: null,
     readAt: null,
     createdAt: new Date('2026-07-23T00:00:00Z'),
     ...overrides,
