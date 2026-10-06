@@ -9,6 +9,7 @@ import { appLink } from '../lib/app-link';
 import { admin } from '../lib/firebase';
 import { adminNotificationsService } from './admin/notifications.service';
 import { logger } from '../lib/logger';
+import { quizPickShelfRows } from '../lib/quiz-picks';
 import { touchLastSignIn } from './user-activity.service';
 import { enqueueEmail } from '../lib/email-queue';
 import { generatePreferenceVector, type LikedBook } from './recommendations.service';
@@ -216,7 +217,7 @@ async function generatePreferenceEmbedding(
  *  0. Promote books swiped away during onboarding into the user's permanent
  *     rejection history (user_disliked_books)
  *  1. Save structured preferences (feelings, genres, dislikes, liked books)
- *  2. Seed reading list with the 5 chosen books (status: want_to_read)
+ *  2. Seed reading list with the 5 chosen books (status: want_to_read, not liked)
  *  3. Record those choices as interactions (type: chosen_from_recommendation)
  *  4. Delete the guest session row
  */
@@ -296,16 +297,7 @@ async function migrateGuestSession(userId: number, sessionId: string): Promise<v
     if ((session.chosenBookIds ?? []).length > 0) {
       await tx
         .insert(userBooks)
-        .values(
-          (session.chosenBookIds ?? []).map((bookId) => ({
-            userId,
-            bookId,
-            status: null,
-            source: 'chosen_from_onboarding',
-            liked: true,
-            likedAt: new Date(),
-          })),
-        )
+        .values(quizPickShelfRows(userId, session.chosenBookIds ?? [], 'chosen_from_onboarding'))
         .onConflictDoNothing();
 
       await tx

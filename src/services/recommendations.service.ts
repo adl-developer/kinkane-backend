@@ -29,6 +29,7 @@ import {
   type ExcludedWork,
   type UserExclusions,
 } from '../lib/exclusions';
+import { quizPickShelfRows } from '../lib/quiz-picks';
 import {
   generateEmbedding,
   generateEmbeddings,
@@ -1319,7 +1320,7 @@ export const recommendationsService = {
    * The guest version parks its results on the session row and waits for
    * registration to turn them into real state. Here there is already a user, so
    * the same work happens directly and immediately: chosen books land on the
-   * shelf and in the interaction log, and swiped-away books go straight into the
+   * shelf as want_to_read (not liked) and in the interaction log, and swiped-away books go straight into the
    * permanent rejection history.
    *
    * Reader type is re-inferred from the new picks and written to both
@@ -1373,16 +1374,7 @@ export const recommendationsService = {
       // excluded from quiz results, this should only fire on a stale client.
       await tx
         .insert(userBooks)
-        .values(
-          uniqueChosenIds.map((bookId) => ({
-            userId,
-            bookId,
-            status: null,
-            source: 'chosen_from_quiz',
-            liked: true,
-            likedAt: new Date(),
-          })),
-        )
+        .values(quizPickShelfRows(userId, uniqueChosenIds, 'chosen_from_quiz'))
         .onConflictDoNothing();
 
       await tx

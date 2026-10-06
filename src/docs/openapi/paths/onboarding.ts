@@ -116,7 +116,7 @@ export const onboardingPaths = {
       description: [
         'Step 2 of onboarding. Records what the user chose from the recommendations screen, and what they swiped away.',
         '',
-        'Nothing is applied yet — both lists sit on the guest session until signup, at which point chosen books land on the shelf and in the interaction log, and swiped-away books become the account’s **permanent** rejection history, filtered out of quiz results, the personalised feed, "you may also like" and recommendation emails from then on.',
+        'Nothing is applied yet — both lists sit on the guest session until signup, at which point chosen books land on the shelf as **Want to read, not liked**, and in the interaction log, and swiped-away books become the account’s **permanent** rejection history, filtered out of quiz results, the personalised feed, "you may also like" and recommendation emails from then on.',
         '',
         '**Rate limit:** 60 per 15 minutes per IP.',
       ].join('\n'),
@@ -281,7 +281,7 @@ export const onboardingPaths = {
       description: [
         'The signed-in twin of `POST /guest-sessions/{id}/selections`. Call it after `PATCH /refresh?includeRecommendations=true`, with the picks made from that response.',
         '',
-        'Unlike the guest version **nothing is parked for later** — there is already an account, so chosen books go onto the shelf and into the interaction log immediately, and swiped-away books go straight into the permanent rejection history. This is the only way a signed-in user’s rejections get recorded.',
+        'Unlike the guest version **nothing is parked for later** — there is already an account, so chosen books go onto the shelf as **Want to read, not liked**, and into the interaction log immediately, and swiped-away books go straight into the permanent rejection history. This is the only way a signed-in user’s rejections get recorded.',
         '',
         'A chosen book already on the shelf **keeps its existing status, note and source** — this call never overwrites the user’s own edits.',
         '',

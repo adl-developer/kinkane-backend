@@ -200,4 +200,20 @@ describe('saveSelections (reader type after a quiz retake)', () => {
     expect(shelfRows?.map((r) => r.bookId)).toEqual(CHOSEN);
     expect(readerTypeUpdates()).toHaveLength(1);
   });
+
+  it('shelves the chosen books as want to read, not liked', async () => {
+    await recommendationsService.saveSelections(7, CHOSEN);
+
+    // A quiz pick is a book to read next. Liking is the reader's own act.
+    const shelfRows = inserts.find((i) => i.table === userBooks)?.values as Array<{
+      status: string | null;
+      liked: boolean;
+      likedAt?: Date | null;
+    }>;
+    for (const row of shelfRows) {
+      expect(row.status).toBe('want_to_read');
+      expect(row.liked).toBe(false);
+      expect(row.likedAt ?? null).toBeNull();
+    }
+  });
 });

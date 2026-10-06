@@ -131,7 +131,7 @@ router.patch('/refresh', requireAuth, requirePlus, recommendationsLimiter, (req:
  * finish a retake, and only Plus members can start one.
  *
  * Unlike the guest version, nothing is parked for later. There is already a
- * user, so the chosen books go onto their shelf and into the interaction log
+ * user, so the chosen books go onto their shelf (want_to_read, not liked) and into the interaction log
  * immediately, and swiped-away books go straight into their permanent rejection
  * history. This is the only way a signed-in user's rejections get recorded.
  *
