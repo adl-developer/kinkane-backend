@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { AuthenticatedRequest } from '../middleware/auth.middleware';
 import { groupsService } from '../services/groups.service';
 import { groupBooksService } from '../services/group-books.service';
+import { withShelfReviews } from './group-books.controller';
 import { authService } from '../services/auth.service';
 import { parseId } from '../lib/route-helpers';
 import { createGroupSchema, updateGroupSchema } from '../lib/group-input';
@@ -98,7 +99,10 @@ export const groupsController = {
     // The shelf block rides on the detail response so the group page draws in
     // one request. Null when the viewer may not see it (a private group they
     // are not in), which is distinct from an empty shelf.
-    const shelf = await groupBooksService.summary(groupId, result.viewer);
+    const summary = await groupBooksService.summary(groupId, result.viewer);
+    const shelf = summary?.currentlyReading
+      ? { ...summary, currentlyReading: (await withShelfReviews(req.user.id, [summary.currentlyReading]))[0] }
+      : summary;
     res.status(200).json({ ...result, shelf });
   },
 

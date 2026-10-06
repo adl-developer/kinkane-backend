@@ -365,6 +365,10 @@ export const socialPaths = {
               example: 'Best thing I read this year.',
             },
             post: { allOf: [ref('Post')], nullable: true, description: 'Their review, if they wrote one.' },
+            myReview: {
+              allOf: [ref('MyReview')],
+              description: 'Your own rating and review of the same book, to show beside theirs.',
+            },
           })),
         400: resp('ValidationError'),
         403: resp('Forbidden'),

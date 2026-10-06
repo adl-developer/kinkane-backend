@@ -36,6 +36,13 @@ vi.mock('../services/books.service', () => ({
 }));
 vi.mock('../services/user-books.service', () => ({ userBooksService: {} }));
 vi.mock('../services/interactions.service', () => ({ interactionsService: {} }));
+vi.mock('../middleware/auth.middleware', () => ({
+  optionalAuth: (_req: unknown, _res: unknown, next: () => void) => next(),
+}));
+vi.mock('../services/my-reviews.service', () => ({
+  withMyReviews: async <T,>(_u: unknown, items: T[]) => items.map((i) => ({ ...i, myReview: null })),
+  getMyReview: async () => null,
+}));
 vi.mock('../config', () => ({ config: { commerce: { cart: { maxItems: 50 } } } }));
 vi.mock('../services/commerce/pricing', () => ({
   fromPresentment: (v: number) => v,

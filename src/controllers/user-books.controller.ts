@@ -1,6 +1,7 @@
 import { Response } from 'express';
 import { z } from 'zod';
 import { userBooksService } from '../services/user-books.service';
+import { withMyReviews } from '../services/my-reviews.service';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 
 const listSchema = z.object({
@@ -56,7 +57,7 @@ export const userBooksController = {
         ...parsed.data,
       });
       res.status(200).json({
-        books: result.books,
+        books: await withMyReviews(req.user.id, result.books, (b) => b.bookId),
         total: result.total,
         limit: parsed.data.limit,
         offset: parsed.data.offset,

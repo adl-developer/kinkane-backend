@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
 import { recommendationsService } from '../services/recommendations.service';
+import { withMyReviews } from '../services/my-reviews.service';
 import { maybeSendRecommendationAfterRefresh } from '../services/recommendation-notifications.service';
 import { logger } from '../lib/logger';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
@@ -143,7 +144,9 @@ export const recommendationsController = {
       );
 
       if (parsedQuery.data.includeRecommendations) {
-        res.status(200).json({ recommendations: result.recommendations });
+        res.status(200).json({
+          recommendations: result.recommendations && (await withMyReviews(user.id, result.recommendations, (r) => r.bookId)),
+        });
       } else {
         res.status(200).json({
           preferences: {
@@ -188,7 +191,7 @@ export const recommendationsController = {
       res.status(200).json({
         readerType: result.readerType,
         readerTypeTagline: readerTypeTagline(result.readerType),
-        books: result.books,
+        books: await withMyReviews(req.user.id, result.books, (b) => b.id),
       });
     } catch (err: unknown) {
       const e = err as Error & { statusCode?: number };

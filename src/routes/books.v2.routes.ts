@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { booksController } from '../controllers/books.controller';
+import { optionalAuth } from '../middleware/auth.middleware';
 
 /**
  * v2 of the catalogue list endpoint, and nothing else.
@@ -47,6 +48,6 @@ const router = Router();
  *
  * Public — no auth required.
  */
-router.get('/', booksController.listV2);
+router.get('/', optionalAuth, booksController.listV2);
 
 export default router;

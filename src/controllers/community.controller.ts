@@ -2,6 +2,7 @@ import { Response } from 'express';
 import { z } from 'zod';
 import { communityService } from '../services/community.service';
 import { communitySearchService } from '../services/community-search.service';
+import { getMyReview } from '../services/my-reviews.service';
 import { parseId } from '../lib/route-helpers';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 
@@ -283,8 +284,11 @@ export const communityController = {
     try {
       const friendId = parseId(req.params.friendId, 'friend ID');
       const bookId = parseId(req.params.bookId, 'book ID');
-      const result = await communityService.getFriendBookDetail(friendId, bookId, req.user.id);
-      res.status(200).json(result);
+      const [result, myReview] = await Promise.all([
+        communityService.getFriendBookDetail(friendId, bookId, req.user.id),
+        getMyReview(req.user.id, bookId),
+      ]);
+      res.status(200).json({ ...result, myReview });
     } catch (err: unknown) {
       const e = err as Error & { statusCode?: number };
       res.status(e.statusCode ?? 500).json({ error: e.message });

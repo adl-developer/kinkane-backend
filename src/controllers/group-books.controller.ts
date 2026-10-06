@@ -1,7 +1,8 @@
 import { Response } from 'express';
 import type { ZodTypeAny, z } from 'zod';
 import { AuthenticatedRequest } from '../middleware/auth.middleware';
-import { groupBooksService } from '../services/group-books.service';
+import { groupBooksService, type GroupShelfItem } from '../services/group-books.service';
+import { withMyReviews } from '../services/my-reviews.service';
 import { parseId } from '../lib/route-helpers';
 import {
   listGroupBooksSchema,
@@ -24,19 +25,26 @@ function parse<S extends ZodTypeAny>(schema: S, input: unknown, res: Response): 
   return parsed.data;
 }
 
+/** Puts the viewer's own rating and review on each shelf entry's book card. */
+export async function withShelfReviews(viewerId: number, items: GroupShelfItem[]) {
+  const cards = await withMyReviews(viewerId, items.map((i) => i.book), (b) => b.id);
+  return items.map((item, i) => ({ ...item, book: cards[i] }));
+}
+
 export const groupBooksController = {
   async list(req: AuthenticatedRequest, res: Response): Promise<void> {
     const groupId = parseId(req.params.groupId, 'group ID');
     const query = parse(listGroupBooksSchema, req.query, res);
     if (!query) return;
     const result = await groupBooksService.list(groupId, req.user.id, query);
-    res.status(200).json({ ...result, status: query.status, sort: query.sort, limit: query.limit, offset: query.offset });
+    const books = await withShelfReviews(req.user.id, result.books);
+    res.status(200).json({ ...result, books, status: query.status, sort: query.sort, limit: query.limit, offset: query.offset });
   },
 
   async get(req: AuthenticatedRequest, res: Response): Promise<void> {
     const groupId = parseId(req.params.groupId, 'group ID');
     const groupBookId = parseId(req.params.groupBookId, 'group book ID');
-    const book = await groupBooksService.get(groupId, groupBookId, req.user.id);
+    const [book] = await withShelfReviews(req.user.id, [await groupBooksService.get(groupId, groupBookId, req.user.id)]);
     res.status(200).json({ book });
   },
 
@@ -53,7 +61,7 @@ export const groupBooksController = {
     const groupId = parseId(req.params.groupId, 'group ID');
     const body = parse(setCurrentBookSchema, req.body, res);
     if (!body) return;
-    const book = await groupBooksService.setCurrent(groupId, req.user.id, body);
+    const [book] = await withShelfReviews(req.user.id, [await groupBooksService.setCurrent(groupId, req.user.id, body)]);
     res.status(200).json({ book });
   },
 
@@ -62,7 +70,7 @@ export const groupBooksController = {
     const groupBookId = parseId(req.params.groupBookId, 'group book ID');
     const body = parse(updateGroupBookSchema, req.body, res);
     if (!body) return;
-    const book = await groupBooksService.update(groupId, groupBookId, req.user.id, body);
+    const [book] = await withShelfReviews(req.user.id, [await groupBooksService.update(groupId, groupBookId, req.user.id, body)]);
     res.status(200).json({ book });
   },
 
@@ -71,7 +79,7 @@ export const groupBooksController = {
     const groupBookId = parseId(req.params.groupBookId, 'group book ID');
     const body = parse(finishGroupBookSchema, req.body, res);
     if (!body) return;
-    const book = await groupBooksService.finish(groupId, groupBookId, req.user.id, body.finishedOn);
+    const [book] = await withShelfReviews(req.user.id, [await groupBooksService.finish(groupId, groupBookId, req.user.id, body.finishedOn)]);
     res.status(200).json({ book });
   },
 

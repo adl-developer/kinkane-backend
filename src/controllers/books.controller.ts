@@ -4,6 +4,7 @@ import { booksService, decodeDedupeCursor } from '../services/books.service';
 import type { BookSearchType } from '../services/books.service';
 import { userBooksService } from '../services/user-books.service';
 import { interactionsService } from '../services/interactions.service';
+import { getMyReview, withMyReviews } from '../services/my-reviews.service';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 import { config } from '../config';
 import { fromPresentment, resolveCurrency, resolveRequestCountry } from '../services/commerce/pricing';
@@ -304,8 +305,9 @@ async function runList(
       priceMaxGbpPence,
       cursor,
     });
+    const userId = (req as Partial<AuthenticatedRequest>).user?.id;
     res.status(200).json({
-      books: result.books,
+      books: await withMyReviews(userId, result.books, (b) => b.id),
       total: result.total,
       // `total` is capped for search queries (see SEARCH_COUNT_CAP) — when
       // totalIsApproximate is true it's a floor, not an exact count, and clients should
@@ -344,7 +346,7 @@ export const booksController = {
       await shopCurrency(req),
     );
 
-    res.status(200).json({ books });
+    res.status(200).json({ books: await withMyReviews(userId, books, (b) => b.id) });
   },
 
   async suggestions(req: Request, res: Response): Promise<void> {
@@ -356,7 +358,11 @@ export const booksController = {
 
     try {
       const results = await booksService.suggestions(parsed.data.q, parsed.data.limit, parsed.data.type, parsed.data.dedupe);
-      res.status(200).json({ suggestions: results, type: parsed.data.type });
+      const userId = (req as Partial<AuthenticatedRequest>).user?.id;
+      res.status(200).json({
+        suggestions: await withMyReviews(userId, results, (b) => b.id),
+        type: parsed.data.type,
+      });
     } catch (err: unknown) {
       const e = err as Error;
       res.status(500).json({ error: e.message });
@@ -446,7 +452,10 @@ export const booksController = {
       // optionalAuth sets req.user only when a valid token was presented —
       // anonymous callers get userStatus: null rather than a 401.
       const userId = (req as Partial<AuthenticatedRequest>).user?.id;
-      const userStatus = userId ? await userBooksService.getStatus(userId, id) : null;
+      const [userStatus, myReview] = await Promise.all([
+        userId ? userBooksService.getStatus(userId, id) : null,
+        getMyReview(userId, id),
+      ]);
 
       // Record the view as a trending signal. Only for signed-in callers — the
       // interactions table requires a user_id, so anonymous views are dropped
@@ -456,7 +465,7 @@ export const booksController = {
         interactionsService.recordFireAndForget(userId, id, 'view');
       }
 
-      res.status(200).json({ book, publicNotes, userStatus });
+      res.status(200).json({ book, publicNotes, userStatus, myReview });
     } catch (err: unknown) {
       const e = err as Error;
       res.status(500).json({ error: e.message });
@@ -494,7 +503,7 @@ export const booksController = {
         userId,
         await shopCurrency(req),
       );
-      res.status(200).json({ books: results });
+      res.status(200).json({ books: await withMyReviews(userId, results, (b) => b.id) });
     } catch (err: unknown) {
       const e = err as Error;
       res.status(500).json({ error: e.message });

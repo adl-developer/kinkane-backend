@@ -1,6 +1,7 @@
 import { Response } from 'express';
 import { z } from 'zod';
 import { usersService } from '../services/users.service';
+import { withMyReviews } from '../services/my-reviews.service';
 import { parseId } from '../lib/route-helpers';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 
@@ -133,7 +134,8 @@ export const usersController = {
       const targetId = parseId(req.params.userId, 'user ID');
       const { filter, sort, limit, offset } = parsed.data;
       const result = await usersService.getUserBooks(targetId, req.user.id, filter, sort, limit, offset);
-      res.status(200).json({ ...result, filter, sort, limit, offset });
+      const items = await withMyReviews(req.user.id, result.items, (b) => b.bookId);
+      res.status(200).json({ ...result, items, filter, sort, limit, offset });
     } catch (err: unknown) {
       const e = err as Error & { statusCode?: number };
       res.status(e.statusCode ?? 500).json({ error: e.message });

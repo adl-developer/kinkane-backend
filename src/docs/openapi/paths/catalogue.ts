@@ -62,7 +62,7 @@ const listResponses = {
 
   200: json('A page of books.',
     object({
-      books: arrayOf(ref('BookSummary')),
+      books: arrayOf(ref('BookCard')),
       total: { type: 'integer', example: 137 },
       totalIsApproximate: {
         type: 'boolean',
@@ -167,7 +167,7 @@ export const cataloguePaths = {
           'Every edition, grouped by work, **on by default**: within each work, stock first (on the shelf, then order-in, then unavailable), then hardback, then paperback, then any other format. Send `false` to see the editions ungrouped.'),
       ],
       responses: {
-        200: json('Ranked suggestions.', object({ books: arrayOf(ref('BookSummary')) })),
+        200: json('Ranked suggestions.', object({ books: arrayOf(ref('BookCard')) })),
         400: resp('ValidationError'),
         429: resp('RateLimited'),
         500: resp('ServerError'),
@@ -181,10 +181,26 @@ export const cataloguePaths = {
       ...publicEndpoint,
       summary: 'Get one book',
       description:
-        'The full catalogue record — descriptions, contributors, subjects, genres and supplier prices.\n\nAuthentication is **optional and worth sending**: with a valid token the response also carries `userStatus`, the caller’s own shelf entry for this book (reading status, liked flag, note). Anonymous callers get `null` there.',
+        'The full catalogue record — descriptions, contributors, subjects, genres and supplier prices.\n\nAuthentication is **optional and worth sending**: with a valid token the response also carries `userStatus`, the caller’s own shelf entry for this book (reading status, liked flag, note). It also carries `myReview`, the caller’s own rating and review of the book (see the MyReview schema). Anonymous callers get `null` for both.',
       parameters: [bookIdParam],
       responses: {
-        200: json('The book.', ref('BookDetail')),
+        200: json('The book.',
+          object({
+            book: ref('BookDetail'),
+            publicNotes: arrayOf(
+              object({
+                userId: { type: 'integer', example: 4412 },
+                userName: { type: 'string', example: 'Ama Boateng' },
+                userPhotoUrl: { type: 'string', format: 'uri', nullable: true },
+                note: { type: 'string', example: 'Best thing I read this year.' },
+                status: { type: 'string', nullable: true, enum: ['want_to_read', 'reading', 'read', null] },
+                addedAt: { type: 'string', format: 'date-time' },
+              }),
+              'Other readers’ notes on this book that they marked public.',
+            ),
+            userStatus: ref('UserStatus'),
+            myReview: ref('MyReview'),
+          })),
         400: resp('ValidationError'),
         404: json('No book with that id.', ref('Error'), { error: 'Book not found' }),
         429: resp('RateLimited'),
@@ -207,7 +223,7 @@ export const cataloguePaths = {
       ],
       responses: {
         200: json('Similar books, most similar first. May be empty.',
-          object({ books: arrayOf(ref('BookSummary')) })),
+          object({ books: arrayOf(ref('BookCard')) })),
         400: resp('ValidationError'),
         404: json('No book with that id.', ref('Error'), { error: 'Book not found' }),
       },
@@ -239,7 +255,7 @@ export const cataloguePaths = {
       ],
       responses: {
         200: json('Recommendations, most relevant first. May be empty.',
-          object({ books: arrayOf(ref('BookSummary')) })),
+          object({ books: arrayOf(ref('BookCard')) })),
         400: resp('ValidationError'),
       },
     },
@@ -316,7 +332,7 @@ export const cataloguePaths = {
           'How many books (1–20).'),
       ],
       responses: {
-        200: json('Trending books.', object({ books: arrayOf(ref('BookSummary')) })),
+        200: json('Trending books.', object({ books: arrayOf(ref('BookCard')) })),
         400: resp('ValidationError'),
         429: resp('RateLimited'),
         500: resp('ServerError'),
@@ -354,7 +370,7 @@ export const cataloguePaths = {
               description: '`orders` — a genuine ranking by copies sold. `trending` — nothing sold in this window, so these are trending books ranked by interaction signal, not a sales chart. Label the section accordingly.',
               example: 'orders',
             },
-            books: arrayOf(ref('BookSummary')),
+            books: arrayOf(ref('BookCard')),
           })),
         400: resp('ValidationError'),
         429: resp('RateLimited'),
@@ -416,7 +432,7 @@ export const cataloguePaths = {
               description: 'One-line tagline for `readerType`, for display under it. `null` whenever `readerType` is.',
               example: "You're open to the world but discerning about what stays.",
             },
-            books: arrayOf(ref('BookSummary')),
+            books: arrayOf(ref('BookCard')),
             pagination: ref('Pagination'),
           })),
         400: resp('ValidationError'),
@@ -445,7 +461,7 @@ export const cataloguePaths = {
       ],
       responses: {
         200: json('Personalised books. Empty while the embedding is still being built.',
-          object({ books: arrayOf(ref('BookSummary')) })),
+          object({ books: arrayOf(ref('BookCard')) })),
         400: resp('ValidationError'),
         ...plusErrors,
       },
