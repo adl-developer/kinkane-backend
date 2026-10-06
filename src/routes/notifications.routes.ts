@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { notificationsController } from '../controllers/notifications.controller';
+import { wrapHttp } from '../lib/route-helpers';
 
 const router = Router();
 
@@ -33,5 +34,28 @@ router.get('/', requireAuth, (req: Request, res: Response) =>
 router.patch('/read', requireAuth, (req: Request, res: Response) =>
   notificationsController.markRead(req as AuthenticatedRequest, res),
 );
+
+/**
+ * DELETE /api/v1/user/notifications
+ *
+ * Clears the caller's whole feed, read or unread, except friend requests that
+ * are still waiting for an accept/decline.
+ *
+ * Returns 200: { cleared: number }
+ * Errors: 401 unauthenticated
+ */
+router.delete('/', requireAuth, wrapHttp(notificationsController.clearAll));
+
+/**
+ * DELETE /api/v1/user/notifications/:id
+ *
+ * Clears one notification, read or unread. Marking a notification read never
+ * clears it; only this (or clearing all) does.
+ *
+ * Returns 200: { cleared: 1 }
+ * Errors: 400 invalid id | 401 unauthenticated | 404 not the caller's |
+ *         409 FRIEND_REQUEST_PENDING (accept or decline it first)
+ */
+router.delete('/:id', requireAuth, wrapHttp(notificationsController.clearOne));
 
 export default router;

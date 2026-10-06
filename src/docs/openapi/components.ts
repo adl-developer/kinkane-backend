@@ -426,7 +426,8 @@ const socialSchemas = {
   Notification: {
     type: 'object',
     description:
-      'One item in the notifications feed. The feed merges stored rows (`post_like`, `post_comment`, `group_invite`, `follow_accepted`, `new_recommendation`) with a live view over the follow-request table (`friend_request`, requests sent *to* the caller), which is why `id` is only markable-as-read for the stored kinds.\n\n' +
+      'One item in the notifications feed. Every kind is a stored row, so `id` is always an integer and any item can be marked read or cleared.\n\n' +
+      '`friend_request` goes to the person a follow request was sent *to*; its `data` carries `followRequestId` (what the accept/decline endpoints take), `senderId`, `senderName`, `senderPhotoUrl` and `status` (`pending`, `accepted` or `declined`). Status, name and photo are always current. Accepting or declining also marks it read; a re-sent request moves it back to the top as unread; a withdrawn request removes it.\n\n' +
       '`follow_accepted` goes to the person whose request was accepted; its `data` carries `followRequestId`, `accepterId`, `accepterName` and `accepterPhotoUrl`. `new_recommendation` carries `bookId`, `bookTitle`, `bookAuthor` and `bookCoverUrl`.',
     properties: {
       id: { type: 'integer', example: 5521 },

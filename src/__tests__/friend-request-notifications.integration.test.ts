@@ -12,8 +12,9 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vites
  * the database (the unique index, the FK cascade, the transaction), so a
  * mocked database would only prove we wrote the calls we wrote.
  *
- * The feed doesn't read these rows yet (it still builds friend requests from
- * follow_requests), so most assertions look at the table directly.
+ * Also covers the feed that reads these rows and the clear endpoints, whose
+ * one special case — a pending friend request can't be cleared — is decided
+ * by follow_requests.
  *
  * WHERE IT RUNS. TEST_DATABASE_URL, never DATABASE_URL — this suite deletes
  * users, and `.env` points at production. Skips itself when unset; refuses to
@@ -203,12 +204,95 @@ describeIfDb('friend-request notifications', () => {
     }
   });
 
-  it('keeps the feed showing each friend request once while it still reads the live view', async () => {
+  it('lists friend requests from the stored rows, with numeric ids and real read state', async () => {
     await usersService.sendFollowRequest(alice, bob);
+    const { id } = await storedRow();
 
-    const feed = await notificationsService.list(bob, 20, 0);
+    let feed = await notificationsService.list(bob, 20, 0);
     expect(feed.total).toBe(1);
     expect(feed.unreadCount).toBe(1);
-    expect(feed.notifications.map((n) => n.type)).toEqual(['friend_request']);
+    expect(feed.notifications[0]).toMatchObject({ id, type: 'friend_request', readAt: null });
+
+    await notificationsService.markRead(bob, [id]);
+    feed = await notificationsService.list(bob, 20, 0);
+    expect(feed.unreadCount).toBe(0);
+    // Read is not cleared: the item stays in the feed.
+    expect(feed.total).toBe(1);
+  });
+
+  it("shows the sender's current name and photo, not the ones saved when the request was sent", async () => {
+    await usersService.sendFollowRequest(alice, bob);
+    await db.execute(sql`UPDATE users SET name = 'Alicia', photo_url = NULL WHERE id = ${alice}`);
+
+    const [item] = (await notificationsService.list(bob, 20, 0)).notifications;
+    expect(item.data).toMatchObject({ senderName: 'Alicia', senderPhotoUrl: null, status: 'pending' });
+  });
+
+  describe('clearing', () => {
+    async function addNotification(userId: number, read = false): Promise<number> {
+      const [row] = (await db.execute(sql`
+        INSERT INTO notifications (user_id, type, data, read_at)
+        VALUES (${userId}, 'post_like', '{}'::jsonb, ${read ? sql`now()` : sql`NULL`})
+        RETURNING id
+      `)) as unknown as { id: number }[];
+      return row.id;
+    }
+
+    it('clears one notification by id, read or unread', async () => {
+      const unread = await addNotification(bob);
+      const read = await addNotification(bob, true);
+      const keep = await addNotification(bob);
+
+      await notificationsService.clearOne(bob, unread);
+      await notificationsService.clearOne(bob, read);
+
+      const feed = await notificationsService.list(bob, 20, 0);
+      expect(feed.notifications.map((n) => n.id)).toEqual([keep]);
+    });
+
+    it("404s on an id that isn't the caller's, and leaves it alone", async () => {
+      const alicesId = await addNotification(alice);
+
+      await expect(notificationsService.clearOne(bob, alicesId)).rejects.toMatchObject({ statusCode: 404 });
+      await expect(notificationsService.clearOne(bob, 999999999)).rejects.toMatchObject({ statusCode: 404 });
+      expect((await notificationsService.list(alice, 20, 0)).total).toBe(1);
+    });
+
+    it('refuses to clear a pending friend request, and allows it once answered', async () => {
+      await usersService.sendFollowRequest(alice, bob);
+      const { id } = await storedRow();
+
+      await expect(notificationsService.clearOne(bob, id)).rejects.toMatchObject({
+        statusCode: 409,
+        code: 'FRIEND_REQUEST_PENDING',
+      });
+
+      await usersService.declineFollowRequest(await requestId(), bob);
+      await notificationsService.clearOne(bob, id);
+      expect(await storedRow()).toBeUndefined();
+    });
+
+    it("clears everything of the caller's except pending friend requests", async () => {
+      await addNotification(bob);
+      await addNotification(bob, true);
+      const alicesId = await addNotification(alice);
+      await usersService.sendFollowRequest(alice, bob);
+
+      expect(await notificationsService.clearAll(bob)).toEqual({ cleared: 2 });
+
+      const feed = await notificationsService.list(bob, 20, 0);
+      expect(feed.notifications.map((n) => n.type)).toEqual(['friend_request']);
+      expect((await notificationsService.list(alice, 20, 0)).notifications.map((n) => n.id)).toEqual([alicesId]);
+    });
+
+    it('brings a cleared friend request back when it is re-sent', async () => {
+      await usersService.sendFollowRequest(alice, bob);
+      await usersService.declineFollowRequest(await requestId(), bob);
+      await notificationsService.clearAll(bob);
+      expect(await storedRow()).toBeUndefined();
+
+      await usersService.sendFollowRequest(alice, bob);
+      expect(await storedRow()).toMatchObject({ read_at: null, data: { status: 'pending' } });
+    });
   });
 });

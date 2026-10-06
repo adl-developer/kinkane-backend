@@ -5,10 +5,9 @@ import { users, followRequests } from './users';
 // receiver and are kept in step with their `follow_requests` row by
 // users.service.ts: written in the same transaction as the request, their
 // `data.status` updated on accept/decline/resend, and deleted by the FK
-// cascade when the request is withdrawn. The feed doesn't read them yet — it
-// still builds friend requests from `follow_requests` and skips these rows —
-// so a deploy or rollback can never show a request twice. Existing requests
-// are backfilled, and the feed switched over, in the following release.
+// cascade when the request is withdrawn. Older requests were backfilled by
+// 0072. Clearing a notification deletes its row, except a friend request still
+// waiting on an answer, which can't be cleared.
 export const notificationTypes = [
   'post_like',
   'post_comment',

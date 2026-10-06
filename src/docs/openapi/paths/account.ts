@@ -145,7 +145,7 @@ export const accountPaths = {
       tags: [NOTIF],
       summary: 'The notifications feed',
       description:
-        'Merges stored notifications (post likes, post comments) with a live view over pending and resolved follow requests, newest first.\n\nBecause friend-request items are computed rather than stored, they cannot be marked read here — resolving them means accepting or declining the request.',
+        'The caller’s notifications, newest first. Marking an item read keeps it in the feed; it stays until it is cleared.',
       parameters: [
         param('limit', 'query', { type: 'integer', minimum: 1, maximum: 50, default: 20 }, 'Items per page (1–50).'),
         param('offset', 'query', { type: 'integer', minimum: 0, default: 0 }, 'Items to skip.'),
@@ -157,13 +157,23 @@ export const accountPaths = {
             total: { type: 'integer', example: 41 },
             unreadCount: {
               type: 'integer',
-              description: 'Across the whole feed, not just this page — use it for the badge.',
+              description: 'Notifications not yet marked read, across the whole feed — use it for the badge.',
               example: 3,
             },
             limit: { type: 'integer', example: 20 },
             offset: { type: 'integer', example: 0 },
           })),
         400: resp('ValidationError'),
+        ...authErrors,
+      },
+    },
+    delete: {
+      tags: [NOTIF],
+      summary: 'Clear all notifications',
+      description:
+        'Removes every notification in the caller’s feed, read or unread, except friend requests still waiting on an answer — those stay until accepted or declined.',
+      responses: {
+        200: json('Cleared.', object({ cleared: { type: 'integer', description: 'How many were removed.', example: 12 } })),
         ...authErrors,
       },
     },
@@ -174,7 +184,7 @@ export const accountPaths = {
       tags: [NOTIF],
       summary: 'Mark notifications as read',
       description:
-        'Applies to stored notifications only (`post_like`, `post_comment`). Ids belonging to friend-request items are ignored — accept or decline those instead.',
+        'Marks the given notifications read. They stay in the feed until cleared. Ids that aren’t the caller’s are ignored.',
       requestBody: body(object({
         ids: {
           type: 'array', items: { type: 'integer', minimum: 1 }, minItems: 1, maxItems: 50,
@@ -185,6 +195,23 @@ export const accountPaths = {
       responses: {
         200: successResponse,
         400: resp('ValidationError'),
+        ...authErrors,
+      },
+    },
+  },
+
+  '/api/v1/user/notifications/{id}': {
+    delete: {
+      tags: [NOTIF],
+      summary: 'Clear one notification',
+      description:
+        'Removes the notification from the feed, read or unread. A friend request still waiting on an answer can’t be cleared: accept or decline it first.',
+      parameters: [param('id', 'path', { type: 'integer', minimum: 1 }, 'The notification id.')],
+      responses: {
+        200: json('Cleared.', object({ cleared: { type: 'integer', example: 1 } })),
+        400: resp('ValidationError'),
+        404: resp('NotFound'),
+        409: json('A friend request still waiting on an answer (`code: FRIEND_REQUEST_PENDING`).', ref('Error')),
         ...authErrors,
       },
     },
