@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-10-06
+
+### Features
+
+* start recording friend requests as notifications, ready to show next release ([764acc7](https://adl.github.com/adl-developer/kinkane-backend/commit/764acc7902cadef2984505ceb70e1e8ba709d827)) — [details](changelog/2026-10-06-friend-request-notification-sync.md)
+
+
 ## 2026-10-05
 
 ### Features

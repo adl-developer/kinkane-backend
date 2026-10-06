@@ -505,6 +505,13 @@
       "when": 1791290662761,
       "tag": "0071_friend_request_notifications",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1791295775310,
+      "tag": "0072_friend_request_notifications_backfill",
+      "breakpoints": true
     }
   ]
 }

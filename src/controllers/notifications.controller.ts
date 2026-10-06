@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { AuthenticatedRequest } from '../middleware/auth.middleware';
 import { notificationsService } from '../services/notifications.service';
 import { logger } from '../lib/logger';
+import { parseId } from '../lib/route-helpers';
 
 const listSchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).default(20),
@@ -47,5 +48,16 @@ export const notificationsController = {
       logger.error('Unexpected error marking notifications read', { error: e.message });
       res.status(500).json({ error: 'An unexpected error occurred' });
     }
+  },
+
+  // Mounted with wrapHttp, which turns a thrown statusCode/code into the response.
+  async clearOne(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const id = parseId(req.params.id, 'notification ID');
+    await notificationsService.clearOne(req.user.id, id);
+    res.status(200).json({ cleared: 1 });
+  },
+
+  async clearAll(req: AuthenticatedRequest, res: Response): Promise<void> {
+    res.status(200).json(await notificationsService.clearAll(req.user.id));
   },
 };
