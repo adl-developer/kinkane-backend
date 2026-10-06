@@ -7,9 +7,8 @@ const router = Router();
 /**
  * GET /api/v1/user/notifications
  *
- * Returns the authenticated user's notifications feed — a merge of persisted
- * post-like/post-comment notifications and a live view over pending/resolved
- * friend requests, sorted by createdAt descending.
+ * Returns the authenticated user's notifications feed (every type, including
+ * friend requests, is a stored row), sorted by createdAt descending.
  *
  * Query (all optional): { limit?: 1-50 (default 20), offset?: >=0 (default 0) }
  * Returns 200: { notifications: [...], total, unreadCount, limit, offset }
@@ -22,9 +21,8 @@ router.get('/', requireAuth, (req: Request, res: Response) =>
 /**
  * PATCH /api/v1/user/notifications/read
  *
- * Marks one or more notifications as read. Only applies to persisted
- * notification rows (post_like, post_comment) — friend-request items are
- * resolved via the existing follow-request accept/decline endpoints.
+ * Marks one or more notifications as read. Works for every type; accepting
+ * or declining a friend request also marks its notification read.
  *
  * Body: { ids: number[] } (1-50 ids)
  * Returns 200: { success: true }
