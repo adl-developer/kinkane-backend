@@ -129,6 +129,13 @@ const TITLE_BRACKETS =
 const TITLE_BRACKETS_SQL =
   '\\s+[\\(\\[][^\\)\\]]*[\\)\\]]|(?<=[[:alnum:]])[\\(\\[][^\\)\\]]*[\\)\\]](?=\\s*$)';
 
+// A format tag on the end of the title — "AMERICANAH PB", "Bel Canto HBK" —
+// is how some supplier feeds mark paperback and hardback. Edition dressing, so
+// it goes like a bracketed note. It has to follow a space or punctuation, so a
+// title that is only "PB" keeps its name.
+const TITLE_FORMAT_TAG = /[^\p{Alphabetic}\p{Nd}]+(?:pbk?|hbk?)[^\p{Alphabetic}\p{Nd}]*$/u;
+const TITLE_FORMAT_TAG_SQL = '[^[:alnum:]]+(pbk?|hbk?)[^[:alnum:]]*$';
+
 // A subtitle: everything after the first "Title: ", "Title - " or "Title—".
 // The space after the colon is required, so "Re:ZERO" keeps its name; an
 // unspaced hyphen ("Catch-22") or en dash ("1914–1918") is not a separator, an
@@ -244,7 +251,8 @@ function titleVolumesSql(lowered: SQL, unbracketed: SQL, forCore: boolean): SQL 
 /**
  * The two keys a title is matched on — "is this the same work?" for titles.
  *
- *  - `full`: the title with trailing brackets dropped, then folded.
+ *  - `full`: the title with trailing brackets and a format tag ("… PB")
+ *    dropped, then folded.
  *  - `core`: the same with an edition subtitle ("…: A Novel", "…: Illustrated
  *    Edition") cut off too. Equal to `full` when there is no such subtitle, or
  *    when cutting would leave nothing.
@@ -265,7 +273,7 @@ function titleVolumesSql(lowered: SQL, unbracketed: SQL, forCore: boolean): SQL 
  * plain {@link normalizeTitleForMatch} fold still matches here.
  */
 export function titleKeysForMatch(value: string): { full: string; core: string } {
-  const unbracketed = value.toLowerCase().replace(TITLE_BRACKETS, '');
+  const unbracketed = value.toLowerCase().replace(TITLE_BRACKETS, '').replace(TITLE_FORMAT_TAG, '');
   const fullTitle = normalizeTitleForMatch(unbracketed) || normalizeTitleForMatch(value);
   const full = `${titleVolumes(value)}#${fullTitle}`;
   if (!EDITION_SUBTITLE.test(unbracketed)) return { full, core: full };
@@ -276,9 +284,11 @@ export function titleKeysForMatch(value: string): { full: string; core: string }
 /** {@link titleKeysForMatch} in SQL. */
 export function titleKeysSql(title: SQL | PgColumn): { full: SQL; core: SQL } {
   const lowered = sql`lower(${title} COLLATE "und-x-icu")`;
-  const unbracketed = sql`regexp_replace(${lowered}, ${TITLE_BRACKETS_SQL}, '', 'g')`;
-  const full = sql`(${titleVolumesSql(lowered, unbracketed, false)} || '#' ||
-    coalesce(nullif(${titleMatchSql(unbracketed)}, ''), ${titleMatchSql(title)}))`;
+  const unbracketed = sql`regexp_replace(
+    regexp_replace(${lowered}, ${TITLE_BRACKETS_SQL}, '', 'g'),
+    ${TITLE_FORMAT_TAG_SQL}, ''
+  )`;
+  const full = sql`(${titleVolumesSql(lowered, unbracketed, false)} || '#' || ${titleTextSql(title, unbracketed)})`;
   // NULL anywhere in the CASE branch (no edition subtitle, or nothing left
   // after the cut) falls through to the full key, as in the JS twin.
   const core = sql`coalesce(
@@ -289,6 +299,59 @@ export function titleKeysSql(title: SQL | PgColumn): { full: SQL; core: SQL } {
     ${full}
   )`;
   return { full, core };
+}
+
+/** The folded title half of a `full` key, without its volume prefix. */
+function titleTextSql(title: SQL | PgColumn, unbracketed: SQL): SQL {
+  return sql`coalesce(nullif(${titleMatchSql(unbracketed)}, ''), ${titleMatchSql(title)})`;
+}
+
+/** {@link titleTextSql} in TypeScript: the text after the `#` of a `full` key. */
+function titleText(fullKey: string): string {
+  return fullKey.slice(fullKey.indexOf('#') + 1);
+}
+
+// The shorter title must be at least this many characters for the containment
+// rule to apply, so a one- or two-letter title ("It", "Us") doesn't swallow
+// every title by the same author that happens to use the word.
+const MIN_CONTAINED_TITLE_LENGTH = 4;
+
+/**
+ * "One of these titles contains the other", word for word: "dune" is in "dune
+ * messiah" and "americanah" is in "americanah special edition", but "dune" is
+ * not in "dunes". Equal titles are left to the exact match, which also checks
+ * volume numbers, so "Tokyo Ghoul (Vol. 3)" and "(Vol. 9)" stay apart.
+ *
+ * {@link titleContainmentSql} is the SQL twin.
+ */
+function titlesContainEachOther(a: string, b: string): boolean {
+  if (a === b || Math.min([...a].length, [...b].length) < MIN_CONTAINED_TITLE_LENGTH) return false;
+  return ` ${a} `.includes(` ${b} `) || ` ${b} `.includes(` ${a} `);
+}
+
+function titleContainmentSql(a: SQL, b: SQL): SQL {
+  // Folded titles are only letters, digits and single spaces, so neither side
+  // can carry a LIKE wildcard.
+  return sql`(${a} <> ${b}
+    AND least(char_length(${a}), char_length(${b})) >= ${MIN_CONTAINED_TITLE_LENGTH}
+    AND (' ' || ${a} || ' ' LIKE '% ' || ${b} || ' %'
+      OR ' ' || ${b} || ' ' LIKE '% ' || ${a} || ' %'))`;
+}
+
+/**
+ * The excluded works with a known author, as the rows the containment rule
+ * runs on: the folded title and the folded author. One per pair.
+ */
+function containmentRows(works: ExcludedWork[]): { title: string; author: string }[] {
+  const rows = new Map<string, { title: string; author: string }>();
+  for (const work of works) {
+    if (work.author === null) continue;
+    const author = normalizeAuthorForMatch(work.author);
+    if (!author) continue;
+    const title = titleText(titleKeysForMatch(work.title).full);
+    rows.set(`${title}\u0000${author}`, { title, author });
+  }
+  return [...rows.values()];
 }
 
 /**
@@ -316,7 +379,7 @@ function workMatchRows(works: ExcludedWork[]) {
  * filtered by an older rule (quiz results, keyed through hashInput) are
  * retired rather than served until they expire.
  */
-export const WORK_MATCH_VERSION = 2;
+export const WORK_MATCH_VERSION = 3;
 
 /**
  * Builds the "none of these works" predicate.
@@ -337,8 +400,11 @@ export const WORK_MATCH_VERSION = 2;
  *  - the candidate has no A01 author recorded (an untagged catalogue row), or
  *  - the two authors match, as {@link normalizeAuthorForMatch} folds them.
  *
- * Only a same-titled book by a *known, different* author survives, and other
- * books by the same author are untouched unless their title matches. Both
+ * Only a same-titled book by a *known, different* author survives. On top of
+ * that, a book by the same author is excluded when either title contains the
+ * other word for word ("Dune" and "Dune Messiah") — see
+ * titlesContainEachOther. That rule needs a known author on both sides; an
+ * unknown author never widens it. Both
  * unknown-author branches deliberately err towards over-excluding: one missing
  * book in a list of a hundred costs nothing, while re-recommending the book
  * someone just told us they'd read reads as the quiz not listening.
@@ -368,8 +434,32 @@ export function buildWorkExclusionCondition(works: ExcludedWork[]): SQL | undefi
   const coreKey = sql`CASE WHEN ${books.title} COLLATE "und-x-icu" ~ ${TITLE_SUBTITLE_SOURCE}
     THEN CASE WHEN lower(${books.title} COLLATE "und-x-icu") ~ ${EDITION_SUBTITLE_SQL} THEN ${candidate.core} END
   END`;
+  const containment = workContainmentClause(containmentRows(works));
   return sql`(${workMatchClause(againstFull, candidate.full)}
-    AND ${workMatchClause(againstCore, coreKey)})`;
+    AND ${workMatchClause(againstCore, coreKey)}${containment ? sql`
+    AND ${containment}` : sql``})`;
+}
+
+function workContainmentClause(rows: { title: string; author: string }[]): SQL | undefined {
+  if (rows.length === 0) return undefined;
+  const values = rows.map((r) => sql`(${r.title}::text, ${r.author}::text)`);
+  const lowered = sql`lower(${books.title} COLLATE "und-x-icu")`;
+  const unbracketed = sql`regexp_replace(
+    regexp_replace(${lowered}, ${TITLE_BRACKETS_SQL}, '', 'g'),
+    ${TITLE_FORMAT_TAG_SQL}, ''
+  )`;
+  // Joined on the author first, which Postgres can hash: the candidate's title
+  // is only folded and compared for a book by an author the user excluded,
+  // not for every row the search looks at.
+  return sql`NOT EXISTS (
+    SELECT 1
+    FROM book_contributors bc
+    JOIN (VALUES ${sql.join(values, sql`, `)}) AS excluded_work(title, author)
+      ON excluded_work.author = ${authorMatchSql(sql`bc.person_name`)}
+    WHERE bc.book_id = ${books.id}
+      AND bc.role = 'A01'
+      AND ${titleContainmentSql(titleTextSql(books.title, unbracketed), sql`excluded_work.title`)}
+  )`;
 }
 
 function workMatchClause(
@@ -495,11 +585,27 @@ export function filterExcludedWorks<
   };
   const authorsByFull = group(againstFull);
   const authorsByCore = group(againstCore);
+  const titlesByAuthor = new Map<string, string[]>();
+  for (const { title, author } of containmentRows(exclusions.works)) {
+    const titles = titlesByAuthor.get(author);
+    if (titles) titles.push(title);
+    else titlesByAuthor.set(author, [title]);
+  }
 
   return items.filter((item) => {
     if (excludedIds.has(item.id)) return false;
 
     const keys = titleKeysForMatch(item.title);
+    const itemAuthors = item.contributors
+      .filter((c) => c.role === 'A01' && !!c.personName?.trim())
+      .map((c) => normalizeAuthorForMatch(c.personName as string));
+
+    const text = titleText(keys.full);
+    const containedBySameAuthor = itemAuthors.some((author) =>
+      (titlesByAuthor.get(author) ?? []).some((title) => titlesContainEachOther(text, title)),
+    );
+    if (containedBySameAuthor) return false;
+
     const excludedAuthors = [
       ...(authorsByFull.get(keys.full) ?? []),
       ...(authorsByCore.get(keys.core) ?? []),
@@ -511,10 +617,6 @@ export function filterExcludedWorks<
     // Blank and whitespace-only names count as untagged here exactly as they
     // do there; that agreement is the point of sharing hasNamedAuthor.
     if (!hasNamedAuthor(item.contributors)) return false;
-
-    const itemAuthors = item.contributors
-      .filter((c) => c.role === 'A01' && !!c.personName?.trim())
-      .map((c) => normalizeAuthorForMatch(c.personName as string));
 
     return !excludedAuthors.some(
       (author) => author === null || itemAuthors.includes(author),

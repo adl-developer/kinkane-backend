@@ -73,6 +73,13 @@ const CATALOGUE: Fixture[] = [
   { id: 30, title: 'The War 1914–1918', authors: ['A. Historian'] },
   { id: 31, title: 'Friend(s) Forever', authors: ['A. N. Author'] },
   { id: 32, title: 'Tokyo Ghoul (Vol. 2) (Collector\'s Edition)', authors: ['Sui Ishida'] },
+  { id: 33, title: 'AMERICANAH PB', authors: ['Chimamanda Ngozi Adichie'] },
+  { id: 34, title: 'Americanah', authors: ['Ngozi Adichie, Chimamanda'] },
+  { id: 35, title: 'Dune Messiah', authors: ['Frank Herbert'] },
+  { id: 36, title: 'Bel Cantos', authors: ['Ann Patchett'] },
+  { id: 37, title: 'Bel Canto Arias for Soprano', authors: ['Robert Toft'] },
+  { id: 38, title: 'It Ends Here', authors: ['A. N. Author'] },
+  { id: 39, title: 'Bel Canto (Large Print) PBK', authors: ['Ann Patchett'] },
 ];
 
 const EXCLUSION_SETS: { name: string; works: ExcludedWork[] }[] = [
@@ -99,6 +106,10 @@ const EXCLUSION_SETS: { name: string; works: ExcludedWork[] }[] = [
   },
   { name: 'Hedgewitch', works: [{ title: 'hedgewitch', author: 'skye mckenna' }] },
   { name: 'Catch-22', works: [{ title: 'catch-22', author: 'joseph heller' }] },
+  { name: 'Americanah', works: [{ title: 'americanah', author: 'chimamanda ngozi adichie' }] },
+  { name: 'Americanah PB', works: [{ title: 'americanah pb', author: 'ngozi adichie, chimamanda' }] },
+  { name: 'Dune by Frank Herbert', works: [{ title: 'dune', author: 'frank herbert' }] },
+  { name: 'a very short title', works: [{ title: 'it', author: 'a. n. author' }] },
   {
     name: 'two works that fold alike',
     works: [
@@ -143,11 +154,11 @@ describe('work exclusion — SQL agrees with its in-memory twin', () => {
     const cond = buildWorkExclusionCondition(EXCLUSION_SETS[0].works)!;
     const kept = await keptBySql(cond);
     for (const dropped of [1, 2, 3, 4, 7]) expect(kept).not.toContain(dropped);
-    // Glued-on edition notes go too.
-    for (const dropped of [27, 28]) expect(kept).not.toContain(dropped);
-    // Toft's same-titled book, her other books, and an edition note that is
-    // not a subtitle all stay.
-    for (const stays of [5, 6, 19]) expect(kept).toContain(stays);
+    // Glued-on edition notes go too, and so does a title of hers that
+    // contains "Bel Canto" word for word.
+    for (const dropped of [19, 27, 28]) expect(kept).not.toContain(dropped);
+    // Toft's same-titled book and her other books stay.
+    for (const stays of [5, 6]) expect(kept).toContain(stays);
   });
 
   it('matches "Book 1 of" with the plain title but keeps the next book', async () => {
@@ -158,9 +169,17 @@ describe('work exclusion — SQL agrees with its in-memory twin', () => {
     expect(kept).toContain(25);
   });
 
-  it('keeps a sequel that starts with the title that was read', async () => {
+  it('drops a same-author title that contains the one that was read', async () => {
     const kept = await keptBySql(buildWorkExclusionCondition([{ title: 'hedgewitch', author: 'skye mckenna' }])!);
-    expect(kept).toContain(26);
+    expect(kept).not.toContain(26);
+  });
+
+  it('drops the PB edition of Americanah and keeps Bel Cantos', async () => {
+    const americanah = await keptBySql(buildWorkExclusionCondition(EXCLUSION_SETS.find((e) => e.name === 'Americanah')!.works)!);
+    for (const dropped of [33, 34]) expect(americanah).not.toContain(dropped);
+    const belCanto = await keptBySql(buildWorkExclusionCondition(EXCLUSION_SETS[0].works)!);
+    expect(belCanto).not.toContain(39);
+    for (const stays of [36, 37]) expect(belCanto).toContain(stays);
   });
 
   it('folds every title the same way in SQL as in TypeScript', async () => {
