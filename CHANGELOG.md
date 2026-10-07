@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-10-07
+
+### Bug Fixes
+
+* accept any genre label at onboarding, capped at 3 ([4ed04cb](https://adl.github.com/adl-developer/kinkane-backend/commit/4ed04cbf2a319604183ec88d5ba1ef84f148af10)) — [details](changelog/2026-10-07-genres-no-limit.md)
+
+
 ## 2026-10-06
 
 ### Features
