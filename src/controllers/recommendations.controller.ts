@@ -15,7 +15,7 @@ const feelingSchema = z.string().min(1).max(200);
 // Open for the same reason as dislikes below: the genre chips belong to the
 // onboarding UI, and a fixed enum here turned every new chip (e.g.
 // "contemporary fiction") into a 400. Labels go into the embedded preference
-// text, so only length and count are capped. The fiction/non-fiction format
+// text, so only each label's length is capped. The fiction/non-fiction format
 // filter in recommendations.service.ts just ignores labels it doesn't know.
 const genreSchema = z.string().trim().min(1).max(100);
 
@@ -44,8 +44,7 @@ const recommendationsSchema = z.object({
 
   genres: z
     .array(genreSchema)
-    .min(1, 'At least 1 genre is required')
-    .max(3, 'A maximum of 3 genres are allowed'),
+    .min(1, 'At least 1 genre is required'),
 
   dislikes: dislikesSchema.default({}),
 });

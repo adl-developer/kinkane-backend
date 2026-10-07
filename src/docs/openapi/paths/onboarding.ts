@@ -18,9 +18,8 @@ const genresSchema = {
   type: 'array',
   items: { type: 'string', minLength: 1, maxLength: 100 },
   minItems: 1,
-  maxItems: 3,
   description:
-    '1 to 3 genre labels. **Open-ended**, like `dislikes` — any label the onboarding UI offers is accepted, each ≤100 characters. Labels are embedded into the preference text; known ones (e.g. "literary fiction", "self-help") also drive a fiction/non-fiction format filter. Note it is **not** the same vocabulary as `GET /genres`, which returns catalogue genres.',
+    'One or more genre labels, with no upper limit. **Open-ended**, like `dislikes` — any label the onboarding UI offers is accepted, each ≤100 characters. Labels are embedded into the preference text; known ones (e.g. "literary fiction", "self-help") also drive a fiction/non-fiction format filter. Note it is **not** the same vocabulary as `GET /genres`, which returns catalogue genres.',
   example: ['literary fiction', 'historical fiction', 'poetry'],
 };
 
