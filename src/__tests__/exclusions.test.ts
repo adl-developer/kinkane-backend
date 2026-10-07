@@ -133,6 +133,13 @@ describe('titleKeysForMatch', () => {
     ['Re:ZERO', '#re zero', '#re zero'],
     // A bracket that opens the title is part of it.
     ['(Un)Natural', '#un natural', '#un natural'],
+    // A supplier's format tag on the end is edition dressing; a title that is
+    // only the tag, or ends in a word that merely starts with it, keeps it.
+    ['AMERICANAH PB', '#americanah', '#americanah'],
+    ['Bel Canto HBK', '#bel canto', '#bel canto'],
+    ['Bel Canto (Large Print) PB', '#bel canto', '#bel canto'],
+    ['PB', '#pb', '#pb'],
+    ['Dashboard Hbks', '#dashboard hbks', '#dashboard hbks'],
     // A year is not a volume; a lone "I" is not a numeral.
     ['Devon 2026 Calendar', '#devon 2026 calendar', '#devon 2026 calendar'],
     ['The King and I', '#king and i', '#king and i'],
@@ -361,30 +368,82 @@ describe('filterExcludedWorks', () => {
       expect(keptIds([item(1, 'Bel Canto', ['Robert  Toft'])])).toEqual([1]);
     });
 
-    it('keeps titles that merely start the same way', () => {
+    it('drops her books whose title contains it, or is contained in it', () => {
       expect(
         keptIds([
           item(1, 'Bel Canto Arias for Soprano', ['Ann Patchett']),
           item(2, 'Canto', ['Ann Patchett']),
         ]),
-      ).toEqual([1, 2]);
+      ).toEqual([]);
+    });
+
+    it('keeps titles that only share part of a word', () => {
+      expect(keptIds([item(1, 'Bel Cantos', ['Ann Patchett'])])).toEqual([1]);
+    });
+
+    it('keeps a containing title by someone else', () => {
+      expect(keptIds([item(1, 'Bel Canto Arias for Soprano', ['Robert Toft'])])).toEqual([1]);
     });
   });
 
-  it('keeps other books in a series that share its name', () => {
-    // "Warriors: …" subtitles are titles, not edition dressing, so neither the
-    // other books nor a book called just "Warriors" go.
+  it('keeps other books in a series unless one title contains the other', () => {
+    // "Warriors: …" subtitles are titles, not edition dressing, so the other
+    // books stay — but "Warriors" is inside the excluded title, so it goes.
     const kept = filterExcludedWorks(
       [item(1, 'Warriors: Fading Echoes', ['Erin Hunter']), item(2, 'Warriors', ['Erin Hunter'])],
       exclusions({ works: [{ title: "warriors: a warrior's choice", author: 'erin hunter' }] }),
     );
-    expect(kept.map((b) => b.id)).toEqual([1, 2]);
+    expect(kept.map((b) => b.id)).toEqual([1]);
   });
 
-  it('keeps a sequel whose title starts with the book that was read', () => {
+  it('drops a sequel whose title contains the book that was read', () => {
     const kept = filterExcludedWorks(
-      [item(1, 'Hedgewitch: Stonewitch', ['Skye McKenna'])],
-      exclusions({ works: [{ title: 'hedgewitch', author: 'skye mckenna' }] }),
+      [item(1, 'Hedgewitch: Stonewitch', ['Skye McKenna']), item(2, 'Dune Messiah', ['Frank Herbert'])],
+      exclusions({
+        works: [
+          { title: 'hedgewitch', author: 'skye mckenna' },
+          { title: 'dune', author: 'herbert, frank' },
+        ],
+      }),
+    );
+    expect(kept).toHaveLength(0);
+  });
+
+  it('drops the "PB" edition of a book that was picked', () => {
+    const kept = filterExcludedWorks(
+      [item(1, 'AMERICANAH PB', ['Chimamanda Ngozi Adichie'])],
+      exclusions({ works: [{ title: 'americanah', author: 'ngozi adichie, chimamanda' }] }),
+    );
+    expect(kept).toHaveLength(0);
+  });
+
+  it('does not apply containment to very short titles', () => {
+    const kept = filterExcludedWorks(
+      [item(1, 'It Ends Here', ['A. N. Author'])],
+      exclusions({ works: [{ title: 'it', author: 'a. n. author' }] }),
+    );
+    expect(kept.map((b) => b.id)).toEqual([1]);
+  });
+
+  it('needs a known author on both sides for containment', () => {
+    const kept = filterExcludedWorks(
+      [item(1, 'Dune Messiah', ['Frank Herbert']), item(2, 'Dune Messiah')],
+      exclusions({
+        works: [
+          { title: 'dune', author: null },
+          { title: 'dune', author: 'frank herbert' },
+        ],
+      }),
+    );
+    // The untagged row has no author to compare, so only the exact rule could drop it.
+    expect(kept.map((b) => b.id)).toEqual([2]);
+  });
+
+  it('keeps a different volume even when its title text contains the other', () => {
+    // Equal title text is the exact rule's call, which checks volume numbers.
+    const kept = filterExcludedWorks(
+      [item(1, 'Tokyo Ghoul (Vol. 9)', ['Sui Ishida'])],
+      exclusions({ works: [{ title: 'tokyo ghoul (vol. 3)', author: 'sui ishida' }] }),
     );
     expect(kept.map((b) => b.id)).toEqual([1]);
   });
@@ -420,12 +479,12 @@ describe('filterExcludedWorks', () => {
     expect(kept.map((b) => b.id)).toEqual([1]);
   });
 
-  it("keeps Dracula's Guest when Dracula was read", () => {
+  it("drops Dracula's Guest when Dracula was read", () => {
     const kept = filterExcludedWorks(
       [item(1, "Dracula's Guest", ['Bram Stoker'])],
       exclusions({ works: [{ title: 'dracula', author: 'bram stoker' }] }),
     );
-    expect(kept.map((b) => b.id)).toEqual([1]);
+    expect(kept).toHaveLength(0);
   });
 
   it('drops an edition credited to only one of several authors', () => {

@@ -5,6 +5,7 @@
 
 ### Bug Fixes
 
+* let the app send any number of genres at onboarding ([60f6411](https://adl.github.com/adl-developer/kinkane-backend/commit/60f6411a9d7d4654ef6b8082ab35916457a0e1b0)) — [details](changelog/2026-10-07-genres-no-limit.md)
 * accept any genre label at onboarding, capped at 3 ([4ed04cb](https://adl.github.com/adl-developer/kinkane-backend/commit/4ed04cbf2a319604183ec88d5ba1ef84f148af10)) — [details](changelog/2026-10-07-genres-no-limit.md)
 
 
