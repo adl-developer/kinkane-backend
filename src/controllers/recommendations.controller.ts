@@ -12,29 +12,12 @@ import { readerTypeTagline } from '../lib/reader-type-taglines';
 // The freeform text goes straight into the preference embedding — no special handling needed.
 const feelingSchema = z.string().min(1).max(200);
 
-const GENRE_VALUES = [
-  'literary fiction',
-  'poetry',
-  'self-help',
-  'mystery',
-  'romance',
-  'business',
-  'horror',
-  'sci-fi',
-  'historical fiction',
-  'biography',
-  'fantasy',
-  'non-fiction',
-  'society & education',
-  'sport',
-  'crime',
-  'young adult',
-  'classics',
-  'graphic novel',
-  'politics',
-  'health & lifestyle',
-  'travel',
-] as const;
+// Open for the same reason as dislikes below: the genre chips belong to the
+// onboarding UI, and a fixed enum here turned every new chip (e.g.
+// "contemporary fiction") into a 400. Labels go into the embedded preference
+// text, so only length and count are capped. The fiction/non-fiction format
+// filter in recommendations.service.ts just ignores labels it doesn't know.
+const genreSchema = z.string().trim().min(1).max(100);
 
 // Open by design — both the category keys and the labels inside them belong to
 // the onboarding UI. Validating them against a fixed enum here meant every copy
@@ -60,8 +43,9 @@ const recommendationsSchema = z.object({
     .default([]),
 
   genres: z
-    .array(z.enum(GENRE_VALUES))
-    .min(1, 'At least 1 genre is required'),
+    .array(genreSchema)
+    .min(1, 'At least 1 genre is required')
+    .max(3, 'A maximum of 3 genres are allowed'),
 
   dislikes: dislikesSchema.default({}),
 });

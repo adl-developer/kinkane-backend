@@ -5,6 +5,7 @@
 
 ### Features
 
+* notifications stay until cleared, and friend requests can be marked read ([4237d1e](https://adl.github.com/adl-developer/kinkane-backend/commit/4237d1ee4f05a8947d6c55472658526f6c742184)) — [details](changelog/2026-10-06-friend-request-notification-sync.md)
 * start recording friend requests as notifications, ready to show next release ([764acc7](https://adl.github.com/adl-developer/kinkane-backend/commit/764acc7902cadef2984505ceb70e1e8ba709d827)) — [details](changelog/2026-10-06-friend-request-notification-sync.md)
 
 

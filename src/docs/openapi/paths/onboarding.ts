@@ -4,13 +4,6 @@ import {
 
 const TAG = 'Onboarding & Recommendations';
 
-const GENRE_VALUES = [
-  'literary fiction', 'poetry', 'self-help', 'mystery', 'romance', 'business',
-  'horror', 'sci-fi', 'historical fiction', 'biography', 'fantasy', 'non-fiction',
-  'society & education', 'sport', 'crime', 'young adult', 'classics',
-  'graphic novel', 'politics', 'health & lifestyle', 'travel',
-];
-
 const feelingsSchema = {
   type: 'array',
   items: { type: 'string', minLength: 1, maxLength: 200 },
@@ -23,11 +16,11 @@ const feelingsSchema = {
 
 const genresSchema = {
   type: 'array',
-  items: { type: 'string', enum: GENRE_VALUES },
-  minItems: 3,
+  items: { type: 'string', minLength: 1, maxLength: 100 },
+  minItems: 1,
   maxItems: 3,
   description:
-    'Exactly 3, and each must be one of the 21 listed values — this is a closed enum, unlike `dislikes`. Note it is **not** the same vocabulary as `GET /genres`, which returns catalogue genres.',
+    '1 to 3 genre labels. **Open-ended**, like `dislikes` — any label the onboarding UI offers is accepted, each ≤100 characters. Labels are embedded into the preference text; known ones (e.g. "literary fiction", "self-help") also drive a fiction/non-fiction format filter. Note it is **not** the same vocabulary as `GET /genres`, which returns catalogue genres.',
   example: ['literary fiction', 'historical fiction', 'poetry'],
 };
 

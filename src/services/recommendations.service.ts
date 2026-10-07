@@ -732,7 +732,8 @@ function buildDislikeConditions(dislikes: Dislikes) {
 }
 
 // Coarse fiction / non-fiction bucketing of the genre options exposed at
-// onboarding (see GENRE_VALUES in recommendations.controller.ts). pgvector
+// onboarding. The controller accepts any label, so unknown ones are simply
+// left unbucketed. pgvector
 // similarity alone doesn't enforce format — a self-help book can embed close
 // enough to "escapism, romance" to show up in the candidate pool — so this
 // backs the similarity search with an explicit format constraint.
@@ -773,6 +774,7 @@ const NONFICTION_GENRES = new Set([
 function resolveFormatIntent(genreSelections: string[]): 'fiction' | 'non-fiction' | null {
   const sides = new Set(
     genreSelections
+      .map((g) => g.trim().toLowerCase())
       .map((g) => (FICTION_GENRES.has(g) ? 'fiction' : NONFICTION_GENRES.has(g) ? 'non-fiction' : null))
       .filter((side): side is 'fiction' | 'non-fiction' => side !== null),
   );
