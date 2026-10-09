@@ -230,6 +230,44 @@ export const cataloguePaths = {
     },
   },
 
+  '/api/v1/books/{id}/reviews': {
+    get: {
+      tags: [TAG],
+      summary: 'Every reader’s reviews of this book, yours first',
+      description: [
+        'All readers’ ratings and reviews of this book (their community posts), a page at a time. Rating-only posts and `reading` posts are included.',
+        '',
+        '**Your own review is always first.** If you have reviewed this book it is the first item on page one, flagged `isMine: true`, whatever `sort` asks for, and it is not repeated on later pages. It is included **even when private**, because it is your review being shown back to you. Nobody else’s private review is ever returned.',
+        '',
+        'Matched on this exact book id: a review of another edition of the same title is not included.',
+        '',
+        'Requires sign-in.',
+      ].join('\n'),
+      parameters: [
+        bookIdParam,
+        param('sort', 'query', { type: 'string', enum: ['date_desc', 'date_asc'], default: 'date_desc' },
+          'Order of everyone else’s reviews. Newest first by default. Your own review stays first either way.'),
+        param('limit', 'query', { type: 'integer', minimum: 1, maximum: 50, default: 20 }, 'Reviews per page (1–50).'),
+        param('offset', 'query', { type: 'integer', minimum: 0, maximum: 10000, default: 0 },
+          'Reviews to skip. Pass the previous page’s offset + limit.'),
+      ],
+      responses: {
+        200: json('A page of reviews. Your own, if any, is the first item when offset is 0.',
+          object({
+            reviews: arrayOf(ref('BookReview')),
+            total: { type: 'integer', example: 84, description: 'Every review on the list, including yours.' },
+            sort: { type: 'string', example: 'date_desc' },
+            limit: { type: 'integer', example: 20 },
+            offset: { type: 'integer', example: 0 },
+            hasMore: { type: 'boolean', example: true, description: 'Whether another page follows.' },
+          })),
+        400: resp('ValidationError'),
+        404: json('No book with that id.', ref('Error'), { error: 'Book not found' }),
+        ...authErrors,
+      },
+    },
+  },
+
   '/api/v1/books/recommendations': {
     get: {
       tags: [TAG],

@@ -80,7 +80,7 @@ export type MembershipAction =
   | 'decline_invite';
 
 /** Why a requested invitee was not invited. Reported per user rather than failing the batch. */
-export type InviteSkipReason = 'self' | 'already_member' | 'already_invited' | 'not_a_friend';
+export type InviteSkipReason = 'self' | 'already_member' | 'already_invited' | 'not_found';
 
 export interface InviteResult {
   invited: number[];
@@ -840,7 +840,7 @@ export const groupsService = {
   },
 
   /**
-   * Invites friends to a group.
+   * Invites people to a group. Any user can be invited, not only the inviter's friends.
    *
    * Partial success by design: the picker can offer three people and one of them
    * may have joined in the meantime, so unusable ids come back in `skipped` with
@@ -871,18 +871,19 @@ export const groupsService = {
 
     if (candidates.length === 0) return { invited: [], skipped };
 
-    // Friendship is enforced here even though the picker only ever offers
-    // friends: a non-friend id means a stale client or someone probing, and
-    // neither should be able to push an invitation at a stranger.
-    const friends = await db
+    // Anyone on the app can be invited, not only friends — the picker offers
+    // friends, but an inviter may know someone by other means. The lookup is
+    // still needed: an id with no account behind it would otherwise reach the
+    // insert and fail the whole batch on the foreign key.
+    const accounts = await db
       .select({ id: users.id })
       .from(users)
-      .where(and(friendOfCondition(inviterId), inArray(users.id, candidates)));
-    const friendIds = new Set(friends.map((f) => f.id));
+      .where(inArray(users.id, candidates));
+    const accountIds = new Set(accounts.map((u) => u.id));
 
     const invitable = candidates.filter((id) => {
-      if (!friendIds.has(id)) {
-        skipped.push({ userId: id, reason: 'not_a_friend' });
+      if (!accountIds.has(id)) {
+        skipped.push({ userId: id, reason: 'not_found' });
         return false;
       }
       return true;
