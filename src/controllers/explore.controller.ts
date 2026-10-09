@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { shopCurrency } from './books.controller';
 import { z } from 'zod';
 import { booksService } from '../services/books.service';
+import { withMyReviews } from '../services/my-reviews.service';
 import { readerTypeEnum } from '../db/schema';
 import { readerTypeTagline } from '../lib/reader-type-taglines';
 import {
@@ -74,7 +75,8 @@ export const exploreController = {
         parsed.data.limit,
         await shopCurrency(req),
       );
-      res.status(200).json(result);
+      const userId = (req as Partial<AuthenticatedRequest>).user?.id;
+      res.status(200).json({ ...result, books: await withMyReviews(userId, result.books, (b) => b.id) });
     } catch (err: unknown) {
       logger.error('Unexpected error fetching bestsellers', { error: (err as Error).message });
       res.status(500).json({ error: 'An unexpected error occurred' });
@@ -97,7 +99,7 @@ export const exploreController = {
         userId,
         await shopCurrency(req),
       );
-      res.status(200).json({ books });
+      res.status(200).json({ books: await withMyReviews(userId, books, (b) => b.id) });
     } catch (err: unknown) {
       logger.error('Unexpected error fetching trending books', { error: (err as Error).message });
       res.status(500).json({ error: 'An unexpected error occurred' });
@@ -150,7 +152,7 @@ export const exploreController = {
       res.status(200).json({
         readerType: cohort,
         readerTypeTagline: readerTypeTagline(cohort),
-        books,
+        books: await withMyReviews(userId, books, (b) => b.id),
         pagination: { total, limit, offset, hasMore: offset + books.length < total },
       });
     } catch (err: unknown) {
@@ -176,7 +178,7 @@ export const exploreController = {
         parsed.data.limit,
         await shopCurrency(req),
       );
-      res.status(200).json({ books });
+      res.status(200).json({ books: await withMyReviews(user.id, books, (b) => b.id) });
     } catch (err: unknown) {
       logger.error('Unexpected error fetching personalized books', { error: (err as Error).message });
       res.status(500).json({ error: 'An unexpected error occurred' });

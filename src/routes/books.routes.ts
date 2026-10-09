@@ -20,7 +20,7 @@ const router = Router();
  *
  * NOTE: must be defined before /:id so Express does not treat "search" as an ID.
  */
-router.get('/search', booksController.suggestions);
+router.get('/search', optionalAuth, booksController.suggestions);
 
 /**
  * GET /books/recommendations?bookIds=1,2,3&limit=8
@@ -115,7 +115,7 @@ router.get('/recommendations', optionalAuth, booksController.basketRecommendatio
  *
  * Public — no auth required.
  */
-router.get('/', booksController.list);
+router.get('/', optionalAuth, booksController.list);
 
 /**
  * GET /books/:id
@@ -123,7 +123,10 @@ router.get('/', booksController.list);
  * Public — no auth required. If a valid access token is supplied, the response
  * also includes `userStatus` (the caller's shelf entry for this book: reading
  * status, liked flag, note) — null if they have no entry, or if the request
- * is unauthenticated.
+ * is unauthenticated — and `myReview`, the caller's own rating and review of
+ * it (their community post), null likewise.
+ *
+ * Every other book listing carries `myReview` on each book the same way.
  */
 router.get('/:id', optionalAuth, booksController.getById);
 

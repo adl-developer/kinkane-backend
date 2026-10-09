@@ -2,6 +2,7 @@ import { Response } from 'express';
 import { z } from 'zod';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 import { savedBooksService } from '../services/saved-books.service';
+import { withMyReviews } from '../services/my-reviews.service';
 import { resolveRequestCountry } from '../services/commerce/pricing';
 import { parseId } from '../lib/route-helpers';
 
@@ -31,7 +32,7 @@ export const savedBooksController = {
       countryCode: await resolveRequestCountry(req),
     });
 
-    res.status(200).json(result);
+    res.status(200).json({ ...result, books: await withMyReviews(req.user.id, result.books, (b) => b.bookId) });
   },
 
   /** POST /api/v1/saved-books */

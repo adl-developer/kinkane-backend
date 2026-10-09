@@ -181,6 +181,35 @@ const bookSchemas = {
     },
   },
 
+  BookCard: {
+    allOf: [
+      { $ref: '#/components/schemas/BookSummary' },
+      {
+        type: 'object',
+        description: 'A BookSummary as listings return it: with the caller\'s own rating and review attached.',
+        properties: {
+          myReview: { $ref: '#/components/schemas/MyReview' },
+        },
+      },
+    ],
+  },
+
+  MyReview: {
+    type: 'object',
+    nullable: true,
+    description:
+      "The caller's own rating and review of this book — their community post for it, private ones included. `null` when they have not reviewed this exact edition, and always `null` for anonymous callers. Matched by book id, not by work: a review of the paperback does not appear on the hardback. Edit or delete it through `/community/posts/{postId}`.\n\n**Where it sits:** on each book in lists, search, discovery feeds, recommendations, shelves and saved books; on the nested `book` card of group shelf entries; and at the **top level** of the response (beside `book`, not inside it) on `GET /books/{id}` and the friend's-book page.",
+    properties: {
+      postId: { type: 'integer', example: 3121 },
+      rating: { type: 'integer', minimum: 0, maximum: 5, example: 4 },
+      status: { type: 'string', enum: ['reading', 'read'], example: 'read' },
+      body: { type: 'string', nullable: true, example: 'Twelve voices and not one wasted.' },
+      isPublic: { type: 'boolean', example: true },
+      createdAt: { type: 'string', format: 'date-time', example: '2026-09-21T19:04:00.000Z' },
+      updatedAt: { type: 'string', format: 'date-time', example: '2026-09-21T19:04:00.000Z' },
+    },
+  },
+
   BookDetail: {
     allOf: [
       { $ref: '#/components/schemas/BookSummary' },
@@ -254,26 +283,27 @@ const bookSchemas = {
               },
             },
           },
-          userStatus: {
-            type: 'object',
-            nullable: true,
-            description:
-              "The caller's own shelf entry for this book. Populated only when a valid access token is sent — `null` for anonymous callers and for books the caller has no entry for.",
-            properties: {
-              status: {
-                type: 'string',
-                nullable: true,
-                enum: ['want_to_read', 'reading', 'read', null],
-                example: 'reading',
-              },
-              liked: { type: 'boolean', example: true },
-              note: { type: 'string', nullable: true, example: 'Lent to Ama' },
-              noteIsPublic: { type: 'boolean', example: false },
-            },
-          },
         },
       },
     ],
+  },
+
+  UserStatus: {
+    type: 'object',
+    nullable: true,
+    description:
+      "The caller's own shelf entry for this book. Populated only when a valid access token is sent — `null` for anonymous callers and for books the caller has no entry for.",
+    properties: {
+      status: {
+        type: 'string',
+        nullable: true,
+        enum: ['want_to_read', 'reading', 'read', null],
+        example: 'reading',
+      },
+      liked: { type: 'boolean', example: true },
+      note: { type: 'string', nullable: true, example: 'Lent to Ama' },
+      noteIsPublic: { type: 'boolean', example: false },
+    },
   },
 
   UserBookEntry: {
@@ -296,6 +326,7 @@ const bookSchemas = {
         example: true,
       },
       addedAt: { type: 'string', format: 'date-time', example: '2026-03-04T18:22:11.000Z' },
+      myReview: { $ref: '#/components/schemas/MyReview' },
     },
   },
 } as const;
@@ -995,6 +1026,10 @@ const miscSchemas = {
         type: 'string',
         description: 'A ≤120-character reason, generated per book by Gemini.',
         example: 'Polyphonic and hopeful, with the historical sweep you asked for.',
+      },
+      myReview: {
+        allOf: [{ $ref: '#/components/schemas/MyReview' }],
+        description: 'Present on `PATCH /recommendations/refresh` only — the guest quiz has no reviews to show.',
       },
     },
   },
