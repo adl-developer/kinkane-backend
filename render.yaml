@@ -8,6 +8,9 @@ services:
     startCommand: node dist/server.js
     preDeployCommand: npm run db:init
     healthCheckPath: /api/health
+    # Deploy a push to main only once GitHub Actions CI passes on it — otherwise
+    # CI reports a broken migration or endpoint after it is already live.
+    autoDeployTrigger: checksPass
     envVars:
       - key: NODE_ENV
         value: production
