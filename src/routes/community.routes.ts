@@ -2,7 +2,8 @@ import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.middleware';
 import { requirePlus } from '../middleware/require-plus.middleware';
 import { communityController } from '../controllers/community.controller';
-import { wrap } from '../lib/route-helpers';
+import { mentionsController } from '../controllers/mentions.controller';
+import { wrap, wrapHttp } from '../lib/route-helpers';
 
 const router = Router();
 
@@ -15,6 +16,10 @@ router.use(requireAuth);
 
 // Search
 router.get('/search', wrap(communityController.search));
+
+// The @-mention typeahead. Free, not Plus: mentions work in group discussions,
+// which are open to every member.
+router.get('/mention-suggestions', wrapHttp(mentionsController.suggest));
 
 // Friend book detail
 router.get('/users/:friendId/books/:bookId', wrap(communityController.getFriendBookDetail));

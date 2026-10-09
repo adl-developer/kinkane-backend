@@ -3,6 +3,7 @@ import { db } from '../../db';
 import { userReports, users, groups, groupBookComments } from '../../db/schema';
 import { adminCustomersService } from './customers.service';
 import { adminNotificationsService } from './notifications.service';
+import { renderTexts } from '../mentions.service';
 
 const reporter = aliasedTable(users, 'reporter');
 const reported = aliasedTable(users, 'reported');
@@ -86,19 +87,21 @@ export const adminReportsService = {
       .groupBy(userReports.status);
 
     const [rows, [total], counts] = await Promise.all([rowsQuery, totalQuery, countsQuery]);
+    // Stored comment text carries mention tokens; a moderator reads @usernames.
+    const commentBodies = await renderTexts(rows.map((r) => r.groupCommentBody));
 
     const byStatus: Record<string, number> = { pending: 0, resolved: 0, dismissed: 0 };
     for (const c of counts) byStatus[c.status] = Number(c.n);
 
     return {
-      reports: rows.map((r) => ({
+      reports: rows.map((r, i) => ({
         id: r.id,
         reference: r.reference,
         status: r.status,
         reason: r.reason,
         postId: r.postId,
         groupComment:
-          r.groupCommentId !== null ? { id: r.groupCommentId, body: r.groupCommentBody } : null,
+          r.groupCommentId !== null ? { id: r.groupCommentId, body: commentBodies[i].text } : null,
         targetType: r.targetType,
         // Whichever target this report is about, named. Lets the queue render a
         // row without branching on targetType, and without dereferencing a

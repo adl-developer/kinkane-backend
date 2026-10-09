@@ -5,6 +5,8 @@ import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-ex
 import { notificationPreferencesService } from './notification-preferences.service';
 import { enqueuePush } from '../lib/push-queue';
 import { logger } from '../lib/logger';
+import { mentionsService, renderTexts } from './mentions.service';
+import type { MentionRef } from '../lib/mention-text';
 
 const COMMENT_PREVIEW_LENGTH = 140;
 
@@ -22,6 +24,7 @@ export interface PostItem {
   id: number;
   userId: number;
   userName: string;
+  userUsername: string | null;
   userPhotoUrl: string | null;
   bookId: number;
   bookTitle: string;
@@ -30,6 +33,8 @@ export interface PostItem {
   rating: number;
   status: 'reading' | 'read';
   body: string | null;
+  /** Linked @handles in `body`, by UTF-16 offset. */
+  mentions: MentionRef[];
   isPublic: boolean;
   likeCount: number;
   commentCount: number;
@@ -45,10 +50,13 @@ export interface FriendBookDetail {
   bookExcerpt: BookExcerptInfo | null;
   contributors: { personName: string | null; role: string | null }[];
   friendName: string;
+  friendUsername: string | null;
   friendPhotoUrl: string | null;
   rating: number | null;
   review: string | null;
+  reviewMentions: MentionRef[];
   note: string | null;
+  noteMentions: MentionRef[];
 }
 
 export interface CommentItem {
@@ -56,8 +64,10 @@ export interface CommentItem {
   postId: number;
   userId: number;
   userName: string;
+  userUsername: string | null;
   userPhotoUrl: string | null;
   body: string;
+  mentions: MentionRef[];
   likeCount: number;
   likedByMe: boolean;
   createdAt: Date;
@@ -137,6 +147,8 @@ async function notifyPostLike(
 
 // Notifies the post owner that someone commented on their post. Never notifies
 // on a self-comment (caller is expected to check `post.userId !== userId` first).
+// The caller also checks the owner's `comments` preference: it needs the answer
+// itself, to know whether this notification covers a mention of the owner.
 // bookTitle, bookId, bookCoverUrl, commenterName, and commenterPhotoUrl are
 // passed in from the caller to avoid extra DB fetches.
 //
@@ -154,9 +166,6 @@ async function notifyPostComment(
   commentId: number,
   commentBody: string,
 ): Promise<void> {
-  const enabled = await notificationPreferencesService.isEnabled(recipientId, 'comments');
-  if (!enabled) return;
-
   const commentPreview =
     commentBody.length > COMMENT_PREVIEW_LENGTH
       ? `${commentBody.slice(0, COMMENT_PREVIEW_LENGTH)}…`
@@ -194,15 +203,18 @@ async function notifyPostComment(
 
 // Batch-fetches like counts, comment counts, and the requester's own likes for a
 // set of post IDs. Extracted to avoid copy-paste across list functions.
+//
+// Also renders each body's @mentions (see mentions.service), so every list that
+// goes through here hands the client usernames rather than stored tokens.
 export async function enrichPosts(
-  rows: PostItem[],
+  rows: Omit<PostItem, 'mentions'>[],
   requesterId: number,
 ): Promise<PostItem[]> {
-  if (rows.length === 0) return rows;
+  if (rows.length === 0) return [];
 
   const postIds = rows.map((r) => r.id);
 
-  const [likeCounts, commentCounts, myLikes] = await Promise.all([
+  const [likeCounts, commentCounts, myLikes, rendered] = await Promise.all([
     db
       .select({ postId: postLikes.postId, count: sql<number>`COUNT(*)::int` })
       .from(postLikes)
@@ -217,14 +229,17 @@ export async function enrichPosts(
       .select({ postId: postLikes.postId })
       .from(postLikes)
       .where(and(inArray(postLikes.postId, postIds), eq(postLikes.userId, requesterId))),
+    renderTexts(rows.map((r) => r.body)),
   ]);
 
   const likeMap = new Map(likeCounts.map((r) => [r.postId, r.count]));
   const commentMap = new Map(commentCounts.map((r) => [r.postId, r.count]));
   const likedSet = new Set(myLikes.map((r) => r.postId));
 
-  return rows.map((r) => ({
+  return rows.map((r, i) => ({
     ...r,
+    body: rendered[i].text,
+    mentions: rendered[i].mentions,
     likeCount: likeMap.get(r.id) ?? 0,
     commentCount: commentMap.get(r.id) ?? 0,
     likedByMe: likedSet.has(r.id),
@@ -235,6 +250,7 @@ const POST_SELECT_COLUMNS = {
   id: posts.id,
   userId: posts.userId,
   userName: users.name,
+  userUsername: users.username,
   userPhotoUrl: users.photoUrl,
   bookId: posts.bookId,
   bookTitle: books.title,
@@ -301,6 +317,8 @@ export const communityService = {
 
     if (!book) throw Object.assign(new Error('Book not found'), { statusCode: 404 });
 
+    const body = await mentionsService.prepare(fields.body ?? null);
+
     const [row] = await db
       .insert(posts)
       .values({
@@ -308,7 +326,7 @@ export const communityService = {
         bookId: fields.bookId,
         rating: fields.rating,
         status: fields.status,
-        body: fields.body ?? null,
+        body: body.text,
         isPublic: fields.isPublic,
       })
       .onConflictDoNothing()
@@ -317,6 +335,8 @@ export const communityService = {
     if (!row) {
       throw Object.assign(new Error('You have already posted about this book'), { statusCode: 409 });
     }
+
+    await mentionsService.afterWrite({ type: 'post', id: row.id }, userId, body.mentionedIds, { isNew: true });
 
     return { id: row.id };
   },
@@ -351,9 +371,12 @@ export const communityService = {
         .limit(1),
       getExcerptsByIsbns([bookIsbn13]),
     ]);
+    const [rendered] = await renderTexts([postFields.body]);
 
     return {
       ...postFields,
+      body: rendered.text,
+      mentions: rendered.mentions,
       bookExcerpt: pickExcerpt(bookIsbn13, excerptMap),
       likeCount: likeRow?.count ?? 0,
       commentCount: commentRow?.count ?? 0,
@@ -366,21 +389,28 @@ export const communityService = {
     userId: number,
     fields: { rating?: number; status?: 'reading' | 'read'; body?: string | null; isPublic?: boolean },
   ): Promise<void> {
+    const body = fields.body !== undefined ? await mentionsService.prepare(fields.body) : undefined;
+
     const updateSet: Record<string, unknown> = { updatedAt: new Date() };
     if (fields.rating !== undefined) updateSet.rating = fields.rating;
     if (fields.status !== undefined) updateSet.status = fields.status;
-    if (fields.body !== undefined) updateSet.body = fields.body;
+    if (body !== undefined) updateSet.body = body.text;
     if (fields.isPublic !== undefined) updateSet.isPublic = fields.isPublic;
 
     const result = await db
       .update(posts)
       .set(updateSet)
       .where(and(eq(posts.id, postId), eq(posts.userId, userId)))
-      .returning({ id: posts.id });
+      .returning({ id: posts.id, isPublic: posts.isPublic });
 
     if (result.length === 0) {
       throw Object.assign(new Error('Post not found'), { statusCode: 404 });
     }
+
+    if (body !== undefined) await mentionsService.afterWrite({ type: 'post', id: postId }, userId, body.mentionedIds);
+    // A private post going public releases the mention notifications that were
+    // held back while nobody else could read it — its own and its comments'.
+    if (fields.isPublic === true && result[0].isPublic) await mentionsService.releaseUnderPost(postId);
   },
 
   async deletePost(postId: number, userId: number): Promise<void> {
@@ -606,13 +636,26 @@ export const communityService = {
     assertFound(post, 'Post');
     assertPostVisible(post, userId);
 
+    const prepared = await mentionsService.prepare(body);
     const [row] = await db
       .insert(comments)
-      .values({ postId, userId, body })
+      .values({ postId, userId, body: prepared.text })
       .returning({ id: comments.id });
 
     // Never notify the post owner about their own comment.
-    if (post.userId !== userId && actor) {
+    const notifyOwner =
+      post.userId !== userId && !!actor && (await notificationPreferencesService.isEnabled(post.userId, 'comments'));
+
+    // An owner who is being sent "new comment on your post" for these words is
+    // not also sent "you were mentioned" for them. Only here, on the comment's
+    // creation: an edit sends no comment notification, so a mention it adds
+    // reaches the owner as a mention like anyone else's.
+    await mentionsService.afterWrite({ type: 'comment', id: row.id }, userId, prepared.mentionedIds, {
+      isNew: true,
+      alreadyNotifiedIds: notifyOwner ? [post.userId] : [],
+    });
+
+    if (notifyOwner && actor) {
       notifyPostComment(
         post.userId,
         userId,
@@ -631,15 +674,18 @@ export const communityService = {
   },
 
   async updateComment(commentId: number, userId: number, body: string): Promise<void> {
+    const prepared = await mentionsService.prepare(body);
     const result = await db
       .update(comments)
-      .set({ body, updatedAt: new Date() })
+      .set({ body: prepared.text, updatedAt: new Date() })
       .where(and(eq(comments.id, commentId), eq(comments.userId, userId)))
       .returning({ id: comments.id });
 
     if (result.length === 0) {
       throw Object.assign(new Error('Comment not found'), { statusCode: 404 });
     }
+
+    await mentionsService.afterWrite({ type: 'comment', id: commentId }, userId, prepared.mentionedIds);
   },
 
   async deleteComment(commentId: number, userId: number): Promise<void> {
@@ -677,6 +723,7 @@ export const communityService = {
           postId: comments.postId,
           userId: comments.userId,
           userName: users.name,
+          userUsername: users.username,
           userPhotoUrl: users.photoUrl,
           body: comments.body,
           createdAt: comments.createdAt,
@@ -695,7 +742,7 @@ export const communityService = {
 
     const commentIds = rows.map((r) => r.id);
 
-    const [likeCounts, myLikes] = await Promise.all([
+    const [likeCounts, myLikes, rendered] = await Promise.all([
       db
         .select({ commentId: commentLikes.commentId, count: sql<number>`COUNT(*)::int` })
         .from(commentLikes)
@@ -705,14 +752,17 @@ export const communityService = {
         .select({ commentId: commentLikes.commentId })
         .from(commentLikes)
         .where(and(inArray(commentLikes.commentId, commentIds), eq(commentLikes.userId, requesterId))),
+      renderTexts(rows.map((r) => r.body)),
     ]);
 
     const likeMap = new Map(likeCounts.map((r) => [r.commentId, r.count]));
     const likedSet = new Set(myLikes.map((r) => r.commentId));
 
     return {
-      comments: rows.map((r) => ({
+      comments: rows.map((r, i) => ({
         ...r,
+        body: rendered[i].text ?? '',
+        mentions: rendered[i].mentions,
         likeCount: likeMap.get(r.id) ?? 0,
         likedByMe: likedSet.has(r.id),
       })),
@@ -805,6 +855,7 @@ export const communityService = {
           note: userBooks.note,
           noteIsPublic: userBooks.noteIsPublic,
           friendName: users.name,
+          friendUsername: users.username,
           friendPhotoUrl: users.photoUrl,
         })
         .from(userBooks)
@@ -816,13 +867,15 @@ export const communityService = {
     assertFound(bookRow, 'Book');
     assertFound(userBookRow, 'User book');
 
-    const [contributorRows, excerptMap] = await Promise.all([
+    const note = userBookRow.noteIsPublic ? (userBookRow.note ?? null) : null;
+    const [contributorRows, excerptMap, [review, renderedNote]] = await Promise.all([
       db
         .select({ personName: bookContributors.personName, role: bookContributors.role })
         .from(bookContributors)
         .where(eq(bookContributors.bookId, bookId))
         .orderBy(bookContributors.sequenceNumber),
       getExcerptsByIsbns([bookRow.isbn13]),
+      renderTexts([postRow?.body ?? null, note]),
     ]);
 
     return {
@@ -832,10 +885,13 @@ export const communityService = {
       bookExcerpt: pickExcerpt(bookRow.isbn13, excerptMap),
       contributors: contributorRows,
       friendName: userBookRow.friendName,
+      friendUsername: userBookRow.friendUsername,
       friendPhotoUrl: userBookRow.friendPhotoUrl,
       rating: postRow?.rating ?? null,
-      review: postRow?.body ?? null,
-      note: userBookRow.noteIsPublic ? (userBookRow.note ?? null) : null,
+      review: review.text,
+      reviewMentions: review.mentions,
+      note: renderedNote.text,
+      noteMentions: renderedNote.mentions,
     };
   },
 };

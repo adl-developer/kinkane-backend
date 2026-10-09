@@ -17,6 +17,15 @@ export const accountPaths = {
           object({
             settings: object({
               name: { type: 'string', example: 'Ada' },
+              username: { type: 'string', nullable: true, example: 'ada.reads' },
+              usernameChangedAt: {
+                type: 'string', format: 'date-time', nullable: true,
+                description: 'When the user last chose a username. Null if they never have — a generated name can be replaced straight away.',
+              },
+              nextUsernameChangeAt: {
+                type: 'string', format: 'date-time', nullable: true,
+                description: 'When the username may next be changed. Null when it can be changed now.',
+              },
               photoUrl: { type: 'string', format: 'uri', nullable: true },
               shelfVisibility: { type: 'string', enum: ['public', 'friends', 'private'], example: 'friends' },
               readerType: {
@@ -35,6 +44,62 @@ export const accountPaths = {
         404: resp('NotFound'),
         429: resp('RateLimited'),
         500: resp('ServerError'),
+      },
+    },
+  },
+
+  '/api/v1/user/settings/username': {
+    patch: {
+      tags: [TAG],
+      summary: 'Change your @username',
+      description: [
+        'Normalized like signup (trimmed, leading `@` dropped, lowercased), then the same rules: 3–20 characters of `a-z 0-9 _ .`, not starting or ending with a dot, no `..`, not reserved.',
+        '',
+        '**Once every 30 days.** The first change after signup is always allowed — a generated username was never chosen. The name given up is **held for you for 30 days**: nobody else can take it, and you can take it back.',
+        '',
+        '**Taking it back is an undo**, allowed even inside the 30 days. It does not restart the cooldown, and the name you step off is held only until the original hold would have run out.',
+        '',
+        'Existing mentions follow you — they are stored by account id and read as the new name from the next request.',
+      ].join('\n'),
+      requestBody: body(object({ username: { type: 'string', example: 'ada.reads' } }, ['username'])),
+      responses: {
+        200: json('Changed.', object({
+          username: { type: 'string', example: 'ada.reads' },
+          usernameChangedAt: { type: 'string', format: 'date-time' },
+          nextChangeAt: { type: 'string', format: 'date-time', description: 'The earliest the next change may happen.' },
+        })),
+        400: resp('ValidationError'),
+        409: json('`USERNAME_TAKEN` (someone has it, or is holding it), or `USERNAME_UNCHANGED` (it is already yours).', ref('Error'),
+          { error: 'That username is taken', code: 'USERNAME_TAKEN' }),
+        422: json('`USERNAME_INVALID` or `USERNAME_RESERVED`.', ref('Error'),
+          { error: 'That username is reserved', code: 'USERNAME_RESERVED' }),
+        429: json('`USERNAME_CHANGE_TOO_SOON` — changed within the last 30 days. `nextChangeAt` says when it is allowed. (Also the generic rate limit.)', ref('Error'),
+          { error: 'You changed your username recently — try again later', code: 'USERNAME_CHANGE_TOO_SOON', nextChangeAt: '2026-11-08T18:04:55.608Z' }),
+        401: resp('Unauthorized'),
+        500: resp('ServerError'),
+      },
+    },
+  },
+
+  '/api/v1/user/mentions': {
+    get: {
+      tags: [NOTIF],
+      summary: 'Where you have been @-mentioned',
+      description:
+        'Every mention of the caller that has been delivered, newest first, across posts, comments, groups, group discussions and shelf notes.\n\nVisibility is re-checked on every read: an entry whose text the caller can no longer see (a private group they are not in, a post since made private) keeps its place with `restricted: true` and no excerpt, so pages never shift under the client. Mentions in a private post or note are not listed until it is made public. Self-mentions are never listed.',
+      parameters: [
+        param('limit', 'query', { type: 'integer', minimum: 1, maximum: 50, default: 20 }, 'Items per page (1–50).'),
+        param('offset', 'query', { type: 'integer', minimum: 0, default: 0 }, 'Items to skip.'),
+      ],
+      responses: {
+        200: json('A page of mentions.', object({
+          mentions: arrayOf(ref('MentionFeedItem')),
+          total: { type: 'integer', example: 12 },
+          limit: { type: 'integer', example: 20 },
+          offset: { type: 'integer', example: 0 },
+        })),
+        400: resp('ValidationError'),
+        ...authErrors,
       },
     },
   },
@@ -111,7 +176,7 @@ export const accountPaths = {
     get: {
       tags: [NOTIF],
       summary: 'Get notification preferences',
-      description: 'All six toggles. Every one defaults to true at account creation.',
+      description: 'All eight toggles. Every one defaults to true at account creation.',
       responses: {
         200: json('The preferences.',
           object({ notificationPreferences: ref('NotificationPreferences') })),
@@ -131,6 +196,8 @@ export const accountPaths = {
         friendRequests: { type: 'boolean', example: true },
         comments: { type: 'boolean', example: true },
         likes: { type: 'boolean', example: false },
+        groupInvites: { type: 'boolean', example: true },
+        mentions: { type: 'boolean', example: true },
       })),
       responses: {
         200: json('Updated.', object({ notificationPreferences: ref('NotificationPreferences') })),

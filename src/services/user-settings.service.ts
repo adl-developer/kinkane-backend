@@ -3,9 +3,14 @@ import { db } from '../db';
 import { users } from '../db/schema';
 import type { ShelfVisibility, ReaderType } from '../db/schema/users';
 import { readerTypeTagline } from '../lib/reader-type-taglines';
+import { nextUsernameChangeAt } from '../lib/username';
 
 export interface UserSettings {
   name: string;
+  username: string | null;
+  usernameChangedAt: Date | null;
+  /** When the username may next be changed; null when it can be changed now. */
+  nextUsernameChangeAt: Date | null;
   photoUrl: string | null;
   shelfVisibility: ShelfVisibility;
   readerType: ReaderType | null;
@@ -17,6 +22,8 @@ export const userSettingsService = {
     const [user] = await db
       .select({
         name: users.name,
+        username: users.username,
+        usernameChangedAt: users.usernameChangedAt,
         photoUrl: users.photoUrl,
         shelfVisibility: users.shelfVisibility,
         readerType: users.readerType,
@@ -29,8 +36,12 @@ export const userSettingsService = {
       throw Object.assign(new Error('User not found'), { statusCode: 404 });
     }
 
+    const nextChange = nextUsernameChangeAt(user.usernameChangedAt);
     return {
       name: user.name,
+      username: user.username,
+      usernameChangedAt: user.usernameChangedAt,
+      nextUsernameChangeAt: nextChange && nextChange > new Date() ? nextChange : null,
       photoUrl: user.photoUrl ?? null,
       shelfVisibility: user.shelfVisibility,
       readerType: user.readerType ?? null,

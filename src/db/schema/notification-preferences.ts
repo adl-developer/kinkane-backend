@@ -34,6 +34,10 @@ export const notificationPreferences = pgTable('notification_preferences', {
   // marketing at you — so it sits with friendRequests, outside the promotional
   // group, and keeps arriving after a one-click unsubscribe.
   groupInvites: boolean('group_invites').notNull().default(true),
+  // Someone @-mentioned you. Push and the in-app feed only, like comments and
+  // likes — and, like group invites, a person reaching out rather than us
+  // marketing, so one-click unsubscribe leaves it alone.
+  mentions: boolean('mentions').notNull().default(true),
   lastRecommendationSentAt: timestamp('last_recommendation_sent_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),

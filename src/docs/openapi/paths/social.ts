@@ -1,5 +1,5 @@
 import {
-  ref, resp, json, body, object, param, arrayOf, authErrors, plusErrors, successResponse,
+  ref, resp, json, body, object, param, arrayOf, authErrors, plusErrors, successResponse, publicEndpoint,
 } from '../helpers';
 
 const COMMUNITY = 'Community';
@@ -308,7 +308,7 @@ export const socialPaths = {
       tags: [COMMUNITY],
       summary: 'Search people, posts and groups',
       description:
-        'One query across users, posts and groups. `filter` narrows it; with `all`, every array comes back and only the requested slice of each is populated. Results are scoped to what the caller is allowed to see.\n\n`filter=groups` backs both the Community "Groups" tab and the Explore `Books | Authors | Groups` toggle. Groups rank by the same four-tier formula as people and posts, so the same query orders consistently wherever results appear side by side.\n\n**Private groups are included.** They are unjoinable, not secret — hiding them would make the "you need an invite to join" screen unreachable for anyone not already sent a link.',
+        'One query across users, posts and groups. `filter` narrows it; with `all`, every array comes back and only the requested slice of each is populated. Results are scoped to what the caller is allowed to see.\n\nPeople match on display name and on username. A query starting with `@` (`@ama`) is a username search: it matches usernames by prefix only.\n\n`filter=groups` backs both the Community "Groups" tab and the Explore `Books | Authors | Groups` toggle. Groups rank by the same four-tier formula as people and posts, so the same query orders consistently wherever results appear side by side.\n\n**Private groups are included.** They are unjoinable, not secret — hiding them would make the "you need an invite to join" screen unreachable for anyone not already sent a link.',
       parameters: [
         param('q', 'query', { type: 'string', minLength: 1, maxLength: 200 },
           'The search text. Trimmed; must be at least 1 character after trimming.',
@@ -379,6 +379,79 @@ export const socialPaths = {
   },
 
   // ── People & following ────────────────────────────────────────────────────
+
+  '/api/v1/users/username-available': {
+    get: {
+      tags: [PEOPLE],
+      ...publicEndpoint,
+      summary: 'Is this @username free?',
+      description: [
+        'For the username field on the signup screen and in settings — call it as the user types (debounced). **Works signed out**; send the token when there is one and the answer becomes personal: your own username reads as available with `current: true`, a name you are holding is available to you, and inside the 30-day change cooldown you get `reason: too_soon` with `nextChangeAt`.',
+        '',
+        'Always **200** — `available` is the answer. `username` echoes what would be saved after normalizing (trimmed, leading `@` dropped, lowercased), so the field can show it.',
+        '',
+        '`reason`, when not available: `invalid_format`, `reserved`, `taken` (someone has it or is holding it), `too_soon`.',
+        '',
+        '**Rate limit:** 120 per 15 minutes per user (per IP when signed out).',
+      ].join('\n'),
+      parameters: [
+        param('username', 'query', { type: 'string', maxLength: 64 }, 'The name to check, as typed.', { required: true, example: '@Ama_Reads' }),
+      ],
+      responses: {
+        200: json('The answer.', object({
+          username: { type: 'string', example: 'ama_reads' },
+          available: { type: 'boolean', example: true },
+          reason: { type: 'string', enum: ['invalid_format', 'reserved', 'taken', 'too_soon'], description: 'Only when `available` is false.' },
+          current: { type: 'boolean', description: 'Only present (true) when this is already the caller’s username.' },
+          nextChangeAt: { type: 'string', format: 'date-time', description: 'Only with `too_soon`.' },
+        }), { username: 'ama_reads', available: true }),
+        400: resp('ValidationError'),
+        429: resp('RateLimited'),
+        500: resp('ServerError'),
+      },
+    },
+  },
+
+  '/api/v1/users/by-username/{username}': {
+    get: {
+      tags: [PEOPLE],
+      summary: 'Get a profile by @username',
+      description:
+        'The same response as `GET /users/{userId}`, looked up by username — for a typed or shared handle (a deep link like `kinkane.app/@ama_reads`). Case-insensitive; a leading `@` is fine. Tapping a mention does not need this: every mention carries its `userId`.\n\nAs with `/users/{userId}`, your own username is a 400 — route to your own profile instead. A name someone gave up and is still holding resolves to nobody (404).',
+      parameters: [param('username', 'path', { type: 'string' }, 'The username, with or without `@`.', { example: 'ama_reads' })],
+      responses: {
+        200: json('The profile.', ref('UserProfile')),
+        400: resp('ValidationError'),
+        404: resp('NotFound'),
+        ...authErrors,
+      },
+    },
+  },
+
+  '/api/v1/community/mention-suggestions': {
+    get: {
+      tags: [COMMUNITY],
+      summary: 'The @-mention typeahead',
+      description: [
+        'Up to 10 people to offer as the user types after `@`. Anyone with a username can be mentioned, so anyone can be suggested; ranking puts the likely person first — people already in this conversation (with `context`), then the caller’s friends, then everyone else, and a username prefix match ahead of a display-name match.',
+        '',
+        'With an empty `q` (just `@` typed) only the conversation and friends are offered.',
+        '',
+        'Never includes the caller, guest accounts or blacklisted accounts. Free — not Plus-gated, because group discussions are open to every member.',
+      ].join('\n'),
+      parameters: [
+        param('q', 'query', { type: 'string', maxLength: 64, default: '' }, 'What has been typed after the `@` (a leading `@` is also accepted).', { example: 'am' }),
+        param('context', 'query', { type: 'string', pattern: '^(post|group|group_book):[1-9][0-9]*$' },
+          'Where the user is typing: `post:<postId>`, `group:<groupId>` or `group_book:<groupBookId>`. Ranks that conversation’s people first. Ignored when the caller cannot see it — a private group’s members are never revealed this way.',
+          { example: 'group_book:812' }),
+      ],
+      responses: {
+        200: json('Suggestions, best first.', object({ users: arrayOf(ref('UserSummary')) })),
+        400: resp('ValidationError'),
+        ...authErrors,
+      },
+    },
+  },
 
   '/api/v1/users/{userId}': {
     get: {

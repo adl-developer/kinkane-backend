@@ -1,6 +1,7 @@
 import { Response } from 'express';
 import { z } from 'zod';
 import { usersService } from '../services/users.service';
+import { usernamesService } from '../services/usernames.service';
 import { withMyReviews } from '../services/my-reviews.service';
 import { parseId } from '../lib/route-helpers';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
@@ -22,7 +23,33 @@ const followRequestsQuerySchema = followGraphQuerySchema.extend({
   direction: z.enum(['incoming', 'outgoing']).default('incoming'),
 });
 
+const usernameQuerySchema = z.object({
+  username: z.string().min(1).max(64),
+});
+
 export const usersController = {
+  /**
+   * GET /users/username-available?username= — always 200; `available` is the
+   * answer. Mounted with optionalAuth, so `req.user` may be absent.
+   */
+  async usernameAvailable(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const parsed = usernameQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+    const result = await usernamesService.checkAvailability(parsed.data.username, req.user?.id);
+    res.status(200).json(result);
+  },
+
+  /** GET /users/by-username/:username — the same profile as GET /users/:userId. */
+  async getUserProfileByUsername(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const userId = await usernamesService.findUserId(req.params.username);
+    if (userId === null) throw Object.assign(new Error('User not found'), { statusCode: 404 });
+    const profile = await usersService.getUserProfile(userId, req.user.id);
+    res.status(200).json(profile);
+  },
+
   async getUserProfile(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const targetId = parseId(req.params.userId, 'user ID');

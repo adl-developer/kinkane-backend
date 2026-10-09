@@ -16,6 +16,8 @@ import {
 import { groupViewerCapabilities, type ViewerCapabilities } from './groups.service';
 import { addDisplayGenre, type GenreRef } from '../lib/genre-display';
 import type { HttpError } from '../lib/route-helpers';
+import { mentionsService, renderTexts } from './mentions.service';
+import type { MentionRef } from '../lib/mention-text';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -36,6 +38,8 @@ export interface GroupShelfItem {
   status: GroupBookStatus;
   book: GroupBookCard;
   description: string | null;
+  /** Linked @handles in `description`. */
+  descriptionMentions: MentionRef[];
   startedOn: string | null;
   finishedOn: string | null;
   addedAt: Date;
@@ -81,8 +85,11 @@ export interface GroupCommentItem {
   parentId: number | null;
   userId: number;
   userName: string;
+  userUsername: string | null;
   userPhotoUrl: string | null;
   body: string;
+  /** Linked @handles in `body`. */
+  mentions: MentionRef[];
   likeCount: number;
   /** Top-level comments only; always 0 on a reply, which cannot have replies. */
   replyCount: number;
@@ -405,20 +412,22 @@ async function countComments(groupBookIds: number[]): Promise<Map<number, number
 }
 
 async function toItems(rows: ShelfRow[]): Promise<GroupShelfItem[]> {
-  const [cards, counts] = await Promise.all([
+  const [cards, counts, rendered] = await Promise.all([
     loadBookCards(rows.map((r) => r.bookId)),
     countComments(rows.map((r) => r.id)),
+    renderTexts(rows.map((r) => r.description)),
   ]);
   // A row whose book vanished mid-request (the FK cascades) is dropped rather
   // than returned with a null book every client would have to guard against.
-  return rows.flatMap((r) => {
+  return rows.flatMap((r, i) => {
     const book = cards.get(r.bookId);
     if (!book) return [];
     return [{
       id: r.id,
       status: r.status,
       book,
-      description: r.description,
+      description: rendered[i].text,
+      descriptionMentions: rendered[i].mentions,
       startedOn: r.startedOn,
       finishedOn: r.finishedOn,
       addedAt: r.addedAt,
@@ -429,13 +438,13 @@ async function toItems(rows: ShelfRow[]): Promise<GroupShelfItem[]> {
 
 /** Like counts, reply counts and the viewer's likes for a page of comments. */
 async function enrichComments(
-  rows: Omit<GroupCommentItem, 'likeCount' | 'replyCount' | 'likedByMe'>[],
+  rows: Omit<GroupCommentItem, 'likeCount' | 'replyCount' | 'likedByMe' | 'mentions'>[],
   viewerId: number,
 ): Promise<GroupCommentItem[]> {
   if (rows.length === 0) return [];
   const ids = rows.map((r) => r.id);
 
-  const [likeCounts, replyCounts, mine] = await Promise.all([
+  const [likeCounts, replyCounts, mine, rendered] = await Promise.all([
     db
       .select({ commentId: groupBookCommentLikes.commentId, count: sql<number>`count(*)::int` })
       .from(groupBookCommentLikes)
@@ -450,14 +459,17 @@ async function enrichComments(
       .select({ commentId: groupBookCommentLikes.commentId })
       .from(groupBookCommentLikes)
       .where(and(inArray(groupBookCommentLikes.commentId, ids), eq(groupBookCommentLikes.userId, viewerId))),
+    renderTexts(rows.map((r) => r.body)),
   ]);
 
   const likeMap = new Map(likeCounts.map((r) => [r.commentId, r.count]));
   const replyMap = new Map(replyCounts.map((r) => [r.parentId, r.count]));
   const liked = new Set(mine.map((r) => r.commentId));
 
-  return rows.map((r) => ({
+  return rows.map((r, i) => ({
     ...r,
+    body: rendered[i].text ?? '',
+    mentions: rendered[i].mentions,
     likeCount: likeMap.get(r.id) ?? 0,
     replyCount: replyMap.get(r.id) ?? 0,
     likedByMe: liked.has(r.id),
@@ -470,6 +482,7 @@ const commentColumns = {
   parentId: groupBookComments.parentId,
   userId: groupBookComments.userId,
   userName: users.name,
+  userUsername: users.username,
   userPhotoUrl: users.photoUrl,
   body: groupBookComments.body,
   createdAt: groupBookComments.createdAt,
@@ -637,11 +650,12 @@ export const groupBooksService = {
     enforce(decideSetCurrent(input.bookId, current?.bookId ?? null));
 
     const existing = relevant.find((r) => r.bookId === input.bookId);
+    const description = await mentionsService.prepare(input.description ?? null);
     const fields = {
       status: 'currently_reading' as const,
       startedOn: input.startedOn,
       finishedOn: null,
-      description: input.description ?? null,
+      description: description.text,
       updatedAt: new Date(),
     };
 
@@ -668,6 +682,7 @@ export const groupBooksService = {
       throw err;
     }
 
+    await mentionsService.afterWrite({ type: 'group_book', id }, viewerId, description.mentionedIds);
     return groupBooksService.get(groupId, id, viewerId);
   },
 
@@ -682,15 +697,20 @@ export const groupBooksService = {
     const entry = await loadEntry(groupId, groupBookId);
     enforce(decideEdit(entry, patch));
 
+    const description = patch.description !== undefined ? await mentionsService.prepare(patch.description) : undefined;
     await db
       .update(groupBooks)
       .set({
         ...(patch.startedOn !== undefined && { startedOn: patch.startedOn }),
         ...(patch.finishedOn !== undefined && { finishedOn: patch.finishedOn }),
-        ...(patch.description !== undefined && { description: patch.description }),
+        ...(description !== undefined && { description: description.text }),
         updatedAt: new Date(),
       })
       .where(eq(groupBooks.id, groupBookId));
+
+    if (description !== undefined) {
+      await mentionsService.afterWrite({ type: 'group_book', id: groupBookId }, viewerId, description.mentionedIds);
+    }
 
     return groupBooksService.get(groupId, groupBookId, viewerId);
   },
@@ -804,10 +824,13 @@ export const groupBooksService = {
     }
     enforce(decideComment(entry.status, groupBookId, parent));
 
+    const prepared = await mentionsService.prepare(body);
     const [row] = await db
       .insert(groupBookComments)
-      .values({ groupBookId, userId: viewerId, parentId: parentId ?? null, body })
+      .values({ groupBookId, userId: viewerId, parentId: parentId ?? null, body: prepared.text })
       .returning({ id: groupBookComments.id });
+
+    await mentionsService.afterWrite({ type: 'group_comment', id: row.id }, viewerId, prepared.mentionedIds, { isNew: true });
 
     const [created] = await db
       .select(commentColumns)
@@ -815,7 +838,8 @@ export const groupBooksService = {
       .innerJoin(users, eq(users.id, groupBookComments.userId))
       .where(eq(groupBookComments.id, row.id))
       .limit(1);
-    return { ...created, likeCount: 0, replyCount: 0, likedByMe: false };
+    const [rendered] = await renderTexts([created.body]);
+    return { ...created, body: rendered.text ?? '', mentions: rendered.mentions, likeCount: 0, replyCount: 0, likedByMe: false };
   },
 
   /**
@@ -829,10 +853,13 @@ export const groupBooksService = {
     // not a capability anyone else has, so there is nothing to explain.
     if (comment.userId !== viewerId) throw fail(404, 'Comment not found');
 
+    const prepared = await mentionsService.prepare(body);
     await db
       .update(groupBookComments)
-      .set({ body, updatedAt: new Date() })
+      .set({ body: prepared.text, updatedAt: new Date() })
       .where(eq(groupBookComments.id, commentId));
+
+    await mentionsService.afterWrite({ type: 'group_comment', id: commentId }, viewerId, prepared.mentionedIds);
   },
 
   /**

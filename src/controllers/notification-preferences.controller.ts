@@ -13,6 +13,7 @@ const updateSchema = z
     comments: z.boolean().optional(),
     likes: z.boolean().optional(),
     groupInvites: z.boolean().optional(),
+    mentions: z.boolean().optional(),
   })
   .refine((d) => Object.keys(d).length > 0, {
     message: 'At least one preference must be provided',
@@ -27,6 +28,7 @@ function formatPrefs(row: Awaited<ReturnType<typeof notificationPreferencesServi
     comments: row.comments,
     likes: row.likes,
     groupInvites: row.groupInvites,
+    mentions: row.mentions,
   };
 }
 

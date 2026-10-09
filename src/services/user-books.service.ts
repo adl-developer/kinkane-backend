@@ -17,6 +17,9 @@ import {
 import { redis } from '../lib/redis';
 import { bustUserExclusions } from '../lib/exclusions';
 import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-excerpts.service';
+import { mentionsService, renderTexts } from './mentions.service';
+import { escapeLike } from '../lib/escape-like';
+import type { MentionRef } from '../lib/mention-text';
 import { interactionsService, type InteractionType } from './interactions.service';
 import { getProductFormLabel } from '../lib/product-form';
 import { addDisplayGenre } from '../lib/genre-display';
@@ -42,6 +45,8 @@ export interface UserBookItem {
   likedAt: Date | null;
   source: string;
   note: string | null;
+  /** Linked @handles in `note`. */
+  noteMentions: MentionRef[];
   noteIsPublic: boolean;
   addedAt: Date;
   isbn13: string | null;
@@ -69,17 +74,23 @@ export interface UserBookStatus {
   status: string | null;
   liked: boolean;
   note: string | null;
+  noteMentions: MentionRef[];
   noteIsPublic: boolean;
 }
 
 export interface PublicNote {
   userId: number;
   userName: string;
+  userUsername: string | null;
   userPhotoUrl: string | null;
   note: string;
+  noteMentions: MentionRef[];
   status: string | null;
   addedAt: Date;
 }
+
+/** A public note as cached: stored text, mentions not yet rendered. */
+type CachedPublicNote = Omit<PublicNote, 'noteMentions'>;
 
 export interface ListUserBooksOptions {
   userId: number;
@@ -99,14 +110,6 @@ export interface UpsertUserBookFields {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-/**
- * C8 fix: escape PostgreSQL LIKE/ILIKE metacharacters in user-supplied strings.
- * Without this, q='_' matches every title and q='%' returns every row.
- */
-function escapeLike(value: string): string {
-  return value.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
-}
 
 async function attachRelations(bookIds: number[]): Promise<Map<number, {
   contributors: UserBookItem['contributors'];
@@ -229,15 +232,18 @@ export const userBooksService = {
         .where(where),
     ]);
 
-    const [relations, excerptMap, quantityByIsbn] = await Promise.all([
+    const [relations, excerptMap, quantityByIsbn, renderedNotes] = await Promise.all([
       attachRelations(rows.map((r) => r.bookId)),
       getExcerptsByIsbns(rows.map((r) => r.isbn13)),
       availabilityService.availableQuantityByIsbns(rows.map((r) => r.isbn13)),
+      renderTexts(rows.map((r) => r.note)),
     ]);
 
     return {
-      books: rows.map((r) => ({
+      books: rows.map((r, i) => ({
         ...r,
+        note: renderedNotes[i].text,
+        noteMentions: renderedNotes[i].mentions,
         productFormLabel: getProductFormLabel(r.productForm),
         ...relations.get(r.bookId)!,
         excerpt: pickExcerpt(r.isbn13, excerptMap),
@@ -263,12 +269,14 @@ export const userBooksService = {
       throw Object.assign(new Error('Book not found'), { statusCode: 404 });
     }
 
+    const note = fields.note !== undefined ? await mentionsService.prepare(fields.note) : undefined;
+
     // Build the update set — only include keys that were explicitly provided
     const updateSet: Record<string, unknown> = {
       source: 'manual',
     };
     if (fields.status !== undefined) updateSet.status = fields.status;
-    if (fields.note !== undefined) updateSet.note = fields.note;
+    if (note !== undefined) updateSet.note = note.text;
     if (fields.noteIsPublic !== undefined) updateSet.noteIsPublic = fields.noteIsPublic;
     if (fields.liked !== undefined) {
       updateSet.liked = fields.liked;
@@ -286,14 +294,14 @@ export const userBooksService = {
     // and then have the del fire too late.
     await redis.del(`book:public-notes:${bookId}`);
 
-    await db
+    const [entry] = await db
       .insert(userBooks)
       .values({
         userId,
         bookId,
         source: 'manual',
         status: fields.status ?? null,
-        note: fields.note ?? null,
+        note: note?.text ?? null,
         noteIsPublic: fields.noteIsPublic ?? false,
         liked: fields.liked ?? false,
         likedAt: fields.liked ? new Date() : null,
@@ -301,7 +309,17 @@ export const userBooksService = {
       .onConflictDoUpdate({
         target: [userBooks.userId, userBooks.bookId],
         set: updateSet,
-      });
+      })
+      .returning({ id: userBooks.id, noteIsPublic: userBooks.noteIsPublic });
+
+    // A note is someone's mention target only once others can read it: a
+    // private note's mentions are held (see mentions.service) and go out if it
+    // is made public later, which is what the second branch catches.
+    if (note !== undefined) {
+      await mentionsService.afterWrite({ type: 'book_note', id: entry.id }, userId, note.mentionedIds);
+    } else if (fields.noteIsPublic === true && entry.noteIsPublic) {
+      mentionsService.dispatchInBackground([{ type: 'book_note', id: entry.id }]);
+    }
 
     // Trending signals. Fire-and-forget on purpose: a failure to record analytics
     // must never turn a successful shelf update into an error for the user.
@@ -482,7 +500,9 @@ export const userBooksService = {
       .where(and(eq(userBooks.userId, userId), eq(userBooks.bookId, bookId)))
       .limit(1);
 
-    return row ?? null;
+    if (!row) return null;
+    const [note] = await renderTexts([row.note]);
+    return { ...row, note: note.text, noteMentions: note.mentions };
   },
 
   /**
@@ -490,44 +510,61 @@ export const userBooksService = {
    * Cached for 2 minutes to avoid a DB hit on every book detail view.
    */
   async getPublicNotes(bookId: number): Promise<PublicNote[]> {
-    const cacheKey = `book:public-notes:${bookId}`;
-    const cached = await redis.get(cacheKey);
-    if (cached) {
-      const notes = JSON.parse(cached) as PublicNote[];
-      return notes.map((n) => ({ ...n, addedAt: new Date(n.addedAt) }));
-    }
-
-    const rows = await db
-      .select({
-        userId: userBooks.userId,
-        userName: users.name,
-        userPhotoUrl: users.photoUrl,
-        note: userBooks.note,
-        status: userBooks.status,
-        addedAt: userBooks.addedAt,
-      })
-      .from(userBooks)
-      .innerJoin(users, eq(users.id, userBooks.userId))
-      .where(
-        and(
-          eq(userBooks.bookId, bookId),
-          eq(userBooks.noteIsPublic, true),
-          sql`${userBooks.note} IS NOT NULL`,
-        ),
-      )
-      .orderBy(desc(userBooks.addedAt));
-
-    // note is guaranteed non-null by the WHERE clause above
-    const notes: PublicNote[] = rows.map((r) => ({ ...r, note: r.note! }));
-
-    // C4 fix: treat cache-write failure as non-fatal so a Redis blip doesn't
-    // turn a successful DB read into a 500 for the caller
-    try {
-      await redis.set(cacheKey, JSON.stringify(notes), 'EX', PUBLIC_NOTES_TTL);
-    } catch {
-      // cache miss on the next request is acceptable
-    }
-
-    return notes;
+    const notes = await loadPublicNotes(bookId);
+    // Rendered after the cache, not before: the cache holds stored text, so a
+    // renamed reader shows up under their new @username straight away rather
+    // than once the cached copy expires.
+    const rendered = await renderTexts(notes.map((n) => n.note));
+    return notes.map((n, i) => ({
+      ...n,
+      // Entries cached before usernames existed have no userUsername.
+      userUsername: n.userUsername ?? null,
+      note: rendered[i].text!,
+      noteMentions: rendered[i].mentions,
+    }));
   },
 };
+
+/** The public notes for a book as stored, through a two-minute cache. */
+async function loadPublicNotes(bookId: number): Promise<CachedPublicNote[]> {
+  const cacheKey = `book:public-notes:${bookId}`;
+  const cached = await redis.get(cacheKey);
+  if (cached) {
+    const notes = JSON.parse(cached) as CachedPublicNote[];
+    return notes.map((n) => ({ ...n, addedAt: new Date(n.addedAt) }));
+  }
+
+  const rows = await db
+    .select({
+      userId: userBooks.userId,
+      userName: users.name,
+      userUsername: users.username,
+      userPhotoUrl: users.photoUrl,
+      note: userBooks.note,
+      status: userBooks.status,
+      addedAt: userBooks.addedAt,
+    })
+    .from(userBooks)
+    .innerJoin(users, eq(users.id, userBooks.userId))
+    .where(
+      and(
+        eq(userBooks.bookId, bookId),
+        eq(userBooks.noteIsPublic, true),
+        sql`${userBooks.note} IS NOT NULL`,
+      ),
+    )
+    .orderBy(desc(userBooks.addedAt));
+
+  // note is guaranteed non-null by the WHERE clause above
+  const notes: CachedPublicNote[] = rows.map((r) => ({ ...r, note: r.note! }));
+
+  // C4 fix: treat cache-write failure as non-fatal so a Redis blip doesn't
+  // turn a successful DB read into a 500 for the caller
+  try {
+    await redis.set(cacheKey, JSON.stringify(notes), 'EX', PUBLIC_NOTES_TTL);
+  } catch {
+    // cache miss on the next request is acceptable
+  }
+
+  return notes;
+}

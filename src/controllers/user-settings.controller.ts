@@ -2,9 +2,14 @@ import { Response } from 'express';
 import { z } from 'zod';
 import { AuthenticatedRequest } from '../middleware/auth.middleware';
 import { userSettingsService } from '../services/user-settings.service';
+import { usernamesService } from '../services/usernames.service';
 import { phoneSchema } from '../lib/phone';
 import { isCloudinaryUrl, cloudinaryUrlMessage } from '../lib/cloudinary-url';
 import { logger } from '../lib/logger';
+
+const changeUsernameSchema = z.object({
+  username: z.string().min(1).max(64),
+});
 
 const shelfVisibilitySchema = z.object({
   visibility: z.enum(['public', 'friends', 'private']),
@@ -28,6 +33,17 @@ const updateProfileSchema = z
   });
 
 export const userSettingsController = {
+  /** Mounted with wrapHttp: the service's 409/422/429 come back with their `code`. */
+  async changeUsername(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const parsed = changeUsernameSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+    const result = await usernamesService.change(req.user.id, parsed.data.username);
+    res.status(200).json(result);
+  },
+
   async getUserSettings(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const settings = await userSettingsService.getUserSettings(req.user.id);

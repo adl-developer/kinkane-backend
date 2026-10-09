@@ -20,6 +20,7 @@ import { checkoutService } from './subscriptions/checkout.service';
 import { referralsService } from './referrals.service';
 import { referralScoringService } from './referral-scoring.service';
 import type { ResolvedCountry } from './geo.service';
+import { usernamesService, isUsernameConflict, usernameTakenError } from './usernames.service';
 import type { SubscriptionTier, SubscriptionStatus, SubscriptionPlan } from '../db/schema';
 
 const BCRYPT_ROUNDS = 12;
@@ -41,6 +42,8 @@ export interface TokenPair {
 export interface AuthUser {
   id: number;
   name: string;
+  /** The public @handle. Null only for guest accounts — see users.username. */
+  username: string | null;
   email: string;
   emailVerified: boolean;
 }
@@ -392,6 +395,12 @@ export interface SignupContext {
   country?: ResolvedCountry;
   channel?: string;
   clickId?: number | null;
+  /**
+   * The username chosen on the signup screen, as typed. Optional: when absent
+   * one is generated from the display name. Ignored for guest accounts and for
+   * a social sign-in that turns out to be an existing account.
+   */
+  username?: string;
 }
 
 /**
@@ -510,6 +519,14 @@ export const authService = {
 
     const referralCode = await resolveReferralCode(context.referralCode, guestSessionId);
 
+    const isGuest = isGuestEmail(email);
+    // Checked before anything is written, so a taken name is a clean 409 the
+    // signup screen can put under the field rather than a half-made account.
+    const chosenUsername =
+      context.username !== undefined && !isGuest
+        ? await usernamesService.assertAvailableForSignup(context.username)
+        : null;
+
     // Atomic: user + subscription committed together — if either insert fails,
     // neither row persists and the client can safely retry without hitting a 409.
     const user = await db.transaction(async (tx) => {
@@ -519,7 +536,8 @@ export const authService = {
           name: name.trim(),
           email: email.toLowerCase().trim(),
           passwordHash,
-          isGuest: isGuestEmail(email),
+          isGuest,
+          username: chosenUsername,
           // Resolved once, here, and then frozen — see geo.service for why it is
           // never re-derived on later requests.
           countryCode: context.country?.code ?? null,
@@ -530,7 +548,8 @@ export const authService = {
           cityLng: context.country?.lng ?? null,
           citySource: context.country?.city ? context.country.source : null,
         })
-        .returning({ id: users.id, name: users.name, email: users.email, emailVerified: users.emailVerified });
+        .returning({ id: users.id, name: users.name, username: users.username, email: users.email, emailVerified: users.emailVerified });
+      if (!u.username && !isGuest) u.username = await usernamesService.assignGenerated(tx, u.id, u.name);
       const [sub] = await tx
         .insert(userSubscriptions)
         .values({ userId: u.id, tier: 'plus', status: 'trialing', trialEndsAt })
@@ -556,6 +575,10 @@ export const authService = {
       }
 
       return u;
+    }).catch((err) => {
+      // Someone else took the chosen name between the check above and the insert.
+      if (isUsernameConflict(err)) throw usernameTakenError();
+      throw err;
     });
 
     // No crediting here. This account is unverified by definition — the points
@@ -626,6 +649,7 @@ export const authService = {
       user: {
         id: user.id,
         name: user.name,
+        username: user.username,
         email: user.email,
         emailVerified: user.emailVerified,
       },
@@ -1017,6 +1041,7 @@ export const authService = {
       .select({
         id: users.id,
         name: users.name,
+        username: users.username,
         email: users.email,
         emailVerified: users.emailVerified,
         photoUrl: users.photoUrl,
@@ -1121,7 +1146,7 @@ export const authService = {
     if (existingProvider) {
       const [user] = await db
         .select({
-          id: users.id, name: users.name, email: users.email,
+          id: users.id, name: users.name, username: users.username, email: users.email,
           emailVerified: users.emailVerified, blacklistedAt: users.blacklistedAt,
         })
         .from(users)
@@ -1177,7 +1202,7 @@ export const authService = {
 
       const tokens = await issueTokenPair(existingUser.id, existingUser.email);
       return {
-        user: { id: existingUser.id, name: existingUser.name, email: existingUser.email, emailVerified: true },
+        user: { id: existingUser.id, name: existingUser.name, username: existingUser.username, email: existingUser.email, emailVerified: true },
         tokens,
         isNewUser: false,
       };
@@ -1189,6 +1214,11 @@ export const authService = {
 
     const referralCode = await resolveReferralCode(context.referralCode, guestSessionId);
 
+    // Only now, once this is known to be a new account: a returning user who
+    // happens to send a username must not be refused sign-in over it.
+    const chosenUsername =
+      context.username !== undefined ? await usernamesService.assertAvailableForSignup(context.username) : null;
+
     // Atomic: user + provider link + subscription committed together.
     const newUser = await db.transaction(async (tx) => {
       const [u] = await tx
@@ -1197,6 +1227,7 @@ export const authService = {
           name,
           email,
           photoUrl,
+          username: chosenUsername,
           emailVerified: true,
           countryCode: context.country?.code ?? null,
           countrySource: context.country?.source ?? 'unknown',
@@ -1206,7 +1237,8 @@ export const authService = {
           cityLng: context.country?.lng ?? null,
           citySource: context.country?.city ? context.country.source : null,
         })
-        .returning({ id: users.id, name: users.name, email: users.email, emailVerified: users.emailVerified });
+        .returning({ id: users.id, name: users.name, username: users.username, email: users.email, emailVerified: users.emailVerified });
+      if (!u.username) u.username = await usernamesService.assignGenerated(tx, u.id, u.name);
       await tx.insert(userProviders).values({ userId: u.id, provider, providerUid });
       const [sub] = await tx
         .insert(userSubscriptions)
@@ -1231,6 +1263,9 @@ export const authService = {
       }
 
       return u;
+    }).catch((err) => {
+      if (isUsernameConflict(err)) throw usernameTakenError();
+      throw err;
     });
 
     // Credited straight away, unlike the email path: Google has already

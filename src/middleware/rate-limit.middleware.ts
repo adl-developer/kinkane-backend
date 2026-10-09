@@ -281,3 +281,18 @@ export const groupCommentLimiter = rateLimit({
   keyGenerator: byUser,
   store: new RedisStore({ prefix: 'rl:group-comment:', sendCommand }),
 });
+
+// Username availability: 120 checks per 15 minutes per user, or per IP on the
+// signup screen where nobody is signed in yet. The field checks as the person
+// types (debounced), so a few dozen checks to settle on one name is normal;
+// the limit is there to stop the endpoint being used to enumerate who holds
+// which name, not to ration honest typing.
+export const usernameCheckLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: json429,
+  keyGenerator: byUser,
+  store: new RedisStore({ prefix: 'rl:username-check:', sendCommand }),
+});

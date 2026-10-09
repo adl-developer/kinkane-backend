@@ -2,6 +2,8 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { posts } from '../db/schema';
 import { logger } from '../lib/logger';
+import { withRenderedMentions } from './mentions.service';
+import type { MentionRef } from '../lib/mention-text';
 
 /**
  * The caller's own rating and review of a book — their community post for it.
@@ -21,6 +23,8 @@ export interface MyReview {
   rating: number;
   status: 'reading' | 'read';
   body: string | null;
+  /** Linked @handles in `body`. */
+  mentions: MentionRef[];
   isPublic: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -65,7 +69,8 @@ async function queryMyReviews(userId: number, ids: number[]): Promise<Map<number
     .from(posts)
     .where(and(eq(posts.userId, userId), inArray(posts.bookId, ids)));
 
-  return new Map(rows.map(({ bookId, ...review }) => [bookId, review]));
+  const rendered = await withRenderedMentions(rows, 'body');
+  return new Map(rendered.map(({ bookId, ...review }) => [bookId, review]));
 }
 
 /**

@@ -76,12 +76,20 @@ export const authPaths = {
         guestSessionId: guestSessionIdSchema,
         referralCode: referralCodeSchema,
         referralChannel: referralChannelSchema,
+        username: {
+          type: 'string', maxLength: 64,
+          description:
+            'Optional @handle. Blank (an empty string or spaces) counts as not provided. Normalized before use: trimmed, a leading `@` dropped, lowercased. Must then be 3–20 characters of `a-z 0-9 _ .`, not starting or ending with a dot, no `..`, and not reserved. Omit it and one is generated from `name` (changeable once, any time, from settings). Check it as the user types with `GET /users/username-available`.',
+          example: 'ama_reads',
+        },
       }, ['name', 'email', 'password'])),
       responses: {
         201: json('Account created and signed in.', ref('AuthSuccess')),
         400: resp('ValidationError'),
-        409: json('That email is already registered.', ref('Error'),
-          { error: 'Email already registered' }),
+        409: json(
+          'That email is already registered, or (`code: USERNAME_TAKEN`) the chosen username is taken. Tell them apart by `code`. No account is created either way.',
+          ref('Error'),
+          { error: 'That username is taken', code: 'USERNAME_TAKEN' }),
         429: resp('RateLimited'),
         500: resp('ServerError'),
       },
@@ -141,6 +149,12 @@ export const authPaths = {
         guestSessionId: guestSessionIdSchema,
         referralCode: referralCodeSchema,
         referralChannel: referralChannelSchema,
+        username: {
+          type: 'string', maxLength: 64,
+          description:
+            'Optional @handle. Blank (an empty string or spaces) counts as not provided. Normalized before use: trimmed, a leading `@` dropped, lowercased. Must then be 3–20 characters of `a-z 0-9 _ .`, not starting or ending with a dot, no `..`, and not reserved. Used only when this sign-in creates the account (the 201 case); ignored for a returning user. Omit it and one is generated from `name` (changeable once, any time, from settings). Check it as the user types with `GET /users/username-available`.',
+          example: 'ama_reads',
+        },
       }, ['idToken'])),
       responses: {
         200: json('Returning user, or an existing account newly linked to this provider.', ref('AuthSuccess')),
@@ -148,6 +162,8 @@ export const authPaths = {
         400: resp('ValidationError'),
         401: json('The Firebase ID token is invalid or expired.', ref('Error'),
           { error: 'Invalid authentication token' }),
+        409: json('New account only: the chosen username is taken (`code: USERNAME_TAKEN`). No account is created.', ref('Error'),
+          { error: 'That username is taken', code: 'USERNAME_TAKEN' }),
         422: json(
           'The social account has no email address on it — Apple private relay can be declined, and Facebook accounts need not have one. There is nothing to key an account on, so the client must fall back to email signup.',
           ref('Error'),
