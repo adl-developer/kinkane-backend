@@ -5,6 +5,7 @@
 
 ### Bug Fixes
 
+* stop recommending other editions and same-author titles of books you picked ([bae309f](https://adl.github.com/adl-developer/kinkane-backend/commit/bae309f6a48b1ae57617695ed96d8b154258ee9c)) — [details](changelog/2026-10-07-hide-other-editions-same-author-titles.md)
 * let the app send any number of genres at onboarding ([60f6411](https://adl.github.com/adl-developer/kinkane-backend/commit/60f6411a9d7d4654ef6b8082ab35916457a0e1b0)) — [details](changelog/2026-10-07-genres-no-limit.md)
 * accept any genre label at onboarding, capped at 3 ([4ed04cb](https://adl.github.com/adl-developer/kinkane-backend/commit/4ed04cbf2a319604183ec88d5ba1ef84f148af10)) — [details](changelog/2026-10-07-genres-no-limit.md)
 
@@ -13,6 +14,8 @@
 
 ### Features
 
+* books picked in the quiz go to Want to Read instead of being liked ([bc10dc4](https://adl.github.com/adl-developer/kinkane-backend/commit/bc10dc424560d84117b79ff529c76aa6cbd4040e)) — [details](changelog/2026-10-06-quiz-picks-want-to-read.md)
+* show readers their own rating and review on every book ([cdd0ab8](https://adl.github.com/adl-developer/kinkane-backend/commit/cdd0ab845e9a6ff7e638ece95ceb1887e78f0542)) — [details](changelog/2026-10-06-my-review-on-every-book.md)
 * notifications stay until cleared, and friend requests can be marked read ([4237d1e](https://adl.github.com/adl-developer/kinkane-backend/commit/4237d1ee4f05a8947d6c55472658526f6c742184)) — [details](changelog/2026-10-06-friend-request-notification-sync.md)
 * start recording friend requests as notifications, ready to show next release ([764acc7](https://adl.github.com/adl-developer/kinkane-backend/commit/764acc7902cadef2984505ceb70e1e8ba709d827)) — [details](changelog/2026-10-06-friend-request-notification-sync.md)
 

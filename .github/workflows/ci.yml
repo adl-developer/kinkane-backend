@@ -1,0 +1,156 @@
+# CI for the backend. Two jobs:
+#
+#   checks    — typecheck and the unit suite. No services; the unit suite runs on
+#               the fixed fake env in src/__tests__/support/hermetic-env.ts.
+#   database  — everything that needs a real Postgres and Redis: migrations on an
+#               empty database, the schema-drift check, the endpoint contract
+#               suite and the integration suite.
+#
+# The database job is the one the pre-commit hook can only warn about when no
+# local database is running. Here it always runs, against a throwaway database —
+# never production, which is what `.env` points at on a developer machine.
+#
+# Render should deploy only once both jobs pass (autoDeployTrigger: checksPass in
+# render.yaml); without that, CI reports a break after it is already live.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A new push to a branch supersedes the run already going for it.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Typecheck and unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # `prepare` points git at .githooks — pointless on a CI runner.
+      - run: npm ci --ignore-scripts
+      - name: Typecheck
+        run: npm run build
+      - name: Unit tests
+        run: npm test
+
+  database:
+    name: Migrations, schema drift, endpoint and integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      postgres:
+        # Production runs Postgres 18 with pgvector.
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: kinkane
+          POSTGRES_PASSWORD: kinkane
+          POSTGRES_DB: kinkane_ci
+          # Production's database was created with collate/ctype C, which makes
+          # POSIX regex classes ASCII-only. A default container is en_US.UTF-8,
+          # where `'É' ~ '[[:alpha:]]'` is true — so accent-handling SQL would
+          # pass here and misfile text in production. Match production instead.
+          POSTGRES_INITDB_ARGS: --encoding=UTF8 --locale=C
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U kinkane -d kinkane_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      NODE_ENV: test
+      # The endpoint suite only reads; the integration suite truncates tables and
+      # refuses to share a database with DATABASE_URL. So: two databases.
+      DATABASE_URL: postgresql://kinkane:kinkane@localhost:5432/kinkane_ci
+      TEST_DATABASE_URL: postgresql://kinkane:kinkane@localhost:5432/kinkane_integration
+      REDIS_URL: redis://localhost:6379
+      # Placeholders that satisfy config/index.ts. None of them reach a real
+      # service: the suites never send mail, call Gemini or upload images.
+      JWT_ACCESS_SECRET: ci-access-secret-that-is-long-enough-32
+      JWT_REFRESH_SECRET: ci-refresh-secret-that-is-long-enough-32
+      ADMIN_JWT_SECRET: ci-admin-jwt-secret-that-is-long-enough-32
+      ADMIN_TOKEN: ci-admin-token-that-is-long-enough-to-pass
+      UNSUBSCRIBE_SECRET: ci-unsubscribe-secret-long-enough-to-pass
+      GEMINI_API_KEY: ci-gemini-key
+      RESEND_API_KEY: ci-resend-key
+      CLOUDINARY_CLOUD_NAME: ci-cloud
+      FIREBASE_PROJECT_ID: kinkane-ci
+      FIREBASE_CLIENT_EMAIL: ci@kinkane-ci.iam.gserviceaccount.com
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+
+      # The endpoint suite boots the whole app, and Firebase Admin parses its
+      # private key at import — a placeholder string is rejected, so generate a
+      # throwaway key that is valid PEM and belongs to no project.
+      - name: Generate a throwaway Firebase key
+        run: |
+          {
+            echo 'FIREBASE_PRIVATE_KEY<<PEM_EOF'
+            openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null
+            echo 'PEM_EOF'
+          } >> "$GITHUB_ENV"
+
+      - name: Create the integration database
+        run: |
+          PGPASSWORD=kinkane psql -h localhost -U kinkane -d kinkane_ci \
+            -c "CREATE DATABASE kinkane_integration TEMPLATE template0 ENCODING 'UTF8' LC_COLLATE 'C' LC_CTYPE 'C'"
+
+      # Exactly what Render's preDeployCommand runs, on an empty database. A
+      # migration that fails here would fail the deploy.
+      - name: Migrate and set up an empty database
+        run: npm run db:init
+
+      - name: Migrate the integration database
+        run: npm run db:init
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+
+      # A schema change without a migration typechecks and passes every unit
+      # test, then 500s every endpoint reading that table. If generate writes
+      # anything, the schema and drizzle/ disagree.
+      - name: Check for schema changes without a migration
+        run: |
+          timeout 120 npx drizzle-kit generate < /dev/null
+          if [ -n "$(git status --porcelain -- drizzle)" ]; then
+            echo "::error::The Drizzle schema has changes with no migration. Run 'npm run db:generate' and commit the result."
+            git status --porcelain -- drizzle
+            exit 1
+          fi
+
+      # One book, so parameterised routes are exercised on a row that exists.
+      - name: Load the endpoint fixtures
+        run: PGPASSWORD=kinkane psql -v ON_ERROR_STOP=1 -h localhost -U kinkane -d kinkane_ci -f .github/ci/fixtures.sql
+
+      - name: Endpoint contract tests
+        run: npm run test:endpoints
+
+      - name: Integration tests
+        run: npm run test:integration
