@@ -5,6 +5,8 @@ import type { BookSearchType } from '../services/books.service';
 import { userBooksService } from '../services/user-books.service';
 import { interactionsService } from '../services/interactions.service';
 import { getMyReview, withMyReviews } from '../services/my-reviews.service';
+import { communityService } from '../services/community.service';
+import { listPostsSchema } from './community.controller';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 import { config } from '../config';
 import { fromPresentment, resolveCurrency, resolveRequestCountry } from '../services/commerce/pricing';
@@ -508,5 +510,32 @@ export const booksController = {
       const e = err as Error;
       res.status(500).json({ error: e.message });
     }
+  },
+
+  // Wrapped in wrapHttp: an unknown book is the service's 404, and anything
+  // unexpected goes to the global handler instead of echoing a database error.
+  async reviews(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) {
+      res.status(400).json({ error: 'Invalid book ID' });
+      return;
+    }
+
+    const parsed = listPostsSchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+
+    const { sort, limit, offset } = parsed.data;
+    const result = await communityService.listReviewsForBook(id, req.user.id, sort, limit, offset);
+    res.status(200).json({
+      reviews: result.posts,
+      total: result.total,
+      sort,
+      limit,
+      offset,
+      hasMore: offset + result.posts.length < result.total,
+    });
   },
 };

@@ -32,12 +32,15 @@ const updateCommentSchema = z.object({
   body: z.string().min(1).max(2000),
 });
 
+// Offset is capped: Postgres walks and discards every skipped row, so an
+// unbounded offset is a cheap way to make each request expensive.
 const paginationSchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).default(20),
-  offset: z.coerce.number().int().min(0).default(0),
+  offset: z.coerce.number().int().min(0).max(10_000).default(0),
 });
 
-const listPostsSchema = paginationSchema.extend({
+// Also what GET /books/:id/reviews takes, so a client pages both the same way.
+export const listPostsSchema = paginationSchema.extend({
   sort: z.enum(['date_asc', 'date_desc']).default('date_desc'),
 });
 
