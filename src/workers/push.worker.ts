@@ -66,6 +66,15 @@ async function processPushJob(job: Job): Promise<void> {
       });
       break;
     }
+    case 'mention': {
+      const { userId, mentionerName, where, data } = job.data as PushJobMap['mention'];
+      await sendPush(userId, {
+        title: 'You were mentioned',
+        body: `${mentionerName} mentioned you in ${where}.`,
+        data,
+      });
+      break;
+    }
     default: {
       // Exhaustiveness check — TypeScript will catch unhandled job names at compile time
       const unhandled: never = name;

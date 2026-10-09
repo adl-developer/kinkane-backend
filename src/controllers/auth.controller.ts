@@ -5,6 +5,7 @@ import { AuthenticatedRequest } from '../middleware/auth.middleware';
 import { logger } from '../lib/logger';
 import { geoService } from '../services/geo.service';
 import type { SignupContext } from '../services/auth.service';
+import { optionalUsernameInput } from '../lib/username';
 
 // Referral codes are Crockford base32 (no I/L/O/U), but accept anything of the
 // right shape and let the lookup decide — a typo'd code has to read as "no
@@ -12,6 +13,7 @@ import type { SignupContext } from '../services/auth.service';
 const referralCodeSchema = z.string().trim().regex(/^[0-9A-Za-z]{6,32}$/).optional();
 
 const channelSchema = z.enum(['whatsapp', 'sms', 'email', 'copy', 'link']).optional();
+
 
 /**
  * Assembles the referral/geography context for a signup.
@@ -21,12 +23,13 @@ const channelSchema = z.enum(['whatsapp', 'sms', 'email', 'copy', 'link']).optio
  */
 async function buildSignupContext(
   req: Request,
-  data: { referralCode?: string; referralChannel?: string },
+  data: { referralCode?: string; referralChannel?: string; username?: string },
 ): Promise<SignupContext> {
   return {
     referralCode: data.referralCode,
     channel: data.referralChannel,
     country: await geoService.resolveFromRequest(req),
+    username: data.username,
   };
 }
 
@@ -47,6 +50,7 @@ const signupSchema = z.object({
   // the signup screen. Falls back to whatever is parked on the guest session.
   referralCode: referralCodeSchema,
   referralChannel: channelSchema,
+  username: optionalUsernameInput,
 });
 
 const loginSchema = z.object({
@@ -68,6 +72,8 @@ const socialSchema = z.object({
   guestSessionId: z.string().uuid().optional(),
   referralCode: referralCodeSchema,
   referralChannel: channelSchema,
+  // Used only when this sign-in creates the account.
+  username: optionalUsernameInput,
 });
 
 const deleteAccountSchema = z.object({
@@ -131,7 +137,9 @@ export const authController = {
         logger.error('Unexpected error during signup', { error: e.message });
         res.status(500).json({ error: 'An unexpected error occurred' });
       } else {
-        res.status(status).json({ error: e.message });
+        // `code` tells a taken username (USERNAME_TAKEN) apart from a taken email, both 409s.
+        const code = (err as { code?: unknown }).code;
+        res.status(status).json({ error: e.message, ...(typeof code === 'string' && { code }) });
       }
     }
   },
@@ -392,7 +400,8 @@ export const authController = {
         logger.error('Unexpected error during social login', { error: e.message });
         res.status(500).json({ error: 'An unexpected error occurred' });
       } else {
-        res.status(status).json({ error: e.message });
+        const code = (err as { code?: unknown }).code;
+        res.status(status).json({ error: e.message, ...(typeof code === 'string' && { code }) });
       }
     }
   },

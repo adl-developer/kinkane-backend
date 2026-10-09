@@ -38,6 +38,22 @@ export const users = pgTable(
   {
     id: serial('id').primaryKey(),
     name: varchar('name', { length: 500 }).notNull(),
+    // ── Username ───────────────────────────────────────────────────────────
+    // The public handle people are mentioned by (`@ama_reads`). Lowercase
+    // a-z0-9_. only — see lib/username.ts for the rules and why they are ASCII
+    // — so the plain unique index below is also a case-insensitive one.
+    //
+    // Nullable for one reason: guest accounts. The web shop creates roughly ten
+    // of those per real signup (see is_guest), all named "Guest", and handing
+    // each one a `guest4821` would fill the namespace with names nobody chose
+    // and nobody will ever be mentioned by. Every non-guest account has one —
+    // chosen at signup, or generated from the display name when it was not, and
+    // backfilled for everyone who signed up before usernames existed.
+    username: varchar('username', { length: 20 }),
+    // When the user last chose a new username, for the change cooldown. Null
+    // until the first change: a generated or backfilled name was never picked,
+    // so replacing it is free.
+    usernameChangedAt: timestamp('username_changed_at', { withTimezone: true }),
     email: varchar('email', { length: 500 }).notNull().unique(),
     passwordHash: varchar('password_hash', { length: 500 }),
     photoUrl: varchar('photo_url', { length: 1000 }),
@@ -144,6 +160,10 @@ export const users = pgTable(
   },
   (t) => ({
     emailIdx: index('idx_users_email').on(t.email),
+    // Unique, and also what the mention lookup and the typeahead's prefix
+    // match read. The database collation is C, so a btree on the raw column
+    // serves `LIKE 'am%'` without a text_pattern_ops variant.
+    usernameUniq: uniqueIndex('idx_users_username').on(t.username),
     searchVectorIdx: index('idx_users_search_vector').on(t.searchVector),
     // The admin console counts and filters on this on every Customers and
     // Overview load; without an index both become a seq scan over all users.
@@ -187,6 +207,25 @@ export const userProviders = pgTable(
   }),
 );
 
+/**
+ * A username someone recently gave up, held for them.
+ *
+ * Without this, renaming `ama_reads` to `ama.reads` would let anyone claim
+ * `ama_reads` the same minute — and every screenshot, bio link and half-typed
+ * mention pointing at the old name would now point at a stranger. The old owner
+ * may take it back within the hold; nobody else can until it expires.
+ *
+ * Expired rows are inert (every read checks `expires_at`) and are overwritten in
+ * place when the same name is released again, so nothing needs to sweep them.
+ */
+export const usernameHolds = pgTable('username_holds', {
+  username: varchar('username', { length: 20 }).primaryKey(),
+  userId: integer('user_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+});
+
 export const followRequestStatusEnum = pgEnum('follow_request_status', ['pending', 'accepted', 'declined']);
 
 export const followRequests = pgTable(
@@ -224,3 +263,4 @@ export type NewUser = typeof users.$inferInsert;
 export type RefreshToken = typeof refreshTokens.$inferSelect;
 export type UserProvider = typeof userProviders.$inferSelect;
 export type FollowRequest = typeof followRequests.$inferSelect;
+export type UsernameHold = typeof usernameHolds.$inferSelect;

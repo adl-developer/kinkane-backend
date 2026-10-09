@@ -332,12 +332,66 @@ const bookSchemas = {
 } as const;
 
 const socialSchemas = {
+  MentionRef: {
+    type: 'object',
+    description:
+      'One linked @handle inside a piece of user-written text — a post, comment, group description, shelf description, group discussion comment or shelf note. The text itself already reads `@username`; this says where, so the client can make that span tappable.\n\n' +
+      '`start` and `length` are in **UTF-16 code units** (JavaScript string indices; also how Dart `String` and Swift `NSString`/`NSRange` index), and `length` includes the `@`. `username` is always the account’s *current* username — mentions are stored by account id, so a rename never breaks one. A mention of a deleted account reads `@deleted` and has no entry here.\n\n' +
+      'Clients send plain text with `@username` in it and get plain text back; there is nothing to encode. Editing round-trips: send back exactly what you were shown.',
+    properties: {
+      userId: { type: 'integer', example: 4412 },
+      username: { type: 'string', example: 'ama_reads' },
+      start: { type: 'integer', example: 22 },
+      length: { type: 'integer', example: 10 },
+    },
+  },
+
+  MentionFeedItem: {
+    type: 'object',
+    description: 'One place the caller was @-mentioned, as `GET /user/mentions` returns it.',
+    properties: {
+      id: { type: 'integer', example: 9031 },
+      sourceType: {
+        type: 'string',
+        enum: ['post', 'comment', 'group', 'group_book', 'group_comment', 'book_note'],
+        description:
+          '`post` a review; `comment` a comment on one; `group` a group description; `group_book` the description on a group’s shelf entry; `group_comment` a group discussion comment or reply; `book_note` a public shelf note.',
+        example: 'comment',
+      },
+      createdAt: { type: 'string', format: 'date-time' },
+      author: { allOf: [{ $ref: '#/components/schemas/UserSummary' }], nullable: true, description: 'Null if their account has been deleted.' },
+      excerpt: {
+        type: 'string', nullable: true,
+        description: 'The first 140 characters of the text, rendered. Null when `restricted`.',
+        example: 'You have to read this, @ama_reads — the ending!',
+      },
+      mentions: { type: 'array', items: { $ref: '#/components/schemas/MentionRef' }, description: 'Linked handles within `excerpt`.' },
+      restricted: {
+        type: 'boolean',
+        description:
+          'True when the caller cannot read the text: it is in a private group they are not in, or its author has since made it private. The entry keeps its place in the list; only the excerpt is withheld.',
+        example: false,
+      },
+      target: {
+        type: 'object',
+        description:
+          'Where to navigate. Only the keys that apply are present: `postId`, `commentId`, `groupId`, `groupName`, `groupBookId`, `groupCommentId`, `parentCommentId` (for a reply), `bookId`, `bookTitle`. When `restricted`, comment ids are left out.',
+        example: { postId: 3310, commentId: 771, bookId: 48213, bookTitle: 'Girl, Woman, Other' },
+      },
+    },
+  },
+
   UserSummary: {
     type: 'object',
     description: 'The public face of an account, as it appears in lists and on posts.',
     properties: {
       id: { type: 'integer', example: 4412 },
       name: { type: 'string', example: 'Ama Boateng' },
+      username: {
+        type: 'string', nullable: true,
+        description: 'The @handle, without the `@`. Lowercase `a-z 0-9 _ .`, 3–20 characters. Null only for web-shop guest accounts.',
+        example: 'ama_reads',
+      },
       photoUrl: {
         type: 'string',
         format: 'uri',
@@ -425,9 +479,10 @@ const socialSchemas = {
       body: {
         type: 'string',
         nullable: true,
-        description: 'The review text. Optional — a rating on its own is a valid post.',
+        description: 'The review text. Optional — a rating on its own is a valid post. May contain @mentions; see `mentions`.',
         example: 'Twelve voices and not one wasted page.',
       },
+      mentions: { type: 'array', items: { $ref: '#/components/schemas/MentionRef' }, description: 'Linked @handles in `body`. Empty when there are none.' },
       isPublic: {
         type: 'boolean',
         description: 'False restricts the post to the author’s accepted followers.',
@@ -449,6 +504,7 @@ const socialSchemas = {
       id: { type: 'integer', example: 3310, description: 'The post id — what the community edit/delete/like routes take.' },
       userId: { type: 'integer', example: 4412 },
       userName: { type: 'string', example: 'Ama Boateng' },
+      userUsername: { type: 'string', nullable: true, example: 'ama_reads' },
       userPhotoUrl: { type: 'string', format: 'uri', nullable: true, example: null },
       bookId: { type: 'integer', example: 48213 },
       bookTitle: { type: 'string', example: 'Girl, Woman, Other' },
@@ -465,6 +521,7 @@ const socialSchemas = {
       rating: { type: 'integer', minimum: 0, maximum: 5, example: 5 },
       status: { type: 'string', enum: ['reading', 'read'], example: 'read' },
       body: { type: 'string', nullable: true, example: 'Twelve voices and not one wasted page.' },
+      mentions: { type: 'array', items: { $ref: '#/components/schemas/MentionRef' }, description: 'Linked @handles in `body`. Empty when there are none.' },
       isPublic: {
         type: 'boolean',
         example: true,
@@ -485,7 +542,8 @@ const socialSchemas = {
       id: { type: 'integer', example: 771 },
       postId: { type: 'integer', example: 3310 },
       author: { $ref: '#/components/schemas/UserSummary' },
-      body: { type: 'string', example: 'Adding it to my list right now.' },
+      body: { type: 'string', example: 'Adding it to my list right now, @kofi.reads.' },
+      mentions: { type: 'array', items: { $ref: '#/components/schemas/MentionRef' }, description: 'Linked @handles in `body`. Empty when there are none.' },
       likeCount: { type: 'integer', example: 2 },
       likedByMe: { type: 'boolean', example: false },
       createdAt: { type: 'string', format: 'date-time', example: '2026-07-30T21:10:00.000Z' },
@@ -497,12 +555,13 @@ const socialSchemas = {
     description:
       'One item in the notifications feed. Every kind is a stored row, so `id` is always an integer and any item can be marked read or cleared.\n\n' +
       '`friend_request` goes to the person a follow request was sent *to*; its `data` carries `followRequestId` (what the accept/decline endpoints take), `senderId`, `senderName`, `senderPhotoUrl` and `status` (`pending`, `accepted` or `declined`). Status, name and photo are always current. Accepting or declining also marks it read; a re-sent request moves it back to the top as unread; a withdrawn request removes it.\n\n' +
-      '`follow_accepted` goes to the person whose request was accepted; its `data` carries `followRequestId`, `accepterId`, `accepterName` and `accepterPhotoUrl`. `new_recommendation` carries `bookId`, `bookTitle`, `bookAuthor` and `bookCoverUrl`.',
+      '`follow_accepted` goes to the person whose request was accepted; its `data` carries `followRequestId`, `accepterId`, `accepterName` and `accepterPhotoUrl`. `new_recommendation` carries `bookId`, `bookTitle`, `bookAuthor` and `bookCoverUrl`.\n\n' +
+      '`mention` — someone @-mentioned you. `data` carries `sourceType` (as on MentionFeedItem), the navigation ids that apply (`postId`, `commentId`, `groupId`, `groupName`, `groupBookId`, `groupCommentId`, `parentCommentId`, `bookId`, `bookTitle`), `mentionerId`, `mentionerName`, `mentionerUsername`, `mentionerPhotoUrl`, `excerpt` with `excerptMentions`, and `restricted`. When `restricted` is true you were mentioned in a private group you are not in: `excerpt` is null and comment ids are omitted. Mentions in a private post or private note are not notified until it is made public.',
     properties: {
       id: { type: 'integer', example: 5521 },
       type: {
         type: 'string',
-        enum: ['post_like', 'post_comment', 'group_invite', 'follow_accepted', 'new_recommendation', 'friend_request'],
+        enum: ['post_like', 'post_comment', 'group_invite', 'follow_accepted', 'new_recommendation', 'friend_request', 'mention'],
         example: 'post_comment',
       },
       actor: { $ref: '#/components/schemas/UserSummary' },
@@ -984,6 +1043,11 @@ const miscSchemas = {
         properties: {
           id: { type: 'integer', example: 4412 },
           name: { type: 'string', example: 'Ama Boateng' },
+          username: {
+            type: 'string', nullable: true,
+            description: 'The @handle — the one chosen at signup, or one generated from the name. Null only for web-shop guest accounts.',
+            example: 'ama_reads',
+          },
           email: { type: 'string', format: 'email', example: 'ama@example.com' },
           emailVerified: { type: 'boolean', example: false },
         },
@@ -1083,6 +1147,8 @@ const miscSchemas = {
       friendRequests: { type: 'boolean', example: true },
       comments: { type: 'boolean', example: true },
       likes: { type: 'boolean', example: true },
+      groupInvites: { type: 'boolean', example: true },
+      mentions: { type: 'boolean', example: true, description: 'Someone @-mentioned you. Push and the in-app feed only.' },
     },
   },
 } as const;

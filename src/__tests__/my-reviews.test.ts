@@ -84,6 +84,8 @@ describe('withMyReviews', () => {
       rating: 4,
       status: 'read',
       body: 'review of 2',
+      // No @mentions in this body, so nothing to link and no lookup made.
+      mentions: [],
       isPublic: false,
       createdAt,
       updatedAt: createdAt,

@@ -13,6 +13,8 @@ import {
 } from '../db/schema';
 import { enqueuePush } from '../lib/push-queue';
 import { logger } from '../lib/logger';
+import { mentionsService, renderTexts } from './mentions.service';
+import type { MentionRef } from '../lib/mention-text';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -43,6 +45,8 @@ export interface GroupSummary {
   id: number;
   name: string;
   description: string | null;
+  /** Linked @handles in `description`. */
+  descriptionMentions: MentionRef[];
   photoUrl: string | null;
   privacy: GroupPrivacy;
   memberCount: number;
@@ -50,7 +54,7 @@ export interface GroupSummary {
 }
 
 export interface GroupDetail extends GroupSummary {
-  owner: { id: number; name: string; photoUrl: string | null };
+  owner: { id: number; name: string; username: string | null; photoUrl: string | null };
 }
 
 export interface CreateGroupInput {
@@ -65,6 +69,7 @@ export type UpdateGroupInput = Partial<CreateGroupInput>;
 export interface GroupMember {
   id: number;
   name: string;
+  username: string | null;
   photoUrl: string | null;
   isOwner: boolean;
   joinedAt: Date | null;
@@ -497,16 +502,23 @@ type GroupSummaryRow = {
   [K in keyof typeof groupSummaryColumns]: Group[K & keyof Group];
 };
 
-function toSummary(row: GroupSummaryRow): GroupSummary {
+function toSummary(row: GroupSummaryRow, rendered: { text: string | null; mentions: MentionRef[] }): GroupSummary {
   return {
     id: row.id,
     name: row.name,
-    description: row.description,
+    description: rendered.text,
+    descriptionMentions: rendered.mentions,
     photoUrl: row.photoUrl,
     privacy: row.privacy,
     memberCount: row.memberCount,
     createdAt: row.createdAt,
   };
+}
+
+/** Summaries for a page of rows, with every description's @mentions rendered in one lookup. */
+async function toSummaries(rows: GroupSummaryRow[]): Promise<GroupSummary[]> {
+  const rendered = await renderTexts(rows.map((r) => r.description));
+  return rows.map((r, i) => toSummary(r, rendered[i]));
 }
 
 // ── Service ───────────────────────────────────────────────────────────────────
@@ -520,13 +532,14 @@ export const groupsService = {
    * means the same thing on every surface.
    */
   async create(ownerId: number, input: CreateGroupInput): Promise<GroupSummary> {
-    return db.transaction(async (tx) => {
+    const description = await mentionsService.prepare(input.description ?? null);
+    const created = await db.transaction(async (tx) => {
       const [group] = await tx
         .insert(groups)
         .values({
           ownerId,
           name: input.name,
-          description: input.description ?? null,
+          description: description.text,
           photoUrl: input.photoUrl ?? null,
           privacy: input.privacy ?? 'public',
           memberCount: 1,
@@ -540,8 +553,12 @@ export const groupsService = {
         joinedAt: new Date(),
       });
 
-      return toSummary(group);
+      return group;
     });
+
+    await mentionsService.afterWrite({ type: 'group', id: created.id }, ownerId, description.mentionedIds, { isNew: true });
+    const [summary] = await toSummaries([created]);
+    return summary;
   },
 
   /**
@@ -561,6 +578,7 @@ export const groupsService = {
       .select({
         ...groupSummaryColumns,
         ownerName: users.name,
+        ownerUsername: users.username,
         ownerPhotoUrl: users.photoUrl,
         viewerStatus: groupMemberships.status,
       })
@@ -574,11 +592,12 @@ export const groupsService = {
       .limit(1);
 
     if (!row) throw notFound();
+    const [summary] = await toSummaries([row]);
 
     return {
       group: {
-        ...toSummary(row),
-        owner: { id: row.ownerId, name: row.ownerName, photoUrl: row.ownerPhotoUrl },
+        ...summary,
+        owner: { id: row.ownerId, name: row.ownerName, username: row.ownerUsername, photoUrl: row.ownerPhotoUrl },
       },
       viewer: groupViewerCapabilities(row, row.viewerStatus ?? null, viewerId),
     };
@@ -644,7 +663,7 @@ export const groupsService = {
         .where(membershipFilter),
     ]);
 
-    return { groups: rows.map(toSummary), total: counted?.count ?? 0 };
+    return { groups: await toSummaries(rows), total: counted?.count ?? 0 };
   },
 
   /**
@@ -673,7 +692,7 @@ export const groupsService = {
       db.select({ count: sql<number>`count(*)::int` }).from(groups).where(where),
     ]);
 
-    return { groups: rows.map(toSummary), total: counted?.count ?? 0 };
+    return { groups: await toSummaries(rows), total: counted?.count ?? 0 };
   },
 
   /**
@@ -685,11 +704,12 @@ export const groupsService = {
    * someone else's. Same shape as communityService.deletePost.
    */
   async update(groupId: number, ownerId: number, input: UpdateGroupInput): Promise<GroupSummary> {
+    const description = input.description !== undefined ? await mentionsService.prepare(input.description) : undefined;
     const [updated] = await db
       .update(groups)
       .set({
         ...(input.name !== undefined && { name: input.name }),
-        ...(input.description !== undefined && { description: input.description }),
+        ...(description !== undefined && { description: description.text }),
         ...(input.photoUrl !== undefined && { photoUrl: input.photoUrl }),
         ...(input.privacy !== undefined && { privacy: input.privacy }),
         updatedAt: new Date(),
@@ -698,7 +718,11 @@ export const groupsService = {
       .returning(groupSummaryColumns);
 
     if (!updated) throw notFound();
-    return toSummary(updated);
+    if (description !== undefined) {
+      await mentionsService.afterWrite({ type: 'group', id: groupId }, ownerId, description.mentionedIds);
+    }
+    const [summary] = await toSummaries([updated]);
+    return summary;
   },
 
   /**
@@ -732,6 +756,7 @@ export const groupsService = {
         .select({
           id: users.id,
           name: users.name,
+          username: users.username,
           photoUrl: users.photoUrl,
           joinedAt: groupMemberships.joinedAt,
         })
@@ -807,7 +832,7 @@ export const groupsService = {
     limit: number,
     offset: number,
     q?: string,
-  ): Promise<{ friends: { id: number; name: string; photoUrl: string | null }[]; total: number }> {
+  ): Promise<{ friends: { id: number; name: string; username: string | null; photoUrl: string | null }[]; total: number }> {
     const standing = await loadStanding(groupId, viewerId);
     const decision = decideMembershipAction('invite', standing);
     if (!decision.allowed) {
@@ -827,7 +852,7 @@ export const groupsService = {
 
     const [rows, [counted]] = await Promise.all([
       db
-        .select({ id: users.id, name: users.name, photoUrl: users.photoUrl })
+        .select({ id: users.id, name: users.name, username: users.username, photoUrl: users.photoUrl })
         .from(users)
         .where(where)
         .orderBy(users.name)

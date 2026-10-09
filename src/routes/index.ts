@@ -21,6 +21,7 @@ import unsubscribeRoutes from './unsubscribe.routes';
 import contactRoutes from './contact.routes';
 import settingsRoutes from './settings.routes';
 import notificationsRoutes from './notifications.routes';
+import mentionsRoutes from './mentions.routes';
 import deviceTokensRoutes from './device-tokens.routes';
 import reportsRoutes from './reports.routes';
 import referralsRoutes from './referrals.routes';
@@ -56,6 +57,7 @@ v1.use('/user/subscription', subscriptionRoutes);
 v1.use('/user/notification-preferences', notificationPreferencesRoutes);
 v1.use('/user/preference-history', preferenceHistoryRoutes);
 v1.use('/user/notifications', notificationsRoutes);
+v1.use('/user/mentions', mentionsRoutes);
 v1.use('/user/device-tokens', deviceTokensRoutes);
 v1.use('/reports', reportsRoutes);
 // Open to every signed-up user — the router itself deliberately applies

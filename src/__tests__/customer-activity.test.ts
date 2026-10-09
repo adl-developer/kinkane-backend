@@ -184,7 +184,10 @@ describe('the "active" definition', () => {
     // The domain belongs to the frontend. Re-deriving it in a query would mean
     // a metric that breaks silently the day they rename that host.
     const auth = read('services/auth.service.ts');
-    expect(auth).toContain('isGuest: isGuestEmail(email)');
+    // Read into a local first, because signup also uses it to decide whether
+    // the account gets a username; then stored as is.
+    expect(auth).toContain('const isGuest = isGuestEmail(email);');
+    expect(auth).toMatch(/\.insert\(users\)\s*\.values\(\{[^}]*\bisGuest,/);
 
     const services = read('services/admin/customers.service.ts') + dashboard;
     expect(services).not.toContain('guest.kinkane.app');

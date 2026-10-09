@@ -1,11 +1,16 @@
 import { Router } from 'express';
-import { requireAuth } from '../middleware/auth.middleware';
-import { followRequestLimiter } from '../middleware/rate-limit.middleware';
+import { optionalAuth, requireAuth } from '../middleware/auth.middleware';
+import { followRequestLimiter, usernameCheckLimiter } from '../middleware/rate-limit.middleware';
 import { usersController } from '../controllers/users.controller';
 import { groupsController } from '../controllers/groups.controller';
 import { wrap, wrapHttp } from '../lib/route-helpers';
 
 const router = Router();
+
+// Registered ahead of requireAuth: the signup screen checks a username before
+// the account exists. Signed in, it answers for the caller — their own name
+// reads as available, and a change cooldown is reported.
+router.get('/username-available', optionalAuth, usernameCheckLimiter, wrapHttp(usersController.usernameAvailable));
 
 router.use(requireAuth);
 
@@ -13,6 +18,7 @@ router.use(requireAuth);
 router.get('/follow-requests',                      wrap(usersController.listPendingFollowRequests));
 router.patch('/follow-requests/:requestId/accept',  wrap(usersController.acceptFollowRequest));
 router.patch('/follow-requests/:requestId/decline', wrap(usersController.declineFollowRequest));
+router.get('/by-username/:username',                wrapHttp(usersController.getUserProfileByUsername));
 
 router.get('/:userId',           wrap(usersController.getUserProfile));
 router.get('/:userId/books',     wrap(usersController.getUserBooks));

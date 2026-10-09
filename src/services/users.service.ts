@@ -74,18 +74,21 @@ export interface PendingFollowRequest {
    */
   userId: number;
   name: string;
+  username: string | null;
   photoUrl: string | null;
 }
 
 export interface FollowListItem {
   id: number;
   name: string;
+  username: string | null;
   photoUrl: string | null;
 }
 
 export interface UserProfile {
   id: number;
   name: string;
+  username: string | null;
   photoUrl: string | null;
   yearJoined: number;
   followStatus: FollowStatus;
@@ -195,7 +198,7 @@ export const usersService = {
     // Fetch user row and the follow requests in each direction in parallel
     const [[userRow], [followRow], [incomingRow]] = await Promise.all([
       db
-        .select({ id: users.id, name: users.name, photoUrl: users.photoUrl, createdAt: users.createdAt, shelfVisibility: users.shelfVisibility })
+        .select({ id: users.id, name: users.name, username: users.username, photoUrl: users.photoUrl, createdAt: users.createdAt, shelfVisibility: users.shelfVisibility })
         .from(users)
         .where(eq(users.id, targetId))
         .limit(1),
@@ -224,6 +227,7 @@ export const usersService = {
     const base: UserProfile = {
       id: userRow.id,
       name: userRow.name,
+      username: userRow.username,
       photoUrl: userRow.photoUrl ?? null,
       yearJoined: new Date(userRow.createdAt).getFullYear(),
       followStatus,
@@ -290,6 +294,7 @@ export const usersService = {
           id: followRequests.id,
           userId: users.id,
           name: users.name,
+          username: users.username,
           photoUrl: users.photoUrl,
         })
         .from(followRequests)
@@ -322,7 +327,7 @@ export const usersService = {
 
     const [rows, [countRow]] = await Promise.all([
       db
-        .select({ id: users.id, name: users.name, photoUrl: users.photoUrl })
+        .select({ id: users.id, name: users.name, username: users.username, photoUrl: users.photoUrl })
         .from(followRequests)
         .innerJoin(users, eq(users.id, followRequests.senderId))
         .where(and(eq(followRequests.receiverId, targetId), eq(followRequests.status, 'accepted')))
@@ -352,7 +357,7 @@ export const usersService = {
 
     const [rows, [countRow]] = await Promise.all([
       db
-        .select({ id: users.id, name: users.name, photoUrl: users.photoUrl })
+        .select({ id: users.id, name: users.name, username: users.username, photoUrl: users.photoUrl })
         .from(followRequests)
         .innerJoin(users, eq(users.id, followRequests.receiverId))
         .where(and(eq(followRequests.senderId, targetId), eq(followRequests.status, 'accepted')))

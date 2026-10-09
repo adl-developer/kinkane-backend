@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth.middleware';
 import { userSettingsController } from '../controllers/user-settings.controller';
+import { wrapHttp } from '../lib/route-helpers';
 
 const router = Router();
 
@@ -45,5 +46,19 @@ router.patch('/profile', requireAuth, (req: Request, res: Response) =>
 router.patch('/shelf-visibility', requireAuth, (req: Request, res: Response) =>
   userSettingsController.updateShelfVisibility(req as AuthenticatedRequest, res),
 );
+
+/**
+ * PATCH /api/v1/user/settings/username
+ *
+ * Changes the authenticated user's @username. Once every 30 days; the name
+ * given up stays reserved for them for 30 days. Existing mentions follow the
+ * person, not the old name.
+ *
+ * Body: { username: string }
+ * Returns 200: { username, usernameChangedAt, nextChangeAt }
+ * Errors: 400 missing body | 401 | 409 USERNAME_TAKEN / USERNAME_UNCHANGED |
+ *         422 USERNAME_INVALID / USERNAME_RESERVED | 429 USERNAME_CHANGE_TOO_SOON (+ nextChangeAt)
+ */
+router.patch('/username', requireAuth, wrapHttp(userSettingsController.changeUsername));
 
 export default router;

@@ -5,12 +5,16 @@ import { buildGroupSearchCondition, buildGroupSearchOrderBy } from './groups.ser
 import { enrichPosts } from './community.service';
 import type { PostItem } from './community.service';
 import { getExcerptsByIsbns, pickExcerpt } from './book-excerpts.service';
+import { withRenderedMentions } from './mentions.service';
+import { escapeLike } from '../lib/escape-like';
+import type { MentionRef } from '../lib/mention-text';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface UserResult {
   id: number;
   name: string;
+  username: string | null;
   photoUrl: string | null;
 }
 
@@ -21,6 +25,8 @@ export interface GroupResult {
   id: number;
   name: string;
   description: string | null;
+  /** Linked @handles in `description`. */
+  descriptionMentions: MentionRef[];
   photoUrl: string | null;
   privacy: 'public' | 'private';
   memberCount: number;
@@ -35,22 +41,44 @@ export interface SearchResult {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/** A handle as a LIKE prefix — lowercased, as usernames are stored, and escaped (`_` is a username character). */
+function usernameLikePrefix(handle: string): string {
+  return escapeLike(handle.toLowerCase()) + '%';
+}
+
+/**
+ * A query starting with `@` is a username search and matches usernames only —
+ * someone typing `@am` is looking for a handle, not for everyone called Amy.
+ * Returns the prefix to match on, or null for an ordinary search.
+ */
+function usernamePrefixOf(q: string): string | null {
+  return q.startsWith('@') ? usernameLikePrefix(q.slice(1)) : null;
+}
+
 function buildUserSearchCondition(q: string): SQL {
+  const handlePrefix = usernamePrefixOf(q);
+  if (handlePrefix !== null) return sql`${users.username} LIKE ${handlePrefix}`;
+
   const prefix = q + '%';
   const wordPrefix = '% ' + q + '%';
   const fts = q.length >= 3
     ? sql` OR ${users.searchVector} @@ plainto_tsquery('simple', ${q})`
     : sql``;
 
+  // Usernames match by prefix alongside the name, so "amareads" finds
+  // @ama_reads' owner even though their display name is "Ama Owusu".
   return sql`(
     ${users.name} ILIKE ${prefix}
     OR ${users.name} ILIKE ${wordPrefix}
+    OR ${users.username} LIKE ${usernameLikePrefix(q)}
     OR word_similarity(${q}, ${users.name}) > 0.3
     ${fts}
   )`;
 }
 
 function buildUserSearchOrderBy(q: string): SQL[] {
+  if (usernamePrefixOf(q) !== null) return [sql`length(${users.username})`, sql`${users.username}`];
+
   const prefix = q + '%';
   const wordPrefix = '% ' + q + '%';
 
@@ -105,7 +133,7 @@ async function searchUsers(q: string, limit: number, offset: number): Promise<{ 
 
   const [rows, [countRow]] = await Promise.all([
     db
-      .select({ id: users.id, name: users.name, photoUrl: users.photoUrl })
+      .select({ id: users.id, name: users.name, username: users.username, photoUrl: users.photoUrl })
       .from(users)
       .where(where)
       .orderBy(...orderBy)
@@ -132,6 +160,7 @@ async function searchPosts(
         id: posts.id,
         userId: posts.userId,
         userName: users.name,
+        userUsername: users.username,
         userPhotoUrl: users.photoUrl,
         bookId: posts.bookId,
         bookTitle: books.title,
@@ -211,7 +240,7 @@ async function searchGroups(
     db.select({ count: sql<number>`count(*)::int` }).from(groups).where(where),
   ]);
 
-  return { results, total: counted?.count ?? 0 };
+  return { results: await withRenderedMentions(results, 'description', 'descriptionMentions'), total: counted?.count ?? 0 };
 }
 
 export const communitySearchService = {

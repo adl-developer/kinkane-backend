@@ -22,6 +22,7 @@ export * from './groups';
 export * from './group-books';
 export * from './notification-preferences';
 export * from './notifications';
+export * from './mentions';
 export * from './recommendation-email-log';
 export * from './device-tokens';
 export * from './reports';

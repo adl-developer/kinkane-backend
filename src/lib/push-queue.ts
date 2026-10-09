@@ -17,6 +17,10 @@ export interface PushJobMap {
   'post-like': { userId: number; postId: number; likerName: string; bookTitle: string };
   'new-recommendation': { userId: number; bookId: number; bookTitle: string };
   'group-invite': { userId: number; groupId: number; groupName: string; inviterName: string };
+  // `where` is the tail of the sentence ("a comment on a post about Beloved"),
+  // composed by mentions.service because it already knows the source; `data` is
+  // the navigation payload, already stringified for FCM.
+  mention: { userId: number; mentionerName: string; where: string; data: Record<string, string> };
 }
 
 export type PushJobName = keyof PushJobMap;
@@ -33,6 +37,8 @@ export const PUSH_PRIORITY: Record<PushJobName, number> = {
   // Same priority as a follow request: both are one person asking another for
   // something, and both are stale within the day if they arrive late.
   'group-invite': 7,
+  // Someone addressing you by name — as personal as a comment on your post.
+  mention: 7,
 };
 
 // ── Queue ─────────────────────────────────────────────────────────────────────

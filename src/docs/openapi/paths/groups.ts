@@ -1,5 +1,5 @@
 import {
-  json, body, object, param, arrayOf, pagination, authErrors, plusErrors, successResponse,
+  ref, json, body, object, param, arrayOf, pagination, authErrors, plusErrors, successResponse,
 } from '../helpers';
 
 const GROUPS = 'Groups';
@@ -17,7 +17,8 @@ const PRIVACY_NOTE =
 const groupSchema = object({
   id: { type: 'integer', example: 12 },
   name: { type: 'string', example: 'Books & Friends' },
-  description: { type: 'string', nullable: true, example: 'A cozy gathering of history enthusiasts.' },
+  description: { type: 'string', nullable: true, example: 'A cozy gathering of history enthusiasts, run with @kofi.reads.' },
+  descriptionMentions: arrayOf(ref('MentionRef'), 'Linked @handles in `description`.'),
   photoUrl: { type: 'string', nullable: true, example: 'https://res.cloudinary.com/kinkane/image/upload/v1/g.jpg' },
   privacy: { type: 'string', enum: ['public', 'private'], example: 'public' },
   memberCount: { type: 'integer', description: 'Includes the owner.', example: 34 },
@@ -66,7 +67,8 @@ const shelfItemSchema = object({
   id: { type: 'integer', description: 'Shelf entry id — what edit, finish, remove and comment routes take.', example: 88 },
   status: { type: 'string', enum: ['want_to_read', 'currently_reading', 'finished'], example: 'currently_reading' },
   book: bookCardSchema,
-  description: { type: 'string', nullable: true, description: "The owner's note on the read." },
+  description: { type: 'string', nullable: true, description: "The owner's note on the read. May contain @mentions." },
+  descriptionMentions: arrayOf(ref('MentionRef'), 'Linked @handles in `description`.'),
   startedOn: { type: 'string', format: 'date', nullable: true, example: '2026-09-20' },
   finishedOn: { type: 'string', format: 'date', nullable: true, example: null },
   addedAt: { type: 'string', format: 'date-time' },
@@ -89,8 +91,10 @@ const commentSchema = object({
   parentId: { type: 'integer', nullable: true, description: 'Null on a top-level comment.', example: null },
   userId: { type: 'integer', example: 4412 },
   userName: { type: 'string', example: 'Amara Okafor' },
+  userUsername: { type: 'string', nullable: true, example: 'amara.o' },
   userPhotoUrl: { type: 'string', nullable: true },
-  body: { type: 'string', example: 'Love this book! Would love to discuss it.' },
+  body: { type: 'string', example: 'Love this book! @kofi.reads, chapter 3?' },
+  mentions: arrayOf(ref('MentionRef'), 'Linked @handles in `body`.'),
   likeCount: { type: 'integer', example: 1 },
   replyCount: { type: 'integer', description: 'Always 0 on a reply — replies cannot be replied to.', example: 2 },
   likedByMe: { type: 'boolean', example: false },
