@@ -5,6 +5,7 @@
 
 ### Features
 
+* let group members invite anyone on the app, not only friends ([bc3ff51](https://adl.github.com/adl-developer/kinkane-backend/commit/bc3ff5124f5e98e16d1da69d0608cca004b0a776))
 * show every reader's reviews on a book, with yours pinned first ([84ec2c4](https://adl.github.com/adl-developer/kinkane-backend/commit/84ec2c4735cdb34799a875bbc7161e1fb8cbdae0)) — [details](changelog/2026-10-09-book-reviews-list.md)
 
 ### Bug Fixes
