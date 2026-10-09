@@ -1,0 +1,43 @@
+# Typecheck and unit tests on every pull request.
+#
+# Only the hermetic suite runs here: `npm test` mocks the database and
+# src/__tests__/support/hermetic-env.ts strips the environment, so it needs no
+# Postgres, Redis or secrets. The integration and endpoint contract suites
+# (npm run test:integration / test:endpoints) need a migrated database and
+# are not run in CI yet.
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A new push to a PR supersedes the run already going for it.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Typecheck and unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Matches @types/node in package.json.
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Unit tests
+        run: npm test

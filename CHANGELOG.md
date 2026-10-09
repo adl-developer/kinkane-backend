@@ -7,6 +7,10 @@
 
 * show every reader's reviews on a book, with yours pinned first ([84ec2c4](https://adl.github.com/adl-developer/kinkane-backend/commit/84ec2c4735cdb34799a875bbc7161e1fb8cbdae0)) — [details](changelog/2026-10-09-book-reviews-list.md)
 
+### Bug Fixes
+
+* harden the book reviews list against deep paging and leaked errors ([5d4d069](https://adl.github.com/adl-developer/kinkane-backend/commit/5d4d069ad109bb5c74f7f3fcec5742878f3bd297)) — [details](changelog/2026-10-09-book-reviews-list.md)
+
 
 ## 2026-10-07
 
