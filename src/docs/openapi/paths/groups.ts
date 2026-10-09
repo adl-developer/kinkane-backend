@@ -306,11 +306,12 @@ export const groupPaths = {
   '/api/v1/groups/{groupId}/invites': {
     post: {
       tags: [GROUPS],
-      summary: 'Invite friends to a group',
+      summary: 'Invite people to a group',
       description:
         '**Any member can invite, not only the owner** — the design puts "+ Invite friends" on the plain-member view, and a private group would otherwise depend entirely on its owner to grow. An invitee who has not accepted yet cannot invite onward.\n\n' +
         '**Partial success by design.** Ids that cannot be invited come back in `skipped` with a reason rather than failing the batch — the picker may offer three people and one of them may have joined in between. A request where *every* id is skipped is still a 201: it was understood and acted on.\n\n' +
-        'Skip reasons: `self`, `not_a_friend`, `already_member`, `already_invited`. Friendship is enforced server-side even though the picker only offers friends — a non-friend id means a stale client or someone probing.\n\n' +
+        '**Anyone on the app can be invited**, not only friends. The invitable-friends list is just the picker\'s suggestion; this endpoint accepts any user id.\n\n' +
+        'Skip reasons: `self`, `not_found` (no account with that id), `already_member`, `already_invited`.\n\n' +
         'Rate limited to 30 **requests** per hour, and a single request carries at most 50 ids. Together those are the ceiling.',
       parameters: [groupIdParam],
       requestBody: body(object({
@@ -328,7 +329,7 @@ export const groupPaths = {
             invited: arrayOf({ type: 'integer' }, 'Ids genuinely invited by this request.'),
             skipped: arrayOf(object({
               userId: { type: 'integer', example: 4415 },
-              reason: { type: 'string', enum: ['self', 'not_a_friend', 'already_member', 'already_invited'] },
+              reason: { type: 'string', enum: ['self', 'not_found', 'already_member', 'already_invited'] },
             })),
           })),
         400: json('Invalid body.', object({ error: { type: 'object' } })),
