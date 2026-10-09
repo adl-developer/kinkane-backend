@@ -1,4 +1,4 @@
-import { eq, and, asc, desc, sql, inArray } from 'drizzle-orm';
+import { eq, and, or, asc, desc, sql, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { posts, postLikes, comments, commentLikes, users, books, userBooks, bookContributors, followRequests, notifications } from '../db/schema';
 import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-excerpts.service';
@@ -468,6 +468,67 @@ export const communityService = {
     );
 
     return { posts: enriched, total: countRow?.count ?? 0 };
+  },
+
+  /**
+   * Everyone's reviews of one book, with the requester's own pinned first.
+   *
+   * Differs from listPostsForBook in two ways: the requester's own review is
+   * included even when it is private (it is theirs being shown back to them —
+   * nobody else's private review ever appears), and it always sorts ahead of
+   * everyone else's, whatever `sort` asks for. Each item carries `isMine`.
+   *
+   * The pin is part of the ORDER BY, not prepended after the fact, so offset
+   * pagination stays consistent: the own review is item 0 of the whole list,
+   * appears on page one only, and is counted in `total` exactly once.
+   *
+   * Matched on the exact book id, like myReview — see my-reviews.service.
+   */
+  async listReviewsForBook(
+    bookId: number,
+    requesterId: number,
+    sort: 'date_asc' | 'date_desc',
+    limit: number,
+    offset: number,
+  ): Promise<{ posts: (PostItem & { isMine: boolean })[]; total: number }> {
+    const where = and(
+      eq(posts.bookId, bookId),
+      or(eq(posts.isPublic, true), eq(posts.userId, requesterId)),
+    );
+    const byDate = sort === 'date_asc' ? asc(posts.createdAt) : desc(posts.createdAt);
+    // The id tiebreak keeps pages stable when two reviews share a timestamp.
+    const byId = sort === 'date_asc' ? asc(posts.id) : desc(posts.id);
+
+    const [rows, [countRow]] = await Promise.all([
+      db
+        .select(POST_SELECT_COLUMNS)
+        .from(posts)
+        .innerJoin(users, eq(users.id, posts.userId))
+        .innerJoin(books, eq(books.id, posts.bookId))
+        .where(where)
+        .orderBy(desc(sql`${posts.userId} = ${requesterId}`), byDate, byId)
+        .limit(limit)
+        .offset(offset),
+      db.select({ count: sql<number>`COUNT(*)::int` }).from(posts).where(where),
+    ]);
+
+    const excerptMap = await getExcerptsByIsbns(rows.map((r) => r.bookIsbn13));
+
+    const enriched = await enrichPosts(
+      rows.map(({ bookIsbn13, ...r }) => ({
+        ...r,
+        bookExcerpt: pickExcerpt(bookIsbn13, excerptMap),
+        likeCount: 0,
+        commentCount: 0,
+        likedByMe: false,
+      })),
+      requesterId,
+    );
+
+    return {
+      posts: enriched.map((p) => ({ ...p, isMine: p.userId === requesterId })),
+      total: countRow?.count ?? 0,
+    };
   },
 
   // ── Post likes ─────────────────────────────────────────────────────────────

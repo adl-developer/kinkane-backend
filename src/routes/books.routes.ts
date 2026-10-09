@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { booksController } from '../controllers/books.controller';
-import { optionalAuth } from '../middleware/auth.middleware';
+import { optionalAuth, requireAuth } from '../middleware/auth.middleware';
+import { wrap } from '../lib/route-helpers';
 
 const router = Router();
 
@@ -142,5 +143,16 @@ router.get('/:id', optionalAuth, booksController.getById);
  * rejected are filtered out.
  */
 router.get('/:id/similar', optionalAuth, booksController.similar);
+
+/**
+ * GET /books/:id/reviews?sort=date_desc&limit=20&offset=0
+ * Every reader's rating and review of this book (their community posts),
+ * paginated. Each review carries `isMine`; the caller's own review, if they
+ * have one, is always the first item of page one — even when it is private —
+ * whatever `sort` says. Nobody else's private review is ever included.
+ *
+ * Requires auth: the pin and `isMine` are the point of this endpoint.
+ */
+router.get('/:id/reviews', requireAuth, wrap(booksController.reviews));
 
 export default router;
