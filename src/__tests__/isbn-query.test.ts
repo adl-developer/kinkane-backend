@@ -20,6 +20,7 @@ vi.mock('../services/books.service', () => ({
 vi.mock('../services/user-books.service', () => ({ userBooksService: {} }));
 vi.mock('../services/interactions.service', () => ({ interactionsService: {} }));
 vi.mock('../services/community.service', () => ({ communityService: {} }));
+vi.mock('../services/community-search.service', () => ({ communitySearchService: {} }));
 vi.mock('../services/my-reviews.service', () => ({
   withMyReviews: async <T,>(_u: unknown, items: T[]) => items.map((i) => ({ ...i, myReview: null })),
   getMyReview: async () => null,

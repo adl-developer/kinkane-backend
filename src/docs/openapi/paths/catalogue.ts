@@ -248,20 +248,13 @@ export const cataloguePaths = {
         param('sort', 'query', { type: 'string', enum: ['date_desc', 'date_asc'], default: 'date_desc' },
           'Order of everyone else’s reviews. Newest first by default. Your own review stays first either way.'),
         param('limit', 'query', { type: 'integer', minimum: 1, maximum: 50, default: 20 }, 'Reviews per page (1–50).'),
-        param('offset', 'query', { type: 'integer', minimum: 0, default: 0 },
+        param('offset', 'query', { type: 'integer', minimum: 0, maximum: 10000, default: 0 },
           'Reviews to skip. Pass the previous page’s offset + limit.'),
       ],
       responses: {
         200: json('A page of reviews. Your own, if any, is the first item when offset is 0.',
           object({
-            reviews: arrayOf({
-              allOf: [
-                ref('Post'),
-                object({
-                  isMine: { type: 'boolean', example: false, description: 'True on the caller’s own review.' },
-                }),
-              ],
-            }),
+            reviews: arrayOf(ref('BookReview')),
             total: { type: 'integer', example: 84, description: 'Every review on the list, including yours.' },
             sort: { type: 'string', example: 'date_desc' },
             limit: { type: 'integer', example: 20 },

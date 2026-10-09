@@ -13,7 +13,7 @@ const listParams = [
   param('sort', 'query', { type: 'string', enum: ['date_desc', 'date_asc'], default: 'date_desc' },
     'Newest first by default.'),
   param('limit', 'query', { type: 'integer', minimum: 1, maximum: 50, default: 20 }, 'Items per page (1–50).'),
-  param('offset', 'query', { type: 'integer', minimum: 0, default: 0 }, 'Items to skip.'),
+  param('offset', 'query', { type: 'integer', minimum: 0, maximum: 10000, default: 0 }, 'Items to skip.'),
 ];
 
 const followParams = [
@@ -209,7 +209,7 @@ export const socialPaths = {
       parameters: [
         postIdParam,
         param('limit', 'query', { type: 'integer', minimum: 1, maximum: 50, default: 20 }, 'Items per page (1–50).'),
-        param('offset', 'query', { type: 'integer', minimum: 0, default: 0 }, 'Items to skip.'),
+        param('offset', 'query', { type: 'integer', minimum: 0, maximum: 10000, default: 0 }, 'Items to skip.'),
       ],
       responses: {
         200: json('A page of comments.',
@@ -316,7 +316,7 @@ export const socialPaths = {
         param('filter', 'query', { type: 'string', enum: ['all', 'users', 'posts', 'groups'], default: 'all' },
           'Which kinds of result to include.'),
         param('limit', 'query', { type: 'integer', minimum: 1, maximum: 50, default: 20 }, 'Items per page (1–50).'),
-        param('offset', 'query', { type: 'integer', minimum: 0, default: 0 }, 'Items to skip.'),
+        param('offset', 'query', { type: 'integer', minimum: 0, maximum: 10000, default: 0 }, 'Items to skip.'),
       ],
       responses: {
         200: json('Search results.',

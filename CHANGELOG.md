@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-10-09
+
+### Features
+
+* show every reader's reviews on a book, with yours pinned first ([84ec2c4](https://adl.github.com/adl-developer/kinkane-backend/commit/84ec2c4735cdb34799a875bbc7161e1fb8cbdae0)) — [details](changelog/2026-10-09-book-reviews-list.md)
+
+
 ## 2026-10-07
 
 ### Bug Fixes

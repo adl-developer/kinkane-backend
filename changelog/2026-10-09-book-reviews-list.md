@@ -21,7 +21,7 @@ It returns every reader's rating and review of the book, a page at a time. Each 
 }
 ```
 
-Each item has the same shape as a community post (the existing post lists), with `isMine` added.
+Each item has the same shape as a community post (the existing post lists), with `isMine` added. It's documented as the `BookReview` schema. The shared `Post` docs schema doesn't match what the post endpoints actually return (it shows nested `author`/`book` objects), so the new endpoint doesn't reference it.
 
 ## Why
 
@@ -36,6 +36,10 @@ The book page could show the reader's own review (`myReview` on `GET /books/:id`
 - **Sign-in required.** Without a signed-in reader there's nothing to pin or flag.
 - **Only this exact book id.** Reviews of another edition of the same title aren't included, for the same reason given in `my-reviews.service`: editions are grouped by heuristics, not by a stored work id.
 
+- **`offset` is capped at 10,000**, here and on the community lists that share the same paging rules. Postgres reads and discards every skipped row, so an uncapped offset is an easy way to make each request expensive.
+- **The check that the book exists is a plain id lookup**, run in parallel with the reviews query, rather than a full book-detail load.
+- **Reviews from blacklisted accounts stay visible.** The blacklist deliberately doesn't hide content (see `users.blacklistedAt`).
+
 ## Out of scope
 
 - Signed-out access.
@@ -44,6 +48,7 @@ The book page could show the reader's own review (`myReview` on `GET /books/:id`
 
 ## Verification
 
+- `book-reviews-endpoint.test.ts` drives the real route: it checks that sign-in is required, the 400s (bad id, offset over the cap, bad sort or limit), the `hasMore` arithmetic, the 404 for an unknown book, and that an unexpected error goes to the global handler rather than being echoed to the client.
 - `book-reviews-list.test.ts` renders the generated SQL and checks three things: the filter (public, or the caller's own), that the pin comes first in the `ORDER BY` for both sort orders, and that `isMine` is set on the caller's review only.
 - The full unit suite passes, and so does `tsc`.
 - No run against a real database yet. There was no `TEST_DATABASE_URL` on the machine, and `.env` points at production.

@@ -6,6 +6,7 @@ import { userBooksService } from '../services/user-books.service';
 import { interactionsService } from '../services/interactions.service';
 import { getMyReview, withMyReviews } from '../services/my-reviews.service';
 import { communityService } from '../services/community.service';
+import { listPostsSchema } from './community.controller';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 import { config } from '../config';
 import { fromPresentment, resolveCurrency, resolveRequestCountry } from '../services/commerce/pricing';
@@ -50,13 +51,6 @@ const authorSuggestionsSchema = z.object({
 // against the old flag keep working and get what they were asking for anyway.
 const similarSchema = z.object({
   limit: z.coerce.number().int().min(1).max(20).default(10),
-});
-
-// Same paging and sort as the community post lists, so a client can share its paging code.
-const reviewsSchema = z.object({
-  sort: z.enum(['date_asc', 'date_desc']).default('date_desc'),
-  limit: z.coerce.number().int().min(1).max(50).default(20),
-  offset: z.coerce.number().int().min(0).default(0),
 });
 
 // Everything both versions of GET /books accept. `type` is the only difference between
@@ -518,6 +512,8 @@ export const booksController = {
     }
   },
 
+  // Wrapped in wrapHttp: an unknown book is the service's 404, and anything
+  // unexpected goes to the global handler instead of echoing a database error.
   async reviews(req: AuthenticatedRequest, res: Response): Promise<void> {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) {
@@ -525,32 +521,21 @@ export const booksController = {
       return;
     }
 
-    const parsed = reviewsSchema.safeParse(req.query);
+    const parsed = listPostsSchema.safeParse(req.query);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.flatten().fieldErrors });
       return;
     }
 
-    try {
-      const book = await booksService.getById(id);
-      if (!book) {
-        res.status(404).json({ error: 'Book not found' });
-        return;
-      }
-
-      const { sort, limit, offset } = parsed.data;
-      const result = await communityService.listReviewsForBook(id, req.user.id, sort, limit, offset);
-      res.status(200).json({
-        reviews: result.posts,
-        total: result.total,
-        sort,
-        limit,
-        offset,
-        hasMore: offset + result.posts.length < result.total,
-      });
-    } catch (err: unknown) {
-      const e = err as Error;
-      res.status(500).json({ error: e.message });
-    }
+    const { sort, limit, offset } = parsed.data;
+    const result = await communityService.listReviewsForBook(id, req.user.id, sort, limit, offset);
+    res.status(200).json({
+      reviews: result.posts,
+      total: result.total,
+      sort,
+      limit,
+      offset,
+      hasMore: offset + result.posts.length < result.total,
+    });
   },
 };

@@ -10,8 +10,10 @@ import type { SQL } from 'drizzle-orm';
  */
 
 // Each db.select() call takes the next result off this queue, in call order:
-// the page, the count, then enrichPosts' likes, comments and my-likes.
+// the book existence check, the page, the count, then enrichPosts' likes,
+// comments and my-likes. An empty queue answers "book exists" by default.
 let results: unknown[][] = [];
+const BOOK = [{ id: 5 }];
 const wheres: SQL[] = [];
 const orderBys: SQL[][] = [];
 
@@ -65,7 +67,7 @@ const row = (id: number, userId: number, isPublic = true) => ({
 });
 
 beforeEach(() => {
-  results = [];
+  results = [BOOK];
   wheres.length = 0;
   orderBys.length = 0;
 });
@@ -74,11 +76,11 @@ describe('listReviewsForBook', () => {
   it("shows public reviews and the caller's own, never anyone else's private one", async () => {
     await communityService.listReviewsForBook(5, 7, 'date_desc', 20, 0);
 
-    const { sql, params } = dialect.sqlToQuery(wheres[0]);
+    const { sql, params } = dialect.sqlToQuery(wheres[1]);
     expect(sql).toBe('("posts"."book_id" = $1 and ("posts"."is_public" = $2 or "posts"."user_id" = $3))');
     expect(params).toEqual([5, true, 7]);
     // The count uses the same filter, so total matches what pages return.
-    expect(dialect.sqlToQuery(wheres[1]).sql).toBe(sql);
+    expect(dialect.sqlToQuery(wheres[2]).sql).toBe(sql);
   });
 
   it("pins the caller's review first in the query itself, then sorts by date", async () => {
@@ -98,7 +100,7 @@ describe('listReviewsForBook', () => {
   });
 
   it("flags only the caller's review as isMine", async () => {
-    results = [[row(70, 7, false), row(80, 8), row(90, 9)], [{ count: 3 }]];
+    results = [BOOK, [row(70, 7, false), row(80, 8), row(90, 9)], [{ count: 3 }]];
     const { posts, total } = await communityService.listReviewsForBook(5, 7, 'date_desc', 20, 0);
 
     expect(posts.map((p) => [p.id, p.isMine])).toEqual([[70, true], [80, false], [90, false]]);
@@ -107,7 +109,16 @@ describe('listReviewsForBook', () => {
   });
 
   it('returns an empty page for a book nobody has reviewed', async () => {
-    results = [[], [{ count: 0 }]];
+    results = [BOOK, [], [{ count: 0 }]];
     expect(await communityService.listReviewsForBook(5, 7, 'date_desc', 20, 0)).toEqual({ posts: [], total: 0 });
+  });
+
+  it('throws a 404 for a book that does not exist', async () => {
+    results = [[], [], [{ count: 0 }]];
+    await expect(communityService.listReviewsForBook(999, 7, 'date_desc', 20, 0)).rejects.toMatchObject({
+      statusCode: 404,
+      message: 'Book not found',
+    });
+    expect(dialect.sqlToQuery(wheres[0])).toMatchObject({ sql: '"books"."id" = $1', params: [999] });
   });
 });

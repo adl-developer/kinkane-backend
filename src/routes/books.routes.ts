@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { booksController } from '../controllers/books.controller';
 import { optionalAuth, requireAuth } from '../middleware/auth.middleware';
-import { wrap } from '../lib/route-helpers';
+import { wrapHttp } from '../lib/route-helpers';
 
 const router = Router();
 
@@ -153,6 +153,6 @@ router.get('/:id/similar', optionalAuth, booksController.similar);
  *
  * Requires auth: the pin and `isMine` are the point of this endpoint.
  */
-router.get('/:id/reviews', requireAuth, wrap(booksController.reviews));
+router.get('/:id/reviews', requireAuth, wrapHttp(booksController.reviews));
 
 export default router;

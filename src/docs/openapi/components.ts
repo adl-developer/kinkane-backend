@@ -441,6 +441,44 @@ const socialSchemas = {
     },
   },
 
+  BookReview: {
+    type: 'object',
+    description:
+      'One reader’s rating and review of a book, as `GET /books/{id}/reviews` returns it. Flat: the reviewer and book are plain fields, not nested objects.',
+    properties: {
+      id: { type: 'integer', example: 3310, description: 'The post id — what the community edit/delete/like routes take.' },
+      userId: { type: 'integer', example: 4412 },
+      userName: { type: 'string', example: 'Ama Boateng' },
+      userPhotoUrl: { type: 'string', format: 'uri', nullable: true, example: null },
+      bookId: { type: 'integer', example: 48213 },
+      bookTitle: { type: 'string', example: 'Girl, Woman, Other' },
+      bookCoverUrl: { type: 'string', format: 'uri', nullable: true, example: null },
+      bookExcerpt: {
+        type: 'object',
+        nullable: true,
+        properties: {
+          title: { type: 'string', nullable: true },
+          url: { type: 'string', nullable: true },
+          available: { type: 'boolean' },
+        },
+      },
+      rating: { type: 'integer', minimum: 0, maximum: 5, example: 5 },
+      status: { type: 'string', enum: ['reading', 'read'], example: 'read' },
+      body: { type: 'string', nullable: true, example: 'Twelve voices and not one wasted page.' },
+      isPublic: {
+        type: 'boolean',
+        example: true,
+        description: 'Always true on other people’s reviews; can be false only on your own.',
+      },
+      likeCount: { type: 'integer', example: 24 },
+      commentCount: { type: 'integer', example: 3 },
+      likedByMe: { type: 'boolean', example: false },
+      isMine: { type: 'boolean', example: false, description: 'True on the caller’s own review.' },
+      createdAt: { type: 'string', format: 'date-time', example: '2026-07-30T20:04:00.000Z' },
+      updatedAt: { type: 'string', format: 'date-time', example: '2026-07-30T20:04:00.000Z' },
+    },
+  },
+
   Comment: {
     type: 'object',
     properties: {

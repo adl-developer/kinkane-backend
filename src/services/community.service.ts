@@ -1,4 +1,4 @@
-import { eq, and, or, asc, desc, sql, inArray } from 'drizzle-orm';
+import { eq, and, or, asc, desc, sql, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { posts, postLikes, comments, commentLikes, users, books, userBooks, bookContributors, followRequests, notifications } from '../db/schema';
 import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-excerpts.service';
@@ -248,6 +248,45 @@ const POST_SELECT_COLUMNS = {
   updatedAt: posts.updatedAt,
 } as const;
 
+// One page of posts matching `where`, with its total, excerpts, and the like
+// and comment counts. Shared by the per-book lists, which differ only in which
+// posts they show and in what order.
+async function listPostPage(
+  where: SQL | undefined,
+  orderBy: SQL[],
+  requesterId: number,
+  limit: number,
+  offset: number,
+): Promise<{ posts: PostItem[]; total: number }> {
+  const [rows, [countRow]] = await Promise.all([
+    db
+      .select(POST_SELECT_COLUMNS)
+      .from(posts)
+      .innerJoin(users, eq(users.id, posts.userId))
+      .innerJoin(books, eq(books.id, posts.bookId))
+      .where(where)
+      .orderBy(...orderBy)
+      .limit(limit)
+      .offset(offset),
+    db.select({ count: sql<number>`COUNT(*)::int` }).from(posts).where(where),
+  ]);
+
+  const excerptMap = await getExcerptsByIsbns(rows.map((r) => r.bookIsbn13));
+
+  const enriched = await enrichPosts(
+    rows.map(({ bookIsbn13, ...r }) => ({
+      ...r,
+      bookExcerpt: pickExcerpt(bookIsbn13, excerptMap),
+      likeCount: 0,
+      commentCount: 0,
+      likedByMe: false,
+    })),
+    requesterId,
+  );
+
+  return { posts: enriched, total: countRow?.count ?? 0 };
+}
+
 // ── Service ───────────────────────────────────────────────────────────────────
 
 export const communityService = {
@@ -438,36 +477,8 @@ export const communityService = {
     limit: number,
     offset: number,
   ): Promise<{ posts: PostItem[]; total: number }> {
-    const where = and(eq(posts.bookId, bookId), eq(posts.isPublic, true));
     const order = sort === 'date_asc' ? asc(posts.createdAt) : desc(posts.createdAt);
-
-    const [rows, [countRow]] = await Promise.all([
-      db
-        .select(POST_SELECT_COLUMNS)
-        .from(posts)
-        .innerJoin(users, eq(users.id, posts.userId))
-        .innerJoin(books, eq(books.id, posts.bookId))
-        .where(where)
-        .orderBy(order)
-        .limit(limit)
-        .offset(offset),
-      db.select({ count: sql<number>`COUNT(*)::int` }).from(posts).where(where),
-    ]);
-
-    const excerptMap = await getExcerptsByIsbns(rows.map((r) => r.bookIsbn13));
-
-    const enriched = await enrichPosts(
-      rows.map(({ bookIsbn13, ...r }) => ({
-        ...r,
-        bookExcerpt: pickExcerpt(bookIsbn13, excerptMap),
-        likeCount: 0,
-        commentCount: 0,
-        likedByMe: false,
-      })),
-      requesterId,
-    );
-
-    return { posts: enriched, total: countRow?.count ?? 0 };
+    return listPostPage(and(eq(posts.bookId, bookId), eq(posts.isPublic, true)), [order], requesterId, limit, offset);
   },
 
   /**
@@ -483,6 +494,7 @@ export const communityService = {
    * appears on page one only, and is counted in `total` exactly once.
    *
    * Matched on the exact book id, like myReview — see my-reviews.service.
+   * Throws a 404 for a book that does not exist.
    */
   async listReviewsForBook(
     bookId: number,
@@ -499,35 +511,17 @@ export const communityService = {
     // The id tiebreak keeps pages stable when two reviews share a timestamp.
     const byId = sort === 'date_asc' ? asc(posts.id) : desc(posts.id);
 
-    const [rows, [countRow]] = await Promise.all([
-      db
-        .select(POST_SELECT_COLUMNS)
-        .from(posts)
-        .innerJoin(users, eq(users.id, posts.userId))
-        .innerJoin(books, eq(books.id, posts.bookId))
-        .where(where)
-        .orderBy(desc(sql`${posts.userId} = ${requesterId}`), byDate, byId)
-        .limit(limit)
-        .offset(offset),
-      db.select({ count: sql<number>`COUNT(*)::int` }).from(posts).where(where),
+    // The existence check runs alongside the page rather than ahead of it: an
+    // unknown book has no posts, so the page is empty and cheap either way.
+    const [[book], page] = await Promise.all([
+      db.select({ id: books.id }).from(books).where(eq(books.id, bookId)).limit(1),
+      listPostPage(where, [desc(sql`${posts.userId} = ${requesterId}`), byDate, byId], requesterId, limit, offset),
     ]);
-
-    const excerptMap = await getExcerptsByIsbns(rows.map((r) => r.bookIsbn13));
-
-    const enriched = await enrichPosts(
-      rows.map(({ bookIsbn13, ...r }) => ({
-        ...r,
-        bookExcerpt: pickExcerpt(bookIsbn13, excerptMap),
-        likeCount: 0,
-        commentCount: 0,
-        likedByMe: false,
-      })),
-      requesterId,
-    );
+    assertFound(book, 'Book');
 
     return {
-      posts: enriched.map((p) => ({ ...p, isMine: p.userId === requesterId })),
-      total: countRow?.count ?? 0,
+      posts: page.posts.map((p) => ({ ...p, isMine: p.userId === requesterId })),
+      total: page.total,
     };
   },
 
