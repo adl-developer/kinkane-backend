@@ -1,11 +1,18 @@
 # Changelog
 
 
+## 2026-10-10
+
+### Features
+
+* add an Owned section to the bookshelf alongside Favourites ([ab87f4e](https://adl.github.com/adl-developer/kinkane-backend/commit/ab87f4ec19584571b19c40936b1a28d0a194a14f)) — [details](changelog/2026-10-10-shelf-owned-section.md)
+
+
 ## 2026-10-09
 
 ### Features
 
-* give every reader an @username and let people mention each other anywhere they write ([d1f0743](https://adl.github.com/adl-developer/kinkane-backend/commit/d1f0743208516d76eeaa4e44a41dc8d1f51cb567)) — [details](changelog/2026-10-09-usernames-and-mentions.md)
+* give every reader an @username and let people mention each other anywhere they write ([3095e3f](https://adl.github.com/adl-developer/kinkane-backend/commit/3095e3f597d132ba6f5d17c8fd5fe73e85c07fc3)) — [details](changelog/2026-10-09-usernames-and-mentions.md)
 * let group members invite anyone on the app, not only friends ([bc3ff51](https://adl.github.com/adl-developer/kinkane-backend/commit/bc3ff5124f5e98e16d1da69d0608cca004b0a776)) — [details](changelog/2026-10-09-usernames-and-mentions.md)
 * show every reader's reviews on a book, with yours pinned first ([84ec2c4](https://adl.github.com/adl-developer/kinkane-backend/commit/84ec2c4735cdb34799a875bbc7161e1fb8cbdae0)) — [details](changelog/2026-10-09-book-reviews-list.md)
 

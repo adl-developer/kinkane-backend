@@ -134,6 +134,11 @@ export const userInteractions = pgTable(
 
 // ── User Books (Reading List) ─────────────────────────────────────────────────
 // The user's personal bookshelf. Seeded at registration from the 5 chosen books.
+//
+// Five sections, two kinds. Want to read / Reading now / Finished are one
+// `status` column, so a book can only ever be in one of them. Favourites
+// (`liked`) and Owned (`owned`) are independent flags on top. A row exists only
+// while it holds something — see userBooksService's pruneIfEmpty.
 
 export const userBooks = pgTable(
   'user_books',
@@ -158,6 +163,10 @@ export const userBooks = pgTable(
     // User has explicitly liked this book (independent of reading status)
     liked: boolean('liked').notNull().default(false),
     likedAt: timestamp('liked_at', { withTimezone: true }),
+    // User owns a copy ("Owned" section). Like `liked`, independent of reading
+    // status: a book can be Finished, a Favourite and Owned all at once.
+    owned: boolean('owned').notNull().default(false),
+    ownedAt: timestamp('owned_at', { withTimezone: true }),
     addedAt: timestamp('added_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({

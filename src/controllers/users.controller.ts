@@ -7,7 +7,7 @@ import { parseId } from '../lib/route-helpers';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 
 const shelfQuerySchema = z.object({
-  filter: z.enum(['all', 'want_to_read', 'reading', 'read']).default('all'),
+  filter: z.enum(['all', 'want_to_read', 'reading', 'read', 'liked', 'owned']).default('all'),
   sort:   z.enum(['date_desc', 'date_asc', 'title_asc', 'title_desc']).default('date_desc'),
   limit:  z.coerce.number().int().min(1).max(50).default(20),
   offset: z.coerce.number().int().min(0).default(0),

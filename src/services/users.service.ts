@@ -51,7 +51,9 @@ async function setFriendRequestNotificationStatus(
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export type FollowStatus = 'none' | 'pending' | 'accepted' | 'declined';
-export type ShelfFilter = 'all' | 'want_to_read' | 'reading' | 'read';
+// 'liked' is the Favourites section and 'owned' the Owned one; both are flags
+// on top of the reading status, so a book can turn up under more than one.
+export type ShelfFilter = 'all' | 'want_to_read' | 'reading' | 'read' | 'liked' | 'owned';
 export type ShelfSort = 'date_desc' | 'date_asc' | 'title_asc' | 'title_desc';
 
 export interface ShelfItem {
@@ -60,6 +62,8 @@ export interface ShelfItem {
   title: string;
   coverUrl: string | null;
   status: string | null;
+  liked: boolean;
+  owned: boolean;
   addedAt: Date;
 }
 
@@ -616,7 +620,11 @@ export const usersService = {
     }
 
     const conditions = [eq(userBooks.userId, targetId)];
-    if (filter !== 'all') {
+    if (filter === 'liked') {
+      conditions.push(eq(userBooks.liked, true));
+    } else if (filter === 'owned') {
+      conditions.push(eq(userBooks.owned, true));
+    } else if (filter !== 'all') {
       conditions.push(eq(userBooks.status, filter));
     }
     const where = and(...conditions);
@@ -636,6 +644,8 @@ export const usersService = {
           title: books.title,
           coverUrl: books.coverUrl,
           status: userBooks.status,
+          liked: userBooks.liked,
+          owned: userBooks.owned,
           addedAt: userBooks.addedAt,
         })
         .from(userBooks)

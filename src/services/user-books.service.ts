@@ -1,5 +1,5 @@
 import bcrypt from 'bcryptjs';
-import { eq, and, asc, desc, ilike, sql, inArray, type SQL } from 'drizzle-orm';
+import { eq, and, asc, desc, ilike, sql, inArray, isNull, type SQL } from 'drizzle-orm';
 import { admin } from '../lib/firebase';
 import { db } from '../db';
 import {
@@ -43,6 +43,8 @@ export interface UserBookItem {
   status: string | null;
   liked: boolean;
   likedAt: Date | null;
+  owned: boolean;
+  ownedAt: Date | null;
   source: string;
   note: string | null;
   /** Linked @handles in `note`. */
@@ -73,6 +75,7 @@ export interface UserBookItem {
 export interface UserBookStatus {
   status: string | null;
   liked: boolean;
+  owned: boolean;
   note: string | null;
   noteMentions: MentionRef[];
   noteIsPublic: boolean;
@@ -97,16 +100,19 @@ export interface ListUserBooksOptions {
   q?: string;
   status?: 'want_to_read' | 'reading' | 'read';
   liked?: boolean;
+  owned?: boolean;
   sort: 'title_asc' | 'title_desc' | 'date_asc' | 'date_desc';
   limit: number;
   offset: number;
 }
 
 export interface UpsertUserBookFields {
-  status?: 'want_to_read' | 'reading' | 'read';
+  /** null takes the book out of Want to read / Reading now / Finished. */
+  status?: 'want_to_read' | 'reading' | 'read' | null;
   note?: string | null;
   noteIsPublic?: boolean;
   liked?: boolean;
+  owned?: boolean;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -167,6 +173,95 @@ async function attachRelations(bookIds: number[]): Promise<Map<number, {
   return map;
 }
 
+/**
+ * Deletes the user's entry for a book if nothing is left on it: no reading
+ * status, not a Favourite, not Owned, and no note. Returns whether it did.
+ *
+ * One conditional DELETE rather than a read and then a delete, so a toggle
+ * that lands between the two (unlike on one device, mark Owned on another)
+ * can't lose the book. The note counts as content so that clearing the last
+ * flag never silently throws away something the reader wrote.
+ */
+async function pruneIfEmpty(userId: number, bookId: number): Promise<boolean> {
+  const deleted = await db
+    .delete(userBooks)
+    .where(
+      and(
+        eq(userBooks.userId, userId),
+        eq(userBooks.bookId, bookId),
+        isNull(userBooks.status),
+        eq(userBooks.liked, false),
+        eq(userBooks.owned, false),
+        // ICU collation, not the database's C ctype, so [[:space:]] also
+        // matches newlines' Unicode cousins and non-breaking spaces.
+        sql`(coalesce(${userBooks.note}, '') COLLATE "und-x-icu") ~ '^[[:space:]]*$'`,
+      ),
+    )
+    .returning({ id: userBooks.id });
+  return deleted.length > 0;
+}
+
+/** The two independent shelf flags: Favourites and Owned. */
+type ShelfFlag = 'liked' | 'owned';
+
+/** The column values that set a flag. A repeat keeps the original timestamp. */
+function flagOn(flag: ShelfFlag) {
+  return flag === 'liked'
+    ? { liked: true, likedAt: sql`coalesce(${userBooks.likedAt}, now())` }
+    : { owned: true, ownedAt: sql`coalesce(${userBooks.ownedAt}, now())` };
+}
+
+function flagOff(flag: ShelfFlag) {
+  return flag === 'liked' ? { liked: false, likedAt: null } : { owned: false, ownedAt: null };
+}
+
+/**
+ * Turns a flag on, creating the entry (no reading status) if the book isn't on
+ * the shelf yet. Idempotent: setting it again keeps the original timestamp.
+ *
+ * Leaves `source` alone on an existing entry. Source records how the book got
+ * onto the shelf, and the "readers like you" cohort reads it — favouriting or
+ * owning a quiz pick shouldn't stop it counting as one.
+ */
+async function setFlag(userId: number, bookId: number, flag: ShelfFlag): Promise<void> {
+  const [book] = await db.select({ id: books.id }).from(books).where(eq(books.id, bookId)).limit(1);
+  if (!book) {
+    throw Object.assign(new Error('Book not found'), { statusCode: 404 });
+  }
+
+  const now = new Date();
+  await db
+    .insert(userBooks)
+    .values({
+      userId,
+      bookId,
+      source: 'manual',
+      status: null,
+      ...(flag === 'liked' ? { liked: true, likedAt: now } : { owned: true, ownedAt: now }),
+    })
+    .onConflictDoUpdate({ target: [userBooks.userId, userBooks.bookId], set: flagOn(flag) });
+
+  await bustUserExclusions(userId);
+}
+
+/**
+ * Turns a flag off, and removes the entry if that leaves it empty (see
+ * pruneIfEmpty) — a book with a reading status, the other flag or a note stays.
+ */
+async function clearFlag(userId: number, bookId: number, flag: ShelfFlag): Promise<void> {
+  await db
+    .update(userBooks)
+    .set(flagOff(flag))
+    .where(and(eq(userBooks.userId, userId), eq(userBooks.bookId, bookId)));
+
+  // Only a removed entry changes the exclusion set — the book can be
+  // recommended again. An entry that stays is still on the shelf, and so
+  // still excluded.
+  if (await pruneIfEmpty(userId, bookId)) {
+    await bustUserExclusions(userId);
+  }
+}
+
 // ── Public service ────────────────────────────────────────────────────────────
 
 export const userBooksService = {
@@ -179,6 +274,10 @@ export const userBooksService = {
 
     if (opts.liked !== undefined) {
       conditions.push(eq(userBooks.liked, opts.liked));
+    }
+
+    if (opts.owned !== undefined) {
+      conditions.push(eq(userBooks.owned, opts.owned));
     }
 
     if (opts.q) {
@@ -201,6 +300,8 @@ export const userBooksService = {
           status: userBooks.status,
           liked: userBooks.liked,
           likedAt: userBooks.likedAt,
+          owned: userBooks.owned,
+          ownedAt: userBooks.ownedAt,
           source: userBooks.source,
           note: userBooks.note,
           noteIsPublic: userBooks.noteIsPublic,
@@ -254,9 +355,11 @@ export const userBooksService = {
   },
 
   /**
-   * Upserts the user's entry for a book (status, note, visibility).
+   * Upserts the user's entry for a book (status, Favourite, Owned, note, visibility).
    * Only the fields present in `fields` are written — omitted fields are left unchanged
-   * on update, or set to their column defaults on first insert.
+   * on update, or set to their column defaults on first insert. If the write
+   * leaves the entry empty (e.g. `status: null` on a book that is neither a
+   * Favourite nor Owned), the entry is removed.
    */
   async upsert(userId: number, bookId: number, fields: UpsertUserBookFields): Promise<void> {
     const [book] = await db
@@ -269,22 +372,27 @@ export const userBooksService = {
       throw Object.assign(new Error('Book not found'), { statusCode: 404 });
     }
 
-    const note = fields.note !== undefined ? await mentionsService.prepare(fields.note) : undefined;
+    // A note of only whitespace is no note: stored as null, so it never keeps
+    // an otherwise empty entry alive.
+    const noteInput = fields.note?.trim() === '' ? null : fields.note;
+    const note = noteInput !== undefined ? await mentionsService.prepare(noteInput) : undefined;
 
-    // Build the update set — only include keys that were explicitly provided
-    const updateSet: Record<string, unknown> = {
-      source: 'manual',
-    };
+    // Build the update set — only include keys that were explicitly provided.
+    // A flag-only write (liked/owned) keeps the entry's source, as setFlag does:
+    // favouriting or owning a quiz pick shouldn't stop it counting as one.
+    const updateSet: Record<string, unknown> = {};
+    if (fields.status !== undefined || fields.note !== undefined || fields.noteIsPublic !== undefined) {
+      updateSet.source = 'manual';
+    }
     if (fields.status !== undefined) updateSet.status = fields.status;
     if (note !== undefined) updateSet.note = note.text;
     if (fields.noteIsPublic !== undefined) updateSet.noteIsPublic = fields.noteIsPublic;
-    if (fields.liked !== undefined) {
-      updateSet.liked = fields.liked;
-      updateSet.likedAt = fields.liked ? new Date() : null;
-    }
+    // Re-sending true keeps the original timestamp, as like()/own() do.
+    if (fields.liked !== undefined) Object.assign(updateSet, fields.liked ? flagOn('liked') : flagOff('liked'));
+    if (fields.owned !== undefined) Object.assign(updateSet, fields.owned ? flagOn('owned') : flagOff('owned'));
 
     // C3 fix: Drizzle throws 'No values to set' when the set object is empty.
-    // source is always present now so this guard is a safety net for future refactors.
+    // The controller requires at least one field, so this guard is a safety net.
     if (Object.keys(updateSet).length === 0) {
       throw new Error('upsert called with no fields to update');
     }
@@ -305,6 +413,8 @@ export const userBooksService = {
         noteIsPublic: fields.noteIsPublic ?? false,
         liked: fields.liked ?? false,
         likedAt: fields.liked ? new Date() : null,
+        owned: fields.owned ?? false,
+        ownedAt: fields.owned ? new Date() : null,
       })
       .onConflictDoUpdate({
         target: [userBooks.userId, userBooks.bookId],
@@ -335,44 +445,27 @@ export const userBooksService = {
       interactionsService.recordFireAndForget(userId, bookId, 'like');
     }
 
+    // Only a write that can empty the entry needs the check.
+    if (fields.status === null || fields.liked === false || fields.owned === false || fields.note !== undefined) {
+      await pruneIfEmpty(userId, bookId);
+    }
+
     // A book on the shelf is excluded from every recommendation surface, so the
     // cached exclusion set is stale the moment the shelf changes.
     await bustUserExclusions(userId);
   },
 
   /**
-   * Likes a book. If the user has no existing entry for it, one is created
-   * with no reading status — just the liked flag. Idempotent.
+   * Likes a book (Favourites). Creates an entry with no reading status if the
+   * book isn't on the shelf yet. Idempotent.
    */
   async like(userId: number, bookId: number): Promise<void> {
-    const [book] = await db.select({ id: books.id }).from(books).where(eq(books.id, bookId)).limit(1);
-    if (!book) {
-      throw Object.assign(new Error('Book not found'), { statusCode: 404 });
-    }
-
-    await db
-      .insert(userBooks)
-      .values({
-        userId,
-        bookId,
-        source: 'manual',
-        status: null,
-        liked: true,
-        likedAt: new Date(),
-      })
-      .onConflictDoUpdate({
-        target: [userBooks.userId, userBooks.bookId],
-        set: { liked: true, likedAt: new Date(), source: 'manual' },
-      });
-
+    await setFlag(userId, bookId, 'liked');
     interactionsService.recordFireAndForget(userId, bookId, 'like');
-
-    await bustUserExclusions(userId);
   },
 
   /**
-   * Unlikes a book. If the row has no reading status, it is deleted entirely
-   * (nothing left to keep it). Otherwise only the liked flag is cleared.
+   * Unlikes a book. The entry goes only if nothing else is left on it.
    *
    * Deliberately does NOT retract the 'like' trending signal. The interaction log
    * is append-only: the user's attention on that book at that moment was real, and
@@ -381,26 +474,23 @@ export const userBooksService = {
    * the row anyway (the partial unique index allows exactly one per user per book).
    */
   async unlike(userId: number, bookId: number): Promise<void> {
-    const [row] = await db
-      .select({ id: userBooks.id, status: userBooks.status })
-      .from(userBooks)
-      .where(and(eq(userBooks.userId, userId), eq(userBooks.bookId, bookId)))
-      .limit(1);
+    await clearFlag(userId, bookId, 'liked');
+  },
 
-    if (!row) return; // nothing to do
+  /**
+   * Marks a book as Owned. Creates an entry with no reading status if the book
+   * isn't on the shelf yet. Idempotent.
+   *
+   * No trending signal: owning a copy says nothing about whether the reader
+   * liked it, and gifts and secondhand piles would skew the lists.
+   */
+  async own(userId: number, bookId: number): Promise<void> {
+    await setFlag(userId, bookId, 'owned');
+  },
 
-    if (row.status === null) {
-      await db.delete(userBooks).where(eq(userBooks.id, row.id));
-      // Only this branch changes the exclusion set — the row is gone, so the
-      // book can be recommended again. Clearing the liked flag on a row that
-      // keeps its reading status leaves it on the shelf, and so still excluded.
-      await bustUserExclusions(userId);
-    } else {
-      await db
-        .update(userBooks)
-        .set({ liked: false, likedAt: null })
-        .where(eq(userBooks.id, row.id));
-    }
+  /** Un-marks a book as Owned. Same removal rule as unlike. */
+  async unown(userId: number, bookId: number): Promise<void> {
+    await clearFlag(userId, bookId, 'owned');
   },
 
   /**
@@ -485,7 +575,7 @@ export const userBooksService = {
 
   /**
    * Returns the calling user's shelf entry for a single book (status, liked,
-   * note), or null if they've never added it. Powers the "your status on
+   * owned, note), or null if they've never added it. Powers the "your status on
    * this book" field on the book detail page.
    */
   async getStatus(userId: number, bookId: number): Promise<UserBookStatus | null> {
@@ -493,6 +583,7 @@ export const userBooksService = {
       .select({
         status: userBooks.status,
         liked: userBooks.liked,
+        owned: userBooks.owned,
         note: userBooks.note,
         noteIsPublic: userBooks.noteIsPublic,
       })
