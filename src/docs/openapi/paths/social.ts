@@ -478,8 +478,8 @@ export const socialPaths = {
       parameters: [
         userIdParam,
         param('filter', 'query',
-          { type: 'string', enum: ['all', 'want_to_read', 'reading', 'read'], default: 'all' },
-          'Reading state to show.'),
+          { type: 'string', enum: ['all', 'want_to_read', 'reading', 'read', 'liked', 'owned'], default: 'all' },
+          'Section to show: a reading state, `liked` (Favourites) or `owned` (Owned).'),
         param('sort', 'query',
           { type: 'string', enum: ['date_desc', 'date_asc', 'title_asc', 'title_desc'], default: 'date_desc' },
           'Sort order.'),

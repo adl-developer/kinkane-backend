@@ -58,14 +58,16 @@ export const libraryPaths = {
     get: {
       tags: [TAG],
       summary: 'List the shelf',
-      description: `The caller’s own reading list, with filtering, search and sorting.\n\n${RETAIN_READ_ONLY}`,
+      description: `The caller’s own reading list, with filtering, search and sorting.\n\nThe shelf has five sections. **Want to read**, **Reading now** and **Finished** are the \`status\` filter, and a book is in at most one of them. **Favourites** (\`liked=true\`) and **Owned** (\`owned=true\`) are independent flags, so the same book can also appear there.\n\n${RETAIN_READ_ONLY}`,
       parameters: [
         param('q', 'query', { type: 'string', minLength: 1, maxLength: 200 },
           'Search the shelf by book title.', { example: 'girl' }),
         param('status', 'query', { type: 'string', enum: ['want_to_read', 'reading', 'read'] },
           'Show only entries in this reading state. Omit for all.'),
         param('liked', 'query', { type: 'string', enum: ['true', 'false'] },
-          'Filter to liked (or explicitly not-liked) entries. Omit for all.'),
+          'Filter to liked (or explicitly not-liked) entries — the Favourites section. Omit for all.'),
+        param('owned', 'query', { type: 'string', enum: ['true', 'false'] },
+          'Filter to owned (or explicitly not-owned) entries — the Owned section. Omit for all.'),
         param('sort', 'query',
           { type: 'string', enum: ['title_asc', 'title_desc', 'date_asc', 'date_desc'], default: 'date_desc' },
           '`date_*` sorts by when the book was added to the shelf.'),
@@ -98,13 +100,15 @@ export const libraryPaths = {
         '',
         'At least one field must be supplied — an empty body is a 400 rather than a no-op.',
         '',
-        '**Requires Kinkané Plus** (building the shelf is the gated part; see `DELETE` on this path, which is not gated).',
+        '`status` is one of three (or none); `liked` and `owned` are independent toggles on top. Send `status: null` to take a book out of Want to read / Reading now / Finished while keeping it in Favourites or Owned. If a write leaves the entry with no status, not liked, not owned and no note, the entry is removed.',
+        '',
+        '**Requires Kinkané Plus** (building the shelf is the gated part; see `DELETE` on this path, which is not gated). A body that only clears fields — `status: null`, `liked: false`, `owned: false`, `noteIsPublic: false`, `note: null` — is not gated either, so a lapsed member can still tidy their shelf.',
       ].join('\n'),
       parameters: [bookIdParam],
       requestBody: body(object({
         status: {
-          type: 'string', enum: ['want_to_read', 'reading', 'read'],
-          description: 'The reading state.', example: 'reading',
+          type: 'string', enum: ['want_to_read', 'reading', 'read', null], nullable: true,
+          description: 'The reading state. `null` clears it.', example: 'reading',
         },
         note: {
           type: 'string', maxLength: 1000, nullable: true,
@@ -116,10 +120,14 @@ export const libraryPaths = {
           description: 'When true, the note is visible to anyone who can see this shelf.',
           example: false,
         },
-        liked: { type: 'boolean', description: 'Equivalent to the like/unlike endpoints below.', example: true },
+        liked: { type: 'boolean', description: 'Favourites. Equivalent to the like/unlike endpoints below.', example: true },
+        owned: { type: 'boolean', description: 'Owned. Equivalent to the own/unown endpoints below.', example: true },
       })),
       responses: {
-        200: json('The entry as it now stands.', ref('UserBookEntry')),
+        200: {
+          ...successResponse,
+          description: 'Saved. The body is only `{ success: true }`: re-read the entry (or the list) for its new state — it may have been removed, if this write left it empty.',
+        },
         400: json('Validation failed, or no fields were supplied.', ref('ValidationError')),
         404: json('No book with that id.', ref('Error'), { error: 'Book not found' }),
         ...plusErrors,
@@ -129,7 +137,7 @@ export const libraryPaths = {
     delete: {
       tags: [TAG],
       summary: 'Remove a book from the shelf',
-      description: `Deletes the entry outright, including any note and the liked flag. Idempotent.\n\n${RETAIN_READ_ONLY}`,
+      description: `Deletes the entry outright, including any note and the liked and owned flags. Idempotent.\n\n${RETAIN_READ_ONLY}`,
       parameters: [bookIdParam],
       responses: {
         200: successResponse,
@@ -156,7 +164,33 @@ export const libraryPaths = {
     delete: {
       tags: [TAG],
       summary: 'Unlike a book',
-      description: `Clears the liked flag. If the entry exists **only** because of the like — no reading status — the whole entry is removed rather than left as an empty row.\n\n${RETAIN_READ_ONLY}`,
+      description: `Clears the liked flag. If nothing else is left on the entry — no reading status, not owned, no note — the whole entry is removed rather than left as an empty row.\n\n${RETAIN_READ_ONLY}`,
+      parameters: [bookIdParam],
+      responses: {
+        200: successResponse,
+        ...authErrors,
+      },
+    },
+  },
+
+  '/api/v1/user-books/{bookId}/own': {
+    post: {
+      tags: [TAG],
+      summary: 'Mark a book as Owned',
+      description:
+        'Idempotent. Creates a shelf entry if the book is not on the shelf yet — one with no reading status, just the owned flag. Independent of reading status and of Favourites. Repeating the call keeps the original `ownedAt`.\n\n**Requires Kinkané Plus.**',
+      parameters: [bookIdParam],
+      responses: {
+        200: successResponse,
+        404: json('No book with that id.', ref('Error'), { error: 'Book not found' }),
+        ...plusErrors,
+      },
+    },
+
+    delete: {
+      tags: [TAG],
+      summary: 'Un-mark a book as Owned',
+      description: `Clears the owned flag. If nothing else is left on the entry — no reading status, not liked, no note — the whole entry is removed.\n\n${RETAIN_READ_ONLY}`,
       parameters: [bookIdParam],
       responses: {
         200: successResponse,
