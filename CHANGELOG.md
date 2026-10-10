@@ -5,7 +5,7 @@
 
 ### Features
 
-* add an Owned section to the bookshelf alongside Favourites ([ab87f4e](https://adl.github.com/adl-developer/kinkane-backend/commit/ab87f4ec19584571b19c40936b1a28d0a194a14f)) — [details](changelog/2026-10-10-shelf-owned-section.md)
+* add an Owned section to the bookshelf alongside Favourites ([6a1161a](https://adl.github.com/adl-developer/kinkane-backend/commit/6a1161af4a9788cc3069af02866a86b9e2ad6373)) — [details](changelog/2026-10-10-shelf-owned-section.md)
 
 
 ## 2026-10-09

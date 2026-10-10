@@ -347,7 +347,7 @@ export const socialPaths = {
       tags: [COMMUNITY],
       summary: 'See what a friend made of a book',
       description:
-        'Another user’s shelf entry and post for one book — their status, whether they liked it, their note if it is public, and their review if there is one.\n\nSubject to that user’s `shelfVisibility` and the follow graph; a shelf the caller cannot see returns 403.',
+        'Another user’s shelf entry and post for one book — their status, whether they liked it, their note if it is public, and their review if there is one.\n\nSubject to that user’s `shelfVisibility` and the follow graph, the same as their full shelf; a shelf the caller cannot see returns 404, the same as a missing account.',
       parameters: [
         param('friendId', 'path', { type: 'integer' }, 'The other user’s id.', { example: 4412 }),
         param('bookId', 'path', { type: 'integer' }, 'Book id.', { example: 48213 }),
@@ -371,7 +371,6 @@ export const socialPaths = {
             },
           })),
         400: resp('ValidationError'),
-        403: resp('Forbidden'),
         404: resp('NotFound'),
         ...authErrors,
       },
@@ -474,7 +473,7 @@ export const socialPaths = {
       tags: [PEOPLE],
       summary: 'Get another user’s shelf',
       description:
-        'Their reading list, if they let the caller see it. Returns 403 when their `shelfVisibility` excludes the caller — check `canViewShelf` on the profile first and do not render the tab at all in that case.\n\nNotes appear only where the owner marked them public.',
+        'Their reading list, if they let the caller see it. Returns 404, the same as a missing account, when their `shelfVisibility` excludes the caller — check `canViewShelf` on the profile first and do not render the tab at all in that case.\n\nNotes appear only where the owner marked them public.',
       parameters: [
         userIdParam,
         param('filter', 'query',
@@ -496,7 +495,6 @@ export const socialPaths = {
             offset: { type: 'integer', example: 0 },
           })),
         400: resp('ValidationError'),
-        403: resp('Forbidden'),
         404: resp('NotFound'),
         ...authErrors,
       },

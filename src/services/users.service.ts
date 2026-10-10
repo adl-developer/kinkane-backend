@@ -104,6 +104,9 @@ export interface UserProfile {
   followingCount?: number;
   postCount?: number;
   shelfVisibility?: ShelfVisibility;
+  // Whether the requester may read this user's shelf. Decided here so clients
+  // never re-implement the visibility rule; see canViewShelf below.
+  canViewShelf: boolean;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -191,6 +194,50 @@ async function assertCanViewFollowGraph(targetId: number, requesterId: number): 
   }
 }
 
+/**
+ * The shelf visibility rule: `public` to everyone, `friends` to themselves and
+ * accepted followers, `private` to themselves only.
+ */
+export function canViewShelf(
+  visibility: ShelfVisibility,
+  isSelf: boolean,
+  isAcceptedFollower: boolean,
+): boolean {
+  if (isSelf) return true;
+  if (visibility === 'public') return true;
+  if (visibility === 'friends') return isAcceptedFollower;
+  return false;
+}
+
+/**
+ * Guards anything read off a user's shelf with canViewShelf. 404 (not 403),
+ * like the follow graph, so a hidden shelf looks the same as a missing account.
+ */
+export async function assertCanViewShelf(targetId: number, requesterId: number): Promise<void> {
+  const [[targetUser], [followRow]] = await Promise.all([
+    db
+      .select({ shelfVisibility: users.shelfVisibility })
+      .from(users)
+      .where(eq(users.id, targetId))
+      .limit(1),
+    db
+      .select({ status: followRequests.status })
+      .from(followRequests)
+      .where(and(eq(followRequests.senderId, requesterId), eq(followRequests.receiverId, targetId)))
+      .limit(1),
+  ]);
+
+  if (!targetUser) {
+    throw Object.assign(new Error('User not found'), { statusCode: 404 });
+  }
+
+  const isSelf = targetId === requesterId;
+  const isAcceptedFollower = followRow?.status === 'accepted';
+  if (!canViewShelf(targetUser.shelfVisibility, isSelf, isAcceptedFollower)) {
+    throw Object.assign(new Error('User not found'), { statusCode: 404 });
+  }
+}
+
 // ── Service ───────────────────────────────────────────────────────────────────
 
 export const usersService = {
@@ -237,6 +284,8 @@ export const usersService = {
       followStatus,
       incomingFollowRequest: incomingRow ?? null,
       shelfVisibility: userRow.shelfVisibility,
+      // Never self: this endpoint 400s on your own profile above
+      canViewShelf: canViewShelf(userRow.shelfVisibility, false, followStatus === 'accepted'),
     };
 
     // Non-followers see only the base profile (name, photo, year joined, follow status)
@@ -590,34 +639,7 @@ export const usersService = {
     limit: number,
     offset: number,
   ): Promise<{ items: ShelfItem[]; total: number }> {
-    // Fetch target's shelf visibility and the requester's follow status in parallel
-    const [[targetUser], [followRow]] = await Promise.all([
-      db
-        .select({ shelfVisibility: users.shelfVisibility })
-        .from(users)
-        .where(eq(users.id, targetId))
-        .limit(1),
-      db
-        .select({ status: followRequests.status })
-        .from(followRequests)
-        .where(and(eq(followRequests.senderId, requesterId), eq(followRequests.receiverId, targetId)))
-        .limit(1),
-    ]);
-
-    if (!targetUser) {
-      throw Object.assign(new Error('User not found'), { statusCode: 404 });
-    }
-
-    const isSelf = targetId === requesterId;
-    const isAcceptedFollower = followRow?.status === 'accepted';
-    const { shelfVisibility } = targetUser;
-
-    if (shelfVisibility === 'private' && !isSelf) {
-      throw Object.assign(new Error('User not found'), { statusCode: 404 });
-    }
-    if (shelfVisibility === 'friends' && !isSelf && !isAcceptedFollower) {
-      throw Object.assign(new Error('User not found'), { statusCode: 404 });
-    }
+    await assertCanViewShelf(targetId, requesterId);
 
     const conditions = [eq(userBooks.userId, targetId)];
     if (filter === 'liked') {

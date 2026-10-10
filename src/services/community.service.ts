@@ -1,11 +1,12 @@
 import { eq, and, or, asc, desc, sql, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../db';
-import { posts, postLikes, comments, commentLikes, users, books, userBooks, bookContributors, followRequests, notifications } from '../db/schema';
+import { posts, postLikes, comments, commentLikes, users, books, userBooks, bookContributors, notifications } from '../db/schema';
 import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-excerpts.service';
 import { notificationPreferencesService } from './notification-preferences.service';
 import { enqueuePush } from '../lib/push-queue';
 import { logger } from '../lib/logger';
 import { mentionsService, renderTexts } from './mentions.service';
+import { assertCanViewShelf } from './users.service';
 import type { MentionRef } from '../lib/mention-text';
 
 const COMMENT_PREVIEW_LENGTH = 140;
@@ -812,22 +813,8 @@ export const communityService = {
     bookId: number,
     requesterId: number,
   ): Promise<FriendBookDetail> {
-    // Verify the requester is an accepted follower before exposing friend data
-    const [followRow] = await db
-      .select({ id: followRequests.id })
-      .from(followRequests)
-      .where(
-        and(
-          eq(followRequests.senderId, requesterId),
-          eq(followRequests.receiverId, friendId),
-          eq(followRequests.status, 'accepted'),
-        ),
-      )
-      .limit(1);
-
-    if (!followRow) {
-      throw Object.assign(new Error('User not found'), { statusCode: 404 });
-    }
+    // Same rule as their full shelf: one book off it is no more visible than the rest
+    await assertCanViewShelf(friendId, requesterId);
 
     const [[bookRow], [postRow], [userBookRow]] = await Promise.all([
       db
@@ -847,7 +834,15 @@ export const communityService = {
           body: posts.body,
         })
         .from(posts)
-        .where(and(eq(posts.userId, friendId), eq(posts.bookId, bookId)))
+        .where(
+          and(
+            eq(posts.userId, friendId),
+            eq(posts.bookId, bookId),
+            // A private review is author-only everywhere (see assertPostVisible),
+            // and a public shelf must not become a way round that
+            or(eq(posts.isPublic, true), eq(posts.userId, requesterId)),
+          ),
+        )
         .limit(1),
 
       db

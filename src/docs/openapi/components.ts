@@ -426,7 +426,7 @@ const socialSchemas = {
           canViewShelf: {
             type: 'boolean',
             description:
-              "Whether the *caller* may read this user's shelf, having applied `shelfVisibility` and the follow graph. When false, `GET /users/{userId}/books` returns 403.",
+              "Whether the *caller* may read this user's shelf, having applied `shelfVisibility` and the follow graph. When false, `GET /users/{userId}/books` and `GET /community/users/{friendId}/books/{bookId}` return 404.",
             example: true,
           },
           followState: {
