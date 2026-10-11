@@ -321,7 +321,7 @@ export const socialPaths = {
       responses: {
         200: json('Search results.',
           object({
-            users: arrayOf(ref('UserSummary')),
+            users: arrayOf(ref('UserSearchResult')),
             posts: arrayOf(ref('Post')),
             groups: arrayOf(object({
               id: { type: 'integer', example: 12 },
@@ -347,7 +347,7 @@ export const socialPaths = {
       tags: [COMMUNITY],
       summary: 'See what a friend made of a book',
       description:
-        'Another user’s shelf entry and post for one book — their status, whether they liked it, their note if it is public, and their review if there is one.\n\nSubject to that user’s `shelfVisibility` and the follow graph; a shelf the caller cannot see returns 403.',
+        'One book from another user’s shelf: the book, who they are, their note if they made it public, and their rating and review if they wrote a public one. Your own review of the book comes back beside theirs.\n\nAccepted followers can always open it, whatever the shelf setting — one book reveals far less than the whole shelf. Everyone else goes by `shelfVisibility`: open to all when `public`, closed when `friends` or `private`. When the caller can’t open it the answer is 404, the same as a missing account. So `canViewShelf: false` on the profile does not by itself mean this page is closed.',
       parameters: [
         param('friendId', 'path', { type: 'integer' }, 'The other user’s id.', { example: 4412 }),
         param('bookId', 'path', { type: 'integer' }, 'Book id.', { example: 48213 }),
@@ -355,23 +355,60 @@ export const socialPaths = {
       responses: {
         200: json('Their entry for this book.',
           object({
-            user: ref('UserSummary'),
-            book: ref('BookSummary'),
-            status: { type: 'string', nullable: true, enum: ['want_to_read', 'reading', 'read', null], example: 'read' },
-            liked: { type: 'boolean', example: true },
+            bookId: { type: 'integer', example: 48213 },
+            bookTitle: { type: 'string', example: 'Homegoing' },
+            bookCoverUrl: { type: 'string', format: 'uri', nullable: true, example: null },
+            bookExcerpt: {
+              type: 'object',
+              nullable: true,
+              description: 'A free sample of the book, when one exists.',
+              properties: {
+                title: { type: 'string', nullable: true },
+                url: { type: 'string', nullable: true },
+                available: { type: 'boolean' },
+              },
+            },
+            contributors: {
+              type: 'array',
+              description: 'In ONIX order.',
+              items: {
+                type: 'object',
+                properties: {
+                  personName: { type: 'string', nullable: true, example: 'Yaa Gyasi' },
+                  role: {
+                    type: 'string', nullable: true,
+                    description: 'ONIX contributor role — `A01` is author, `B06` translator, and so on.',
+                    example: 'A01',
+                  },
+                },
+              },
+            },
+            friendName: { type: 'string', example: 'Ama Boateng' },
+            friendUsername: { type: 'string', nullable: true, example: 'ama_reads' },
+            friendPhotoUrl: { type: 'string', format: 'uri', nullable: true, example: null },
+            rating: {
+              type: 'integer', nullable: true, minimum: 0, maximum: 5,
+              description: 'From their review. `null` when they have not reviewed the book, or their review is private and you are not its author.',
+              example: 4,
+            },
+            review: {
+              type: 'string', nullable: true,
+              description: 'The text of their review. `null` in the same cases as `rating`, or when they rated without writing anything.',
+              example: 'Kept me up all night.',
+            },
+            reviewMentions: { type: 'array', items: ref('MentionRef'), description: 'Linked @handles in `review`. Empty when there are none.' },
             note: {
               type: 'string', nullable: true,
-              description: 'Only present when the note was marked public. Otherwise `null`.',
+              description: 'Their shelf note, only when they marked it public. Otherwise `null`.',
               example: 'Best thing I read this year.',
             },
-            post: { allOf: [ref('Post')], nullable: true, description: 'Their review, if they wrote one.' },
+            noteMentions: { type: 'array', items: ref('MentionRef'), description: 'Linked @handles in `note`. Empty when there are none.' },
             myReview: {
               allOf: [ref('MyReview')],
               description: 'Your own rating and review of the same book, to show beside theirs.',
             },
           })),
         400: resp('ValidationError'),
-        403: resp('Forbidden'),
         404: resp('NotFound'),
         ...authErrors,
       },
@@ -458,7 +495,7 @@ export const socialPaths = {
       tags: [PEOPLE],
       summary: 'Get another user’s profile',
       description:
-        'A public profile plus the caller’s relationship to it. Check **`canViewShelf`** before rendering a shelf tab — it has already applied `shelfVisibility` and the follow graph, so you do not need to work it out client-side. `followState` tells you which button to show.',
+        'A public profile plus the caller’s relationship to it. Check **`canViewShelf`** before rendering a shelf tab — it has already applied `shelfVisibility` and the follow graph, so you do not need to work it out client-side. `followStatus` tells you which button to show.',
       parameters: [userIdParam],
       responses: {
         200: json('The profile.', ref('UserProfile')),
@@ -474,7 +511,7 @@ export const socialPaths = {
       tags: [PEOPLE],
       summary: 'Get another user’s shelf',
       description:
-        'Their reading list, if they let the caller see it. Returns 403 when their `shelfVisibility` excludes the caller — check `canViewShelf` on the profile first and do not render the tab at all in that case.\n\nNotes appear only where the owner marked them public.',
+        'Their reading list, if they let the caller see it. Returns 404, the same as a missing account, when their `shelfVisibility` excludes the caller — check `canViewShelf` on the profile first and do not render the tab at all in that case.\n\nNotes appear only where the owner marked them public.',
       parameters: [
         userIdParam,
         param('filter', 'query',
@@ -496,7 +533,6 @@ export const socialPaths = {
             offset: { type: 'integer', example: 0 },
           })),
         400: resp('ValidationError'),
-        403: resp('Forbidden'),
         404: resp('NotFound'),
         ...authErrors,
       },

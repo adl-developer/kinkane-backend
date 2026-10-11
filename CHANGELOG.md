@@ -1,11 +1,22 @@
 # Changelog
 
 
+## 2026-10-11
+
+### Features
+
+* let people you've accepted as followers open any single book from your shelf, even a private one ([01077fb](https://adl.github.com/adl-developer/kinkane-backend/commit/01077fb69068b10ed40049b87f823c6863d59af6)) — [details](changelog/2026-10-11-search-people-follow-status.md)
+
+
 ## 2026-10-10
 
 ### Features
 
-* add an Owned section to the bookshelf alongside Favourites ([ab87f4e](https://adl.github.com/adl-developer/kinkane-backend/commit/ab87f4ec19584571b19c40936b1a28d0a194a14f)) — [details](changelog/2026-10-10-shelf-owned-section.md)
+* add an Owned section to the bookshelf alongside Favourites ([6a1161a](https://adl.github.com/adl-developer/kinkane-backend/commit/6a1161af4a9788cc3069af02866a86b9e2ad6373)) — [details](changelog/2026-10-10-shelf-owned-section.md)
+
+### Bug Fixes
+
+* make a friend's book page respect their shelf privacy and stop it showing private reviews ([aff0b6b](https://adl.github.com/adl-developer/kinkane-backend/commit/aff0b6bd0cfc6ec104eee8b375c06742dab3f72b)) — [details](changelog/2026-10-10-friend-book-shelf-privacy.md)
 
 
 ## 2026-10-09

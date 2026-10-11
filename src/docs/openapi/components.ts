@@ -204,6 +204,7 @@ const bookSchemas = {
       rating: { type: 'integer', minimum: 0, maximum: 5, example: 4 },
       status: { type: 'string', enum: ['reading', 'read'], example: 'read' },
       body: { type: 'string', nullable: true, example: 'Twelve voices and not one wasted.' },
+      mentions: { type: 'array', items: { $ref: '#/components/schemas/MentionRef' }, description: 'Linked @handles in `body`. Empty when there are none.' },
       isPublic: { type: 'boolean', example: true },
       createdAt: { type: 'string', format: 'date-time', example: '2026-09-21T19:04:00.000Z' },
       updatedAt: { type: 'string', format: 'date-time', example: '2026-09-21T19:04:00.000Z' },
@@ -411,29 +412,13 @@ const socialSchemas = {
       {
         type: 'object',
         properties: {
-          joinedYear: { type: 'integer', example: 2026 },
-          readerType: {
+          yearJoined: { type: 'integer', example: 2026 },
+          followStatus: {
             type: 'string',
-            nullable: true,
-            description: 'Inferred taste label from onboarding, e.g. "The Wanderer".',
-            example: 'The Wanderer',
-          },
-          shelfVisibility: {
-            type: 'string',
-            enum: ['public', 'friends', 'private'],
-            example: 'friends',
-          },
-          canViewShelf: {
-            type: 'boolean',
+            enum: ['none', 'pending', 'accepted', 'declined'],
             description:
-              "Whether the *caller* may read this user's shelf, having applied `shelfVisibility` and the follow graph. When false, `GET /users/{userId}/books` returns 403.",
-            example: true,
-          },
-          followState: {
-            type: 'string',
-            enum: ['none', 'pending', 'following', 'self'],
-            description: "The caller's relationship to this user.",
-            example: 'following',
+              "The caller's follow request to this user, which decides the button to show: `none` Follow, `pending` Requested, `accepted` Following, `declined` Follow again. Your own profile is never returned here; this endpoint answers 400 for it.",
+            example: 'accepted',
           },
           incomingFollowRequest: {
             type: 'object',
@@ -445,9 +430,60 @@ const socialSchemas = {
               requestedAt: { type: 'string', format: 'date-time', example: '2026-09-28T20:48:04.353Z' },
             },
           },
-          followerCount: { type: 'integer', example: 128 },
-          followingCount: { type: 'integer', example: 94 },
-          bookCount: { type: 'integer', example: 37 },
+          shelfVisibility: {
+            type: 'string',
+            enum: ['public', 'friends', 'private'],
+            example: 'friends',
+          },
+          canViewShelf: {
+            type: 'boolean',
+            description:
+              "Whether the *caller* may read this user's whole shelf, having applied `shelfVisibility` and the follow graph. When false, `GET /users/{userId}/books` returns 404. Single books are looser: accepted followers can always open `GET /community/users/{friendId}/books/{bookId}`, even when this is false.",
+            example: true,
+          },
+          followerCount: {
+            type: 'integer',
+            description: 'Only present when `followStatus` is `accepted`.',
+            example: 128,
+          },
+          followingCount: {
+            type: 'integer',
+            description: 'Only present when `followStatus` is `accepted`.',
+            example: 94,
+          },
+          postCount: {
+            type: 'integer',
+            description: 'Their public reviews. Only present when `followStatus` is `accepted`.',
+            example: 37,
+          },
+        },
+      },
+    ],
+  },
+
+  UserSearchResult: {
+    allOf: [
+      { $ref: '#/components/schemas/UserSummary' },
+      {
+        type: 'object',
+        properties: {
+          followStatus: {
+            type: 'string',
+            enum: ['none', 'pending', 'accepted', 'declined', 'self'],
+            description:
+              "The caller's follow request to this user, exactly as on the profile (`none` Follow, `pending` Requested, `accepted` Following, `declined` Follow again), plus `self` on the caller's own row so the app can leave the button off.",
+            example: 'none',
+          },
+          incomingFollowRequest: {
+            type: 'object',
+            nullable: true,
+            description:
+              'A pending follow request this user has sent the *caller*, as on the profile. When set, show Accept/Decline (with `requestId`) instead of a Follow button — `POST /users/{userId}/follow` is refused with a 409 while it is pending.',
+            properties: {
+              requestId: { type: 'integer', example: 902 },
+              requestedAt: { type: 'string', format: 'date-time', example: '2026-09-28T20:48:04.353Z' },
+            },
+          },
         },
       },
     ],
