@@ -703,6 +703,12 @@ export const groupsService = {
    * 404 as a missing group rather than a 403 confirming it exists and is
    * someone else's. Same shape as communityService.deletePost.
    */
+  /** The stored group photo URL, or null. Used to let an edit re-send it unchanged. */
+  async getPhotoUrl(groupId: number): Promise<string | null> {
+    const [row] = await db.select({ photoUrl: groups.photoUrl }).from(groups).where(eq(groups.id, groupId)).limit(1);
+    return row?.photoUrl ?? null;
+  },
+
   async update(groupId: number, ownerId: number, input: UpdateGroupInput): Promise<GroupSummary> {
     const description = input.description !== undefined ? await mentionsService.prepare(input.description) : undefined;
     const [updated] = await db

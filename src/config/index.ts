@@ -234,6 +234,28 @@ const envSchema = z.object({
   // to this project's Cloudinary account, not an arbitrary third-party account.
   CLOUDINARY_CLOUD_NAME: z.string().min(1),
 
+  // Cloudinary API credentials — used only to sign upload requests
+  // (POST /uploads/signature). Optional so the server still boots without them;
+  // that one route answers 503 CLOUDINARY_NOT_CONFIGURED until they are set.
+  CLOUDINARY_API_KEY: z.string().min(1).optional(),
+  CLOUDINARY_API_SECRET: z.string().min(1).optional(),
+
+  // Top-level folder every signed upload lands under. Give each environment its
+  // own (e.g. "kinkane-dev") when they share a cloud: profile and group photos
+  // use fixed public IDs, so dev user 5 would otherwise overwrite prod user 5.
+  CLOUDINARY_UPLOAD_ROOT: z
+    .string()
+    .regex(/^[a-z0-9][a-z0-9_-]*$/i, 'CLOUDINARY_UPLOAD_ROOT must be a single folder name')
+    .default('kinkane'),
+
+  // When true, a stored photo URL must be one the server signed for that user or
+  // group. Off by default so app builds still uploading through the unsigned
+  // preset keep working; turn on once every supported client uses signed uploads.
+  CLOUDINARY_REQUIRE_SIGNED_UPLOADS: z
+    .string()
+    .default('false')
+    .transform((v) => v === 'true'),
+
   // Stripe — payments for Kinkané Plus.
   // All optional so the server still boots without them: local development,
   // CI and the existing deployment predate payments, and a missing key should
@@ -834,6 +856,10 @@ export const config = {
   },
   cloudinary: {
     cloudName: env.CLOUDINARY_CLOUD_NAME,
+    apiKey: env.CLOUDINARY_API_KEY,
+    apiSecret: env.CLOUDINARY_API_SECRET,
+    uploadRoot: env.CLOUDINARY_UPLOAD_ROOT,
+    requireSignedUploads: env.CLOUDINARY_REQUIRE_SIGNED_UPLOADS,
   },
   stripe: {
     secretKey: env.STRIPE_SECRET_KEY,

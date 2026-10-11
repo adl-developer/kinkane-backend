@@ -142,7 +142,7 @@ export const groupPaths = {
         photoUrl: {
           type: 'string',
           nullable: true,
-          description: 'Must already be uploaded to our Cloudinary account; pass the resulting URL.',
+          description: 'Must already be uploaded to our Cloudinary account; pass the resulting URL. Sign the upload with `POST /uploads/signature` — `kind: "upload"` when creating (the group has no ID yet), `kind: "group"` when editing.',
         },
         privacy: { type: 'string', enum: ['public', 'private'], default: 'public' },
       }, ['name'])),

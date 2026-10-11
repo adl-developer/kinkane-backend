@@ -4,7 +4,7 @@ import { AuthenticatedRequest } from '../middleware/auth.middleware';
 import { userSettingsService } from '../services/user-settings.service';
 import { usernamesService } from '../services/usernames.service';
 import { phoneSchema } from '../lib/phone';
-import { isCloudinaryUrl, cloudinaryUrlMessage } from '../lib/cloudinary-url';
+import { isCloudinaryUrl, cloudinaryUrlMessage, unsignedPhotoUrlError, uploadFolder } from '../lib/cloudinary-url';
 import { logger } from '../lib/logger';
 
 const changeUsernameSchema = z.object({
@@ -66,8 +66,19 @@ export const userSettingsController = {
       res.status(400).json({ error: parsed.error.flatten().fieldErrors });
       return;
     }
-
     try {
+      // Inside the try: this route isn't wrapped, and the check may query the
+      // stored photo, so a database error must still reach the 500 below.
+      const photoError = await unsignedPhotoUrlError(
+        parsed.data.photoUrl,
+        [uploadFolder('user', req.user.id), uploadFolder('upload', req.user.id)],
+        () => userSettingsService.getPhotoUrl(req.user.id),
+      );
+      if (photoError) {
+        res.status(400).json({ error: photoError });
+        return;
+      }
+
       const updated = await userSettingsService.updateProfile(req.user.id, parsed.data);
       res.status(200).json(updated);
     } catch (err: unknown) {
