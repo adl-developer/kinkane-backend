@@ -56,6 +56,12 @@ export const userSettingsService = {
       .where(eq(users.id, userId));
   },
 
+  /** The stored profile photo URL, or null. Used to let an edit re-send it unchanged. */
+  async getPhotoUrl(userId: number): Promise<string | null> {
+    const [row] = await db.select({ photoUrl: users.photoUrl }).from(users).where(eq(users.id, userId)).limit(1);
+    return row?.photoUrl ?? null;
+  },
+
   async updateProfile(
     userId: number,
     data: { name?: string; photoUrl?: string | null; phone?: string | null },

@@ -66,16 +66,19 @@ export const userSettingsController = {
       res.status(400).json({ error: parsed.error.flatten().fieldErrors });
       return;
     }
-    const photoError = unsignedPhotoUrlError(parsed.data.photoUrl, [
-      uploadFolder('user', req.user.id),
-      uploadFolder('upload', req.user.id),
-    ]);
-    if (photoError) {
-      res.status(400).json({ error: photoError });
-      return;
-    }
-
     try {
+      // Inside the try: this route isn't wrapped, and the check may query the
+      // stored photo, so a database error must still reach the 500 below.
+      const photoError = await unsignedPhotoUrlError(
+        parsed.data.photoUrl,
+        [uploadFolder('user', req.user.id), uploadFolder('upload', req.user.id)],
+        () => userSettingsService.getPhotoUrl(req.user.id),
+      );
+      if (photoError) {
+        res.status(400).json({ error: photoError });
+        return;
+      }
+
       const updated = await userSettingsService.updateProfile(req.user.id, parsed.data);
       res.status(200).json(updated);
     } catch (err: unknown) {

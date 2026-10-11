@@ -6,11 +6,19 @@ import { config } from '../config';
 import { signUploadParams } from '../lib/cloudinary-signature';
 import { uploadAssetFolder, uploadFolder, type UploadKind } from '../lib/cloudinary-url';
 
-/** Formats Cloudinary will accept on a signed upload; anything else is rejected there. */
-export const ALLOWED_UPLOAD_FORMATS = ['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif'] as const;
+/**
+ * Formats stored as uploaded. Anything else (notably HEIC/HEIF straight from the
+ * iOS picker) is converted to CONVERT_TO on upload rather than rejected: a stored
+ * .heic URL renders as a broken image in most browsers and many Android versions.
+ */
+export const ALLOWED_UPLOAD_FORMATS = ['jpg', 'jpeg', 'png', 'webp'] as const;
+const CONVERT_TO = 'jpg';
 
 /** Cloudinary honours an upload signature for one hour from its timestamp; we can't shorten that. */
 const SIGNATURE_TTL_SECONDS = 60 * 60;
+
+/** What to sign for. A group upload names the group, which the caller must own. */
+export type UploadTarget = { kind: 'user' } | { kind: 'upload' } | { kind: 'group'; groupId: number };
 
 export interface UploadSignature {
   /** POST the image here as multipart/form-data. */
@@ -28,54 +36,46 @@ export const uploadsService = {
   /**
    * Signs one direct-to-Cloudinary image upload for `userId`.
    *
-   * - 'user'   → the caller's profile photo, at a fixed public ID so a new
-   *              photo replaces the old one instead of piling up.
-   * - 'group'  → a group's photo, fixed public ID likewise. Owner only — the
-   *              same rule as editing the group.
-   * - 'upload' → a one-off image in the caller's own folder, under a fresh
-   *              random ID. Also what a client uses for a group photo before
-   *              the group exists.
+   * Every upload gets a fresh random public ID inside the folder for its kind:
+   * `users/<userId>` for a profile photo, `groups/<groupId>` for a group photo
+   * (owner only, the same rule as editing the group), `uploads/<userId>` for
+   * anything else, including a group photo picked before the group exists.
+   *
+   * Random rather than a fixed `…/avatar` overwritten each time, for two reasons.
+   * An overwrite changes the photo everyone sees the moment the upload lands,
+   * even if the client never saves the new URL. And a fixed ID is guessable, so
+   * anyone could fetch any user's or group's photo by counting through IDs.
    */
-  async createSignature(userId: number, kind: UploadKind, groupId?: number): Promise<UploadSignature> {
+  async createSignature(userId: number, target: UploadTarget): Promise<UploadSignature> {
     const { cloudName, apiKey, apiSecret } = config.cloudinary;
     if (!apiKey || !apiSecret) {
       throw httpError('Image uploads are not configured', 503, 'CLOUDINARY_NOT_CONFIGURED');
     }
 
-    let publicId: string;
-    let replaces = false;
-    if (kind === 'group') {
-      if (groupId === undefined) throw httpError('groupId is required for a group upload', 400);
+    let folder: string;
+    if (target.kind === 'group') {
       const [owned] = await db
         .select({ id: groups.id })
         .from(groups)
-        .where(and(eq(groups.id, groupId), eq(groups.ownerId, userId)))
+        .where(and(eq(groups.id, target.groupId), eq(groups.ownerId, userId)))
         .limit(1);
       // 404 rather than 403, as PATCH /groups/:id does: a non-owner learns
       // nothing about whether the group exists.
       if (!owned) throw httpError('Group not found', 404);
-      publicId = `${uploadFolder('group', groupId)}/photo`;
-      replaces = true;
-    } else if (kind === 'user') {
-      publicId = `${uploadFolder('user', userId)}/avatar`;
-      replaces = true;
+      folder = uploadFolder('group', target.groupId);
     } else {
-      publicId = `${uploadFolder('upload', userId)}/${randomUUID()}`;
+      folder = uploadFolder(target.kind, userId);
     }
 
     const timestamp = Math.floor(Date.now() / 1000);
     const signed: Record<string, string | number | boolean> = {
-      public_id: publicId,
+      public_id: `${folder}/${randomUUID()}`,
       // Files the image under kinkane/users etc. in the Media Library. On a
       // dynamic-folder account the public ID alone doesn't create folders there.
-      asset_folder: uploadAssetFolder(kind),
+      asset_folder: uploadAssetFolder(target.kind),
       timestamp,
       allowed_formats: ALLOWED_UPLOAD_FORMATS.join(','),
-      // A replacement gets a new version number, so its URL changes and the
-      // client stores that; invalidating just stops the CDN serving the old
-      // image to anyone still holding the previous URL.
-      overwrite: replaces,
-      ...(replaces && { invalidate: true }),
+      format: CONVERT_TO,
     };
 
     return {

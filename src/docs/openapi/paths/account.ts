@@ -117,11 +117,11 @@ export const accountPaths = {
         '',
         '| `kind` | Use for | Where it lands |',
         '|---|---|---|',
-        '| `user` | Your profile photo | `users/<yourId>/avatar`. Each upload replaces the last one. |',
-        '| `group` | Photo for a group you **own** (`groupId` required) | `groups/<groupId>/photo`. Each upload replaces the last one. |',
-        '| `upload` | Anything else, including a group photo picked **before** the group is created | `uploads/<yourId>/<random>`. Always a new image. |',
+        '| `user` | Your profile photo | `users/<yourId>/<random>` |',
+        '| `group` | Photo for a group you **own** (`groupId` required) | `groups/<groupId>/<random>` |',
+        '| `upload` | Anything else, including a group photo picked **before** the group is created | `uploads/<yourId>/<random>` |',
         '',
-        'Accepted formats: jpg, jpeg, png, webp, heic, heif. Signatures are valid for one hour, which Cloudinary fixes. Store the exact `secure_url`: it carries a version number, so a replaced photo gets a new URL and caches refresh.',
+        'Every upload is a new image with a random ID; nothing is overwritten, so the photo only changes once its URL is saved. jpg, jpeg, png and webp are stored as uploaded; anything else (e.g. HEIC from the iOS picker) is converted to jpg. Signatures are valid for one hour, which Cloudinary fixes. Store the exact `secure_url`.',
       ].join('\n'),
       requestBody: body(object({
         kind: { type: 'string', enum: ['user', 'group', 'upload'], example: 'user' },
@@ -132,12 +132,11 @@ export const accountPaths = {
           object({
             uploadUrl: { type: 'string', format: 'uri', example: 'https://api.cloudinary.com/v1_1/kinkane/image/upload' },
             params: object({
-              public_id: { type: 'string', example: 'kinkane/users/42/avatar' },
+              public_id: { type: 'string', example: 'kinkane/users/42/9c1e4f2a-7b3d-4e8f-a1c6-5d2b8e0f4a71' },
               asset_folder: { type: 'string', description: 'Media Library folder: `kinkane/users`, `kinkane/groups` or `kinkane/uploads`.', example: 'kinkane/users' },
               timestamp: { type: 'integer', example: 1791700000 },
-              allowed_formats: { type: 'string', example: 'jpg,jpeg,png,webp,heic,heif' },
-              overwrite: { type: 'boolean', example: true },
-              invalidate: { type: 'boolean', description: 'Present only for `user` and `group`.', example: true },
+              allowed_formats: { type: 'string', example: 'jpg,jpeg,png,webp' },
+              format: { type: 'string', description: 'Files in any other format are converted to this on upload.', example: 'jpg' },
               api_key: { type: 'string', example: '123456789012345' },
               signature: { type: 'string', example: 'bfd09f95f331f558cbd1320e67aa8d488770583e' },
             }),
@@ -167,7 +166,7 @@ export const accountPaths = {
         photoUrl: {
           type: 'string', format: 'uri', nullable: true,
           description: 'Must be on `res.cloudinary.com` under the configured cloud name. `null` clears it.',
-          example: 'https://res.cloudinary.com/kinkane/image/upload/v1791700000/kinkane/users/4412/avatar.jpg',
+          example: 'https://res.cloudinary.com/kinkane/image/upload/v1791700000/kinkane/users/4412/9c1e4f2a-7b3d-4e8f-a1c6-5d2b8e0f4a71.jpg',
         },
         phone: {
           type: 'string', maxLength: 32, nullable: true,

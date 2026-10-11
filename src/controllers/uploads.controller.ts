@@ -17,8 +17,7 @@ export const uploadsController = {
       res.status(400).json({ error: parsed.error.flatten().fieldErrors });
       return;
     }
-    const groupId = parsed.data.kind === 'group' ? parsed.data.groupId : undefined;
-    const result = await uploadsService.createSignature(req.user.id, parsed.data.kind, groupId);
+    const result = await uploadsService.createSignature(req.user.id, parsed.data);
     res.status(200).json(result);
   },
 };

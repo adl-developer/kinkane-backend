@@ -99,12 +99,19 @@ export function isCloudinaryUrlInFolders(url: string, folders: string[]): boolea
  * use the unsigned preset can't produce URLs in these folders, and the existing
  * own-cloud check (isCloudinaryUrl, in the zod schema) still applies to them.
  * Clearing a photo (null) is always allowed.
+ *
+ * So is re-sending the URL already stored. Edit screens send the whole form, so
+ * without this a user or group with a photo from before signed uploads couldn't
+ * change their name until they replaced the photo. `currentPhotoUrl` is only
+ * called when the folder check fails, so the common case costs no query.
  */
-export function unsignedPhotoUrlError(
+export async function unsignedPhotoUrlError(
   photoUrl: string | null | undefined,
   folders: string[],
-): { photoUrl: string[] } | null {
+  currentPhotoUrl?: () => Promise<string | null>,
+): Promise<{ photoUrl: string[] } | null> {
   if (!config.cloudinary.requireSignedUploads || photoUrl == null) return null;
   if (isCloudinaryUrlInFolders(photoUrl, folders)) return null;
+  if (currentPhotoUrl && (await currentPhotoUrl()) === photoUrl) return null;
   return { photoUrl: ['photoUrl must be an image uploaded with a signature from POST /uploads/signature'] };
 }

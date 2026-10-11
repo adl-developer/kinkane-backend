@@ -51,7 +51,7 @@ export const groupsController = {
     }
     // The group has no ID yet, so its photo can only come from the caller's
     // own one-off uploads folder.
-    const photoError = unsignedPhotoUrlError(parsed.data.photoUrl, [uploadFolder('upload', req.user.id)]);
+    const photoError = await unsignedPhotoUrlError(parsed.data.photoUrl, [uploadFolder('upload', req.user.id)]);
     if (photoError) {
       res.status(400).json({ error: photoError });
       return;
@@ -121,10 +121,11 @@ export const groupsController = {
       res.status(400).json({ error: parsed.error.flatten().fieldErrors });
       return;
     }
-    const photoError = unsignedPhotoUrlError(parsed.data.photoUrl, [
-      uploadFolder('group', groupId),
-      uploadFolder('upload', req.user.id),
-    ]);
+    const photoError = await unsignedPhotoUrlError(
+      parsed.data.photoUrl,
+      [uploadFolder('group', groupId), uploadFolder('upload', req.user.id)],
+      () => groupsService.getPhotoUrl(groupId),
+    );
     if (photoError) {
       res.status(400).json({ error: photoError });
       return;

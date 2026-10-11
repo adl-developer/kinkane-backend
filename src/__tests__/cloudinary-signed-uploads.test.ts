@@ -82,16 +82,30 @@ describe('unsignedPhotoUrlError', () => {
     cloudinary.requireSignedUploads = false;
   });
 
-  it('lets anything through while enforcement is off', () => {
-    expect(unsignedPhotoUrlError(legacy, folders)).toBeNull();
+  it('lets anything through while enforcement is off', async () => {
+    expect(await unsignedPhotoUrlError(legacy, folders)).toBeNull();
   });
 
-  it('rejects an unsigned URL once enforcement is on, but still allows clearing', () => {
+  it('rejects an unsigned URL once enforcement is on, but still allows clearing', async () => {
     cloudinary.requireSignedUploads = true;
-    expect(unsignedPhotoUrlError(legacy, folders)).toEqual({ photoUrl: [expect.any(String)] });
-    expect(unsignedPhotoUrlError(url(`v1/${folders[0]}/avatar.png`), folders)).toBeNull();
-    expect(unsignedPhotoUrlError(null, folders)).toBeNull();
-    expect(unsignedPhotoUrlError(undefined, folders)).toBeNull();
+    expect(await unsignedPhotoUrlError(legacy, folders)).toEqual({ photoUrl: [expect.any(String)] });
+    expect(await unsignedPhotoUrlError(url(`v1/${folders[0]}/avatar.png`), folders)).toBeNull();
+    expect(await unsignedPhotoUrlError(null, folders)).toBeNull();
+    expect(await unsignedPhotoUrlError(undefined, folders)).toBeNull();
+  });
+
+  it('accepts re-sending the photo already stored, so a whole-form edit still saves', async () => {
+    cloudinary.requireSignedUploads = true;
+    expect(await unsignedPhotoUrlError(legacy, folders, async () => legacy)).toBeNull();
+    expect(await unsignedPhotoUrlError(legacy, folders, async () => url('v1/other.jpg'))).not.toBeNull();
+    expect(await unsignedPhotoUrlError(legacy, folders, async () => null)).not.toBeNull();
+  });
+
+  it('only looks up the stored photo when the folder check fails', async () => {
+    cloudinary.requireSignedUploads = true;
+    const current = vi.fn(async () => null);
+    await unsignedPhotoUrlError(url(`v1/${folders[0]}/a.png`), folders, current);
+    expect(current).not.toHaveBeenCalled();
   });
 });
 
@@ -107,45 +121,54 @@ describe('uploadsService.createSignature', () => {
     cloudinary.apiSecret = undefined;
   });
 
-  it('pins a profile photo to a fixed, overwritable ID in the caller folder', async () => {
-    const { uploadUrl, params, expiresAt } = await uploadsService.createSignature(42, 'user');
+  const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+
+  it('signs a profile photo into the caller folder under a fresh, unguessable ID', async () => {
+    const { uploadUrl, params, expiresAt } = await uploadsService.createSignature(42, { kind: 'user' });
     expect(uploadUrl).toBe(`https://api.cloudinary.com/v1_1/${CLOUD}/image/upload`);
-    expect(params).toMatchObject({
-      public_id: `${ROOT}/users/42/avatar`,
-      asset_folder: `${ROOT}/users`,
-      overwrite: true,
-      invalidate: true,
-      api_key: 'test-key',
-    });
+    expect(params.public_id).toMatch(new RegExp(`^${ROOT}/users/42/${UUID}$`));
+    expect(params).toMatchObject({ asset_folder: `${ROOT}/users`, api_key: 'test-key' });
     const { api_key: _k, signature, ...signed } = params;
     expect(signature).toBe(signUploadParams(signed, 'test-secret'));
     expect(new Date(expiresAt).getTime() - Number(params.timestamp) * 1000).toBe(60 * 60 * 1000);
   });
 
-  it('gives each one-off upload its own ID and never overwrites', async () => {
-    const a = await uploadsService.createSignature(42, 'upload');
-    const b = await uploadsService.createSignature(42, 'upload');
-    expect(a.params.public_id).toMatch(new RegExp(`^${ROOT}/uploads/42/[0-9a-f-]{36}$`));
+  it('never overwrites: a second profile photo gets a different ID', async () => {
+    // Overwriting a fixed ID would change the visible photo before the client
+    // saved the new URL, and a fixed ID can be guessed from the user ID.
+    const a = await uploadsService.createSignature(42, { kind: 'user' });
+    const b = await uploadsService.createSignature(42, { kind: 'user' });
     expect(a.params.public_id).not.toBe(b.params.public_id);
-    expect(a.params.asset_folder).toBe(`${ROOT}/uploads`);
-    expect(a.params.overwrite).toBe(false);
+    expect(a.params).not.toHaveProperty('overwrite');
     expect(a.params).not.toHaveProperty('invalidate');
+  });
+
+  it('converts formats browsers cannot show (HEIC) to jpg instead of storing them', async () => {
+    const { params } = await uploadsService.createSignature(42, { kind: 'user' });
+    expect(String(params.allowed_formats).split(',')).not.toContain('heic');
+    expect(params.format).toBe('jpg');
+  });
+
+  it('files one-off uploads under the caller uploads folder', async () => {
+    const { params } = await uploadsService.createSignature(42, { kind: 'upload' });
+    expect(params.public_id).toMatch(new RegExp(`^${ROOT}/uploads/42/${UUID}$`));
+    expect(params.asset_folder).toBe(`${ROOT}/uploads`);
   });
 
   it("signs a group photo for the group's owner", async () => {
     dbResult.rows = [{ id: 7 }];
-    const { params } = await uploadsService.createSignature(42, 'group', 7);
-    expect(params.public_id).toBe(`${ROOT}/groups/7/photo`);
+    const { params } = await uploadsService.createSignature(42, { kind: 'group', groupId: 7 });
+    expect(params.public_id).toMatch(new RegExp(`^${ROOT}/groups/7/${UUID}$`));
     expect(params.asset_folder).toBe(`${ROOT}/groups`);
   });
 
   it('answers 404 to anyone who does not own the group', async () => {
-    await expect(uploadsService.createSignature(42, 'group', 7)).rejects.toMatchObject({ statusCode: 404 });
+    await expect(uploadsService.createSignature(42, { kind: 'group', groupId: 7 })).rejects.toMatchObject({ statusCode: 404 });
   });
 
   it('answers 503 with a code while the API credentials are missing', async () => {
     cloudinary.apiSecret = undefined;
-    await expect(uploadsService.createSignature(42, 'user')).rejects.toMatchObject({
+    await expect(uploadsService.createSignature(42, { kind: 'user' })).rejects.toMatchObject({
       statusCode: 503,
       code: 'CLOUDINARY_NOT_CONFIGURED',
     });

@@ -70,12 +70,11 @@ fit the table.
 {
   "uploadUrl": "https://api.cloudinary.com/v1_1/dy0cthb0l/image/upload",
   "params": {
-    "public_id": "kinkane/users/42/avatar",
+    "public_id": "kinkane/users/42/9c1e4f2a-7b3d-4e8f-a1c6-5d2b8e0f4a71",
     "asset_folder": "kinkane/users",
     "timestamp": 1791717811,
-    "allowed_formats": "jpg,jpeg,png,webp,heic,heif",
-    "overwrite": true,
-    "invalidate": true,
+    "allowed_formats": "jpg,jpeg,png,webp",
+    "format": "jpg",
     "api_key": "556…",
     "signature": "d8cf9dce4db066c51b4abb94a0fb0e4e6111381e"
   },
@@ -84,8 +83,8 @@ fit the table.
 ```
 
 **Treat `params` as an opaque bag.** Send every key, don't add any, don't
-change any. The set of keys differs by kind (`invalidate` only appears for
-`user` and `group`), so loop over the object instead of picking fields by name.
+change any. Loop over the object instead of picking fields by name, because
+we may add keys later.
 
 Errors:
 
@@ -137,7 +136,6 @@ Errors from Cloudinary come back as `{ "error": { "message": "…" } }`:
 |---|---|---|
 | 401 / 400 | `Invalid Signature` | A field in `params` was changed, added or dropped. Sign again |
 | 400 | `Stale request` | The signature is more than an hour old. Sign again |
-| 400 | `Image file format … not allowed` | Not jpg, jpeg, png, webp, heic or heif |
 | 400 | `File size too large` | Over the account limit. Compress first |
 
 A simple rule for the app: on any Cloudinary error, get a new signature and
@@ -149,7 +147,7 @@ Unchanged from today: send `secure_url` as `photoUrl`.
 
 ```http
 PATCH /user/settings/profile
-{ "photoUrl": "https://res.cloudinary.com/dy0cthb0l/image/upload/v1791717811/kinkane/users/42/avatar.jpg" }
+{ "photoUrl": "https://res.cloudinary.com/dy0cthb0l/image/upload/v1791717811/kinkane/users/42/9c1e4f2a-7b3d-4e8f-a1c6-5d2b8e0f4a71.jpg" }
 ```
 
 `{ "photoUrl": null }` still removes the photo.
@@ -170,16 +168,16 @@ if the app saved an old-style URL, someone else's URL, or a URL it had changed.
   Cloudinary returns: `…/image/upload/v<number>/<folder>/<file>`. If you want a
   thumbnail, add resize settings when you *display* the image (e.g.
   `…/image/upload/w_200,h_200,c_fill/v…`), never in what you save.
-- **A new profile photo keeps the same name but gets a new URL.** Each upload
-  replaces the previous avatar, and the `v<number>` part of the URL changes.
-  Always save the new `secure_url`, then refresh the screen from the response.
-  Don't rebuild the URL yourself, or users will keep seeing the cached old
-  photo.
+- **Every upload is a new image.** Nothing is overwritten, so the photo only
+  changes once you save the new `secure_url`. Refresh the screen from the save
+  response.
 - **A signature lasts one hour**, and Cloudinary fixes that. Sign right before
   uploading, not when the screen opens.
 - **Upload first, save second.** If the user cancels after the upload but
-  before saving, nothing changes on their profile. For profile and group photos
-  the next upload simply replaces the orphaned image.
+  before saving, nothing changes. The uploaded image just goes unused.
+- **Re-sending the current photo is fine.** If your edit screen sends the whole
+  form, sending the `photoUrl` that's already saved is always accepted, even
+  for photos uploaded the old way.
 - **Only the owner can change a group's photo.** Members asking for a `group`
   signature get a 404.
 
@@ -190,8 +188,9 @@ phone:
 
 - Resize to at most **2048px** on the longest side, and compress to JPEG at
   around 0.8 quality. `expo-image-manipulator` does both.
-- HEIC from the iOS picker is accepted as-is, but converting to JPEG during
-  that resize step is simplest and works everywhere.
+- HEIC from the iOS picker is fine. We convert anything that isn't jpg, png
+  or webp to JPEG on upload. Converting it yourself during the resize step
+  also works.
 
 ## Rollout
 
