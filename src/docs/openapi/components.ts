@@ -201,7 +201,7 @@ const bookSchemas = {
       "The caller's own rating and review of this book — their community post for it, private ones included. `null` when they have not reviewed this exact edition, and always `null` for anonymous callers. Matched by book id, not by work: a review of the paperback does not appear on the hardback. Edit or delete it through `/community/posts/{postId}`.\n\n**Where it sits:** on each book in lists, search, discovery feeds, recommendations, shelves and saved books; on the nested `book` card of group shelf entries; and at the **top level** of the response (beside `book`, not inside it) on `GET /books/{id}` and the friend's-book page.",
     properties: {
       postId: { type: 'integer', example: 3121 },
-      rating: { type: 'integer', minimum: 0, maximum: 5, example: 4 },
+      rating: { type: 'integer', minimum: 0, maximum: 5, nullable: true, description: 'Null on a `reading` post the author hasn\'t rated yet. Always set when `status` is `read`.', example: 4 },
       status: { type: 'string', enum: ['reading', 'read'], example: 'read' },
       body: { type: 'string', nullable: true, example: 'Twelve voices and not one wasted.' },
       mentions: { type: 'array', items: { $ref: '#/components/schemas/MentionRef' }, description: 'Linked @handles in `body`. Empty when there are none.' },
@@ -515,7 +515,7 @@ const socialSchemas = {
       id: { type: 'integer', example: 3310 },
       author: { $ref: '#/components/schemas/UserSummary' },
       book: { $ref: '#/components/schemas/BookSummary' },
-      rating: { type: 'integer', minimum: 0, maximum: 5, example: 5 },
+      rating: { type: 'integer', minimum: 0, maximum: 5, nullable: true, description: 'Null on a `reading` post the author hasn\'t rated yet. Always set when `status` is `read`.', example: 5 },
       status: {
         type: 'string',
         enum: ['reading', 'read'],
@@ -564,7 +564,7 @@ const socialSchemas = {
           available: { type: 'boolean' },
         },
       },
-      rating: { type: 'integer', minimum: 0, maximum: 5, example: 5 },
+      rating: { type: 'integer', minimum: 0, maximum: 5, nullable: true, description: 'Null on a `reading` post the author hasn\'t rated yet. Always set when `status` is `read`.', example: 5 },
       status: { type: 'string', enum: ['reading', 'read'], example: 'read' },
       body: { type: 'string', nullable: true, example: 'Twelve voices and not one wasted page.' },
       mentions: { type: 'array', items: { $ref: '#/components/schemas/MentionRef' }, description: 'Linked @handles in `body`. Empty when there are none.' },

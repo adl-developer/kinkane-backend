@@ -61,10 +61,14 @@ export const socialPaths = {
     post: {
       tags: [COMMUNITY],
       summary: 'Post a rating or review',
-      description: `Creates a post about a book. \`body\` is optional — a rating on its own is a perfectly valid post — but \`rating\`, \`status\` and \`isPublic\` are all required.\n\n**Requires Kinkané Plus.** ${ASYMMETRY}`,
+      description: `Creates a post about a book. \`body\` is optional — a rating on its own is a perfectly valid post — and so is \`rating\` while the book is still being read. \`status\` and \`isPublic\` are required, and \`rating\` is required when \`status\` is \`read\`.\n\n**Requires Kinkané Plus.** ${ASYMMETRY}`,
       requestBody: body(object({
         bookId: { type: 'integer', minimum: 1, example: 48213 },
-        rating: { type: 'integer', minimum: 0, maximum: 5, example: 5 },
+        rating: {
+          type: 'integer', minimum: 0, maximum: 5, nullable: true,
+          description: 'Required when `status` is `read`. Optional on a `reading` post — leave it out or send null.',
+          example: 5,
+        },
         status: {
           type: 'string', enum: ['reading', 'read'],
           description: 'Where the author is in the book. `want_to_read` is not valid — there is nothing to review yet.',
@@ -80,7 +84,7 @@ export const socialPaths = {
           description: 'False restricts it to accepted followers.',
           example: true,
         },
-      }, ['bookId', 'rating', 'status', 'isPublic'])),
+      }, ['bookId', 'status', 'isPublic'])),
       responses: {
         201: json('Post created.', ref('Post')),
         400: resp('ValidationError'),
@@ -141,17 +145,17 @@ export const socialPaths = {
     patch: {
       tags: [COMMUNITY],
       summary: 'Edit a post',
-      description: `Patch semantics — only the fields present change. At least one must be supplied. Only the author can edit; anyone else gets a 404.\n\nPass \`body: null\` to strip the review text back to a bare rating.\n\n**Requires Kinkané Plus.** ${ASYMMETRY}`,
+      description: `Patch semantics — only the fields present change. At least one must be supplied. Only the author can edit; anyone else gets a 404.\n\nPass \`body: null\` to strip the review text back to a bare rating.\n\nA \`read\` post must have a rating: \`rating: null\` is only accepted on a \`reading\` post, and switching an unrated post to \`read\` needs a \`rating\` in the same request. Either mistake is a 400.\n\n**Requires Kinkané Plus.** ${ASYMMETRY}`,
       parameters: [postIdParam],
       requestBody: body(object({
-        rating: { type: 'integer', minimum: 0, maximum: 5, example: 4 },
+        rating: { type: 'integer', minimum: 0, maximum: 5, nullable: true, description: 'Null clears the rating — `reading` posts only.', example: 4 },
         status: { type: 'string', enum: ['reading', 'read'], example: 'read' },
         body: { type: 'string', maxLength: 5000, nullable: true, example: 'Revisited it. Still extraordinary.' },
         isPublic: { type: 'boolean', example: true },
       })),
       responses: {
         200: successResponse,
-        400: json('Validation failed, or no fields were supplied.', ref('ValidationError')),
+        400: json('Validation failed, no fields were supplied, or the edit would leave a `read` post without a rating.', ref('ValidationError')),
         404: resp('NotFound'),
         ...plusErrors,
       },

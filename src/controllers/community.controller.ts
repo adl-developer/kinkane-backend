@@ -6,16 +6,21 @@ import { getMyReview } from '../services/my-reviews.service';
 import { parseId } from '../lib/route-helpers';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 
+// A `reading` post may leave the rating out (or send null); a `read` post must
+// rate the book. Updates are checked against the merged post in the service.
 const createPostSchema = z.object({
   bookId: z.number().int().positive(),
-  rating: z.number().int().min(0).max(5),
+  rating: z.number().int().min(0).max(5).nullable().optional(),
   status: z.enum(['reading', 'read']),
   body: z.string().max(5000).optional(),
   isPublic: z.boolean(),
-});
+}).refine(
+  (d) => d.status === 'reading' || (d.rating !== undefined && d.rating !== null),
+  { message: 'A rating is required when status is read', path: ['rating'] },
+);
 
 const updatePostSchema = z.object({
-  rating: z.number().int().min(0).max(5).optional(),
+  rating: z.number().int().min(0).max(5).nullable().optional(),
   status: z.enum(['reading', 'read']).optional(),
   body: z.string().max(5000).nullable().optional(),
   isPublic: z.boolean().optional(),

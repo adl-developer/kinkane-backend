@@ -27,7 +27,8 @@ export const posts = pgTable(
     bookId: integer('book_id')
       .notNull()
       .references(() => books.id, { onDelete: 'cascade' }),
-    rating: smallint('rating').notNull(),
+    // Null only on a `reading` post — a finished book must be rated.
+    rating: smallint('rating'),
     status: postStatusEnum('status').notNull(),
     body: text('body'),
     isPublic: boolean('is_public').notNull().default(true),
@@ -39,6 +40,7 @@ export const posts = pgTable(
     bookIdIdx: index('idx_posts_book_id').on(t.bookId),
     userBookUniq: uniqueIndex('idx_posts_user_book').on(t.userId, t.bookId),
     ratingCheck: check('posts_rating_check', sql`${t.rating} BETWEEN 0 AND 5`),
+    readRatingCheck: check('posts_read_rating_check', sql`${t.status} <> 'read' OR ${t.rating} IS NOT NULL`),
   }),
 );
 

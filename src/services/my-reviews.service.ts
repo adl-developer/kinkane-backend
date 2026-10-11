@@ -20,7 +20,8 @@ import type { MentionRef } from '../lib/mention-text';
 export interface MyReview {
   /** The post's id — what the community edit/delete routes take. */
   postId: number;
-  rating: number;
+  /** Null on a `reading` post the author hasn't rated yet. */
+  rating: number | null;
   status: 'reading' | 'read';
   body: string | null;
   /** Linked @handles in `body`. */

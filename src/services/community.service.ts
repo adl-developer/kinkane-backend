@@ -15,7 +15,8 @@ const COMMENT_PREVIEW_LENGTH = 140;
 
 export interface CreatePostFields {
   bookId: number;
-  rating: number;
+  /** Null or absent only when `status` is `reading`. */
+  rating?: number | null;
   status: 'reading' | 'read';
   body?: string;
   isPublic: boolean;
@@ -31,7 +32,8 @@ export interface PostItem {
   bookTitle: string;
   bookCoverUrl: string | null;
   bookExcerpt: BookExcerptInfo | null;
-  rating: number;
+  /** Null on a `reading` post the author hasn't rated yet. */
+  rating: number | null;
   status: 'reading' | 'read';
   body: string | null;
   /** Linked @handles in `body`, by UTF-16 offset. */
@@ -325,7 +327,7 @@ export const communityService = {
       .values({
         userId,
         bookId: fields.bookId,
-        rating: fields.rating,
+        rating: fields.rating ?? null,
         status: fields.status,
         body: body.text,
         isPublic: fields.isPublic,
@@ -388,8 +390,27 @@ export const communityService = {
   async updatePost(
     postId: number,
     userId: number,
-    fields: { rating?: number; status?: 'reading' | 'read'; body?: string | null; isPublic?: boolean },
+    fields: { rating?: number | null; status?: 'reading' | 'read'; body?: string | null; isPublic?: boolean },
   ): Promise<void> {
+    // A `read` post must keep a rating, so check the post as it will be after
+    // the patch: switching to `read` unrated, or clearing a `read` post's
+    // rating, is refused. Only the author's own post is looked up — anyone
+    // else falls through to the 404 below.
+    if (fields.rating === null || fields.status === 'read') {
+      const [current] = await db
+        .select({ rating: posts.rating, status: posts.status })
+        .from(posts)
+        .where(and(eq(posts.id, postId), eq(posts.userId, userId)))
+        .limit(1);
+      if (current) {
+        const status = fields.status ?? current.status;
+        const rating = fields.rating !== undefined ? fields.rating : current.rating;
+        if (status === 'read' && rating === null) {
+          throw Object.assign(new Error('A rating is required when status is read'), { statusCode: 400 });
+        }
+      }
+    }
+
     const body = fields.body !== undefined ? await mentionsService.prepare(fields.body) : undefined;
 
     const updateSet: Record<string, unknown> = { updatedAt: new Date() };
