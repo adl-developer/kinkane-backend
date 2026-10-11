@@ -95,6 +95,8 @@ export interface UserProfile {
   username: string | null;
   photoUrl: string | null;
   yearJoined: number;
+  /** Full sign-up timestamp; yearJoined is kept for older app builds. */
+  joinedAt: Date;
   followStatus: FollowStatus;
   // A pending request *they* sent *you*. When set, show Accept/Decline instead
   // of a Follow button — sending one back is refused with a 409.
@@ -315,6 +317,7 @@ export const usersService = {
       username: target.username,
       photoUrl: target.photoUrl ?? null,
       yearJoined: new Date(target.createdAt).getFullYear(),
+      joinedAt: new Date(target.createdAt),
       followStatus,
       incomingFollowRequest: incomingRow ?? null,
       shelfVisibility: target.shelfVisibility,

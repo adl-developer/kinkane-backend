@@ -237,6 +237,12 @@ export const authPaths = {
               photoUrl: { type: 'string', format: 'uri', nullable: true, example: null },
               phone: { type: 'string', nullable: true, description: 'E.164, or null.', example: '+233201234567' },
               joinedYear: { type: 'integer', example: 2026 },
+              joinedAt: {
+                type: 'string',
+                format: 'date-time',
+                description: 'When you signed up. `joinedYear` is the year of this.',
+                example: '2026-03-14T09:21:07.512Z',
+              },
               subscription: ref('Subscription'),
               providers: {
                 type: 'array',

@@ -53,6 +53,8 @@ export interface MeUser extends AuthUser {
   /** E.164, or null. Shown on the account screen and prefilled at checkout. */
   phone: string | null;
   joinedYear: number;
+  /** Full sign-up timestamp; joinedYear is kept for older app builds. */
+  joinedAt: Date;
   subscription: {
     tier: SubscriptionTier;
     // Sourced from the enum rather than restated, so adding a Stripe-driven
@@ -1089,6 +1091,7 @@ export const authService = {
     return {
       ...userFields,
       joinedYear: createdAt.getFullYear(),
+      joinedAt: createdAt,
       subscription: {
         tier: sub.tier,
         status: sub.status,
