@@ -4,7 +4,7 @@ import { AuthenticatedRequest } from '../middleware/auth.middleware';
 import { userSettingsService } from '../services/user-settings.service';
 import { usernamesService } from '../services/usernames.service';
 import { phoneSchema } from '../lib/phone';
-import { isCloudinaryUrl, cloudinaryUrlMessage } from '../lib/cloudinary-url';
+import { isCloudinaryUrl, cloudinaryUrlMessage, unsignedPhotoUrlError, uploadFolder } from '../lib/cloudinary-url';
 import { logger } from '../lib/logger';
 
 const changeUsernameSchema = z.object({
@@ -64,6 +64,14 @@ export const userSettingsController = {
     const parsed = updateProfileSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+    const photoError = unsignedPhotoUrlError(parsed.data.photoUrl, [
+      uploadFolder('user', req.user.id),
+      uploadFolder('upload', req.user.id),
+    ]);
+    if (photoError) {
+      res.status(400).json({ error: photoError });
       return;
     }
 

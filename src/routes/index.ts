@@ -29,6 +29,7 @@ import paymentsRoutes from './payments.routes';
 import cartRoutes from './cart.routes';
 import ordersRoutes from './orders.routes';
 import savedBooksRoutes from './saved-books.routes';
+import uploadsRoutes from './uploads.routes';
 
 const router = Router();
 
@@ -71,6 +72,8 @@ v1.use('/cart', cartRoutes);
 v1.use('/orders', ordersRoutes);
 // The shop's purchase wishlist. requireAuth only — never requirePlus.
 v1.use('/saved-books', savedBooksRoutes);
+// Signs direct-to-Cloudinary image uploads; the bytes never come through us.
+v1.use('/uploads', uploadsRoutes);
 v1.use('/unsubscribe', unsubscribeRoutes);
 // Public by design — the people most likely to need the contact form are the
 // ones who cannot get into their account.

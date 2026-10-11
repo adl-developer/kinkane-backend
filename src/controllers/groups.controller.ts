@@ -7,6 +7,7 @@ import { withShelfReviews } from './group-books.controller';
 import { authService } from '../services/auth.service';
 import { parseId } from '../lib/route-helpers';
 import { createGroupSchema, updateGroupSchema } from '../lib/group-input';
+import { unsignedPhotoUrlError, uploadFolder } from '../lib/cloudinary-url';
 
 const paginationSchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).default(20),
@@ -46,6 +47,13 @@ export const groupsController = {
     const parsed = createGroupSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+    // The group has no ID yet, so its photo can only come from the caller's
+    // own one-off uploads folder.
+    const photoError = unsignedPhotoUrlError(parsed.data.photoUrl, [uploadFolder('upload', req.user.id)]);
+    if (photoError) {
+      res.status(400).json({ error: photoError });
       return;
     }
     const group = await groupsService.create(req.user.id, parsed.data);
@@ -111,6 +119,14 @@ export const groupsController = {
     const parsed = updateGroupSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+    const photoError = unsignedPhotoUrlError(parsed.data.photoUrl, [
+      uploadFolder('group', groupId),
+      uploadFolder('upload', req.user.id),
+    ]);
+    if (photoError) {
+      res.status(400).json({ error: photoError });
       return;
     }
     const group = await groupsService.update(groupId, req.user.id, parsed.data);

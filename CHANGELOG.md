@@ -9,6 +9,10 @@
 * show where you stand with each person in community search ([29e2c19](https://adl.github.com/adl-developer/kinkane-backend/commit/29e2c19317de4a3fadfe86592ad0810b7145e580)) — [details](changelog/2026-10-11-search-people-follow-status.md)
 * let people you've accepted as followers open any single book from your shelf, even a private one ([01077fb](https://adl.github.com/adl-developer/kinkane-backend/commit/01077fb69068b10ed40049b87f823c6863d59af6)) — [details](changelog/2026-10-11-search-people-follow-status.md)
 
+### Bug Fixes
+
+* show email verification codes on one line so they're easy to copy ([fde136f](https://adl.github.com/adl-developer/kinkane-backend/commit/fde136fb3f800f44651193085a16c500d33c5d2a))
+
 
 ## 2026-10-10
 

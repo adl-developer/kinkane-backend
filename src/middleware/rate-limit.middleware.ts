@@ -254,6 +254,19 @@ export const groupCreateLimiter = rateLimit({
   store: new RedisStore({ prefix: 'rl:group-create:', sendCommand }),
 });
 
+// Upload signatures: 30 per 15 minutes per user. Each one lets the caller put
+// an image in our Cloudinary account, which is storage and bandwidth we pay
+// for. A profile-photo retry loop needs a handful; a script wants thousands.
+export const uploadSignatureLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: json429,
+  keyGenerator: byUser,
+  store: new RedisStore({ prefix: 'rl:upload-signature:', sendCommand }),
+});
+
 // Group invites: 30 requests per hour per user. Same reasoning as
 // followRequestLimiter — an invitation puts a notification in someone else's
 // app — but note this counts *requests*, not people invited, which is why the

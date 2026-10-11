@@ -104,6 +104,53 @@ export const accountPaths = {
     },
   },
 
+  '/api/v1/uploads/signature': {
+    post: {
+      tags: [TAG],
+      summary: 'Sign an image upload to Cloudinary',
+      description: [
+        'Returns everything needed to upload one image **straight to Cloudinary**. The image never passes through this API.',
+        '',
+        '1. Call this with what the image is for.',
+        '2. `POST` the image as `multipart/form-data` to `uploadUrl`, with a `file` field plus **every field in `params`, unchanged**. Adding, dropping or editing any of them makes Cloudinary reject the upload.',
+        '3. Send the `secure_url` from Cloudinary’s response to the endpoint that stores it: `PATCH /user/settings/profile`, `POST /groups` or `PATCH /groups/{groupId}`.',
+        '',
+        '| `kind` | Use for | Where it lands |',
+        '|---|---|---|',
+        '| `user` | Your profile photo | `users/<yourId>/avatar`. Each upload replaces the last one. |',
+        '| `group` | Photo for a group you **own** (`groupId` required) | `groups/<groupId>/photo`. Each upload replaces the last one. |',
+        '| `upload` | Anything else, including a group photo picked **before** the group is created | `uploads/<yourId>/<random>`. Always a new image. |',
+        '',
+        'Accepted formats: jpg, jpeg, png, webp, heic, heif. Signatures are valid for one hour, which Cloudinary fixes. Store the exact `secure_url`: it carries a version number, so a replaced photo gets a new URL and caches refresh.',
+      ].join('\n'),
+      requestBody: body(object({
+        kind: { type: 'string', enum: ['user', 'group', 'upload'], example: 'user' },
+        groupId: { type: 'integer', description: 'Required when `kind` is `group`.', example: 7 },
+      }, ['kind'])),
+      responses: {
+        200: json('A signed upload.',
+          object({
+            uploadUrl: { type: 'string', format: 'uri', example: 'https://api.cloudinary.com/v1_1/kinkane/image/upload' },
+            params: object({
+              public_id: { type: 'string', example: 'kinkane/users/42/avatar' },
+              asset_folder: { type: 'string', description: 'Media Library folder: `kinkane/users`, `kinkane/groups` or `kinkane/uploads`.', example: 'kinkane/users' },
+              timestamp: { type: 'integer', example: 1791700000 },
+              allowed_formats: { type: 'string', example: 'jpg,jpeg,png,webp,heic,heif' },
+              overwrite: { type: 'boolean', example: true },
+              invalidate: { type: 'boolean', description: 'Present only for `user` and `group`.', example: true },
+              api_key: { type: 'string', example: '123456789012345' },
+              signature: { type: 'string', example: 'bfd09f95f331f558cbd1320e67aa8d488770583e' },
+            }),
+            expiresAt: { type: 'string', format: 'date-time' },
+          })),
+        400: resp('ValidationError'),
+        404: resp('NotFound'),
+        503: json('Uploads are not configured on this server (`code: CLOUDINARY_NOT_CONFIGURED`).',
+          object({ error: { type: 'string' }, code: { type: 'string', example: 'CLOUDINARY_NOT_CONFIGURED' } })),
+        ...authErrors,
+      },
+    },
+  },
   '/api/v1/user/settings/profile': {
     patch: {
       tags: [TAG],
@@ -111,7 +158,7 @@ export const accountPaths = {
       description: [
         'Patch semantics — send only what changes.',
         '',
-        '**`photoUrl` must already be hosted on Kinkané’s own Cloudinary account.** This endpoint does not accept uploads: upload to Cloudinary from the client first, then send the resulting URL here. URLs on any other host — including other Cloudinary accounts — are rejected with a 400, so an arbitrary third-party image cannot be made to render as a user’s avatar.',
+        '**`photoUrl` must already be hosted on Kinkané’s own Cloudinary account.** This endpoint does not accept uploads: get a signature from `POST /uploads/signature` (`kind: "user"`), upload to Cloudinary from the client, then send the returned `secure_url` here. URLs on any other host — including other Cloudinary accounts — are rejected with a 400, so an arbitrary third-party image cannot be made to render as a user’s avatar. Once signed uploads are enforced, the URL must also sit in the caller’s own `users/<id>` or `uploads/<id>` folder.',
         '',
         'Pass `photoUrl: null` to remove the photo, or `phone: null` to remove the number.',
       ].join('\n'),
@@ -120,7 +167,7 @@ export const accountPaths = {
         photoUrl: {
           type: 'string', format: 'uri', nullable: true,
           description: 'Must be on `res.cloudinary.com` under the configured cloud name. `null` clears it.',
-          example: 'https://res.cloudinary.com/kinkane/image/upload/v1/avatars/4412.jpg',
+          example: 'https://res.cloudinary.com/kinkane/image/upload/v1791700000/kinkane/users/4412/avatar.jpg',
         },
         phone: {
           type: 'string', maxLength: 32, nullable: true,
