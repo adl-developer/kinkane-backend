@@ -6,7 +6,7 @@ import { notificationPreferencesService } from './notification-preferences.servi
 import { enqueuePush } from '../lib/push-queue';
 import { logger } from '../lib/logger';
 import { mentionsService, renderTexts } from './mentions.service';
-import { assertCanViewShelf } from './users.service';
+import { assertCanViewShelf, canViewShelfBook } from './users.service';
 import type { MentionRef } from '../lib/mention-text';
 
 const COMMENT_PREVIEW_LENGTH = 140;
@@ -813,8 +813,8 @@ export const communityService = {
     bookId: number,
     requesterId: number,
   ): Promise<FriendBookDetail> {
-    // Same rule as their full shelf: one book off it is no more visible than the rest
-    await assertCanViewShelf(friendId, requesterId);
+    // Accepted followers always see one book; everyone else follows the shelf setting
+    await assertCanViewShelf(friendId, requesterId, canViewShelfBook);
 
     const [[bookRow], [postRow], [userBookRow]] = await Promise.all([
       db

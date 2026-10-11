@@ -254,14 +254,32 @@ export function canViewShelf(
 }
 
 /**
- * Guards anything read off a user's shelf with canViewShelf. 404 (not 403),
- * like the follow graph, so a hidden shelf looks the same as a missing account.
+ * One book off someone's shelf is looser than the whole shelf: accepted
+ * followers always get it, whatever the shelf setting, because a single book
+ * reveals far less than the full list. Everyone else follows canViewShelf.
  */
-export async function assertCanViewShelf(targetId: number, requesterId: number): Promise<void> {
+export function canViewShelfBook(
+  visibility: ShelfVisibility,
+  isSelf: boolean,
+  isAcceptedFollower: boolean,
+): boolean {
+  return isAcceptedFollower || canViewShelf(visibility, isSelf, isAcceptedFollower);
+}
+
+/**
+ * Guards a read off a user's shelf with `rule` — canViewShelf for the whole
+ * shelf, canViewShelfBook for one book. 404 (not 403), like the follow graph,
+ * so a hidden shelf looks the same as a missing account.
+ */
+export async function assertCanViewShelf(
+  targetId: number,
+  requesterId: number,
+  rule: typeof canViewShelf = canViewShelf,
+): Promise<void> {
   const relationship = await loadViewerRelationship(targetId, requesterId);
   if (!relationship) throw userNotFound();
   const { target, isSelf, isAcceptedFollower } = relationship;
-  if (!canViewShelf(target.shelfVisibility, isSelf, isAcceptedFollower)) throw userNotFound();
+  if (!rule(target.shelfVisibility, isSelf, isAcceptedFollower)) throw userNotFound();
 }
 
 // ── Service ───────────────────────────────────────────────────────────────────

@@ -8,11 +8,12 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vites
  * WHY THIS EXISTS. A shelf is readable through three doors — the full shelf
  * (GET /users/:userId/books), one book off it (GET /community/users/:friendId/
  * books/:bookId), and the `canViewShelf` flag on the profile that tells the app
- * whether to show the tab at all. All three apply one rule (canViewShelf in
- * users.service.ts), and the rule depends on the follow graph, so only real
- * rows show the doors agree. The one-book door also carries the owner's
- * review, which has a privacy setting of its own: a public shelf must not be a
- * way to read a private review.
+ * whether to show the tab at all. The full shelf and the flag apply
+ * canViewShelf; the one-book door applies canViewShelfBook, which also always
+ * lets accepted followers in (both in users.service.ts). Both depend on the
+ * follow graph, so only real rows show the doors behave. The one-book door also
+ * carries the owner's review, which has a privacy setting of its own: a public
+ * shelf must not be a way to read a private review.
  *
  * WHERE IT RUNS. TEST_DATABASE_URL, never DATABASE_URL — this suite deletes
  * users, and `.env` points at production. Skips itself when unset; refuses to
@@ -66,7 +67,7 @@ const OTHER_BOOK_REF = 'shelf-visibility-test-other-book';
 
 type Visibility = 'public' | 'friends' | 'private';
 
-describeIfDb('shelf visibility: full shelf, one book, and the profile flag agree', () => {
+describeIfDb('shelf visibility: full shelf, one book, and the profile flag', () => {
   let bookId: number;
   let otherBookId: number;
   let owner: number;
@@ -171,13 +172,19 @@ describeIfDb('shelf visibility: full shelf, one book, and the profile flag agree
     }
   });
 
-  it('closes a private shelf even to accepted followers', async () => {
+  it('closes a private shelf to everyone else, accepted followers included', async () => {
     await setVisibility('private');
     for (const viewer of [follower, requester, stranger]) {
       expect(await fullShelf(viewer)).toBe(404);
-      expect(await oneBook(viewer)).toBe(404);
       expect(await flag(viewer)).toBe(false);
     }
+  });
+
+  it('still opens one book off a private shelf to accepted followers, and nobody else', async () => {
+    await setVisibility('private');
+    expect(await oneBook(follower)).toBe(200);
+    expect(await oneBook(requester)).toBe(404);
+    expect(await oneBook(stranger)).toBe(404);
   });
 
   it('always opens your own shelf, private included', async () => {
@@ -215,7 +222,8 @@ describeIfDb('shelf visibility: full shelf, one book, and the profile flag agree
     });
 
     it('hides a private review from accepted followers too — private posts are author-only', async () => {
-      await setVisibility('friends');
+      // Private shelf: the follower gets the book page, but still not the review
+      await setVisibility('private');
       await review(false);
       const detail = await communityService.getFriendBookDetail(owner, bookId, follower);
       expect(detail).toMatchObject({ rating: null, review: null });

@@ -347,7 +347,7 @@ export const socialPaths = {
       tags: [COMMUNITY],
       summary: 'See what a friend made of a book',
       description:
-        'One book from another user’s shelf: the book, who they are, their note if they made it public, and their rating and review if they wrote a public one. Your own review of the book comes back beside theirs.\n\nSubject to that user’s `shelfVisibility` and the follow graph, the same as their full shelf; a shelf the caller cannot see returns 404, the same as a missing account.',
+        'One book from another user’s shelf: the book, who they are, their note if they made it public, and their rating and review if they wrote a public one. Your own review of the book comes back beside theirs.\n\nAccepted followers can always open it, whatever the shelf setting — one book reveals far less than the whole shelf. Everyone else goes by `shelfVisibility`: open to all when `public`, closed when `friends` or `private`. When the caller can’t open it the answer is 404, the same as a missing account. So `canViewShelf: false` on the profile does not by itself mean this page is closed.',
       parameters: [
         param('friendId', 'path', { type: 'integer' }, 'The other user’s id.', { example: 4412 }),
         param('bookId', 'path', { type: 'integer' }, 'Book id.', { example: 48213 }),
