@@ -173,7 +173,7 @@ router.post('/change-password', requireAuth, authController.changePassword);
  *
  * Returns 200: {
  *   user: {
- *     id, name, email, emailVerified, photoUrl, joinedYear,
+ *     id, name, email, emailVerified, photoUrl, joinedYear, joinedAt,
  *     subscription: {
  *       tier, status,
  *       plan,              // 'monthly' | 'annual' | null (null while free/trialing)

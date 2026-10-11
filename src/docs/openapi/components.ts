@@ -413,6 +413,12 @@ const socialSchemas = {
         type: 'object',
         properties: {
           yearJoined: { type: 'integer', example: 2026 },
+          joinedAt: {
+            type: 'string',
+            format: 'date-time',
+            description: 'When they signed up. `yearJoined` is the year of this.',
+            example: '2026-03-14T09:21:07.512Z',
+          },
           followStatus: {
             type: 'string',
             enum: ['none', 'pending', 'accepted', 'declined'],
