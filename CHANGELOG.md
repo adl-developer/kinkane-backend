@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-10-11
+
+### Features
+
+* let people you've accepted as followers open any single book from your shelf, even a private one ([01077fb](https://adl.github.com/adl-developer/kinkane-backend/commit/01077fb69068b10ed40049b87f823c6863d59af6)) — [details](changelog/2026-10-11-search-people-follow-status.md)
+
+
 ## 2026-10-10
 
 ### Features

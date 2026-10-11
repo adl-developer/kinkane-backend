@@ -1,12 +1,14 @@
 import { eq, and, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
-import { users, posts, books, postLikes, comments, groups } from '../db/schema';
+import { alias } from 'drizzle-orm/pg-core';
+import { users, posts, books, postLikes, comments, groups, followRequests } from '../db/schema';
 import { buildGroupSearchCondition, buildGroupSearchOrderBy } from './groups.service';
 import { enrichPosts } from './community.service';
 import type { PostItem } from './community.service';
 import { getExcerptsByIsbns, pickExcerpt } from './book-excerpts.service';
 import { withRenderedMentions } from './mentions.service';
 import { escapeLike } from '../lib/escape-like';
+import { toFollowStatus, type FollowStatus } from './users.service';
 import type { MentionRef } from '../lib/mention-text';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -16,6 +18,12 @@ export interface UserResult {
   name: string;
   username: string | null;
   photoUrl: string | null;
+  // The requester's follow request to this user, as on the profile, plus
+  // 'self' for the requester's own row so the app can leave off the button.
+  followStatus: FollowStatus | 'self';
+  // A pending request *they* sent the requester. When set, show Accept/Decline
+  // instead of a Follow button, as on the profile.
+  incomingFollowRequest: { requestId: number; requestedAt: Date } | null;
 }
 
 export type SearchFilter = 'all' | 'users' | 'posts' | 'groups';
@@ -127,14 +135,37 @@ function buildPostSearchOrderBy(q: string): SQL[] {
 
 // ── Service ───────────────────────────────────────────────────────────────────
 
-async function searchUsers(q: string, limit: number, offset: number): Promise<{ results: UserResult[]; total: number }> {
+// Both directions of the follow graph between the requester and each result
+const outgoing = alias(followRequests, 'outgoing');
+const incoming = alias(followRequests, 'incoming');
+
+async function searchUsers(
+  q: string,
+  requesterId: number,
+  limit: number,
+  offset: number,
+): Promise<{ results: UserResult[]; total: number }> {
   const where = buildUserSearchCondition(q);
   const orderBy = buildUserSearchOrderBy(q);
 
   const [rows, [countRow]] = await Promise.all([
+    // sender/receiver is unique, so each join adds at most one row per user
     db
-      .select({ id: users.id, name: users.name, username: users.username, photoUrl: users.photoUrl })
+      .select({
+        id: users.id,
+        name: users.name,
+        username: users.username,
+        photoUrl: users.photoUrl,
+        outgoingStatus: outgoing.status,
+        incomingRequestId: incoming.id,
+        incomingRequestedAt: incoming.createdAt,
+      })
       .from(users)
+      .leftJoin(outgoing, and(eq(outgoing.senderId, requesterId), eq(outgoing.receiverId, users.id)))
+      .leftJoin(
+        incoming,
+        and(eq(incoming.senderId, users.id), eq(incoming.receiverId, requesterId), eq(incoming.status, 'pending')),
+      )
       .where(where)
       .orderBy(...orderBy)
       .limit(limit)
@@ -142,7 +173,15 @@ async function searchUsers(q: string, limit: number, offset: number): Promise<{ 
     db.select({ count: sql<number>`COUNT(*)::int` }).from(users).where(where),
   ]);
 
-  return { results: rows, total: countRow?.count ?? 0 };
+  const results = rows.map(({ outgoingStatus, incomingRequestId, incomingRequestedAt, ...user }) => ({
+    ...user,
+    followStatus: user.id === requesterId ? ('self' as const) : toFollowStatus(outgoingStatus),
+    incomingFollowRequest:
+      incomingRequestId !== null && incomingRequestedAt !== null
+        ? { requestId: incomingRequestId, requestedAt: incomingRequestedAt }
+        : null,
+  }));
+  return { results, total: countRow?.count ?? 0 };
 }
 
 async function searchPosts(
@@ -258,7 +297,7 @@ export const communitySearchService = {
     // Joined into the existing Promise.all rather than awaited after it, so
     // filter='all' costs one more parallel query rather than a serial hop.
     const [userResults, postResults, groupResults] = await Promise.all([
-      includeUsers ? searchUsers(q, limit, offset) : Promise.resolve({ results: [], total: 0 }),
+      includeUsers ? searchUsers(q, requesterId, limit, offset) : Promise.resolve({ results: [], total: 0 }),
       includePosts ? searchPosts(q, requesterId, limit, offset) : Promise.resolve({ results: [], total: 0 }),
       includeGroups ? searchGroups(q, limit, offset) : Promise.resolve({ results: [], total: 0 }),
     ]);

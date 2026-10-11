@@ -461,6 +461,34 @@ const socialSchemas = {
     ],
   },
 
+  UserSearchResult: {
+    allOf: [
+      { $ref: '#/components/schemas/UserSummary' },
+      {
+        type: 'object',
+        properties: {
+          followStatus: {
+            type: 'string',
+            enum: ['none', 'pending', 'accepted', 'declined', 'self'],
+            description:
+              "The caller's follow request to this user, exactly as on the profile (`none` Follow, `pending` Requested, `accepted` Following, `declined` Follow again), plus `self` on the caller's own row so the app can leave the button off.",
+            example: 'none',
+          },
+          incomingFollowRequest: {
+            type: 'object',
+            nullable: true,
+            description:
+              'A pending follow request this user has sent the *caller*, as on the profile. When set, show Accept/Decline (with `requestId`) instead of a Follow button — `POST /users/{userId}/follow` is refused with a 409 while it is pending.',
+            properties: {
+              requestId: { type: 'integer', example: 902 },
+              requestedAt: { type: 'string', format: 'date-time', example: '2026-09-28T20:48:04.353Z' },
+            },
+          },
+        },
+      },
+    ],
+  },
+
   FollowRequest: {
     type: 'object',
     properties: {

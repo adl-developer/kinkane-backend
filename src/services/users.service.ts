@@ -116,7 +116,7 @@ function assertFound<T>(row: T | undefined, label: string): T {
   return row;
 }
 
-function toFollowStatus(status: string | null | undefined): FollowStatus {
+export function toFollowStatus(status: string | null | undefined): FollowStatus {
   if (status === 'accepted') return 'accepted';
   if (status === 'pending') return 'pending';
   if (status === 'declined') return 'declined';

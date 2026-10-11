@@ -321,7 +321,7 @@ export const socialPaths = {
       responses: {
         200: json('Search results.',
           object({
-            users: arrayOf(ref('UserSummary')),
+            users: arrayOf(ref('UserSearchResult')),
             posts: arrayOf(ref('Post')),
             groups: arrayOf(object({
               id: { type: 'integer', example: 12 },
