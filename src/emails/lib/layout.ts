@@ -118,25 +118,16 @@ export function ctaButton(text: string, url: string): string {
 }
 
 /**
- * Individual digit boxes for OTP codes — matches the Figma verification code display.
- * White boxes with #E8E8E7 outline, Georgia digits, cream container.
+ * OTP code as a single unbroken string on a cream container, so it can be
+ * selected and copied in one go. Spacing is letter-spacing only — no extra
+ * characters end up on the clipboard.
  */
 export function otpDisplay(otp: string, expiryMinutes: number = 15): string {
-  const digitCells = otp
-    .split('')
-    .map(
-      (d) =>
-        `<td style="width:44px;height:56px;background-color:#FFFFFF;outline:1px solid #E8E8E7;text-align:center;vertical-align:middle;"><span style="font-family:Georgia,'Times New Roman',serif;font-size:24px;font-weight:400;color:#262626;line-height:32px;">${d}</span></td>`,
-    )
-    .join('<td style="width:12px;"></td>');
-
-  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width:100%;margin:20px 0 0;background-color:#F5F0E8;border-radius:6px;outline:1px solid #E8E8E7;">
+  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width:100%;margin:20px 0 0;background-color:#F5F0E8;border-radius:6px;">
     <tr>
       <td style="padding:32px 24px;text-align:center;">
         <p style="margin:0 0 16px;font-family:${SANS};font-size:12px;font-weight:400;letter-spacing:3.6px;color:#52514E;text-transform:uppercase;line-height:16px;">Your Verification Code</p>
-        <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 auto;">
-          <tr>${digitCells}</tr>
-        </table>
+        <p style="margin:0;font-family:Georgia,'Times New Roman',serif;font-size:32px;font-weight:400;letter-spacing:8px;color:#262626;line-height:40px;white-space:nowrap;">${otp}</p>
         <p style="margin:16px 0 0;font-family:${SANS};font-size:12px;color:rgba(82,81,78,0.60);line-height:16px;">This code will expire in ${expiryMinutes} minutes.</p>
       </td>
     </tr>
