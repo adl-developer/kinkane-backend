@@ -204,6 +204,7 @@ const bookSchemas = {
       rating: { type: 'integer', minimum: 0, maximum: 5, example: 4 },
       status: { type: 'string', enum: ['reading', 'read'], example: 'read' },
       body: { type: 'string', nullable: true, example: 'Twelve voices and not one wasted.' },
+      mentions: { type: 'array', items: { $ref: '#/components/schemas/MentionRef' }, description: 'Linked @handles in `body`. Empty when there are none.' },
       isPublic: { type: 'boolean', example: true },
       createdAt: { type: 'string', format: 'date-time', example: '2026-09-21T19:04:00.000Z' },
       updatedAt: { type: 'string', format: 'date-time', example: '2026-09-21T19:04:00.000Z' },
@@ -411,12 +412,23 @@ const socialSchemas = {
       {
         type: 'object',
         properties: {
-          joinedYear: { type: 'integer', example: 2026 },
-          readerType: {
+          yearJoined: { type: 'integer', example: 2026 },
+          followStatus: {
             type: 'string',
+            enum: ['none', 'pending', 'accepted', 'declined'],
+            description:
+              "The caller's follow request to this user, which decides the button to show: `none` Follow, `pending` Requested, `accepted` Following, `declined` Follow again. Your own profile is never returned here; this endpoint answers 400 for it.",
+            example: 'accepted',
+          },
+          incomingFollowRequest: {
+            type: 'object',
             nullable: true,
-            description: 'Inferred taste label from onboarding, e.g. "The Wanderer".',
-            example: 'The Wanderer',
+            description:
+              'A pending follow request this user has sent the *caller*. When set, show Accept/Decline (with `requestId`) instead of a Follow button — `POST /users/{userId}/follow` is refused with a 409 while it is pending.',
+            properties: {
+              requestId: { type: 'integer', example: 902 },
+              requestedAt: { type: 'string', format: 'date-time', example: '2026-09-28T20:48:04.353Z' },
+            },
           },
           shelfVisibility: {
             type: 'string',
@@ -429,25 +441,21 @@ const socialSchemas = {
               "Whether the *caller* may read this user's shelf, having applied `shelfVisibility` and the follow graph. When false, `GET /users/{userId}/books` and `GET /community/users/{friendId}/books/{bookId}` return 404.",
             example: true,
           },
-          followState: {
-            type: 'string',
-            enum: ['none', 'pending', 'following', 'self'],
-            description: "The caller's relationship to this user.",
-            example: 'following',
+          followerCount: {
+            type: 'integer',
+            description: 'Only present when `followStatus` is `accepted`.',
+            example: 128,
           },
-          incomingFollowRequest: {
-            type: 'object',
-            nullable: true,
-            description:
-              'A pending follow request this user has sent the *caller*. When set, show Accept/Decline (with `requestId`) instead of a Follow button — `POST /users/{userId}/follow` is refused with a 409 while it is pending.',
-            properties: {
-              requestId: { type: 'integer', example: 902 },
-              requestedAt: { type: 'string', format: 'date-time', example: '2026-09-28T20:48:04.353Z' },
-            },
+          followingCount: {
+            type: 'integer',
+            description: 'Only present when `followStatus` is `accepted`.',
+            example: 94,
           },
-          followerCount: { type: 'integer', example: 128 },
-          followingCount: { type: 'integer', example: 94 },
-          bookCount: { type: 'integer', example: 37 },
+          postCount: {
+            type: 'integer',
+            description: 'Their public reviews. Only present when `followStatus` is `accepted`.',
+            example: 37,
+          },
         },
       },
     ],

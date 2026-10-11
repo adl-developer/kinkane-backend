@@ -7,6 +7,10 @@
 
 * add an Owned section to the bookshelf alongside Favourites ([6a1161a](https://adl.github.com/adl-developer/kinkane-backend/commit/6a1161af4a9788cc3069af02866a86b9e2ad6373)) — [details](changelog/2026-10-10-shelf-owned-section.md)
 
+### Bug Fixes
+
+* make a friend's book page respect their shelf privacy and stop it showing private reviews ([aff0b6b](https://adl.github.com/adl-developer/kinkane-backend/commit/aff0b6bd0cfc6ec104eee8b375c06742dab3f72b)) — [details](changelog/2026-10-10-friend-book-shelf-privacy.md)
+
 
 ## 2026-10-09
 
