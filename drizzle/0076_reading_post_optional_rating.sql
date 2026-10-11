@@ -1,0 +1,2 @@
+ALTER TABLE "posts" ALTER COLUMN "rating" DROP NOT NULL;--> statement-breakpoint
+ALTER TABLE "posts" ADD CONSTRAINT "posts_read_rating_check" CHECK ("posts"."status" <> 'read' OR "posts"."rating" IS NOT NULL);

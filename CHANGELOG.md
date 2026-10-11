@@ -7,12 +7,13 @@
 
 * let the app upload profile and group photos with a server-signed Cloudinary upload ([75ea452](https://adl.github.com/adl-developer/kinkane-backend/commit/75ea4522801764675ed3868534c0c1fb960d51fd)) — [details](changelog/2026-10-11-full-sign-up-date.md)
 * show the full date someone joined on profiles, not just the year ([c905a3b](https://adl.github.com/adl-developer/kinkane-backend/commit/c905a3b752e6eae4b7fa0b4f5fc3754453aef10f)) — [details](changelog/2026-10-11-full-sign-up-date.md)
-* show where you stand with each person in community search ([29e2c19](https://adl.github.com/adl-developer/kinkane-backend/commit/29e2c19317de4a3fadfe86592ad0810b7145e580)) — [details](changelog/2026-10-11-search-people-follow-status.md)
+* show where you stand with each person in community search ([29e2c19](https://adl.github.com/adl-developer/kinkane-backend/commit/29e2c19317de4a3fadfe86592ad0810b7145e580)) — [details](changelog/2026-10-11-reading-post-optional-rating.md)
 * let people you've accepted as followers open any single book from your shelf, even a private one ([01077fb](https://adl.github.com/adl-developer/kinkane-backend/commit/01077fb69068b10ed40049b87f823c6863d59af6)) — [details](changelog/2026-10-11-search-people-follow-status.md)
 
 ### Bug Fixes
 
-* show email verification codes on one line so they're easy to copy ([fde136f](https://adl.github.com/adl-developer/kinkane-backend/commit/fde136fb3f800f44651193085a16c500d33c5d2a))
+* photo uploads only change a photo once it's saved, and iPhone photos show everywhere ([8207e74](https://adl.github.com/adl-developer/kinkane-backend/commit/8207e74cf640fb425ea42cf5cc36ea13c043bc54)) — [details](changelog/2026-10-11-reading-post-optional-rating.md)
+* show email verification codes on one line so they're easy to copy ([fde136f](https://adl.github.com/adl-developer/kinkane-backend/commit/fde136fb3f800f44651193085a16c500d33c5d2a)) — [details](changelog/2026-10-11-reading-post-optional-rating.md)
 
 
 ## 2026-10-10
