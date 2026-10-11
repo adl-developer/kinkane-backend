@@ -99,14 +99,14 @@ export interface UserProfile {
   // A pending request *they* sent *you*. When set, show Accept/Decline instead
   // of a Follow button — sending one back is refused with a 409.
   incomingFollowRequest: { requestId: number; requestedAt: Date } | null;
+  shelfVisibility: ShelfVisibility;
+  // Whether the requester may read this user's whole shelf. Decided here so
+  // clients never re-implement the visibility rule; see canViewShelf below.
+  canViewShelf: boolean;
   // Only present for accepted followers
   followerCount?: number;
   followingCount?: number;
   postCount?: number;
-  shelfVisibility?: ShelfVisibility;
-  // Whether the requester may read this user's shelf. Decided here so clients
-  // never re-implement the visibility rule; see canViewShelf below.
-  canViewShelf: boolean;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -171,6 +171,61 @@ export function decideFollowRequest(
   return { action: 'insert' };
 }
 
+/** Who the target is, and what the requester is to them. */
+interface ViewerRelationship {
+  target: {
+    id: number;
+    name: string;
+    username: string | null;
+    photoUrl: string | null;
+    createdAt: Date;
+    shelfVisibility: ShelfVisibility;
+  };
+  isSelf: boolean;
+  /** The requester's own follow request to the target, if any. */
+  followStatus: FollowStatus;
+  isAcceptedFollower: boolean;
+}
+
+/**
+ * The target user and the requester's follow request to them, in one query.
+ * Every "may this person see that" check in this file starts here, so they
+ * all read the follow graph the same way. Null when the target doesn't exist.
+ */
+async function loadViewerRelationship(targetId: number, requesterId: number): Promise<ViewerRelationship | null> {
+  const [row] = await db
+    .select({
+      id: users.id,
+      name: users.name,
+      username: users.username,
+      photoUrl: users.photoUrl,
+      createdAt: users.createdAt,
+      shelfVisibility: users.shelfVisibility,
+      followStatus: followRequests.status,
+    })
+    .from(users)
+    .leftJoin(
+      followRequests,
+      and(eq(followRequests.senderId, requesterId), eq(followRequests.receiverId, users.id)),
+    )
+    .where(eq(users.id, targetId))
+    .limit(1);
+  if (!row) return null;
+
+  const { followStatus: rawStatus, ...target } = row;
+  const followStatus = toFollowStatus(rawStatus);
+  return {
+    target,
+    isSelf: targetId === requesterId,
+    followStatus,
+    isAcceptedFollower: followStatus === 'accepted',
+  };
+}
+
+function userNotFound(): Error {
+  return Object.assign(new Error('User not found'), { statusCode: 404 });
+}
+
 /**
  * Guards access to a user's follower/following list with the same rule as
  * their follower/following counts on the profile: visible to themselves or
@@ -179,19 +234,8 @@ export function decideFollowRequest(
  */
 async function assertCanViewFollowGraph(targetId: number, requesterId: number): Promise<void> {
   if (targetId === requesterId) return;
-
-  const [[targetUser], [followRow]] = await Promise.all([
-    db.select({ id: users.id }).from(users).where(eq(users.id, targetId)).limit(1),
-    db
-      .select({ status: followRequests.status })
-      .from(followRequests)
-      .where(and(eq(followRequests.senderId, requesterId), eq(followRequests.receiverId, targetId)))
-      .limit(1),
-  ]);
-
-  if (!targetUser || followRow?.status !== 'accepted') {
-    throw Object.assign(new Error('User not found'), { statusCode: 404 });
-  }
+  const relationship = await loadViewerRelationship(targetId, requesterId);
+  if (!relationship?.isAcceptedFollower) throw userNotFound();
 }
 
 /**
@@ -214,28 +258,10 @@ export function canViewShelf(
  * like the follow graph, so a hidden shelf looks the same as a missing account.
  */
 export async function assertCanViewShelf(targetId: number, requesterId: number): Promise<void> {
-  const [[targetUser], [followRow]] = await Promise.all([
-    db
-      .select({ shelfVisibility: users.shelfVisibility })
-      .from(users)
-      .where(eq(users.id, targetId))
-      .limit(1),
-    db
-      .select({ status: followRequests.status })
-      .from(followRequests)
-      .where(and(eq(followRequests.senderId, requesterId), eq(followRequests.receiverId, targetId)))
-      .limit(1),
-  ]);
-
-  if (!targetUser) {
-    throw Object.assign(new Error('User not found'), { statusCode: 404 });
-  }
-
-  const isSelf = targetId === requesterId;
-  const isAcceptedFollower = followRow?.status === 'accepted';
-  if (!canViewShelf(targetUser.shelfVisibility, isSelf, isAcceptedFollower)) {
-    throw Object.assign(new Error('User not found'), { statusCode: 404 });
-  }
+  const relationship = await loadViewerRelationship(targetId, requesterId);
+  if (!relationship) throw userNotFound();
+  const { target, isSelf, isAcceptedFollower } = relationship;
+  if (!canViewShelf(target.shelfVisibility, isSelf, isAcceptedFollower)) throw userNotFound();
 }
 
 // ── Service ───────────────────────────────────────────────────────────────────
@@ -246,18 +272,9 @@ export const usersService = {
       throw Object.assign(new Error('Cannot view your own profile via this endpoint'), { statusCode: 400 });
     }
 
-    // Fetch user row and the follow requests in each direction in parallel
-    const [[userRow], [followRow], [incomingRow]] = await Promise.all([
-      db
-        .select({ id: users.id, name: users.name, username: users.username, photoUrl: users.photoUrl, createdAt: users.createdAt, shelfVisibility: users.shelfVisibility })
-        .from(users)
-        .where(eq(users.id, targetId))
-        .limit(1),
-      db
-        .select({ status: followRequests.status })
-        .from(followRequests)
-        .where(and(eq(followRequests.senderId, requesterId), eq(followRequests.receiverId, targetId)))
-        .limit(1),
+    // The target and our request to them, alongside any request they sent us
+    const [relationship, [incomingRow]] = await Promise.all([
+      loadViewerRelationship(targetId, requesterId),
       db
         .select({ requestId: followRequests.id, requestedAt: followRequests.createdAt })
         .from(followRequests)
@@ -271,21 +288,20 @@ export const usersService = {
         .limit(1),
     ]);
 
-    assertFound(userRow, 'User');
-
-    const followStatus = toFollowStatus(followRow?.status);
+    if (!relationship) throw userNotFound();
+    const { target, followStatus, isAcceptedFollower } = relationship;
 
     const base: UserProfile = {
-      id: userRow.id,
-      name: userRow.name,
-      username: userRow.username,
-      photoUrl: userRow.photoUrl ?? null,
-      yearJoined: new Date(userRow.createdAt).getFullYear(),
+      id: target.id,
+      name: target.name,
+      username: target.username,
+      photoUrl: target.photoUrl ?? null,
+      yearJoined: new Date(target.createdAt).getFullYear(),
       followStatus,
       incomingFollowRequest: incomingRow ?? null,
-      shelfVisibility: userRow.shelfVisibility,
+      shelfVisibility: target.shelfVisibility,
       // Never self: this endpoint 400s on your own profile above
-      canViewShelf: canViewShelf(userRow.shelfVisibility, false, followStatus === 'accepted'),
+      canViewShelf: canViewShelf(target.shelfVisibility, false, isAcceptedFollower),
     };
 
     // Non-followers see only the base profile (name, photo, year joined, follow status)
