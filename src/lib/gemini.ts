@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenerativeAI, SchemaType, type Schema, type SingleRequestOptions } from '@google/generative-ai';
 import pLimit from 'p-limit';
 import { config } from '../config';
 import { logger } from './logger';
@@ -100,13 +100,25 @@ export interface ExplanationResult {
   explanation: string;
 }
 
-// Books per Gemini call — small enough to stay within output-token limits,
-// large enough to keep the number of parallel calls reasonable (100 / 25 = 4).
-const EXPLANATION_CHUNK_SIZE = 25;
+// Books per Gemini call. Output is generated token by token, so a call's
+// latency grows with the number of books in it: 10 books is ~2.5s on
+// flash-lite where 25 was ~5s, and a 50-book list is five calls in parallel.
+const EXPLANATION_CHUNK_SIZE = 10;
 
-// Max concurrent Gemini calls — prevents hitting the API's rate limit when
-// many cache misses happen simultaneously.
-const geminiConcurrencyLimit = pLimit(3);
+// Max concurrent Gemini calls across all requests — prevents hitting the API's
+// rate limit when many cache misses happen simultaneously. Sized so a single
+// 50-book list runs every chunk at once.
+const geminiConcurrencyLimit = pLimit(5);
+
+// Hard ceiling on the whole explanation step, retries included. Measured first
+// passes land in ~3s; this leaves room for one retry round. Whatever has not
+// arrived by then falls back to an empty explanation instead of holding the
+// quiz response open — before this cap, one run sat in retries for 135s.
+const EXPLANATION_BUDGET_MS = 8_000;
+
+// Per-call timeout, so one hung request is abandoned (and retried, if the
+// budget allows) rather than consuming the whole budget by itself.
+const EXPLANATION_CALL_TIMEOUT_MS = 5_000;
 
 function chunkArray<T>(arr: T[], size: number): T[][] {
   const chunks: T[][] = [];
@@ -131,13 +143,17 @@ function isRetryableStatus(status: number | undefined): boolean {
  * If the error carries a retryDelay hint (rate-limit responses), that takes priority.
  * Permanent failures (4xx other than 429) are surfaced immediately without retrying.
  */
-async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 4): Promise<T> {
+async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 4, signal?: AbortSignal): Promise<T> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       return await fn();
     } catch (err) {
       lastError = err;
+
+      // The caller's deadline has passed — retrying (or sleeping first) can
+      // only make the request later, never rescue it.
+      if (signal?.aborted) throw err;
       const status = (err as { status?: number }).status;
 
       if (!isRetryableStatus(status)) {
@@ -159,11 +175,26 @@ async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 4): Promise<T> {
           delayMs: delay,
           error: (err as Error).message,
         });
-        await new Promise((res) => setTimeout(res, delay));
+        await sleep(delay, signal);
+        if (signal?.aborted) throw lastError;
       }
     }
   }
   throw lastError;
+}
+
+/** Resolves after `ms`, or as soon as `signal` aborts — whichever is first. */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve();
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener('abort', done, { once: true });
+    function done() {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', done);
+      resolve();
+    }
+  });
 }
 
 /**
@@ -173,16 +204,22 @@ async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 4): Promise<T> {
  * GEMINI_FLASH_MODEL_FALLBACK once before giving up. Never used for
  * embeddings — those must stay in the same vector space as the books already
  * indexed, so there is no safe fallback model for them.
+ *
+ * `requestOptions` is passed to every attempt. Its `signal` also bounds the
+ * retries: once it aborts, no further attempt or fallback is made.
  */
 async function generateContentWithFallback(
   request: Parameters<ReturnType<typeof genai.getGenerativeModel>['generateContent']>[0],
+  requestOptions?: SingleRequestOptions,
 ): ReturnType<ReturnType<typeof genai.getGenerativeModel>['generateContent']> {
   const primaryModel = genai.getGenerativeModel({ model: config.gemini.flashModel });
+  const signal = requestOptions?.signal;
 
   try {
-    return await withRetry(() => primaryModel.generateContent(request));
+    return await withRetry(() => primaryModel.generateContent(request, requestOptions), undefined, signal);
   } catch (err) {
     if (
+      signal?.aborted ||
       !config.gemini.flashModelFallback ||
       config.gemini.flashModelFallback === config.gemini.flashModel
     ) {
@@ -196,8 +233,32 @@ async function generateContentWithFallback(
     });
 
     const fallbackModel = genai.getGenerativeModel({ model: config.gemini.flashModelFallback });
-    return await withRetry(() => fallbackModel.generateContent(request));
+    return await withRetry(() => fallbackModel.generateContent(request, requestOptions), undefined, signal);
   }
+}
+
+/**
+ * Response schema pinning the reply to exactly one entry per book asked about.
+ *
+ * Without it, flash-lite in plain JSON mode routinely stopped early and
+ * returned 5–18 entries for a 25-book chunk, still reporting a normal finish.
+ * Every dropped book then cost a retry round. With the item count fixed by the
+ * schema, measured drops went to zero.
+ */
+function explanationsSchema(count: number): Schema {
+  return {
+    type: SchemaType.ARRAY,
+    minItems: count,
+    maxItems: count,
+    items: {
+      type: SchemaType.OBJECT,
+      properties: {
+        bookId: { type: SchemaType.INTEGER },
+        explanation: { type: SchemaType.STRING },
+      },
+      required: ['bookId', 'explanation'],
+    },
+  };
 }
 
 /**
@@ -209,7 +270,12 @@ async function generateContentWithFallback(
 async function generateExplanationsChunk(
   preferenceText: string,
   books: BookContext[],
+  signal: AbortSignal,
 ): Promise<ExplanationResult[]> {
+  // Queued behind the concurrency limit past the deadline — don't start a call
+  // whose answer would arrive too late to be used.
+  if (signal.aborted) return books.map((b) => ({ bookId: b.bookId, explanation: '' }));
+
   const bookList = books
     .map((b) => {
       const authorPart = b.authors.length ? ` by ${b.authors.join(', ')}` : '';
@@ -245,16 +311,28 @@ ${bookList}
 
   let result: Awaited<ReturnType<typeof generateContentWithFallback>>;
   try {
-    result = await generateContentWithFallback({
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: { responseMimeType: 'application/json', temperature: 0 },
-    });
+    result = await generateContentWithFallback(
+      {
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: {
+          responseMimeType: 'application/json',
+          temperature: 0,
+          responseSchema: explanationsSchema(books.length),
+        },
+      },
+      { timeout: EXPLANATION_CALL_TIMEOUT_MS, signal },
+    );
   } catch (err) {
-    // Gemini stayed down through all retry attempts — degrade to empty
-    // explanations for this chunk rather than failing the whole request.
-    logger.error('Gemini explanations chunk failed after retries', {
-      error: (err as Error).message,
-    });
+    // Gemini stayed down through all retry attempts, or the explanation budget
+    // ran out — degrade to empty explanations for this chunk rather than
+    // failing the whole request.
+    if (signal.aborted) {
+      logger.warn('Gemini explanations chunk cut off by the time budget', { books: books.length });
+    } else {
+      logger.error('Gemini explanations chunk failed after retries', {
+        error: (err as Error).message,
+      });
+    }
     return books.map((b) => ({ bookId: b.bookId, explanation: '' }));
   }
 
@@ -402,54 +480,50 @@ Return ONLY a valid JSON object with no markdown, no code fences, no extra text:
 }
 
 /**
- * Asks gemini-2.5-flash-lite to generate a ≤120-character explanation for
- * every book in the list, explaining why it matches the user's preferences.
+ * Asks gemini-2.5-flash-lite to generate a short explanation for every book in
+ * the list, explaining why it matches the user's preferences.
  *
  * Books are split into chunks of EXPLANATION_CHUNK_SIZE and all chunks are
- * requested in parallel — this keeps each individual call well within the
- * model's output-token limit while still completing the full list in one
- * round-trip wall-clock time.
+ * requested in parallel — this keeps each individual call short while still
+ * completing the full list in one round-trip of wall-clock time.
  *
- * The model occasionally omits a book or returns a blank explanation within
- * an otherwise-valid chunk response — even on a retry of just the missing
- * ones. So missing books get re-requested in a backoff loop (up to
- * MAX_MISSING_RETRY_ROUNDS rounds) until every book has a non-empty
- * explanation or the rounds run out, at which point any still-missing books
- * fall back to an empty string.
+ * Books that come back blank or written about the reader rather than to them
+ * are re-requested, chunked and in parallel the same way, for up to
+ * MAX_MISSING_RETRY_ROUNDS rounds. There is no pause between rounds: a bad
+ * answer is not a sign of load, and genuine API errors already back off inside
+ * withRetry.
+ *
+ * The whole step — first pass and retries — is bounded by
+ * EXPLANATION_BUDGET_MS. When it runs out, in-flight calls are aborted and any
+ * book without an explanation falls back to an empty string, so a slow or
+ * overloaded Gemini delays the quiz by seconds rather than minutes.
  *
  * Returns one explanation per book in the same order as the input.
- *
- * Bounded by MISSING_RETRY_BUDGET_MS overall — during a sustained Gemini
- * outage, every round's withRetry backoff adds up fast, and a user-facing
- * request shouldn't hang for minutes waiting on explanations that are likely
- * to come back empty anyway. Once the budget is spent, remaining books fall
- * back to an empty string immediately rather than starting another round.
  */
-const MAX_MISSING_RETRY_ROUNDS = 3;
-const MISSING_RETRY_BUDGET_MS = 20_000;
+const MAX_MISSING_RETRY_ROUNDS = 2;
 
 export async function generateExplanations(
   preferenceText: string,
   books: BookContext[],
 ): Promise<ExplanationResult[]> {
-  const chunks = chunkArray(books, EXPLANATION_CHUNK_SIZE);
-  const chunkResults = await Promise.all(
-    chunks.map((chunk) =>
-      geminiConcurrencyLimit(() => generateExplanationsChunk(preferenceText, chunk)),
-    ),
-  );
-  const results = chunkResults.flat();
+  const signal = AbortSignal.timeout(EXPLANATION_BUDGET_MS);
+  const runChunked = async (subset: BookContext[]) =>
+    (
+      await Promise.all(
+        chunkArray(subset, EXPLANATION_CHUNK_SIZE).map((chunk) =>
+          geminiConcurrencyLimit(() => generateExplanationsChunk(preferenceText, chunk, signal)),
+        ),
+      )
+    ).flat();
 
-  const explanationMap = new Map(results.map((r) => [r.bookId, r.explanation]));
-
-  const retryDeadline = Date.now() + MISSING_RETRY_BUDGET_MS;
+  const explanationMap = new Map((await runChunked(books)).map((r) => [r.bookId, r.explanation]));
 
   for (let round = 1; round <= MAX_MISSING_RETRY_ROUNDS; round++) {
     const missingBooks = books.filter((b) => needsRegeneration(explanationMap.get(b.bookId)));
     if (missingBooks.length === 0) break;
 
-    if (Date.now() >= retryDeadline) {
-      logger.warn('Missing-explanation retry budget exhausted — giving up early', {
+    if (signal.aborted) {
+      logger.warn('Explanation time budget spent — skipping further retries', {
         round,
         bookIds: missingBooks.map((b) => b.bookId),
       });
@@ -461,25 +535,7 @@ export async function generateExplanations(
       bookIds: missingBooks.map((b) => b.bookId),
     });
 
-    if (round > 1) {
-      // Back off between rounds (not just within a single call) — the model
-      // dropping the same books repeatedly is usually a sign of load, same
-      // as the transient-error case withRetry already handles.
-      const backoffMs = 1000 * 2 ** (round - 1);
-      if (Date.now() + backoffMs >= retryDeadline) {
-        logger.warn('Missing-explanation retry budget would be exceeded by backoff — giving up early', {
-          round,
-          bookIds: missingBooks.map((b) => b.bookId),
-        });
-        break;
-      }
-      await new Promise((res) => setTimeout(res, backoffMs));
-    }
-
-    const retryResults = await geminiConcurrencyLimit(() =>
-      generateExplanationsChunk(preferenceText, missingBooks),
-    );
-    for (const r of retryResults) {
+    for (const r of await runChunked(missingBooks)) {
       // A clean second-person answer always wins. Otherwise a non-empty reply
       // still beats nothing, but must not overwrite something we already have
       // — retrying should never trade down.
@@ -493,9 +549,9 @@ export async function generateExplanations(
 
   const stillMissing = books.filter((b) => !explanationMap.get(b.bookId)?.trim());
   if (stillMissing.length > 0) {
-    logger.error('Gemini explanations still missing after all retry rounds — falling back to empty string', {
+    logger.error('Gemini explanations still missing after retries — falling back to empty string', {
       bookIds: stillMissing.map((b) => b.bookId),
-      rounds: MAX_MISSING_RETRY_ROUNDS,
+      budgetSpent: signal.aborted,
     });
   }
 
@@ -507,10 +563,10 @@ export async function generateExplanations(
     return !!explanation?.trim() && !isSecondPerson(explanation);
   });
   if (stillThirdPerson.length > 0) {
-    logger.warn('Gemini explanations still not in second person after all retry rounds', {
+    logger.warn('Gemini explanations still not in second person after retries', {
       bookIds: stillThirdPerson.map((b) => b.bookId),
       count: stillThirdPerson.length,
-      rounds: MAX_MISSING_RETRY_ROUNDS,
+      budgetSpent: signal.aborted,
     });
   }
 
