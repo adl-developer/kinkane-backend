@@ -133,7 +133,7 @@ interface FollowRequestRow {
 export type FollowRequestDecision =
   | { action: 'insert' }
   | { action: 'resend'; requestId: number }
-  | { action: 'reject'; statusCode: 409; message: string };
+  | { action: 'reject'; message: string };
 
 /**
  * What sending a follow request should do, given the caller's own request to
@@ -143,10 +143,10 @@ export type FollowRequestDecision =
  */
 export function decideFollowRequest(outgoing: FollowRequestRow | undefined): FollowRequestDecision {
   if (outgoing?.status === 'pending') {
-    return { action: 'reject', statusCode: 409, message: 'Follow request already sent' };
+    return { action: 'reject', message: 'Follow request already sent' };
   }
   if (outgoing?.status === 'accepted') {
-    return { action: 'reject', statusCode: 409, message: 'You are already following this user' };
+    return { action: 'reject', message: 'You are already following this user' };
   }
   // A declined request of the caller's own is re-sent by resetting it to pending.
   if (outgoing?.status === 'declined') return { action: 'resend', requestId: outgoing.id };
@@ -478,8 +478,9 @@ export const usersService = {
 
     const decision = decideFollowRequest(outgoing);
 
+    // Every rejection is about a request that already exists, so it's a conflict
     if (decision.action === 'reject') {
-      throw Object.assign(new Error(decision.message), { statusCode: decision.statusCode });
+      throw Object.assign(new Error(decision.message), { statusCode: 409 });
     }
 
     await db.transaction(async (tx) => {

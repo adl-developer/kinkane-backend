@@ -11,7 +11,6 @@ describe('the caller\'s own request', () => {
   it('refuses a second request while the first is still pending', () => {
     expect(decideFollowRequest(row('pending'))).toEqual({
       action: 'reject',
-      statusCode: 409,
       message: 'Follow request already sent',
     });
   });
@@ -19,7 +18,6 @@ describe('the caller\'s own request', () => {
   it('refuses when the caller already follows them', () => {
     expect(decideFollowRequest(row('accepted'))).toEqual({
       action: 'reject',
-      statusCode: 409,
       message: 'You are already following this user',
     });
   });
