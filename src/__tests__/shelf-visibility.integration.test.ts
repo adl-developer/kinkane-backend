@@ -195,10 +195,13 @@ describeIfDb('shelf visibility: full shelf, one book, and the profile flag', () 
 
   it('answers a hidden shelf exactly like a missing account', async () => {
     await setVisibility('private');
-    const hidden = communityService.getFriendBookDetail(owner, bookId, stranger);
-    const missing = communityService.getFriendBookDetail(2_000_000_000, bookId, stranger);
-    await expect(hidden).rejects.toMatchObject({ statusCode: 404, message: 'User not found' });
-    await expect(missing).rejects.toMatchObject({ statusCode: 404, message: 'User not found' });
+    // Each call is started inside its own expect. Starting both up front left
+    // the second rejecting while the first was still awaited, which Vitest
+    // reports as an unhandled rejection and fails the run on.
+    await expect(communityService.getFriendBookDetail(owner, bookId, stranger))
+      .rejects.toMatchObject({ statusCode: 404, message: 'User not found' });
+    await expect(communityService.getFriendBookDetail(2_000_000_000, bookId, stranger))
+      .rejects.toMatchObject({ statusCode: 404, message: 'User not found' });
   });
 
   it('still 404s a book that is not on a visible shelf', async () => {
