@@ -214,6 +214,11 @@ const envSchema = z.object({
   // will just send users somewhere wrong.
   APP_URL: z.string().url().default('https://kinkane.app'),
 
+  // Where the admin console is served. Only used to build the link in an admin
+  // password-reset email, which lands on `<this>/reset-password?token=...`.
+  // Defaults to `APP_URL/admin`; set it if the console lives elsewhere.
+  ADMIN_CONSOLE_URL: z.string().url().optional(),
+
   // Secret token for accessing the Bull Board admin dashboard (/admin/queues).
   // Must be at least 32 characters. Generate with: openssl rand -hex 32
   ADMIN_TOKEN: z.string().min(32),
@@ -841,6 +846,7 @@ export const config = {
     supportInbox: env.SUPPORT_INBOX ?? env.EMAIL_FROM,
   },
   appUrl: env.APP_URL,
+  adminConsoleUrl: (env.ADMIN_CONSOLE_URL ?? `${env.APP_URL}/admin`).replace(/\/+$/, ''),
   referrals: {
     videoUrl: env.REFERRAL_VIDEO_URL,
     campaignEndsAt: env.REFERRAL_CAMPAIGN_ENDS_AT,

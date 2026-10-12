@@ -124,6 +124,52 @@ export const adminLoginLimiter = rateLimit({
 });
 
 /**
+ * Admin forgot-password and reset-password, per IP.
+ *
+ * Its own bucket rather than the login one: an office behind one NAT address
+ * that burns through reset requests must not then be locked out of signing in.
+ */
+export const adminPasswordResetLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: json429,
+  store: new RedisStore({ prefix: 'rl:admin-password-reset:', sendCommand }),
+});
+
+/**
+ * The address a forgot-password is for, normalised the way the lookup is.
+ * Falls back to the IP for a body without one; validation rejects that request
+ * a moment later anyway.
+ */
+export const byResetEmail = (req: Request): string => {
+  const email = (req.body as { email?: unknown } | undefined)?.email;
+  return typeof email === 'string' && email.trim()
+    ? `email:${email.trim().toLowerCase()}`
+    : ipKeyGenerator(req.ip ?? '');
+};
+
+/**
+ * Admin forgot-password, per target address.
+ *
+ * The per-IP limit alone does nothing against someone rotating addresses, and
+ * every request replaces the admin's previous link — so without this, anyone
+ * who knows a staff address can flood that inbox and keep killing the link the
+ * admin is about to click. Three an hour is plenty for a person who lost an
+ * email, and caps how often a stranger can invalidate theirs.
+ */
+export const adminPasswordResetEmailLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 3,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: json429,
+  keyGenerator: byResetEmail,
+  store: new RedisStore({ prefix: 'rl:admin-password-reset-email:', sendCommand }),
+});
+
+/**
  * Contact form. Unauthenticated and it sends mail, which makes it a spam relay
  * if it is not bounded — three an hour is generous for a human with a problem
  * and useless to anyone with a script.

@@ -5,6 +5,7 @@ import {
   sendVerifyEmail,
   sendPasswordResetEmail,
   sendPasswordChangedEmail,
+  sendAdminPasswordResetEmail,
   sendAccountDeletedEmail,
   sendTrialEndingEmail,
   sendNewRecommendationEmail,
@@ -48,6 +49,11 @@ async function processEmailJob(job: Job): Promise<void> {
     case 'password-changed': {
       const { to, name: userName } = job.data as EmailJobMap['password-changed'];
       await sendPasswordChangedEmail(to, userName);
+      break;
+    }
+    case 'admin-password-reset': {
+      const { to, name: adminName, resetUrl, expiryMinutes } = job.data as EmailJobMap['admin-password-reset'];
+      await sendAdminPasswordResetEmail(to, adminName, resetUrl, expiryMinutes);
       break;
     }
     case 'account-deleted': {

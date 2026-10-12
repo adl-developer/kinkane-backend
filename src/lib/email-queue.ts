@@ -19,6 +19,7 @@ export interface EmailJobMap {
   'verify-email':       { to: string; name: string; otp: string; expiryMinutes?: number };
   'password-reset':     { to: string; name: string; resetUrl: string };
   'password-changed':   { to: string; name: string };
+  'admin-password-reset': { to: string; name: string; resetUrl: string; expiryMinutes: number };
   'account-deleted':    { to: string; name: string };
   'trial-ending':       { to: string; name: string; daysLeft: number };
   'new-recommendation': { to: string; name: string; book: RecommendedBook };
@@ -52,6 +53,7 @@ export const EMAIL_PRIORITY: Record<EmailJobName, number> = {
   'order-confirmed':    1,
   'password-reset':     1,
   'password-changed':   1,
+  'admin-password-reset': 1,
   'account-deleted':    1,
   'welcome':            5,
   'verify-email':       3,

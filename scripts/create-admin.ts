@@ -11,9 +11,11 @@
  *   # several at once, from a file
  *   npm run admin:create -- --file admins.json
  *
- * There is no self-service signup for the console and no password-reset flow, so
- * this script is the only way an account comes into being — and re-running it
- * for an existing email is the reset path.
+ * There is no self-service signup for the console, so this script is the only
+ * way an account comes into being. Admins who forget their password reset it
+ * themselves by email (POST /admin/console/auth/forgot-password); re-running
+ * this for an existing email still works as a fallback — for an admin who no
+ * longer has that mailbox, or a disabled one coming back.
  *
  * **Plaintext never reaches the database.** Every password is hashed with bcrypt
  * (cost 10) through the same helper the login path verifies against, so a
@@ -137,11 +139,13 @@ async function upsert(seed: AdminSeed): Promise<'created' | 'updated'> {
     .limit(1);
 
   if (existing) {
-    // Doubles as the password-reset path, and clears a soft-disable so a
-    // returning admin does not need a second step.
+    // The fallback reset path, and clears a soft-disable so a returning admin
+    // does not need a second step. Setting passwordChangedAt signs out any
+    // session issued under the old password.
+    const now = new Date();
     await db
       .update(admins)
-      .set({ passwordHash, name: seed.name, disabledAt: null, updatedAt: new Date() })
+      .set({ passwordHash, name: seed.name, disabledAt: null, passwordChangedAt: now, updatedAt: now })
       .where(eq(admins.id, existing.id));
     console.log(`  updated  #${existing.id}  ${seed.email}`);
     return 'updated';

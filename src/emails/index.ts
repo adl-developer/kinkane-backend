@@ -3,6 +3,7 @@ export { sendWelcomeEmail } from './transactional/welcome';
 export { sendVerifyEmail } from './transactional/verify-email';
 export { sendPasswordResetEmail } from './transactional/password-reset';
 export { sendPasswordChangedEmail } from './transactional/password-changed';
+export { sendAdminPasswordResetEmail } from './transactional/admin-password-reset';
 export { sendAccountDeletedEmail } from './transactional/account-deleted';
 export { sendEmailChangeOtpEmail } from './transactional/email-change-otp';
 export { sendEmailChangeNotifyEmail } from './transactional/email-change-notify';

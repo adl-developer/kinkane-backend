@@ -11,6 +11,7 @@ import { adminNotificationsService } from '../../services/admin/notifications.se
 import { adminShippingMarginService } from '../../services/admin/shipping-margin.service';
 import { csvDocument } from '../../lib/csv';
 import { formatMinor } from '../../lib/money';
+import { logger } from '../../lib/logger';
 
 const loginSchema = z.object({
   email: z.string().trim().email().max(254),
@@ -21,6 +22,15 @@ const changePasswordSchema = z.object({
   currentPassword: z.string().min(1).max(200),
   // Same floor the seeding script enforces. These accounts can suspend a
   // customer and export the customer list.
+  newPassword: z.string().min(12).max(200),
+});
+
+const forgotPasswordSchema = z.object({
+  email: z.string().trim().email().max(254),
+});
+
+const resetPasswordSchema = z.object({
+  token: z.string().min(1).max(200),
   newPassword: z.string().min(12).max(200),
 });
 
@@ -136,13 +146,39 @@ export const adminController = {
     if (!parsed.success) return badRequest(res, parsed.error);
 
     const admin = (req as AdminRequest).admin;
-    await adminAuthService.changePassword(
+    const session = await adminAuthService.changePassword(
       admin.id,
       parsed.data.currentPassword,
       parsed.data.newPassword,
     );
 
-    res.status(200).json({ changed: true });
+    // The change signs out every earlier session, the caller's included, so
+    // the console must swap in this one or its next request gets a 401.
+    res.status(200).json({ changed: true, ...session });
+  },
+
+  /** POST /admin/console/auth/forgot-password */
+  async forgotPassword(req: Request, res: Response): Promise<void> {
+    const parsed = forgotPasswordSchema.safeParse(req.body);
+    if (!parsed.success) return badRequest(res, parsed.error);
+
+    // Answer first, then do the work. For a real admin the work includes a
+    // write that a non-admin address skips, so awaiting it would let response
+    // time reveal which addresses are staff. Failures are logged, not returned,
+    // for the same reason.
+    res.status(200).json({ sent: true });
+    adminAuthService.requestPasswordReset(parsed.data.email).catch((err) => {
+      logger.error('Admin password reset request failed', { error: (err as Error).message });
+    });
+  },
+
+  /** POST /admin/console/auth/reset-password */
+  async resetPassword(req: Request, res: Response): Promise<void> {
+    const parsed = resetPasswordSchema.safeParse(req.body);
+    if (!parsed.success) return badRequest(res, parsed.error);
+
+    await adminAuthService.resetPassword(parsed.data.token, parsed.data.newPassword);
+    res.status(200).json({ reset: true });
   },
 
   /** GET /admin/dashboard */

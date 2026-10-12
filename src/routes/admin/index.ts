@@ -1,6 +1,10 @@
 import { Router } from 'express';
 import { requireAdmin } from '../../middleware/admin-auth.middleware';
-import { adminLoginLimiter } from '../../middleware/rate-limit.middleware';
+import {
+  adminLoginLimiter,
+  adminPasswordResetLimiter,
+  adminPasswordResetEmailLimiter,
+} from '../../middleware/rate-limit.middleware';
 import { wrapHttp } from '../../lib/route-helpers';
 import { adminController } from '../../controllers/admin/admin.controller';
 
@@ -13,9 +17,10 @@ const router = Router();
  * `/admin/*` surfaces. It is not the customer API and is not versioned with it:
  * the console ships with the server and the two move together.
  *
- * Everything except the login is behind `requireAdmin`, which is a *person's*
- * session — distinct from the static `ADMIN_TOKEN` guarding the machine-facing
- * surfaces (Bull Board, Gardners dropship, referral corrections).
+ * Everything except signing in and resetting a forgotten password is behind
+ * `requireAdmin`, which is a *person's* session — distinct from the static
+ * `ADMIN_TOKEN` guarding the machine-facing surfaces (Bull Board, Gardners
+ * dropship, referral corrections).
  */
 
 // ── Session ───────────────────────────────────────────────────────────────────
@@ -31,6 +36,16 @@ router.post(
   requireAdmin,
   wrapHttp(adminController.changePassword),
 );
+// Forgotten password. Both public, so both rate limited, in a bucket of their
+// own so reset traffic cannot use up the login quota. Asking for a link is also
+// limited per target address: it sends mail to whatever address it is given.
+router.post(
+  '/auth/forgot-password',
+  adminPasswordResetLimiter,
+  adminPasswordResetEmailLimiter,
+  wrapHttp(adminController.forgotPassword),
+);
+router.post('/auth/reset-password', adminPasswordResetLimiter, wrapHttp(adminController.resetPassword));
 
 // Everything below needs a session.
 router.use(requireAdmin);
