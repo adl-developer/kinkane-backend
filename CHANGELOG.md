@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-10-12
+
+### Bug Fixes
+
+* quiz recommendations always fill to 50 books ([15883fa](https://adl.github.com/adl-developer/kinkane-backend/commit/15883fa112c084a3877e77c43fd1da8c7948c918)) — [details](changelog/2026-10-12-quiz-always-fills-fifty-books.md)
+
+
 ## 2026-10-11
 
 ### Features

@@ -172,7 +172,7 @@ export function buildOpenApiDocument(req: Request): Record<string, unknown> {
     openapi: '3.0.3',
     info: {
       title: 'Kinkané API',
-      version: '1.0.0',
+      version: '2.0.0',
       description: buildDescription(serverUrl),
       contact: { name: 'Kinkané', url: config.appUrl },
     },
