@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { eq, sql, and, inArray, notInArray, gt, type SQL } from 'drizzle-orm';
+import { eq, sql, and, inArray, notInArray, gt, desc, isNotNull, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   books,
@@ -17,6 +17,8 @@ import { recommendationCache, type RecommendationItem } from '../db/schema/recom
 import type { Dislikes } from '../db/schema/onboarding';
 import { dedupeByWork, workKey } from '../lib/dedupe';
 import { buildFeedCondition } from './books.service';
+import { isStatementTimeout, withStatementTimeout, TRENDING_WINDOW_DAYS } from './books.service';
+import { TRENDING_SCORED_TYPES, trendingScoreSql } from './interactions.service';
 import {
   buildHasAuthorCondition,
   buildWorkExclusionCondition,
@@ -69,20 +71,47 @@ const FETCH_POOL = config.recommendations.fetchPool;
 const SIMILARITY_THRESHOLD = config.recommendations.similarityMax;
 // For narrow/niche preference combinations, fewer than TARGET_RESULTS books
 // fall within SIMILARITY_THRESHOLD out of 1M+ in the catalogue. Rather than
-// return a short list, the search reaches out to this looser cutoff and fills
-// the remainder — those backfilled books are always ranked after every strict
-// match (see fetchCandidateBooks).
+// return a short list, the remainder is filled from the next-nearest books —
+// first the backfill band out to this cutoff, then the reach band beyond it.
+// Both are always ranked after every strict match (see fetchCandidateBooks).
 //
-// This is the outer bound of ONE query, not a band fetched by a second one.
-// A `distance >= SIMILARITY_THRESHOLD` predicate reads naturally but is the
-// worst thing to ask an HNSW index: the scan walks outward from the nearest
-// neighbour, so such a filter rejects every row the scan visits first and the
-// iterative scan burns through the whole reject zone — bounded by
-// hnsw.max_scan_tuples — before a single row qualifies. Measured on an 83k-row
-// catalogue that cost 2753ms against 739ms for the same query without the
-// floor, and it grows with the catalogue, on the exact path taken when the
-// strict tier already came up short.
+// This is a boundary drawn in memory, not a predicate on the query. It used to
+// be the query's outer bound, and that was what made short lists possible: a
+// reader whose vector had fewer than TARGET_RESULTS books inside it got fewer
+// than TARGET_RESULTS back. It was also the slow version of the sparse case —
+// when too few rows qualify, the iterative scan grinds on to
+// hnsw.max_scan_tuples looking for more. Without the bound the scan stops as
+// soon as it has FETCH_POOL rows that pass the filters.
+//
+// Nor is any band ever asked for on its own. A `distance >= x` predicate reads
+// naturally but is the worst thing to ask an HNSW index: the scan walks outward
+// from the nearest neighbour, so it rejects every row visited first. Measured
+// on an 83k-row catalogue that cost 2753ms against 739ms without the floor.
 const BACKFILL_SIMILARITY_THRESHOLD = config.recommendations.backfillMax;
+// The pool a short list re-reads the vector search with, when a full FETCH_POOL
+// page still collapsed below TARGET_RESULTS works (heavy multi-edition titles).
+// One wider pass from the top rather than paging on with OFFSET: a page under an
+// index scan re-walks every row before it, so pages 2 and 3 would cost 600 + 900
+// rows on top of the first 300, across separate transactions that can disagree
+// about which rows qualify. 500 is RECO_FETCH_POOL's ceiling in config/index.ts —
+// the largest pool reviewed as affordable — so the wide pass stays inside it.
+const WIDE_FETCH_POOL = 500;
+// Each genre fallback batch over-fetches by this factor so collapsing editions
+// into works usually leaves enough to fill the list in one batch. When it does
+// not, further batches are read until the list is full or the catalogue runs out.
+const GENRE_FALLBACK_HEADROOM = 4;
+// The whole genre fallback, every batch together, must finish inside this. It
+// runs exactly when the filters are at their most restrictive, ordered
+// newest-first across the whole catalogue, so on a large catalogue a batch can
+// walk a long way before finding enough rows. A list a few books short is a
+// better outcome than a quiz that hangs — this is the one way a list can come
+// back short while the catalogue still holds books that pass the reader's rules.
+const GENRE_FALLBACK_BUDGET_MS = 3000;
+// The filler, the very last tier, over-fetches by the same factor and for the
+// same reason. It has no time budget — it is what makes the list reach
+// TARGET_RESULTS — so its batches are capped in number instead, as a guard
+// against a loop that never makes progress rather than a limit expected to bind.
+const FILLER_MAX_BATCHES = 10;
 // The <=> searches below run against the HNSW index, which visits roughly
 // `ef_search` graph nodes and then stops — every condition in baseConditions
 // (sellability, format intent, dislikes, the user's exclusions) is applied to
@@ -101,27 +130,50 @@ const HNSW_ITERATIVE_SCAN = 'strict_order';
 // Iterative scan landed in pgvector 0.8.0. Below that there is no resuming, so
 // the only lever is a single wide pass — 1000 is the ceiling this GUC accepts.
 const HNSW_EF_SEARCH_NO_ITERATIVE = 1000;
+// How many index tuples the iterative scan may visit before it gives up and
+// returns what it has. pgvector's default is 20,000. The scan stops at FETCH_POOL
+// rows that pass the filters, so this only matters when the filters reject most
+// of what the scan visits — and they reject a lot: only ~26% of embedded books
+// are in stock, before format, dislikes and the reader's exclusions. At the
+// default a heavily filtered search could stop short of FETCH_POOL rows and hand
+// back a short list. Not measured against production; the rows a normal search
+// visits are far below either number, so only the sparse case pays for it.
+const HNSW_MAX_SCAN_TUPLES = 100_000;
+// The scan has a second stop: once the candidates it is holding outgrow
+// work_mem x this multiplier (default 1). At a 4MB work_mem that cap can arrive
+// before HNSW_MAX_SCAN_TUPLES does, which would make the raise above do nothing,
+// so the memory allowance is raised with it. Scoped to the transaction like the
+// rest, and bounded: 4 x work_mem for one query, only on the sparse path.
+const HNSW_SCAN_MEM_MULTIPLIER = 4;
 const MIN_ITERATIVE_SCAN_VERSION = [0, 8, 0];
-// What the four settings above were before they became environment-overridable.
+// What the settings above were before they became environment-overridable.
 // Used only to recognise an untouched environment (see retrievalFingerprint):
 // matching these means the search behaves exactly as it did, so cached entries
 // written by the previous release are still correct and worth keeping.
+// RECO_BACKFILL_MAX is not among them: it no longer changes which books are
+// returned, only how the top-up is labelled in the logs, so changing it must
+// not flush the cache.
 const BASELINE_SIMILARITY_MAX = 0.5;
-const BASELINE_BACKFILL_MAX = 0.7;
 const BASELINE_TARGET_RESULTS = 50;
 
 const CACHE_TTL_HOURS = 48;
-// A result set this short is either a genuinely niche preference combination or
-// a bad day for recall, and from here the two are indistinguishable. Caching
-// either one for the full 48 hours means every reader with those preferences is
-// served the same short list until it expires, so short lists get a much
-// shorter lease and re-run sooner. The rate limiter (20/hour) bounds the cost.
-const MIN_HEALTHY_RESULTS = 10;
+// A list below TARGET_RESULTS is either a catalogue that genuinely has nothing
+// more for these answers or a genre fallback that ran out of time, and from here
+// the two are indistinguishable. Caching either one for the full 48 hours means
+// every reader with those answers is served the same short list until it
+// expires, so short lists get a much shorter lease and re-run sooner. The rate
+// limiter (20/hour) bounds the cost. This used to apply only below 10 books,
+// when lists were routinely short; now that a full list is the norm, any
+// shortfall is the exception worth retrying.
 const SHORT_RESULT_CACHE_TTL_HOURS = 1;
 // v2 — explanations now carry the reader-name token (see NAME_PLACEHOLDER).
 // v3 — explanations must address the reader in second person, so entries
 //      written under v2 (which allowed "Elisabeth will love this") are retired.
 const EXPLANATION_PROMPT_VERSION = 3;
+// v1 — lists are filled to TARGET_RESULTS (no distance bound, extra vector
+//      pages, genre fallback). Entries written before it can be short and were
+//      cached for 48 hours if they held 10 or more books.
+const CANDIDATE_FILL_VERSION = 1;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -180,6 +232,9 @@ function hashInput(input: RecommendationInput, dislikedBookIds: number[] = []): 
     // way a prompt change does. Without this, tuning a weight would appear to
     // do nothing for up to 48 hours.
     retrieval: retrievalFingerprint(),
+    // Also not a preference: how the list is filled out once the close matches
+    // run out. A change there retires entries that were cached short.
+    fill: CANDIDATE_FILL_VERSION,
     // Also not a preference: which books count as "the one you already read"
     // decides what is filtered out, so a change to that rule retires entries.
     workMatch: WORK_MATCH_VERSION,
@@ -346,12 +401,43 @@ function likedBooksToWorks(
  * the result array afterwards. Post-filtering would silently return a short
  * list; a WHERE clause lets the search top itself back up to TARGET_RESULTS.
  */
-function buildBaseConditions(
+export function buildBaseConditions(
   input: { genres: string[]; bookIds: number[]; dislikes: Dislikes },
   likedBooks: { title: string; authors: string[] }[],
   exclusions: UserExclusions,
 ): SQL[] {
   const formatCondition = buildFormatCondition(resolveFormatIntent(input.genres));
+
+  return [
+    // The rules no tier ever relaxes, the filler included — see
+    // buildFillerConditions.
+    ...buildFillerConditions(input, likedBooks, exclusions),
+    ...buildDislikeConditions(input.dislikes),
+    ...(formatCondition ? [formatCondition] : []),
+  ];
+}
+
+/**
+ * The rules that hold even for the filler that pads a list to TARGET_RESULTS
+ * when everything else has run out. The reader's taste — format and dislikes —
+ * gives way there; these do not:
+ *
+ *   - sellable and in stock. Withdrawn and unsellable titles never reach a
+ *     recommendation list. The quiz is the first thing a new reader sees and
+ *     every card on it is a book we are inviting them to buy, so a title the
+ *     shop cannot sell is worse here than anywhere else — there is no "further
+ *     down the page" for it to sink to. Same predicate as every discovery feed,
+ *     imported rather than restated so the two cannot drift apart on what
+ *     sellable means.
+ *   - has a named author, which every card and the work dedupe rely on.
+ *   - never a book the reader named, shelved or swiped away, nor another
+ *     edition of one. The quiz promises not to show a book twice.
+ */
+export function buildFillerConditions(
+  input: { bookIds: number[] },
+  likedBooks: { title: string; authors: string[] }[],
+  exclusions: UserExclusions,
+): SQL[] {
   // Exact-ID exclusion stays alongside the work-level one: it's indexed and
   // cheap, and it covers the case where the same work is stored under a title
   // spelling that doesn't normalize identically.
@@ -362,15 +448,7 @@ function buildBaseConditions(
   ]);
 
   return [
-    // Withdrawn and unsellable titles never reach a recommendation list. The
-    // quiz is the first thing a new reader sees and every card on it is a book
-    // we are inviting them to buy, so a title the shop cannot sell is worse
-    // here than anywhere else — there is no "further down the page" for it to
-    // sink to. Same predicate as every discovery feed, imported rather than
-    // restated so the two cannot drift apart on what sellable means.
     buildFeedCondition(),
-    ...buildDislikeConditions(input.dislikes),
-    ...(formatCondition ? [formatCondition] : []),
     buildHasAuthorCondition(),
     ...(excludedIds.length > 0 ? [notInArray(books.id, excludedIds)] : []),
     ...(workCondition ? [workCondition] : []),
@@ -595,7 +673,7 @@ function buildPreferenceLanes(input: PreferenceFields, likedBooks: LikedBook[]):
  * role `promptVersion` plays for the explanation text.
  */
 function retrievalFingerprint(): string | undefined {
-  const { weightingEnabled, booksFromEmbeddings, weights, similarityMax, backfillMax, targetResults } =
+  const { weightingEnabled, booksFromEmbeddings, weights, similarityMax, targetResults } =
     config.recommendations;
 
   // An environment that has touched none of this gets no fingerprint at all,
@@ -607,7 +685,6 @@ function retrievalFingerprint(): string | undefined {
     !weightingEnabled &&
     !booksFromEmbeddings &&
     similarityMax === BASELINE_SIMILARITY_MAX &&
-    backfillMax === BASELINE_BACKFILL_MAX &&
     targetResults === BASELINE_TARGET_RESULTS;
 
   if (isBaseline) return undefined;
@@ -623,7 +700,6 @@ function retrievalFingerprint(): string | undefined {
     weights.dislikes,
     weights.tags,
     similarityMax,
-    backfillMax,
     targetResults,
   ].join(':');
 }
@@ -732,39 +808,46 @@ function buildDislikeConditions(dislikes: Dislikes) {
   return conditions;
 }
 
-// Coarse fiction / non-fiction bucketing of the genre options exposed at
-// onboarding. The controller accepts any label, so unknown ones are simply
-// left unbucketed. pgvector
-// similarity alone doesn't enforce format — a self-help book can embed close
-// enough to "escapism, romance" to show up in the candidate pool — so this
-// backs the similarity search with an explicit format constraint.
-const FICTION_GENRES = new Set([
-  'literary fiction',
-  'mystery',
-  'romance',
-  'horror',
-  'sci-fi',
-  'historical fiction',
-  'fantasy',
-  'crime',
-  'young adult',
-  'classics',
-  'graphic novel',
-]);
+// Every genre option exposed at onboarding, in one place: which side of the
+// fiction / non-fiction line it sits on, and which Thema subject-code prefixes it
+// stands for. The controller accepts any label, so unknown ones are simply left
+// out of both uses.
+//
+// `side` drives the format filter. pgvector similarity alone doesn't enforce
+// format — a self-help book can embed close enough to "escapism, romance" to
+// show up in the candidate pool — so this backs the similarity search with an
+// explicit format constraint. 'poetry' is deliberately left without a side: it
+// spans both shelving conventions and shouldn't force a format filter.
+//
+// `subjects` is used only by the genre fallback, the last resort when the vector
+// search cannot fill the list. 'non-fiction' has none — it is a side, not a genre.
+const QUIZ_GENRES: Record<string, { side: 'fiction' | 'non-fiction' | null; subjects: string[] }> = {
+  'literary fiction': { side: 'fiction', subjects: ['FB'] },
+  mystery: { side: 'fiction', subjects: ['FF'] },
+  romance: { side: 'fiction', subjects: ['FR'] },
+  horror: { side: 'fiction', subjects: ['FK'] },
+  'sci-fi': { side: 'fiction', subjects: ['FL'] },
+  'historical fiction': { side: 'fiction', subjects: ['FV'] },
+  fantasy: { side: 'fiction', subjects: ['FM'] },
+  crime: { side: 'fiction', subjects: ['FF', 'FH'] },
+  'young adult': { side: 'fiction', subjects: ['YF'] },
+  classics: { side: 'fiction', subjects: ['FBC'] },
+  'graphic novel': { side: 'fiction', subjects: ['X'] },
+  'self-help': { side: 'non-fiction', subjects: ['VS'] },
+  business: { side: 'non-fiction', subjects: ['K'] },
+  biography: { side: 'non-fiction', subjects: ['DNB', 'DNC'] },
+  'non-fiction': { side: 'non-fiction', subjects: [] },
+  'society & education': { side: 'non-fiction', subjects: ['JB', 'JH', 'JN'] },
+  sport: { side: 'non-fiction', subjects: ['S'] },
+  politics: { side: 'non-fiction', subjects: ['JP'] },
+  'health & lifestyle': { side: 'non-fiction', subjects: ['VF', 'WJ'] },
+  travel: { side: 'non-fiction', subjects: ['WT'] },
+  poetry: { side: null, subjects: ['DC'] },
+};
 
-const NONFICTION_GENRES = new Set([
-  'self-help',
-  'business',
-  'biography',
-  'non-fiction',
-  'society & education',
-  'sport',
-  'politics',
-  'health & lifestyle',
-  'travel',
-]);
-// 'poetry' is deliberately left unbucketed — it spans both fiction and
-// non-fiction shelving conventions and shouldn't force a format filter either way.
+function quizGenre(label: string) {
+  return QUIZ_GENRES[label.trim().toLowerCase()];
+}
 
 /**
  * Returns 'fiction' or 'non-fiction' only when every genre the user picked
@@ -775,8 +858,7 @@ const NONFICTION_GENRES = new Set([
 function resolveFormatIntent(genreSelections: string[]): 'fiction' | 'non-fiction' | null {
   const sides = new Set(
     genreSelections
-      .map((g) => g.trim().toLowerCase())
-      .map((g) => (FICTION_GENRES.has(g) ? 'fiction' : NONFICTION_GENRES.has(g) ? 'non-fiction' : null))
+      .map((g) => quizGenre(g)?.side ?? null)
       .filter((side): side is 'fiction' | 'non-fiction' => side !== null),
   );
   return sides.size === 1 ? [...sides][0] : null;
@@ -810,18 +892,55 @@ function buildFormatCondition(intent: 'fiction' | 'non-fiction' | null) {
 }
 
 /**
+ * Books tagged with any subject the reader's quiz genres stand for, or
+ * undefined when the fallback should not narrow by genre at all.
+ *
+ * Narrows only when every genre the reader picked has subjects. A partial
+ * mapping would quietly drop the rest: a reader who picked romance and
+ * non-fiction would get a romance-only fallback. Not narrowing still keeps the
+ * format filter, which is the part of their answer that maps cleanly.
+ */
+export function buildQuizGenreCondition(quizGenres: string[]): SQL | undefined {
+  const subjects = quizGenres.map((g) => quizGenre(g)?.subjects ?? []);
+  if (subjects.length === 0 || subjects.some((s) => s.length === 0)) return undefined;
+
+  const prefixes = [...new Set(subjects.flat())];
+  const anyPrefix = sql.join(
+    prefixes.map((p) => sql`g3.subject_code LIKE ${`${p}%`}`),
+    sql` OR `,
+  );
+  return sql`EXISTS (
+    SELECT 1 FROM book_genres bg3
+    JOIN genres g3 ON g3.id = bg3.genre_id
+    WHERE bg3.book_id = ${books.id} AND (${anyPrefix})
+  )`;
+}
+
+/**
  * Runs the pgvector similarity search for a preference vector and returns up
  * to TARGET_RESULTS candidate books, ordered best-match-first.
  *
- * One pass out to BACKFILL_SIMILARITY_THRESHOLD, split into two tiers in
- * memory: books within SIMILARITY_THRESHOLD are the strict matches, deduped on
- * work (normalized title + first author, see workKey) by best edition; anything beyond it only tops the list off if the
- * strict tier left fewer than TARGET_RESULTS. Backfilled books always sort
- * after every strict match, so overall rank still reflects match quality.
- * `baseConditions` (dislikes, format, already-owned books) applies to the pass,
- * so it holds for both tiers by construction.
+ * Fills the list to TARGET_RESULTS whenever the catalogue allows, in tiers that
+ * always rank in this order:
+ *
+ *   1. strict   — within SIMILARITY_THRESHOLD, deduped on work (normalized
+ *                 title + first author, see workKey) by best edition.
+ *   2. backfill — the next-nearest books out to BACKFILL_SIMILARITY_THRESHOLD.
+ *   3. reach    — the next-nearest books beyond it, at any distance.
+ *   4. genre    — in-stock books in the reader's quiz genres, newest first, for
+ *                 when the vector search itself runs dry.
+ *
+ * Tiers 1-3 are cut in memory out of one nearest-first vector search, re-run
+ * once with a wider pool only when collapsing editions has left a full pool short.
+ * `baseConditions` (sellability, dislikes, format, already-owned books) applies
+ * to every tier, so none of them is ever relaxed to make up the numbers — a
+ * list can still come back short, but only when fewer than TARGET_RESULTS
+ * books in the whole catalogue pass those rules.
  */
-type CandidateRow = { id: number; title: string };
+// `filler` marks a book that only padded the list (see fetchFillerBatch). It
+// never reaches the client — the cache uses it to give a padded list a short
+// lease, so a better attempt replaces it sooner.
+type CandidateRow = { id: number; title: string; filler?: true };
 
 // The columns dedupeByWork needs to pick the best of several editions of one work,
 // fetched alongside id/title and stripped before this function's callers ever see them —
@@ -899,14 +1018,16 @@ function compareVersion(a: number[], b: number[]): number {
 
 /**
  * How long a generated list is allowed to live in the two caches. A full list
- * gets the standard lease; anything short enough to look like a recall failure
- * (see MIN_HEALTHY_RESULTS) gets an hour, so one bad search is not frozen in
- * front of every reader who shares those preferences for two days.
+ * of real matches gets the standard lease. A short list, or one that needed
+ * filler to reach TARGET_RESULTS, gets an hour, so one bad search is not
+ * frozen in front of every reader who shares those preferences for two days —
+ * filler can stand in for a genre fallback that merely ran out of time.
  */
-function cacheTtlSecondsFor(results: RecommendationItem[]): number {
-  if (results.length >= MIN_HEALTHY_RESULTS) return CACHE_TTL_HOURS * 60 * 60;
-  // Logged rather than silently shortened: a list this far below TARGET_RESULTS
-  // is the symptom to watch if the endpoint starts under-returning again.
+function cacheTtlSecondsFor(results: RecommendationItem[], padded = false): number {
+  if (padded) return SHORT_RESULT_CACHE_TTL_HOURS * 60 * 60;
+  if (results.length >= TARGET_RESULTS) return CACHE_TTL_HOURS * 60 * 60;
+  // Logged rather than silently shortened: a list below TARGET_RESULTS is the
+  // symptom to watch if the endpoint starts under-returning again.
   logger.warn('Recommendation list came back short', {
     count: results.length,
     target: TARGET_RESULTS,
@@ -914,9 +1035,103 @@ function cacheTtlSecondsFor(results: RecommendationItem[]): number {
   return SHORT_RESULT_CACHE_TTL_HOURS * 60 * 60;
 }
 
-async function fetchCandidateBooks(
+/**
+ * One batch of the last tier: books passing `baseConditions` (plus `extra`,
+ * the genre narrowing when there is one), newest first, skipping `excludeIds`.
+ * Does not need an embedding, so it also reaches books still waiting on the
+ * embedding backfill.
+ *
+ * Returns null when the batch hit its statement timeout — the caller stops the
+ * fallback there rather than failing the request.
+ */
+async function fetchFallbackBatch(
+  baseConditions: SQL[],
+  extra: SQL[],
+  excludeIds: number[],
+  take: number,
+  timeoutMs: number,
+): Promise<CandidateRow[] | null> {
+  try {
+    return await withStatementTimeout(timeoutMs, (conn) =>
+      conn
+        .select({ id: books.id, title: books.title })
+        .from(books)
+        .where(and(...baseConditions, ...(excludeIds.length > 0 ? [notInArray(books.id, excludeIds)] : []), ...extra))
+        .orderBy(sql`${books.publicationDate} DESC NULLS LAST`, desc(books.id))
+        .limit(take),
+    );
+  } catch (err) {
+    if (!isStatementTimeout(err)) throw err;
+    logger.warn('Recommendation genre fallback timed out', { budgetMs: GENRE_FALLBACK_BUDGET_MS });
+    return null;
+  }
+}
+
+/**
+ * One batch of the filler: popular in-stock books that pass `fillerConditions`,
+ * skipping `excludeIds`, most popular first.
+ *
+ * Popular means what readers have been doing — the trending score over the last
+ * TRENDING_WINDOW_DAYS, the same ranking the trending feed uses — and, past the
+ * books with any activity, Gardners stock depth, then newest. Deep stock is the
+ * distributor's own bet on what sells, and it is always there: the trending
+ * signal is thin until the app has a lot of readers.
+ */
+async function fetchFillerBatch(fillerConditions: SQL[], excludeIds: number[], take: number): Promise<CandidateRow[]> {
+  const notExcluded = (ids: number[]) => (ids.length > 0 ? [notInArray(books.id, ids)] : []);
+
+  const since = new Date();
+  since.setDate(since.getDate() - TRENDING_WINDOW_DAYS);
+  const score = trendingScoreSql();
+  // Scored on interactions alone, then filtered: the interaction table is small
+  // next to the catalogue, so ranking it first and checking the survivors is
+  // far cheaper than joining every in-stock book to its activity.
+  const trending = await db
+    .select({ bookId: userInteractions.bookId })
+    .from(userInteractions)
+    .where(
+      and(
+        gt(userInteractions.createdAt, since),
+        inArray(userInteractions.type, TRENDING_SCORED_TYPES),
+        ...(excludeIds.length > 0 ? [notInArray(userInteractions.bookId, excludeIds)] : []),
+      ),
+    )
+    .groupBy(userInteractions.bookId)
+    .orderBy(sql`${score} DESC`, userInteractions.bookId)
+    .limit(take);
+
+  const trendingIds = trending.map((t) => t.bookId);
+  let ranked: CandidateRow[] = [];
+  if (trendingIds.length > 0) {
+    const eligible = await db
+      .select({ id: books.id, title: books.title })
+      .from(books)
+      .where(and(inArray(books.id, trendingIds), ...fillerConditions));
+    const byId = new Map(eligible.map((r) => [r.id, r]));
+    ranked = trendingIds.map((id) => byId.get(id)).filter((r): r is CandidateRow => r !== undefined);
+  }
+  if (ranked.length >= take) return ranked;
+
+  const stocked = await db
+    .select({ id: books.id, title: books.title })
+    .from(books)
+    // Trending books that failed the filter are skipped too: they would fail it again.
+    .where(and(...fillerConditions, ...notExcluded([...excludeIds, ...trendingIds])))
+    .orderBy(
+      sql`(SELECT max(gs.stock_qty) FROM gardners_stock gs WHERE gs.isbn13 = ${books.isbn13}) DESC NULLS LAST`,
+      sql`${books.publicationDate} DESC NULLS LAST`,
+      desc(books.id),
+    )
+    .limit(take - ranked.length);
+
+  return [...ranked, ...stocked];
+}
+
+export async function fetchCandidateBooks(
   vectorLiteral: string,
   baseConditions: SQL[],
+  quizGenres: string[],
+  fillerConditions: SQL[],
 ): Promise<CandidateRow[]> {
   const distanceExpr = sql`${books.embedding} <=> ${vectorLiteral}::vector`;
   const candidateColumns = {
@@ -926,14 +1141,16 @@ async function fetchCandidateBooks(
     shortDescription: books.shortDescription,
     availabilityCode: books.availabilityCode,
     publicationDate: books.publicationDate,
-    // Selected so the single pass below can be split into the strict and
-    // backfill tiers in memory, without a second query to define the boundary.
+    // Selected so the search below can be split into tiers in memory, without
+    // a second query to define each boundary.
     distance: sql<number>`${books.embedding} <=> ${vectorLiteral}::vector`,
   };
 
-  // SET LOCAL keeps both GUCs scoped to this one transaction — a bare SET would
+  // SET LOCAL keeps the GUCs scoped to this one transaction — a bare SET would
   // stick to the pooled connection and change the plan of unrelated queries that
-  // reuse it afterwards.
+  // reuse it afterwards. max_scan_tuples and scan_mem_multiplier only exist from
+  // pgvector 0.8.0, the same release as the iterative scan they bound, so they
+  // are set alongside it.
   const fetchRows = async (where: SQL | undefined, limit: number) => {
     const iterative = await supportsIterativeScan();
     return db.transaction(async (tx) => {
@@ -942,8 +1159,15 @@ async function fetchCandidateBooks(
       );
       if (iterative) {
         await tx.execute(sql.raw(`SET LOCAL hnsw.iterative_scan = ${HNSW_ITERATIVE_SCAN}`));
+        await tx.execute(sql.raw(`SET LOCAL hnsw.max_scan_tuples = ${HNSW_MAX_SCAN_TUPLES}`));
+        await tx.execute(sql.raw(`SET LOCAL hnsw.scan_mem_multiplier = ${HNSW_SCAN_MEM_MULTIPLIER}`));
       }
-      return tx.select(candidateColumns).from(books).where(where).orderBy(distanceExpr).limit(limit);
+      return tx
+        .select(candidateColumns)
+        .from(books)
+        .where(where)
+        .orderBy(distanceExpr)
+        .limit(limit);
     });
   };
 
@@ -993,47 +1217,136 @@ async function fetchCandidateBooks(
 
   const stripScoring = (r: ScoredCandidateRow): CandidateRow => ({ id: r.id, title: r.title });
 
-  // One pass, out to the loosest distance we would ever accept, nearest first.
-  // The two tiers are then cut out of this one result set rather than fetched
-  // separately — see the note on BACKFILL_SIMILARITY_THRESHOLD for why asking
-  // the index for the far tier on its own is the one thing not to do here.
-  const rows = await fetchRows(
-    and(sql`${distanceExpr} < ${BACKFILL_SIMILARITY_THRESHOLD}`, ...baseConditions),
-    FETCH_POOL,
-  );
-
+  // Nearest first with no distance bound — see the note on
+  // BACKFILL_SIMILARITY_THRESHOLD for why the bound came off. The embedding
+  // check used to be implied by the bound (a NULL distance is never < x); with
+  // it gone it has to be said, or an unembedded book would sort with a NULL
+  // distance that Number() reads as 0, a perfect strict match.
+  const vectorWhere = and(isNotNull(books.embedding), ...baseConditions);
   const isStrict = (row: { distance: number }) => Number(row.distance) < SIMILARITY_THRESHOLD;
 
-  const firstAuthor = await fetchFirstAuthors(rows.map((r) => r.id));
-  const keyOf = (row: { id: number; title: string }) => workKey(row.title, firstAuthor.get(row.id) ?? null);
+  // Splits one nearest-first result set into the strict tier and the in-order
+  // top-up after it. Run once on the normal pool and, if that came back full but
+  // short, once more on the wide pool — from scratch, so a strict row first seen
+  // in the wide pass is scored with the rest of the strict tier rather than
+  // skipped as one already considered.
+  const tierVectorRows = async (rows: Awaited<ReturnType<typeof fetchRows>>) => {
+    const firstAuthor = await fetchFirstAuthors(rows.map((r) => r.id));
+    const keyOf = (row: { id: number; title: string }) => workKey(row.title, firstAuthor.get(row.id) ?? null);
 
-  const primaryCandidates = dedupeByWork(await withScoring(rows.filter(isStrict), firstAuthor))
-    .slice(0, TARGET_RESULTS)
-    .map(stripScoring);
+    const strict = dedupeByWork(await withScoring(rows.filter(isStrict), firstAuthor))
+      .slice(0, TARGET_RESULTS)
+      .map(stripScoring);
+    const seenWorks = new Set(strict.map(keyOf));
 
-  if (primaryCandidates.length >= TARGET_RESULTS) {
-    return primaryCandidates;
+    // Everything past the strict tier is a strictly worse-match pool, only
+    // reached because the strict tier came up short — it exists to top the list
+    // off, not to be scored against itself, so it keeps the simple
+    // first-seen-work rule rather than the full priority scoring above. Strict
+    // rows are skipped: every one of them was already in the dedupe above, and
+    // one that lost its work there must not reappear as a worse match here.
+    const nearest: (CandidateRow & { tier: 'backfill' | 'reach' })[] = [];
+    for (const row of rows) {
+      if (strict.length + nearest.length >= TARGET_RESULTS) break;
+      if (isStrict(row)) continue;
+      const key = keyOf(row);
+      if (seenWorks.has(key)) continue;
+      seenWorks.add(key);
+      const tier = Number(row.distance) < BACKFILL_SIMILARITY_THRESHOLD ? 'backfill' : 'reach';
+      nearest.push({ id: row.id, title: row.title, tier });
+    }
+    return { strict, nearest, seenWorks };
+  };
+
+  let rows = await fetchRows(vectorWhere, FETCH_POOL);
+  let tiers = await tierVectorRows(rows);
+
+  // A full pool that still left the list short lost its rows to edition
+  // collapsing, so a wider pool has more works to offer. A pool that came back
+  // short means the search has nothing further — the catalogue ran out under
+  // the filters, or the scan hit its tuple or memory cap — and a wider one would
+  // only repeat the walk to the same end.
+  const filled = () => tiers.strict.length + tiers.nearest.length;
+  if (filled() < TARGET_RESULTS && rows.length === FETCH_POOL && FETCH_POOL < WIDE_FETCH_POOL) {
+    rows = await fetchRows(vectorWhere, WIDE_FETCH_POOL);
+    tiers = await tierVectorRows(rows);
   }
 
-  const stillNeeded = TARGET_RESULTS - primaryCandidates.length;
-  const seenWorks = new Set(primaryCandidates.map(keyOf));
+  const { strict: primaryCandidates, seenWorks } = tiers;
+  const topUp: (CandidateRow & { tier: 'backfill' | 'reach' | 'genre' | 'filler' })[] = [...tiers.nearest];
+  // Every row any tier has looked at, so no later batch hands back a book
+  // already placed or already rejected as a duplicate edition.
+  const excludeIds = rows.map((r) => r.id);
+  const needed = () => TARGET_RESULTS - primaryCandidates.length - topUp.length;
 
-  // Backfill candidates are a strictly worse-match pool, only reached because the primary
-  // tier came up short — they exist to top the list off, not to be scored against each
-  // other, so this keeps the simple first-seen-work rule rather than the full priority
-  // scoring above. Rows already considered for the strict tier are skipped: one that lost
-  // its work there must not reappear as a worse match here.
-  const backfillCandidates: CandidateRow[] = [];
-  for (const row of rows) {
-    if (backfillCandidates.length >= stillNeeded) break;
-    if (isStrict(row)) continue;
-    const key = keyOf(row);
-    if (seenWorks.has(key)) continue;
-    seenWorks.add(key);
-    backfillCandidates.push({ id: row.id, title: row.title });
+  // The genre tier: the reader's quiz genres first, then — if those run out —
+  // anything that passes their rules. Within each, batches are read until the
+  // list is full, a batch comes back smaller than asked (that pass is
+  // exhausted), or the time budget is spent. A fixed single batch is not enough:
+  // a run of new editions of the same few works can fill it and leave the list
+  // short while plenty of other books remain.
+  if (needed() > 0) {
+    const genreCondition = buildQuizGenreCondition(quizGenres);
+    const passes: SQL[][] = genreCondition ? [[genreCondition], []] : [[]];
+    const deadline = Date.now() + GENRE_FALLBACK_BUDGET_MS;
+
+    fallback: for (const extra of passes) {
+      while (needed() > 0) {
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0) break fallback;
+        const take = needed() * GENRE_FALLBACK_HEADROOM;
+        const batch = await fetchFallbackBatch(baseConditions, extra, excludeIds, take, remainingMs);
+        if (batch === null) break fallback;
+
+        const batchAuthors = await fetchFirstAuthors(batch.map((r) => r.id));
+        for (const row of batch) {
+          excludeIds.push(row.id);
+          if (needed() <= 0) continue;
+          const key = workKey(row.title, batchAuthors.get(row.id) ?? null);
+          if (seenWorks.has(key)) continue;
+          seenWorks.add(key);
+          topUp.push({ id: row.id, title: row.title, tier: 'genre' });
+        }
+        if (batch.length < take) break;
+      }
+    }
   }
 
-  return [...primaryCandidates, ...backfillCandidates];
+  // The filler: whatever the tiers above could not supply — because the
+  // catalogue has fewer matching books than TARGET_RESULTS, or the genre
+  // fallback ran out of time — is padded with popular in-stock books. The
+  // reader's format and dislikes give way here; fillerConditions keeps the rules
+  // that never do (in stock, and never a book they shelved or rejected).
+  for (let batchNo = 0; batchNo < FILLER_MAX_BATCHES && needed() > 0; batchNo += 1) {
+    const take = needed() * GENRE_FALLBACK_HEADROOM;
+    const batch = await fetchFillerBatch(fillerConditions, excludeIds, take);
+    const batchAuthors = await fetchFirstAuthors(batch.map((r) => r.id));
+    for (const row of batch) {
+      excludeIds.push(row.id);
+      if (needed() <= 0) continue;
+      const key = workKey(row.title, batchAuthors.get(row.id) ?? null);
+      if (seenWorks.has(key)) continue;
+      seenWorks.add(key);
+      topUp.push({ id: row.id, title: row.title, tier: 'filler' });
+    }
+    if (batch.length < take) break;
+  }
+
+  // Worth seeing in the logs: how far past the close matches a list had to
+  // reach, and — as its own warning, with the per-tier counts — a list that
+  // still could not be filled.
+  const tierCounts = { strict: primaryCandidates.length, backfill: 0, reach: 0, genre: 0, filler: 0 };
+  for (const c of topUp) tierCounts[c.tier] += 1;
+  if (needed() > 0) {
+    logger.warn('Recommendation list could not be filled to target', { ...tierCounts, target: TARGET_RESULTS });
+  } else if (tierCounts.reach > 0 || tierCounts.genre > 0 || tierCounts.filler > 0) {
+    logger.info('Recommendation list topped up past the backfill cutoff', { ...tierCounts, target: TARGET_RESULTS });
+  }
+
+  return [
+    ...primaryCandidates,
+    ...topUp.map(({ id, title, tier }) => (tier === 'filler' ? { id, title, filler: true as const } : { id, title })),
+  ];
 }
 
 // ── Public service ────────────────────────────────────────────────────────────
@@ -1123,8 +1436,10 @@ export const recommendationsService = {
     //    land on the guest session and start applying once registration moves
     //    them to a user row.
     const baseConditions: SQL[] = buildBaseConditions(input, likedBooks, EMPTY_EXCLUSIONS);
+    const fillerConditions: SQL[] = buildFillerConditions(input, likedBooks, EMPTY_EXCLUSIONS);
 
-    const candidateRows = await fetchCandidateBooks(vectorLiteral, baseConditions);
+    const candidateRows = await fetchCandidateBooks(vectorLiteral, baseConditions, input.genres, fillerConditions);
+    const padded = candidateRows.some((r) => r.filler);
 
     if (candidateRows.length === 0) {
       // Cache the empty result so identical preferences don't re-run the vector search
@@ -1205,7 +1520,7 @@ export const recommendationsService = {
     }));
 
     // 8. Persist to cache — upsert in case of a race condition on concurrent identical requests
-    const ttlSecondsForResults = cacheTtlSecondsFor(results);
+    const ttlSecondsForResults = cacheTtlSecondsFor(results, padded);
     const cacheExpiresAt = new Date(now.getTime() + ttlSecondsForResults * 1000);
     await Promise.all([
       db
@@ -1493,8 +1808,10 @@ async function computeRecommendations(
   const vectorLiteral = `[${queryVector.join(',')}]`;
 
   const baseConditions: SQL[] = buildBaseConditions(input, likedBooks, exclusions);
+  const fillerConditions: SQL[] = buildFillerConditions(input, likedBooks, exclusions);
 
-  const candidateRows = await fetchCandidateBooks(vectorLiteral, baseConditions);
+  const candidateRows = await fetchCandidateBooks(vectorLiteral, baseConditions, input.genres, fillerConditions);
+  const padded = candidateRows.some((r) => r.filler);
 
   let results: RecommendationItem[];
 
@@ -1545,7 +1862,7 @@ async function computeRecommendations(
     }));
   }
 
-  const ttlSecondsForResults = cacheTtlSecondsFor(results);
+  const ttlSecondsForResults = cacheTtlSecondsFor(results, padded);
   const cacheExpiresAt = new Date(now.getTime() + ttlSecondsForResults * 1000);
   await Promise.all([
     db

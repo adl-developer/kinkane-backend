@@ -171,6 +171,11 @@ const envSchema = z.object({
   // Cosine distance cutoffs for the candidate search. pgvector's <=> returns
   // 0 (identical) to 2 (opposite), so both accept that full range.
   //
+  // SIMILARITY_MAX decides which books count as strict matches and get the
+  // best-edition scoring. BACKFILL_MAX no longer bounds the search: past the
+  // strict tier the list fills with the next-nearest books at any distance, so
+  // it only labels the backfill/reach split in the logs.
+  //
   // Worth re-tuning after changing any weight above. A weighted sum is a
   // centroid, not the embedding of one coherent sentence: when lanes point in
   // different directions the combined vector sits further from everything, so

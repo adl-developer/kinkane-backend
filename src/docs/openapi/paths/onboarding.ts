@@ -130,7 +130,7 @@ export const onboardingPaths = {
         dislikedBookIds: {
           type: 'array', items: { type: 'integer', minimum: 1 }, default: [],
           description:
-            'Books swiped away on the same screen. Optional, and deliberately unbounded — the recommendation list runs to 100 books and a thorough swiper can reject most of them.',
+            'Books swiped away on the same screen. Optional, and deliberately unbounded — the recommendation list runs to 50 books and a thorough swiper can reject most of them.',
           example: [12045, 12046],
         },
       }, ['chosenBookIds'])),
