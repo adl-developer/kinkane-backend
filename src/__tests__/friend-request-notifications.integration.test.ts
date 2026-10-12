@@ -228,6 +228,29 @@ describeIfDb('friend-request notifications', () => {
     expect(item.data).toMatchObject({ senderName: 'Alicia', senderPhotoUrl: null, status: 'pending' });
   });
 
+  it('lets both people have a pending request to each other, each with its own notification', async () => {
+    // Follows go one way, so Bob can ask to follow Alice while her request to
+    // him is still waiting. Answering one leaves the other untouched.
+    await usersService.sendFollowRequest(alice, bob);
+    await usersService.sendFollowRequest(bob, alice);
+
+    const statuses = async () =>
+      (await db.execute(sql`
+        SELECT sender_id, status::text AS status FROM follow_requests
+        WHERE sender_id IN (${alice}, ${bob}) ORDER BY sender_id = ${alice} DESC
+      `)) as unknown as { sender_id: number; status: string }[];
+    expect((await statuses()).map((r) => r.status)).toEqual(['pending', 'pending']);
+
+    const [aliceNotif] = (await db.execute(sql`
+      SELECT data FROM notifications WHERE user_id = ${alice} AND type = 'friend_request'
+    `)) as unknown as { data: Record<string, unknown> }[];
+    expect(aliceNotif.data).toMatchObject({ senderId: bob, status: 'pending' });
+    expect((await storedRow()).data).toMatchObject({ senderId: alice, status: 'pending' });
+
+    await usersService.acceptFollowRequest(await requestId(), bob);
+    expect((await statuses()).map((r) => r.status)).toEqual(['accepted', 'pending']);
+  });
+
   describe('clearing', () => {
     async function addNotification(userId: number, read = false): Promise<number> {
       const [row] = (await db.execute(sql`
