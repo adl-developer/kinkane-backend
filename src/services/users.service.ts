@@ -98,8 +98,8 @@ export interface UserProfile {
   /** Full sign-up timestamp; yearJoined is kept for older app builds. */
   joinedAt: Date;
   followStatus: FollowStatus;
-  // A pending request *they* sent *you*. When set, show Accept/Decline instead
-  // of a Follow button — sending one back is refused with a 409.
+  // A pending request *they* sent *you*, for Accept/Decline. It doesn't stop
+  // you sending your own request to them; the two are independent.
   incomingFollowRequest: { requestId: number; requestedAt: Date } | null;
   shelfVisibility: ShelfVisibility;
   // Whether the requester may read this user's whole shelf. Decided here so
@@ -133,40 +133,20 @@ interface FollowRequestRow {
 export type FollowRequestDecision =
   | { action: 'insert' }
   | { action: 'resend'; requestId: number }
-  | { action: 'reject'; statusCode: 409; message: string; code?: string; details?: Record<string, unknown> };
+  | { action: 'reject'; statusCode: 409; message: string };
 
 /**
  * What sending a follow request should do, given the caller's own request to
- * the target (`outgoing`) and the target's request to the caller (`incoming`).
- *
- * The caller's own request is checked first: someone already following, or
- * already waiting, gets that answer whatever the other side looks like.
- *
- * A pending `incoming` request then blocks a new one. The two people would
- * otherwise each be waiting on the other for the same relationship, and the
- * receiver has a one-tap way to resolve it — accept — that this sends them to.
- * Only *pending* blocks: an accepted incoming request means they follow you,
- * and following them back is a separate relationship; a declined one is over.
+ * the target. Only the caller's side matters: follows go one way, so a request
+ * the target has sent the caller — pending or not — is a separate relationship
+ * and never blocks this one. Both can be pending at once.
  */
-export function decideFollowRequest(
-  outgoing: FollowRequestRow | undefined,
-  incoming: FollowRequestRow | undefined,
-  targetName: string,
-): FollowRequestDecision {
+export function decideFollowRequest(outgoing: FollowRequestRow | undefined): FollowRequestDecision {
   if (outgoing?.status === 'pending') {
     return { action: 'reject', statusCode: 409, message: 'Follow request already sent' };
   }
   if (outgoing?.status === 'accepted') {
     return { action: 'reject', statusCode: 409, message: 'You are already following this user' };
-  }
-  if (incoming?.status === 'pending') {
-    return {
-      action: 'reject',
-      statusCode: 409,
-      message: `${targetName} has already sent you a follow request. Accept or decline it instead.`,
-      code: 'INCOMING_FOLLOW_REQUEST_PENDING',
-      details: { requestId: incoming.id },
-    };
   }
   // A declined request of the caller's own is re-sent by resetting it to pending.
   if (outgoing?.status === 'declined') return { action: 'resend', requestId: outgoing.id };
@@ -489,25 +469,17 @@ export const usersService = {
       throw Object.assign(new Error('Please verify your email before sending follow requests'), { statusCode: 403 });
     }
 
-    // The caller's own request to the target, and the target's to the caller
-    const [[outgoing], [incoming]] = await Promise.all([
-      db
-        .select({ id: followRequests.id, status: followRequests.status })
-        .from(followRequests)
-        .where(and(eq(followRequests.senderId, senderId), eq(followRequests.receiverId, receiverId)))
-        .limit(1),
-      db
-        .select({ id: followRequests.id, status: followRequests.status })
-        .from(followRequests)
-        .where(and(eq(followRequests.senderId, receiverId), eq(followRequests.receiverId, senderId)))
-        .limit(1),
-    ]);
+    // The caller's own request to the target; one coming the other way doesn't matter
+    const [outgoing] = await db
+      .select({ id: followRequests.id, status: followRequests.status })
+      .from(followRequests)
+      .where(and(eq(followRequests.senderId, senderId), eq(followRequests.receiverId, receiverId)))
+      .limit(1);
 
-    const decision = decideFollowRequest(outgoing, incoming, target.name);
+    const decision = decideFollowRequest(outgoing);
 
     if (decision.action === 'reject') {
-      const { message, ...rest } = decision;
-      throw Object.assign(new Error(message), rest);
+      throw Object.assign(new Error(decision.message), { statusCode: decision.statusCode });
     }
 
     await db.transaction(async (tx) => {

@@ -430,7 +430,7 @@ const socialSchemas = {
             type: 'object',
             nullable: true,
             description:
-              'A pending follow request this user has sent the *caller*. When set, show Accept/Decline (with `requestId`) instead of a Follow button — `POST /users/{userId}/follow` is refused with a 409 while it is pending.',
+              'A pending follow request this user has sent the *caller*. When set, offer Accept/Decline (with `requestId`). It does not block the caller from sending their own request back with `POST /users/{userId}/follow`; the two are independent.',
             properties: {
               requestId: { type: 'integer', example: 902 },
               requestedAt: { type: 'string', format: 'date-time', example: '2026-09-28T20:48:04.353Z' },
@@ -484,7 +484,7 @@ const socialSchemas = {
             type: 'object',
             nullable: true,
             description:
-              'A pending follow request this user has sent the *caller*, as on the profile. When set, show Accept/Decline (with `requestId`) instead of a Follow button — `POST /users/{userId}/follow` is refused with a 409 while it is pending.',
+              'A pending follow request this user has sent the *caller*, as on the profile. When set, offer Accept/Decline (with `requestId`). It does not block the caller from sending their own request back.',
             properties: {
               requestId: { type: 'integer', example: 902 },
               requestedAt: { type: 'string', format: 'date-time', example: '2026-09-28T20:48:04.353Z' },

@@ -21,8 +21,8 @@ export interface UserResult {
   // The requester's follow request to this user, as on the profile, plus
   // 'self' for the requester's own row so the app can leave off the button.
   followStatus: FollowStatus | 'self';
-  // A pending request *they* sent the requester. When set, show Accept/Decline
-  // instead of a Follow button, as on the profile.
+  // A pending request *they* sent the requester, for Accept/Decline, as on the
+  // profile. It doesn't stop the requester following them back.
   incomingFollowRequest: { requestId: number; requestedAt: Date } | null;
 }
 
