@@ -160,11 +160,50 @@ describe('HNSW recall', () => {
     expect(search).not.toMatch(/>=\s*\$\{SIMILARITY_THRESHOLD\}/);
   });
 
-  it('reaches the catalogue once per search', () => {
-    // One pass covering both tiers, not one per tier.
+  it('reaches the catalogue once per search when the close matches fill the list', () => {
+    // One pass covering every vector tier, not one per tier. A second, wider
+    // pass happens only when the first came back full yet still short — a short
+    // pool means the search has run dry, and a wider one would walk to the same
+    // end. Never OFFSET paging: each page re-walks every row before it.
     const source = SOURCES['recommendations.service.ts'];
     const search = source.slice(source.indexOf('async function fetchCandidateBooks'));
-    expect(search.match(/await fetchRows\(/g)?.length).toBe(1);
+    expect(search.match(/await fetchRows\(vectorWhere/g)?.length).toBe(2);
+    expect(search).toMatch(
+      /if \(filled\(\) < TARGET_RESULTS && rows\.length === FETCH_POOL && FETCH_POOL < WIDE_FETCH_POOL\)/,
+    );
+    expect(search).not.toMatch(/\.offset\(/);
+  });
+
+  it('keeps the wide pass inside the pool ceiling reviewed for latency', () => {
+    const schema = read('config/index.ts');
+    const max = schema.match(/RECO_FETCH_POOL: z\.coerce\.number\(\)\.int\(\)\.min\(\d+\)\.max\((\d+)\)/)![1];
+    const wide = SOURCES['recommendations.service.ts'].match(/const WIDE_FETCH_POOL = (\d+);/)![1];
+    expect(Number(wide)).toBeLessThanOrEqual(Number(max));
+  });
+
+  it('puts no distance bound on the vector search, but still requires an embedding', () => {
+    // The bound is what made short lists possible: fewer books inside it than
+    // the target meant fewer books back. Dropping it means an unembedded book
+    // would sort with a NULL distance that reads as 0 — a perfect match — so
+    // the embedding check has to be explicit.
+    const source = SOURCES['recommendations.service.ts'];
+    const search = source.slice(source.indexOf('async function fetchCandidateBooks'));
+    expect(search).not.toMatch(/\$\{distanceExpr\}\s*</);
+    expect(search).toContain('const vectorWhere = and(isNotNull(books.embedding), ...baseConditions)');
+  });
+
+  it('raises the scan caps alongside the iterative scan only', () => {
+    // The GUC arrived with the iterative scan in pgvector 0.8.0; setting it on an
+    // older server would fail the query rather than be ignored.
+    const source = SOURCES['recommendations.service.ts'];
+    const fetchRows = source.slice(source.indexOf('const fetchRows ='), source.indexOf('const withScoring ='));
+    const gated = fetchRows.slice(fetchRows.indexOf('if (iterative) {'), fetchRows.indexOf('return tx'));
+    expect(gated).toContain('SET LOCAL hnsw.iterative_scan');
+    expect(gated).toContain('SET LOCAL hnsw.max_scan_tuples');
+    // The scan's memory cap can bind before its tuple cap, so the two go together.
+    expect(gated).toContain('SET LOCAL hnsw.scan_mem_multiplier');
+    expect(fetchRows.match(/max_scan_tuples/g)?.length).toBe(1);
+    expect(fetchRows.match(/scan_mem_multiplier/g)?.length).toBe(1);
   });
 
   it('keeps the candidate pool small enough that an iterative scan stays cheap', () => {

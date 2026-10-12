@@ -68,7 +68,7 @@ const selectionsSchema = z.object({
 
   // Books swiped away on the same screen. Optional — a user can pick without
   // rejecting anything. Unbounded above by design: the recommendation list runs
-  // to 100 books and a thorough swiper can reject most of them.
+  // to 50 books and a thorough swiper can reject most of them.
   dislikedBookIds: z.array(z.number().int().positive()).default([]),
 });
 

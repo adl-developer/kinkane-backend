@@ -87,7 +87,7 @@ const PERSONALIZED_SIMILARITY_THRESHOLD = 0.5;
 // HNSW default ef_search (40) is below our pool sizes (up to FEED_POOL_MAX),
 // which would silently drop recall on the <=> ANN queries. Widen it per-query.
 const HNSW_EF_SEARCH = 150;
-const TRENDING_WINDOW_DAYS = 30;
+export const TRENDING_WINDOW_DAYS = 30;
 // Feeds (trending/personalized/similar) over-fetch a candidate pool larger than the
 // requested `limit` so that deduping same-titled editions (see dedupeByTitle) still
 // leaves enough distinct titles to fill the requested count.
@@ -1474,7 +1474,7 @@ async function countUpTo(where: SQL | undefined, cap: number): Promise<number> {
 
 // Postgres reports a statement_timeout abort as query_canceled. Narrowed deliberately:
 // every other failure is a real bug and must keep propagating.
-function isStatementTimeout(err: unknown): boolean {
+export function isStatementTimeout(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: string }).code === '57014';
 }
 
@@ -1527,7 +1527,7 @@ async function estimateFilteredRows(where: SQL | undefined): Promise<number | nu
 // SET LOCAL scopes the timeout to the wrapped statement inside a transaction — a bare SET
 // would stick to the pooled connection and silently apply to unrelated queries that reuse
 // it afterwards. Same rationale as withWordSimilarityThreshold above.
-async function withStatementTimeout<T>(
+export async function withStatementTimeout<T>(
   ms: number,
   fn: (conn: Pick<typeof db, 'select' | 'execute'>) => Promise<T>,
 ): Promise<T> {

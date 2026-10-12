@@ -12,6 +12,7 @@
 
 ### Bug Fixes
 
+* let readers post about a book they're still reading without rating it ([d074d0d](https://adl.github.com/adl-developer/kinkane-backend/commit/d074d0da57009a6e5516f553093b1b98c4a6161b)) — [details](changelog/2026-10-11-reading-post-optional-rating.md)
 * photo uploads only change a photo once it's saved, and iPhone photos show everywhere ([8207e74](https://adl.github.com/adl-developer/kinkane-backend/commit/8207e74cf640fb425ea42cf5cc36ea13c043bc54)) — [details](changelog/2026-10-11-reading-post-optional-rating.md)
 * show email verification codes on one line so they're easy to copy ([fde136f](https://adl.github.com/adl-developer/kinkane-backend/commit/fde136fb3f800f44651193085a16c500d33c5d2a)) — [details](changelog/2026-10-11-reading-post-optional-rating.md)
 
