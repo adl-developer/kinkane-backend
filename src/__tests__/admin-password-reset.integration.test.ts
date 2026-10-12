@@ -2,6 +2,7 @@ import { readFileSync } from 'fs';
 import * as dotenv from 'dotenv';
 import express from 'express';
 import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
@@ -59,7 +60,11 @@ vi.mock('../lib/email-queue', () => ({ enqueueEmail: (...args: unknown[]) => enq
 vi.mock('../lib/push-queue', () => ({ enqueuePush: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../middleware/rate-limit.middleware', () => {
   const pass = (_req: unknown, _res: unknown, next: () => void) => next();
-  return { adminLoginLimiter: pass };
+  return {
+    adminLoginLimiter: pass,
+    adminPasswordResetLimiter: pass,
+    adminPasswordResetEmailLimiter: pass,
+  };
 });
 
 let db: typeof import('../db').db;
@@ -94,20 +99,52 @@ describeIfDb('admin console password reset', () => {
     await db.execute(sql`DELETE FROM admins WHERE email LIKE ${EMAIL_PREFIX + '%'}`);
   }
 
-  async function post(path: string, payload: unknown) {
+  async function post(path: string, payload: unknown, bearer?: string) {
     const res = await fetch(`${base}/admin/console${path}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        ...(bearer ? { authorization: `Bearer ${bearer}` } : {}),
+      },
       body: JSON.stringify(payload),
     });
     return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+  }
+
+  async function me(bearer: string): Promise<number> {
+    const res = await fetch(`${base}/admin/console/auth/me`, {
+      headers: { authorization: `Bearer ${bearer}` },
+    });
+    return res.status;
+  }
+
+  /**
+   * A console token issued a minute ago. Backdated because `iat` is whole
+   * seconds and a token minted in the same second as a password change is
+   * deliberately allowed to survive it.
+   */
+  async function oldSession(): Promise<string> {
+    const { config } = await import('../config');
+    return jwt.sign(
+      { sub: adminId, email, kind: 'admin', iat: Math.floor(Date.now() / 1000) - 60 },
+      config.jwt.adminSecret!,
+      { expiresIn: 3600 },
+    );
+  }
+
+  // forgot-password answers before doing its work, so a test has to wait for
+  // the work: for the email when one is expected, for the token row otherwise.
+  async function requestAndSettle(address: string): Promise<{ status: number; body: Record<string, unknown> }> {
+    const res = await post('/auth/forgot-password', { email: address });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    return res;
   }
 
   /** Asks for a link and returns the token the admin would have been emailed. */
   async function requestToken(): Promise<string> {
     enqueueEmail.mockClear();
     await post('/auth/forgot-password', { email });
-    expect(enqueueEmail).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(enqueueEmail).toHaveBeenCalledTimes(1));
     const { resetUrl } = enqueueEmail.mock.calls[0][1] as { resetUrl: string };
     return new URL(resetUrl).searchParams.get('token')!;
   }
@@ -140,6 +177,7 @@ describeIfDb('admin console password reset', () => {
     const res = await post('/auth/forgot-password', { email: email.toUpperCase() });
     expect(res).toEqual({ status: 200, body: { sent: true } });
 
+    await vi.waitFor(() => expect(enqueueEmail).toHaveBeenCalledTimes(1));
     expect(enqueueEmail).toHaveBeenCalledWith('admin-password-reset', expect.objectContaining({
       to: email,
       name: 'Ama',
@@ -155,14 +193,14 @@ describeIfDb('admin console password reset', () => {
   });
 
   it('answers the same for an address that is not an admin, and sends nothing', async () => {
-    const res = await post('/auth/forgot-password', { email: `${EMAIL_PREFIX}nobody@example.com` });
+    const res = await requestAndSettle(`${EMAIL_PREFIX}nobody@example.com`);
     expect(res).toEqual({ status: 200, body: { sent: true } });
     expect(enqueueEmail).not.toHaveBeenCalled();
   });
 
   it('sends nothing to a disabled admin', async () => {
     await db.execute(sql`UPDATE admins SET disabled_at = now() WHERE id = ${adminId}`);
-    expect(await post('/auth/forgot-password', { email })).toEqual({ status: 200, body: { sent: true } });
+    expect(await requestAndSettle(email)).toEqual({ status: 200, body: { sent: true } });
     expect(enqueueEmail).not.toHaveBeenCalled();
   });
 
@@ -210,5 +248,45 @@ describeIfDb('admin console password reset', () => {
     const token = await requestToken();
     expect((await post('/auth/reset-password', { token, newPassword: 'short' })).status).toBe(400);
     expect(await bcrypt.compare(OLD_PASSWORD, await storedHash())).toBe(true);
+  });
+
+  it('keeps one live link when two requests land at once', async () => {
+    await Promise.all([post('/auth/forgot-password', { email }), post('/auth/forgot-password', { email })]);
+    await vi.waitFor(() => expect(enqueueEmail).toHaveBeenCalledTimes(2));
+
+    const rows = (await db.execute(sql`
+      SELECT id FROM admin_password_reset_tokens WHERE admin_id = ${adminId}
+    `)) as unknown as unknown[];
+    expect(rows).toHaveLength(1);
+  });
+
+  it('signs out sessions issued before the reset', async () => {
+    const before = await oldSession();
+    expect(await me(before)).toBe(200);
+
+    const token = await requestToken();
+    expect((await post('/auth/reset-password', { token, newPassword: NEW_PASSWORD })).status).toBe(200);
+
+    expect(await me(before)).toBe(401);
+    const login = await post('/auth/login', { email, password: NEW_PASSWORD });
+    expect(login.status).toBe(200);
+    expect(await me(login.body.token as string)).toBe(200);
+  });
+
+  it('change-password signs out other sessions and hands back a working one', async () => {
+    const other = await oldSession();
+    const caller = await oldSession();
+
+    const res = await post(
+      '/auth/change-password',
+      { currentPassword: OLD_PASSWORD, newPassword: NEW_PASSWORD },
+      caller,
+    );
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ changed: true, admin: { id: adminId, email } });
+
+    expect(await me(other)).toBe(401);
+    expect(await me(caller)).toBe(401);
+    expect(await me(res.body.token as string)).toBe(200);
   });
 });

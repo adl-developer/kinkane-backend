@@ -3,6 +3,10 @@
 
 ## 2026-10-12
 
+### Features
+
+* let admins reset a forgotten console password by email ([19a73ca](https://adl.github.com/adl-developer/kinkane-backend/commit/19a73ca2ec0b30d80da9b1fb74fc02b1297c283d)) — [details](changelog/2026-10-12-admins-reset-forgotten-password.md)
+
 ### Bug Fixes
 
 * let people send a follow request back while one from the other person is still waiting ([4e14428](https://adl.github.com/adl-developer/kinkane-backend/commit/4e14428385743a934e3dd12f561cdd503fe5172c)) — [details](changelog/2026-10-12-allow-follow-request-back-while-pending.md)

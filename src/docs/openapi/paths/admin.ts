@@ -85,7 +85,7 @@ export const adminPaths = {
         '',
         'The new password must be at least 12 characters and must differ from the current one — a no-op change means somebody believes they have rotated a credential when they have not.',
         '',
-        '**Other sessions are not signed out.** A console token carries no password state, so existing tokens for this admin stay valid until they expire. If the concern is that somebody else holds a session, disable and recreate the account instead.',
+        '**Every existing session for this admin is signed out, including the one making the call.** The response carries a fresh session (`token`, `expiresIn`, `admin` — the same shape as login); the console must swap it in, or its next request gets a 401.',
         '',
         'This is also the endpoint to use straight after a first sign-in with `ADMIN_BOOTSTRAP_PASSWORD`.',
       ].join('\n'),
@@ -94,7 +94,16 @@ export const adminPaths = {
         newPassword: { type: 'string', minLength: 12, example: '••••••••••••••••' },
       }, ['currentPassword', 'newPassword'])),
       responses: {
-        200: json('Changed.', object({ changed: { type: 'boolean', example: true } })),
+        200: json('Changed. Carries the replacement session.', object({
+          changed: { type: 'boolean', example: true },
+          token: { type: 'string', description: 'The new bearer token. Every earlier one is now refused.', example: 'eyJhbGciOiJIUzI1NiIs…' },
+          expiresIn: { type: 'integer', example: 43200 },
+          admin: object({
+            id: { type: 'integer', example: 1 },
+            name: { type: 'string', example: 'Ama Boateng' },
+            email: { type: 'string', format: 'email', example: 'admin@kinkane.app' },
+          }),
+        })),
         400: json('Too short, or identical to the current password.', ref('ValidationError')),
         429: resp('RateLimited'),
         // Spread first so the more specific 401 below wins — adminErrors carries
@@ -116,7 +125,9 @@ export const adminPaths = {
         '',
         '**The response is the same whether or not the address is an admin’s**, so this cannot be used to find out which staff addresses exist. Disabled admins are never sent a link.',
         '',
-        'The link expires after 30 minutes. Asking again replaces the previous link. Shares the login rate limit.',
+        'The response is sent before any work is done, so its timing is the same for every address too.',
+        '',
+        'The link expires after 30 minutes. Asking again replaces the previous link. Rate limited per IP (in a bucket separate from login) and to 3 requests an hour per target address, so nobody can flood an admin’s inbox or keep invalidating their link.',
       ].join('\n'),
       requestBody: body(object({
         email: { type: 'string', format: 'email', example: 'admin@kinkane.app' },
@@ -140,7 +151,7 @@ export const adminPaths = {
         '',
         'The new password must be at least 12 characters. This does not sign the admin in — send them to the login screen afterwards.',
         '',
-        '**Other sessions are not signed out**, for the same reason as `change-password`: a console token carries no password state.',
+        '**Every existing console session for the admin is signed out.** If the reason for the reset is that somebody else has a session, this is what removes them.',
       ].join('\n'),
       requestBody: body(object({
         token: { type: 'string', example: '3f9c…' },

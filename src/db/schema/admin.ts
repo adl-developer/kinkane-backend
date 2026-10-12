@@ -1,5 +1,5 @@
 import {
-  pgTable, serial, varchar, text, timestamp, integer, boolean, index, pgEnum,
+  pgTable, serial, varchar, text, timestamp, integer, boolean, index, uniqueIndex, pgEnum,
 } from 'drizzle-orm/pg-core';
 import { users } from './users';
 import { orders } from './commerce';
@@ -32,6 +32,11 @@ export const admins = pgTable(
     // Soft disable — an admin who has left. Kept rather than deleted so their
     // name still resolves on the reports they resolved.
     disabledAt: timestamp('disabled_at', { withTimezone: true }),
+    // Set whenever the password changes, by any route. A console session issued
+    // before this moment is refused, so changing or resetting a password
+    // actually evicts whoever else holds a session. Null = never changed since
+    // this column existed, which revokes nothing.
+    passwordChangedAt: timestamp('password_changed_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
@@ -50,8 +55,9 @@ export type Admin = typeof admins.$inferSelect;
  * a reset token that could be redeemed against the wrong population is exactly
  * the cross-over the separate `admins` table exists to rule out.
  *
- * Only the SHA-256 of the token is stored. One live token per admin — issuing a
- * new one deletes the old.
+ * Only the SHA-256 of the token is stored. One live token per admin, enforced
+ * by the unique `admin_id` — issuing a new one overwrites the old in place, so
+ * two requests at once cannot leave two working links.
  */
 export const adminPasswordResetTokens = pgTable(
   'admin_password_reset_tokens',
@@ -65,7 +71,7 @@ export const adminPasswordResetTokens = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => ({
-    adminIdIdx: index('idx_admin_password_reset_tokens_admin_id').on(t.adminId),
+    adminIdIdx: uniqueIndex('idx_admin_password_reset_tokens_admin_id').on(t.adminId),
   }),
 );
 
