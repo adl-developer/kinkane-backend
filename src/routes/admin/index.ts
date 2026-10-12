@@ -13,9 +13,10 @@ const router = Router();
  * `/admin/*` surfaces. It is not the customer API and is not versioned with it:
  * the console ships with the server and the two move together.
  *
- * Everything except the login is behind `requireAdmin`, which is a *person's*
- * session — distinct from the static `ADMIN_TOKEN` guarding the machine-facing
- * surfaces (Bull Board, Gardners dropship, referral corrections).
+ * Everything except signing in and resetting a forgotten password is behind
+ * `requireAdmin`, which is a *person's* session — distinct from the static
+ * `ADMIN_TOKEN` guarding the machine-facing surfaces (Bull Board, Gardners
+ * dropship, referral corrections).
  */
 
 // ── Session ───────────────────────────────────────────────────────────────────
@@ -31,6 +32,10 @@ router.post(
   requireAdmin,
   wrapHttp(adminController.changePassword),
 );
+// Forgotten password. Both public, both in the login bucket: one sends mail to
+// whatever address it is given, the other accepts a guess at a token.
+router.post('/auth/forgot-password', adminLoginLimiter, wrapHttp(adminController.forgotPassword));
+router.post('/auth/reset-password', adminLoginLimiter, wrapHttp(adminController.resetPassword));
 
 // Everything below needs a session.
 router.use(requireAdmin);

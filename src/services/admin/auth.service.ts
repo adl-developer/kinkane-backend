@@ -1,9 +1,12 @@
+import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { and, eq, isNull } from 'drizzle-orm';
 import { db } from '../../db';
-import { admins, type Admin } from '../../db/schema';
+import { admins, adminPasswordResetTokens, type Admin } from '../../db/schema';
 import { config } from '../../config';
+import { enqueueEmail } from '../../lib/email-queue';
+import { logger } from '../../lib/logger';
 
 export interface AdminSession {
   token: string;
@@ -33,6 +36,15 @@ function adminSecret(): string {
 // A well-formed bcrypt hash that nothing can match, compared against when no
 // admin row was found so the two failure paths cost the same time.
 const DUMMY_HASH = '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy';
+
+// Half the customer window. An admin asking for a reset is at their desk, and a
+// link that can take over an account able to export the customer list should
+// not sit live in an inbox for long.
+export const ADMIN_RESET_TOKEN_TTL_MINUTES = 30;
+
+function hashResetToken(raw: string): string {
+  return crypto.createHash('sha256').update(raw).digest('hex');
+}
 
 export const adminAuthService = {
   async login(email: string, password: string): Promise<AdminSession> {
@@ -127,6 +139,93 @@ export const adminAuthService = {
       .update(admins)
       .set({ passwordHash: await this.hashPassword(newPassword), updatedAt: new Date() })
       .where(eq(admins.id, adminId));
+  },
+
+  /**
+   * Starts a "forgot password" for the console.
+   *
+   * Always resolves the same way, whether or not the address belongs to an
+   * admin — the same anti-enumeration rule as the login form. A disabled admin
+   * gets nothing: resetting the password must not be a way back in for someone
+   * who has left.
+   */
+  async requestPasswordReset(email: string): Promise<void> {
+    const [admin] = await db
+      .select({ id: admins.id, name: admins.name, email: admins.email })
+      .from(admins)
+      .where(and(eq(admins.email, email.toLowerCase().trim()), isNull(admins.disabledAt)))
+      .limit(1);
+
+    if (!admin) return;
+
+    const rawToken = crypto.randomBytes(32).toString('hex');
+
+    // One live link per admin: asking again kills the previous one.
+    await db.transaction(async (tx) => {
+      await tx.delete(adminPasswordResetTokens).where(eq(adminPasswordResetTokens.adminId, admin.id));
+      await tx.insert(adminPasswordResetTokens).values({
+        adminId: admin.id,
+        tokenHash: hashResetToken(rawToken),
+        expiresAt: new Date(Date.now() + ADMIN_RESET_TOKEN_TTL_MINUTES * 60 * 1000),
+      });
+    });
+
+    const resetUrl = `${config.adminConsoleUrl}/reset-password?token=${rawToken}`;
+
+    enqueueEmail('admin-password-reset', {
+      to: admin.email,
+      name: admin.name,
+      resetUrl,
+      expiryMinutes: ADMIN_RESET_TOKEN_TTL_MINUTES,
+    }).catch((err) => {
+      logger.error('Failed to enqueue admin password reset email', {
+        adminId: admin.id,
+        error: (err as Error).message,
+      });
+    });
+  },
+
+  /**
+   * Redeems a reset link and sets the new password.
+   *
+   * The token is consumed with DELETE ... RETURNING, so two simultaneous
+   * redemptions of the same link cannot both succeed. A refused link is left
+   * where it is (the failed transaction rolls the delete back), which is
+   * harmless: it still expires on schedule, and the next request replaces it.
+   *
+   * Like `changePassword`, this does not sign out existing console sessions: the
+   * token carries no password state. Someone who has forgotten their password
+   * normally has no session to worry about; if the worry is that someone else
+   * does, disable the account instead.
+   */
+  async resetPassword(rawToken: string, newPassword: string): Promise<void> {
+    const passwordHash = await this.hashPassword(newPassword);
+
+    await db.transaction(async (tx) => {
+      const [stored] = await tx
+        .delete(adminPasswordResetTokens)
+        .where(eq(adminPasswordResetTokens.tokenHash, hashResetToken(rawToken)))
+        .returning({
+          adminId: adminPasswordResetTokens.adminId,
+          expiresAt: adminPasswordResetTokens.expiresAt,
+        });
+
+      if (!stored || stored.expiresAt < new Date()) {
+        throw httpError('Invalid or expired password reset link', 400, 'INVALID_RESET_TOKEN');
+      }
+
+      // Re-checked here rather than trusted from request time: an admin
+      // disabled after asking for a link must not be able to use it.
+      const updated = await tx
+        .update(admins)
+        .set({ passwordHash, updatedAt: new Date() })
+        .where(and(eq(admins.id, stored.adminId), isNull(admins.disabledAt)))
+        .returning({ id: admins.id });
+
+      if (updated.length === 0) {
+        throw httpError('Invalid or expired password reset link', 400, 'INVALID_RESET_TOKEN');
+      }
+    });
   },
 
   /** Used by the create-admin script; hashing lives in one place. */

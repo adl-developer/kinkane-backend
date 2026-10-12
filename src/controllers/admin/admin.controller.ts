@@ -24,6 +24,15 @@ const changePasswordSchema = z.object({
   newPassword: z.string().min(12).max(200),
 });
 
+const forgotPasswordSchema = z.object({
+  email: z.string().trim().email().max(254),
+});
+
+const resetPasswordSchema = z.object({
+  token: z.string().min(1).max(200),
+  newPassword: z.string().min(12).max(200),
+});
+
 const pageSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
   offset: z.coerce.number().int().min(0).default(0),
@@ -143,6 +152,25 @@ export const adminController = {
     );
 
     res.status(200).json({ changed: true });
+  },
+
+  /** POST /admin/console/auth/forgot-password */
+  async forgotPassword(req: Request, res: Response): Promise<void> {
+    const parsed = forgotPasswordSchema.safeParse(req.body);
+    if (!parsed.success) return badRequest(res, parsed.error);
+
+    await adminAuthService.requestPasswordReset(parsed.data.email);
+    // Same answer whether or not the address is an admin's.
+    res.status(200).json({ sent: true });
+  },
+
+  /** POST /admin/console/auth/reset-password */
+  async resetPassword(req: Request, res: Response): Promise<void> {
+    const parsed = resetPasswordSchema.safeParse(req.body);
+    if (!parsed.success) return badRequest(res, parsed.error);
+
+    await adminAuthService.resetPassword(parsed.data.token, parsed.data.newPassword);
+    res.status(200).json({ reset: true });
   },
 
   /** GET /admin/dashboard */

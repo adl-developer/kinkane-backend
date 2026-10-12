@@ -16,8 +16,8 @@ import { userReports } from './reports';
  * the app's auth is customers only.
  *
  * The cost is a second login stack, which is why it is deliberately small: email
- * and password, no self-service signup, no password reset. Admins are created
- * with `npm run admin:create`.
+ * and password, an emailed password reset, and no self-service signup. Admins
+ * are created with `npm run admin:create`.
  */
 export const admins = pgTable(
   'admins',
@@ -41,6 +41,33 @@ export const admins = pgTable(
 );
 
 export type Admin = typeof admins.$inferSelect;
+
+/**
+ * In-flight "forgot password" requests for admins.
+ *
+ * Its own table rather than a row in `password_reset_tokens`, for the same
+ * reason admins are not users: that table's `user_id` points at customers, and
+ * a reset token that could be redeemed against the wrong population is exactly
+ * the cross-over the separate `admins` table exists to rule out.
+ *
+ * Only the SHA-256 of the token is stored. One live token per admin — issuing a
+ * new one deletes the old.
+ */
+export const adminPasswordResetTokens = pgTable(
+  'admin_password_reset_tokens',
+  {
+    id: serial('id').primaryKey(),
+    adminId: integer('admin_id')
+      .notNull()
+      .references(() => admins.id, { onDelete: 'cascade' }),
+    tokenHash: varchar('token_hash', { length: 64 }).notNull().unique(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    adminIdIdx: index('idx_admin_password_reset_tokens_admin_id').on(t.adminId),
+  }),
+);
 
 /**
  * The two announcement strips at the top of every storefront page.

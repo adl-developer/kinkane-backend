@@ -29,7 +29,7 @@ export const adminPaths = {
         '',
         '**Admins are a separate population from customers.** They live in their own table, sign sessions with their own secret (`ADMIN_JWT_SECRET`), and no customer token will ever verify here — so no path through the app’s auth stack can end with a customer holding admin rights.',
         '',
-        'There is no self-service signup and no password reset. Accounts are created with `npm run admin:create`, which doubles as the reset path.',
+        'There is no self-service signup. Accounts are created with `npm run admin:create`. A forgotten password is reset by email — see `POST /admin/console/auth/forgot-password`.',
         '',
         'Sessions last `ADMIN_TOKEN_TTL` seconds (12h by default) and there is no refresh token — signing in again is cheap, and a long-lived refresh credential for an account that can export the customer list is not worth the risk.',
       ].join('\n'),
@@ -102,6 +102,56 @@ export const adminPaths = {
         ...adminErrors,
         401: json('The current password is wrong, or the session is invalid.',
           object({ error: { type: 'string' }, code: { type: 'string', example: 'INVALID_CREDENTIALS' } })),
+      },
+    },
+  },
+
+  '/admin/console/auth/forgot-password': {
+    post: {
+      tags: [TAG],
+      ...publicEndpoint,
+      summary: 'Email an admin a password reset link',
+      description: [
+        'Sends a single-use reset link to the address, if it belongs to an active admin. The link opens `ADMIN_CONSOLE_URL/reset-password?token=…` (default `APP_URL/admin/reset-password?token=…`); the console page reads `token` and posts it to `reset-password`.',
+        '',
+        '**The response is the same whether or not the address is an admin’s**, so this cannot be used to find out which staff addresses exist. Disabled admins are never sent a link.',
+        '',
+        'The link expires after 30 minutes. Asking again replaces the previous link. Shares the login rate limit.',
+      ].join('\n'),
+      requestBody: body(object({
+        email: { type: 'string', format: 'email', example: 'admin@kinkane.app' },
+      }, ['email'])),
+      responses: {
+        200: json('Accepted. Says nothing about whether an email was sent.', object({ sent: { type: 'boolean', example: true } })),
+        400: json('Validation failed.', ref('ValidationError')),
+        429: resp('RateLimited'),
+        500: resp('ServerError'),
+      },
+    },
+  },
+
+  '/admin/console/auth/reset-password': {
+    post: {
+      tags: [TAG],
+      ...publicEndpoint,
+      summary: 'Set a new admin password from a reset link',
+      description: [
+        'Redeems the `token` from a reset email and sets the new password. The token works once.',
+        '',
+        'The new password must be at least 12 characters. This does not sign the admin in — send them to the login screen afterwards.',
+        '',
+        '**Other sessions are not signed out**, for the same reason as `change-password`: a console token carries no password state.',
+      ].join('\n'),
+      requestBody: body(object({
+        token: { type: 'string', example: '3f9c…' },
+        newPassword: { type: 'string', minLength: 12, example: '••••••••••••••••' },
+      }, ['token', 'newPassword'])),
+      responses: {
+        200: json('Password changed.', object({ reset: { type: 'boolean', example: true } })),
+        400: json('Validation failed, or the link is invalid, expired, already used, or belongs to a disabled admin (`INVALID_RESET_TOKEN`).',
+          object({ error: { type: 'string', example: 'Invalid or expired password reset link' }, code: { type: 'string', example: 'INVALID_RESET_TOKEN' } })),
+        429: resp('RateLimited'),
+        500: resp('ServerError'),
       },
     },
   },
