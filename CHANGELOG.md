@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-10-13
+
+### Features
+
+* show review quotes and awards from the publisher's own description on book pages ([9eb1f9a](https://adl.github.com/adl-developer/kinkane-backend/commit/9eb1f9ab32cf2d9606145bb5690c39d275c8a4b2)) — [details](changelog/2026-10-13-publisher-reviews-from-descriptions.md)
+
+
 ## 2026-10-12
 
 ### Features

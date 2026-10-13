@@ -222,7 +222,10 @@ const bookSchemas = {
           description: {
             type: 'string',
             nullable: true,
-            description: 'Publisher long description. May contain light HTML.',
+            description:
+              'Publisher long description as plain text, no HTML. Paragraphs are separated by a blank line (`\\n\\n`), ' +
+              'line breaks within one are `\\n`, and list items start with `• `. Markup in the stored text is removed ' +
+              'before it is returned.',
             example: 'Booker Prize-winning novel following twelve characters…',
           },
           publisher: { type: 'string', nullable: true, example: 'Penguin' },

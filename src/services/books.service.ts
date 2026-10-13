@@ -21,6 +21,7 @@ import {
   type BookPrice,
 } from '../db/schema';
 import { dedupeByTitle, dedupeCardsByWork, firstNamedAuthor, groupEditions, workKey } from '../lib/dedupe';
+import { toCleanDescription } from '../lib/review-text';
 import {
   authorMatchSql,
   buildHasAuthorCondition,
@@ -4546,7 +4547,11 @@ async function loadBookDetail(id: number): Promise<BookDetail | null> {
     title: book.title,
     subtitle: book.subtitle,
     shortDescription: book.shortDescription,
-    longDescription: book.longDescription,
+    // Stored descriptions keep the feed's HTML: rewriting ~650k of them costs
+    // too much on production (see scripts/clean-long-descriptions.ts), and the
+    // catalogue import keeps writing markup anyway. Cleaning on the way out
+    // means the API never returns it.
+    longDescription: book.longDescription ? toCleanDescription(book.longDescription) || null : null,
     publisherName: book.publisherName,
     imprintName: book.imprintName,
     productForm: book.productForm,

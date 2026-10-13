@@ -2,8 +2,8 @@ import { decode } from 'html-entities';
 
 /**
  * Text clean-up shared by everything that reads review or description HTML
- * from suppliers: the publisher-review extractor and the supplier review
- * splitter script.
+ * from suppliers: the publisher-review extractor, the long-description
+ * clean-up script and the supplier review splitter script.
  */
 
 /** Windows-1252 characters that arrive as numeric entities in the 128–159 range. */
@@ -49,6 +49,48 @@ export function toPlainText(html: string): string {
     .replace(/[ \t ]+/g, ' ')
     .replace(/\s*\n\s*/g, '\n')
     .replace(/\n{2,}/g, '\n')
+    .trim();
+}
+
+const ENTITY = /&(?:[a-z]+|#\d+|#x[\da-f]+);/i;
+// Non-global copy for .test(): a /g regex keeps lastIndex between calls.
+const HAS_TAG = /<\/?[a-z][^>]*>/i;
+
+/**
+ * A long description as plain text that keeps its layout: a line break stays
+ * a line break, a new paragraph becomes a blank line, and list items become
+ * bullets. No tags or entities survive, including markup that was itself
+ * entity-encoded (repeats until nothing changes, at most four rounds).
+ *
+ * Idempotent: cleaning already-clean text returns it unchanged, so the
+ * clean-up script can be re-run safely. Empty input, or markup with no text in
+ * it, comes back as ''.
+ */
+export function toCleanDescription(html: string): string {
+  // Some feeds pad every numeric entity with a run of spaces
+  // ("Wainwright&#8217;             s"); left in, that reads "Wainwright’ s".
+  let text = html.replace(/(&#x?[\da-f]+;)[ \t]{3,}/gi, '$1');
+  for (let i = 0; i < 4; i++) {
+    const next = decodeEntities(
+      text
+        .replace(/<\s*br\s*\/?>/gi, '\n')
+        .replace(/<\s*li\b[^>]*>/gi, '\n• ')
+        .replace(/<\s*\/\s*li\s*>/gi, '')
+        .replace(BLOCK_TAG, '\n\n')
+        .replace(ANY_TAG, ''),
+    );
+    if (next === text) break;
+    text = next;
+    if (!ENTITY.test(text) && !HAS_TAG.test(text)) break;
+  }
+  return text
+    .replace(/'{2,}/g, "'")
+    .replace(/[ \t\u00a0]+/g, ' ')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '•')
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
 
