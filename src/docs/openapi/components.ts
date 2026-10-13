@@ -226,6 +226,30 @@ const bookSchemas = {
             example: 'Booker Prize-winning novel following twelve characters…',
           },
           publisher: { type: 'string', nullable: true, example: 'Penguin' },
+          review: {
+            type: 'object',
+            nullable: true,
+            description:
+              'Review quotes for this book, from one source. `null` when no source has any. ' +
+              'When several do, Nielsen wins, then BDS, then `publisher`.\n\n' +
+              '`publisher` reviews are pulled out of the publisher\'s own long description (`description`), ' +
+              'so the same quotes usually appear there too. Label them as coming from the publisher.\n\n' +
+              '`reviewHtml` is light HTML: each quote in curly quotes with its source in `<i>` on the next line, ' +
+              'awards and bestseller lines in `<b>`, items separated by `<br /><br />`.',
+            properties: {
+              reviewHtml: {
+                type: 'string',
+                example: '<b>Winner of the Costa Book Award</b><br /><br />“A gripping, visceral story.”<br /><i>John Green</i>',
+              },
+              source: { type: 'string', enum: ['nielsen', 'bds', 'publisher'], example: 'publisher' },
+              sourceField: {
+                type: 'string',
+                nullable: true,
+                description: 'Internal provenance (which supplier field, or how a publisher review was extracted). Not for display.',
+                example: 'rules',
+              },
+            },
+          },
           productForm: {
             type: 'string',
             nullable: true,

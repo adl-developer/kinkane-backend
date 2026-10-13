@@ -5,8 +5,12 @@
  */
 import { pgTable, serial, varchar, text, integer, timestamp, date, index, unique } from 'drizzle-orm/pg-core';
 
-/** Where a review row came from. Nielsen is preferred when both have one. */
-export const REVIEW_SOURCES = ['nielsen', 'bds'] as const;
+/**
+ * Where a review row came from. Nielsen is preferred when several have one,
+ * then BDS; 'publisher' is extracted from the book's own ONIX long
+ * description (see lib/publisher-reviews.ts) and comes last.
+ */
+export const REVIEW_SOURCES = ['nielsen', 'bds', 'publisher'] as const;
 export type ReviewSource = (typeof REVIEW_SOURCES)[number];
 
 /**
@@ -29,10 +33,16 @@ export const bookReviews = pgTable(
     // Kept raw to match how ONIX long descriptions are already handled.
     reviewHtml: text('review_html'),
     // Which field supplied the text — for Nielsen the territory variant
-    // (NBDFREV, AUSFREV or NZFREV); for BDS always 'review'.
+    // (NBDFREV, AUSFREV or NZFREV); for BDS always 'review'. For 'publisher'
+    // rows, how the text was extracted: 'rules', 'llm', or 'rules_fallback'
+    // (the LLM was wanted but unavailable, so a later run may retry it).
     // Only one is ever populated per record, and which one depends on the
     // dataset configuration, so it is worth recording what we actually got.
     sourceField: varchar('source_field', { length: 16 }),
+    // 'publisher' rows only: md5 of the long description the row was
+    // extracted from. A different hash means the publisher changed the text
+    // and the row is due for re-extraction; the same hash means skip it.
+    sourceHash: varchar('source_hash', { length: 32 }),
     checkedAt: timestamp('checked_at', { withTimezone: true }).notNull().defaultNow(),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),

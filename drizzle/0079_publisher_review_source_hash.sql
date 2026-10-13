@@ -1,0 +1,1 @@
+ALTER TABLE "book_reviews" ADD COLUMN "source_hash" varchar(32);

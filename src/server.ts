@@ -27,6 +27,7 @@ import {
 } from './jobs/order-reconciliation.cron';
 import { startNielsenReviewsCron, stopNielsenReviewsCron } from './jobs/nielsen-reviews.cron';
 import { startBdsEnrichmentCron, stopBdsEnrichmentCron } from './jobs/bds-enrichment.cron';
+import { startPublisherReviewsCron, stopPublisherReviewsCron } from './jobs/publisher-reviews.cron';
 import { startEmailWorker, stopEmailWorker } from './workers/email.worker';
 import { startFulfilmentWorker, stopFulfilmentWorker } from './workers/fulfilment.worker';
 import { startPushWorker, stopPushWorker } from './workers/push.worker';
@@ -48,6 +49,7 @@ async function main(): Promise<void> {
   const bestsellerRefreshTask = startBestsellerRefreshCron();
   const nielsenReviewsTask = startNielsenReviewsCron();
   const bdsEnrichmentTask = startBdsEnrichmentCron();
+  const publisherReviewsTask = startPublisherReviewsCron();
   const emailWorker = startEmailWorker();
   const pushWorker = startPushWorker();
   const fulfilmentWorker = startFulfilmentWorker();
@@ -74,6 +76,7 @@ async function main(): Promise<void> {
     stopBestsellerRefreshCron(bestsellerRefreshTask);
     stopNielsenReviewsCron(nielsenReviewsTask);
     stopBdsEnrichmentCron(bdsEnrichmentTask);
+    stopPublisherReviewsCron(publisherReviewsTask);
     // server.close() stops accepting new connections and waits for in-flight
     // requests to finish — disconnect Redis only after they drain so that any
     // in-flight cache/rate-limit call can still reach Redis.
