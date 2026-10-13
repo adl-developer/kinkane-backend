@@ -28,30 +28,11 @@ import { join } from 'path';
 import { sql } from 'drizzle-orm';
 import { db } from '../src/db';
 import { redis } from '../src/lib/redis';
+import { decodeEntities as decode } from '../src/lib/review-text';
 
 const dir = process.argv[2] ?? join(__dirname, '../probe-output/comparison-2026-09-25');
 
 // ── Text clean-up ───────────────────────────────────────────────────────────
-
-/** Windows-1252 characters that arrive as numeric entities in the 128–159 range. */
-const CP1252: Record<number, string> = {
-  128: '€', 130: '‚', 131: 'ƒ', 132: '„', 133: '…', 134: '†', 135: '‡', 136: 'ˆ', 137: '‰', 138: 'Š', 139: '‹',
-  140: 'Œ', 142: 'Ž', 145: '‘', 146: '’', 147: '“', 148: '”', 149: '•', 150: '–', 151: '—', 152: '˜', 153: '™',
-  154: 'š', 155: '›', 156: 'œ', 158: 'ž', 159: 'Ÿ',
-};
-
-const NAMED: Record<string, string> = {
-  amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', hellip: '…', mdash: '—', ndash: '–',
-  lsquo: '‘', rsquo: '’', ldquo: '“', rdquo: '”', eacute: 'é', egrave: 'è', euml: 'ë', uuml: 'ü',
-  ouml: 'ö', auml: 'ä', aacute: 'á', iacute: 'í', oacute: 'ó', uacute: 'ú', ccedil: 'ç', pound: '£',
-};
-
-function decode(s: string): string {
-  return s
-    .replace(/&#(\d+);/g, (_, n) => CP1252[Number(n)] ?? String.fromCodePoint(Number(n)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
-    .replace(/&([a-z]+);/gi, (m, name) => NAMED[name.toLowerCase()] ?? m);
-}
 
 /** Readable text: tags gone, entities decoded, whitespace collapsed. */
 function text(html: string): string {

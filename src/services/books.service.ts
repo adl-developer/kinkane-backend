@@ -4587,7 +4587,11 @@ async function loadBookDetail(id: number): Promise<BookDetail | null> {
   // deletes this key so the next request picks the review up — doing it
   // before the set would let that delete land first and cache the
   // review-less copy for the full hour instead.
-  if (!detail.review) {
+  //
+  // A review extracted from the publisher's own description ranks below
+  // Nielsen's, so it must not stop Nielsen being asked: only a Nielsen or BDS
+  // review means there is nothing better to fetch.
+  if (!detail.review || detail.review.source === 'publisher') {
     void bookReviewsService.fetchOnDemand(book.isbn13, book.id);
   }
   // One BDS lookup answers both bio and review; it checks its own ledger, so

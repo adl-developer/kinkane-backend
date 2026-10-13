@@ -554,6 +554,13 @@
       "when": 1791842347877,
       "tag": "0078_admin_password_reset_hardening",
       "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1791848788471,
+      "tag": "0079_publisher_review_source_hash",
+      "breakpoints": true
     }
   ]
 }

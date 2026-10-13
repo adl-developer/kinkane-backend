@@ -600,6 +600,25 @@ const envSchema = z.object({
   // The daily "what changed at BDS" pass pages through every record BDS
   // updated yesterday, not just ours, so it is capped. See runDailyDelta.
   BDS_DELTA_MAX_PAGES: z.coerce.number().int().min(0).default(100),
+
+  // ── Publisher reviews — extracted from the ONIX long description ───────────
+  //
+  // The nightly re-extraction is off by default: switch it on once
+  // scripts/publisher-reviews-backfill.ts has run, or the first night tries to
+  // catch up on every book at once.
+  PUBLISHER_REVIEWS_ENABLED: z
+    .string()
+    .default('false')
+    .transform((v) => v === 'true'),
+  PUBLISHER_REVIEWS_CRON: z.string().default('0 4 * * *'),
+  // Off means rules only: descriptions the rules cannot split cleanly are
+  // stored as 'rules_fallback' and can be retried later with --retry-fallback.
+  PUBLISHER_REVIEWS_LLM_ENABLED: z
+    .string()
+    .default('true')
+    .transform((v) => v === 'true'),
+  // Gemini calls in flight at once during a run. Each is one description.
+  PUBLISHER_REVIEWS_LLM_CONCURRENCY: z.coerce.number().int().min(1).max(50).default(8),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -971,6 +990,13 @@ export const config = {
     requestDelayMs: env.BDS_REQUEST_DELAY_MS,
     missRecheckDays: env.BDS_MISS_RECHECK_DAYS,
     deltaMaxPages: env.BDS_DELTA_MAX_PAGES,
+  },
+
+  publisherReviews: {
+    enabled: env.PUBLISHER_REVIEWS_ENABLED,
+    cronSchedule: env.PUBLISHER_REVIEWS_CRON,
+    llmEnabled: env.PUBLISHER_REVIEWS_LLM_ENABLED,
+    llmConcurrency: env.PUBLISHER_REVIEWS_LLM_CONCURRENCY,
   },
 } as const;
 

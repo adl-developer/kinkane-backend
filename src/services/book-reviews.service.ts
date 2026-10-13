@@ -8,7 +8,7 @@ import { fetchReviewByIsbn, NielsenLimitExceededError } from '../lib/nielsen';
 
 export interface BookReviewInfo {
   reviewHtml: string;
-  /** Which service supplied the quote: 'nielsen' or 'bds'. */
+  /** Which service supplied the quote: 'nielsen', 'bds' or 'publisher'. */
   source: ReviewSource;
   sourceField: string | null;
 }
@@ -16,10 +16,12 @@ export interface BookReviewInfo {
 /**
  * When more than one source has a review for a book, the first in this list
  * wins. Nielsen first: it was here first and its quotes were checked by hand
- * when the feature shipped. BDS fills the gaps. They are not merged — both
- * carry publisher-supplied quotes, so showing both would mostly repeat them.
+ * when the feature shipped. BDS fills the gaps. Publisher reviews, extracted
+ * from the book's own long description, come last. They are not merged — all
+ * three carry publisher-supplied quotes, so showing several would mostly
+ * repeat them.
  */
-const SOURCE_PREFERENCE: readonly ReviewSource[] = ['nielsen', 'bds'];
+const SOURCE_PREFERENCE: readonly ReviewSource[] = ['nielsen', 'bds', 'publisher'];
 
 export type BudgetKind = 'batch' | 'onDemand';
 
@@ -87,7 +89,7 @@ async function markLimitHit(): Promise<void> {
  */
 export async function storeReviewResults(
   source: ReviewSource,
-  results: { isbn13: string; reviewHtml: string | null; sourceField: string | null }[],
+  results: { isbn13: string; reviewHtml: string | null; sourceField: string | null; sourceHash?: string | null }[],
 ): Promise<void> {
   if (results.length === 0) return;
   const checkedAt = new Date();
@@ -99,6 +101,7 @@ export async function storeReviewResults(
       set: {
         reviewHtml: sql`excluded.review_html`,
         sourceField: sql`excluded.source_field`,
+        sourceHash: sql`excluded.source_hash`,
         checkedAt: sql`excluded.checked_at`,
         updatedAt: sql`now()`,
       },
