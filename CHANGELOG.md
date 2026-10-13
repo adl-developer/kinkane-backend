@@ -1,6 +1,14 @@
 # Changelog
 
 
+## 2026-10-13
+
+### Features
+
+* book pages show descriptions as plain text instead of HTML ([244c474](https://adl.github.com/adl-developer/kinkane-backend/commit/244c474caab4a3073cb2b083300bd26d7c09e835)) — [details](changelog/2026-10-13-plain-text-book-descriptions.md)
+* show review quotes and awards from the publisher's own description on book pages ([9eb1f9a](https://adl.github.com/adl-developer/kinkane-backend/commit/9eb1f9ab32cf2d9606145bb5690c39d275c8a4b2)) — [details](changelog/2026-10-13-publisher-reviews-from-descriptions.md)
+
+
 ## 2026-10-12
 
 ### Features

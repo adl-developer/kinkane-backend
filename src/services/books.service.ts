@@ -21,6 +21,7 @@ import {
   type BookPrice,
 } from '../db/schema';
 import { dedupeByTitle, dedupeCardsByWork, firstNamedAuthor, groupEditions, workKey } from '../lib/dedupe';
+import { toCleanDescription } from '../lib/review-text';
 import {
   authorMatchSql,
   buildHasAuthorCondition,
@@ -634,10 +635,9 @@ export interface EditionSummary {
 
 export interface BookDetail extends BookListItem {
   /**
-   * Review quotes from Nielsen or, where Nielsen has none, from BDS — `source`
-   * says which. HTML as supplied, with the outlet names embedded in the prose
-   * rather than as separate fields. Renders the same way longDescription
-   * does, and needs the same treatment by the client.
+   * Review quotes from Nielsen, then BDS, then the publisher's own long
+   * description — `source` says which. Nielsen and BDS text is HTML as
+   * supplied; 'publisher' text is plain (see lib/publisher-reviews.ts).
    */
   review: BookReviewInfo | null;
   /**
@@ -4546,7 +4546,11 @@ async function loadBookDetail(id: number): Promise<BookDetail | null> {
     title: book.title,
     subtitle: book.subtitle,
     shortDescription: book.shortDescription,
-    longDescription: book.longDescription,
+    // Stored descriptions keep the feed's HTML: rewriting ~650k of them costs
+    // too much on production (see scripts/clean-long-descriptions.ts), and the
+    // catalogue import keeps writing markup anyway. Cleaning on the way out
+    // means the API never returns it.
+    longDescription: book.longDescription ? toCleanDescription(book.longDescription) || null : null,
     publisherName: book.publisherName,
     imprintName: book.imprintName,
     productForm: book.productForm,

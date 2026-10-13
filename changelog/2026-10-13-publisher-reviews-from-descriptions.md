@@ -37,11 +37,11 @@ The scan itself counted 20,864 for the LLM. A final rules fix sends a few more b
    - Every quote and source must appear word for word in the description. This is what stops a model inventing or rewording one.
    - A quote needs a source, unless a praise heading or star rating vouches for it. Unattributed quotes in these descriptions are as often lines from the book.
    - A "source" that reads like a sentence ("Chernow writes", "…is available now") is rejected.
-6. **Output.** The same light-HTML layout BDS reviews use: awards in `<b>` first, then "quote" with its source in `<i>`.
+6. **Output.** Plain text, no HTML: awards first, one per line, then each "quote" with its source on the next line after `— `, with a blank line between items. The column keeps its name, `review_html`, as does the API's `reviewHtml` field.
 
 **Storage.** Only books with reviews get a row: one `book_reviews` row with `source = 'publisher'`, never with an empty `review_html`. A book whose description has no reviews has no row, and a row is deleted when a changed description no longer has any. The row stores:
 - `source_field`: `rules`, `llm`, or `rules_fallback` (the LLM was wanted but unavailable or unusable)
-- a new `source_hash` column (migration 0079): the md5 of the description it was read from
+- a new `source_hash` column (migration 0079): the md5 of the description it was read from, after `toCleanDescription`. Hashing the cleaned text means that removing HTML from the stored descriptions later does not make every book look changed.
 
 **Keeping it current.**
 - `scripts/publisher-reviews-backfill.ts` walks the whole catalogue once.
@@ -71,7 +71,7 @@ The scan itself counted 20,864 for the LLM. A final rules fix sends a few more b
 
 ## How it was verified
 
-- **Unit tests:** 35 in `src/__tests__/publisher-reviews.test.ts`, built from real descriptions found while sizing this. They cover cleaning, each attribution layout, excerpts and whole-blurb quotes that must not count, star ratings, awards, routing, validation, the HTML output and the LLM fallbacks.
+- **Unit tests:** 35 in `src/__tests__/publisher-reviews.test.ts`, built from real descriptions found while sizing this. They cover cleaning, each attribution layout, excerpts and whole-blurb quotes that must not count, star ratings, awards, routing, validation, the plain-text output and the LLM fallbacks.
 - **Integration tests:** 10 in `src/__tests__/publisher-reviews.integration.test.ts`, against a real Postgres. They cover:
   - that only books with reviews get a row, and none has an empty review;
   - that a re-run skips books with reviews and re-checks the rest;

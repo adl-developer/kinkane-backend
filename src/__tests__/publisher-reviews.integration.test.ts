@@ -76,6 +76,7 @@ vi.mock('../lib/redis', () => ({
 let db: typeof import('../db').db;
 let sql: typeof import('drizzle-orm').sql;
 let svc: typeof import('../services/publisher-reviews.service').publisherReviewsService;
+let descriptionHash: typeof import('../services/publisher-reviews.service').descriptionHash;
 let reviews: typeof import('../services/book-reviews.service');
 
 const PREFIX = 'PUBREVTEST-';
@@ -96,18 +97,24 @@ async function addBook(isbn13: string, longDescription: string | null): Promise<
 
 async function publisherRow(isbn13: string) {
   const rows = (await db.execute(sql`
-    SELECT r.review_html, r.source_field, r.source_hash = md5(coalesce(b.long_description, '')) AS hash_matches
+    SELECT r.review_html, r.source_field, r.source_hash, b.long_description
     FROM book_reviews r JOIN books b ON b.isbn13 = r.isbn13
     WHERE r.isbn13 = ${isbn13} AND r.source = 'publisher'
-  `)) as unknown as { review_html: string | null; source_field: string; hash_matches: boolean }[];
-  return rows[0];
+  `)) as unknown as { review_html: string | null; source_field: string; source_hash: string; long_description: string | null }[];
+  const row = rows[0];
+  if (!row) return undefined;
+  return {
+    review_html: row.review_html,
+    source_field: row.source_field,
+    hash_matches: row.source_hash === descriptionHash(row.long_description),
+  };
 }
 
 describeIfDb('publisher reviews', () => {
   beforeAll(async () => {
     ({ sql } = await import('drizzle-orm'));
     ({ db } = await import('../db'));
-    ({ publisherReviewsService: svc } = await import('../services/publisher-reviews.service'));
+    ({ publisherReviewsService: svc, descriptionHash } = await import('../services/publisher-reviews.service'));
     reviews = await import('../services/book-reviews.service');
   });
 
@@ -137,7 +144,7 @@ describeIfDb('publisher reviews', () => {
 
     expect(stats).toMatchObject({ scanned: 2, stored: 1, removed: 0 });
     expect(await publisherRow('9780000000001')).toEqual({
-      review_html: '“Delightful”<br /><i>Veronica Henry</i>',
+      review_html: '“Delightful”\n— Veronica Henry',
       source_field: 'rules',
       hash_matches: true,
     });
@@ -155,6 +162,25 @@ describeIfDb('publisher reviews', () => {
     await addBook('9780000000002', PLAIN);
     await svc.runBackfill();
     expect(await svc.runBackfill()).toMatchObject({ scanned: 1, stored: 0 });
+  });
+
+  it('removing HTML from a stored description does not make its book due again', async () => {
+    const id = await addBook('9780000000001', CLEAN);
+    await svc.runBackfill();
+    const { toCleanDescription } = await import('../lib/review-text');
+    await db.execute(sql`UPDATE books SET long_description = ${toCleanDescription(CLEAN)}, updated_at = now() WHERE id = ${id}`);
+
+    expect(await svc.runBackfill()).toMatchObject({ scanned: 0 });
+    expect(await svc.runChanged(new Date(Date.now() - 60_000))).toMatchObject({ scanned: 0 });
+    expect(await publisherRow('9780000000001')).toMatchObject({ hash_matches: true });
+  });
+
+  it('a --limit run reports a resume point that skips nothing', async () => {
+    const ids = [];
+    for (let i = 1; i <= 3; i++) ids.push(await addBook(`978000000000${i}`, CLEAN));
+    const first = await svc.runBackfill({ limit: 2 });
+    expect(first).toMatchObject({ scanned: 2, lastId: ids[1] });
+    expect(await svc.runBackfill({ afterId: first.lastId })).toMatchObject({ scanned: 1, stored: 1 });
   });
 
   it('resumes after a given book id', async () => {
@@ -185,7 +211,7 @@ describeIfDb('publisher reviews', () => {
     expect(llmCalls).toHaveLength(1);
     expect(stats.byMethod).toEqual({ rules: 0, llm: 1, rules_fallback: 0 });
     expect(await publisherRow('9780000000001')).toMatchObject({
-      review_html: "“I couldn't take my eyes off it”<br /><i>Janice Hallett</i>",
+      review_html: "“I couldn't take my eyes off it”\n— Janice Hallett",
       source_field: 'llm',
     });
   });
@@ -233,7 +259,7 @@ describeIfDb('publisher reviews', () => {
     const stats = await svc.runChanged(new Date(Date.now() - 60_000));
 
     expect(stats).toMatchObject({ scanned: 2, stored: 1, removed: 1, changed: 2 });
-    expect(await publisherRow('9780000000001')).toMatchObject({ review_html: '“Delightful”<br /><i>Veronica Henry</i>', hash_matches: true });
+    expect(await publisherRow('9780000000001')).toMatchObject({ review_html: '“Delightful”\n— Veronica Henry', hash_matches: true });
     expect(await publisherRow('9780000000002')).toBeUndefined();
     expect(deletedKeys.sort()).toEqual([`book:detail:${changedId}`, `book:detail:${clearedId}`].sort());
   });
