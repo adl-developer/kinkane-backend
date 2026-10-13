@@ -237,12 +237,13 @@ const bookSchemas = {
               'When several do, Nielsen wins, then BDS, then `publisher`.\n\n' +
               '`publisher` reviews are pulled out of the publisher\'s own long description (`description`), ' +
               'so the same quotes usually appear there too. Label them as coming from the publisher.\n\n' +
-              '`reviewHtml` is light HTML: each quote in curly quotes with its source in `<i>` on the next line, ' +
-              'awards and bestseller lines in `<b>`, items separated by `<br /><br />`.',
+              'For `publisher`, `reviewHtml` is plain text despite its name: awards first, one per line; then each quote ' +
+              'in curly quotes with its source on the next line after `— `; items separated by a blank line. ' +
+              'Nielsen and BDS text is light HTML.',
             properties: {
               reviewHtml: {
                 type: 'string',
-                example: '<b>Winner of the Costa Book Award</b><br /><br />“A gripping, visceral story.”<br /><i>John Green</i>',
+                example: 'Winner of the Costa Book Award\n\n“A gripping, visceral story.”\n— John Green',
               },
               source: { type: 'string', enum: ['nielsen', 'bds', 'publisher'], example: 'publisher' },
               sourceField: {

@@ -1,4 +1,4 @@
-import { escapeHtml, toPlainText } from './review-text';
+import { toPlainText } from './review-text';
 
 /**
  * Pulls review material out of a publisher's ONIX long description.
@@ -43,7 +43,8 @@ export interface RulesResult {
 export type ExtractionMethod = 'rules' | 'llm' | 'rules_fallback';
 
 export interface ExtractionResult {
-  reviewHtml: string | null;
+  /** Plain text, no markup: see toReviewText. Null when there is nothing. */
+  reviewText: string | null;
   items: ReviewItem[];
   method: ExtractionMethod;
 }
@@ -544,19 +545,25 @@ export function validateItems(items: ReviewItem[], text: string): ReviewItem[] {
 // ── Output ──────────────────────────────────────────────────────────────────
 
 /**
- * The layout BDS used for review_html, so clients render it the same way:
- * accolades in bold, then "quote" with its source in italics on the next line.
+ * The stored review: plain text, no HTML. Awards first, one per line; then
+ * each quote in curly quotes with its source on the next line after a dash.
+ * Items are separated by a blank line.
+ *
+ *   #1 NEW YORK TIMES BESTSELLER
+ *
+ *   “A gripping, visceral story.”
+ *   — John Green
  */
-export function toReviewHtml(items: ReviewItem[]): string | null {
+export function toReviewText(items: ReviewItem[]): string | null {
   if (items.length === 0) return null;
   return items
     .map((i) => {
-      if (i.kind === 'accolade') return `<b>${escapeHtml(i.quote)}</b>`;
+      if (i.kind === 'accolade') return i.quote;
       // '? ? ? ? ?' is a star rating that lost its characters somewhere upstream.
       const source = i.attribution?.replace(/(?:\?\s){4}\?/g, '★★★★★') ?? (i.kind === 'reader' ? 'Reader review' : null);
-      return `“${escapeHtml(i.quote)}”${source ? `<br /><i>${escapeHtml(source)}</i>` : ''}`;
+      return `“${i.quote}”${source ? `\n— ${source}` : ''}`;
     })
-    .join('<br /><br />');
+    .join('\n\n');
 }
 
 // ── Orchestration ───────────────────────────────────────────────────────────
@@ -572,22 +579,22 @@ export async function extractPublisherReviews(
   llm?: LlmExtractor,
 ): Promise<ExtractionResult> {
   const text = normaliseDescription(longDescriptionHtml);
-  if (!text) return { reviewHtml: null, items: [], method: 'rules' };
+  if (!text) return { reviewText: null, items: [], method: 'rules' };
 
   const rules = extractWithRules(text);
   const ruleItems = validateItems(rules.items, text);
 
   if (!rules.needsLlm) {
-    return { reviewHtml: toReviewHtml(ruleItems), items: ruleItems, method: 'rules' };
+    return { reviewText: toReviewText(ruleItems), items: ruleItems, method: 'rules' };
   }
   if (!llm) {
-    return { reviewHtml: toReviewHtml(ruleItems), items: ruleItems, method: 'rules_fallback' };
+    return { reviewText: toReviewText(ruleItems), items: ruleItems, method: 'rules_fallback' };
   }
 
   const llmRaw = await llm(text);
   const llmItems = llmRaw ? validateItems(llmRaw, text) : [];
   if (llmRaw === null || (llmItems.length === 0 && ruleItems.length > 0)) {
-    return { reviewHtml: toReviewHtml(ruleItems), items: ruleItems, method: 'rules_fallback' };
+    return { reviewText: toReviewText(ruleItems), items: ruleItems, method: 'rules_fallback' };
   }
-  return { reviewHtml: toReviewHtml(llmItems), items: llmItems, method: 'llm' };
+  return { reviewText: toReviewText(llmItems), items: llmItems, method: 'llm' };
 }

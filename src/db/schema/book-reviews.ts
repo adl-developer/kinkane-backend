@@ -28,6 +28,8 @@ export const bookReviews = pgTable(
     // Each source keeps its own "asked, nothing" rows, so a miss at one can
     // never hide a hit at the other. Existing rows are all Nielsen's.
     source: varchar('source', { length: 16 }).$type<ReviewSource>().notNull().default('nielsen'),
+    // 'publisher' rows hold plain text (see toReviewText), never NULL: a book
+    // with no publisher reviews has no row. Supplier rows are stored as supplied.
     // Stored as supplied: Nielsen returns escaped HTML with the outlet names
     // embedded in the prose ("... * Observer *"), not as separate fields.
     // Kept raw to match how ONIX long descriptions are already handled.

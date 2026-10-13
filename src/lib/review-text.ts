@@ -93,8 +93,3 @@ export function toCleanDescription(html: string): string {
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
-
-/** Escapes text for safe inclusion in HTML we generate. */
-export function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}

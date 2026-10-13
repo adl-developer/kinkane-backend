@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import pLimit from 'p-limit';
 import { db } from '../db';
@@ -7,6 +8,7 @@ import { logger } from '../lib/logger';
 import { redis } from '../lib/redis';
 import { extractReviewItems } from '../lib/gemini';
 import { extractPublisherReviews, type ExtractionMethod } from '../lib/publisher-reviews';
+import { toCleanDescription } from '../lib/review-text';
 import { storeReviewResults } from './book-reviews.service';
 
 /**
@@ -15,8 +17,8 @@ import { storeReviewResults } from './book-reviews.service';
  *
  * Only books with reviews get a row: a book whose description has none has no
  * row at all, and a row is deleted when a changed description no longer has
- * any. Each row carries the md5 of the text it was read from, so a book with
- * reviews is skipped until its description changes. Books without a row have
+ * any. Each row carries a hash of the text it was read from (descriptionHash),
+ * so a book with reviews is skipped until its description changes. Books without a row have
  * no such record, so a pass re-checks them; the rules are cheap (75k
  * descriptions in about 9 seconds), and each page is committed before the
  * next is read, so a pass is safe to stop and resume.
@@ -35,14 +37,56 @@ const WATERMARK_OVERLAP_MS = 10 * 60 * 1000;
 const DEFAULT_LOOKBACK_MS = 2 * 24 * 60 * 60 * 1000;
 const PAGE_SIZE = 1000;
 
-// A type alias rather than an interface: db.execute<T> needs T to be a Record.
-type Candidate = {
+// Type aliases rather than interfaces: db.execute<T> needs T to be a Record.
+/** A book as read for a pass, with its current publisher row if it has one. */
+type BookRow = {
   id: number;
   isbn13: string;
   long_description: string | null;
-  hash: string;
+  is_removed: boolean;
+  has_row: boolean;
   old_html: string | null;
+  old_hash: string | null;
+  old_field: string | null;
 };
+type Candidate = BookRow & { hash: string };
+
+/**
+ * md5 of the description as a reader sees it, after toCleanDescription. Taken
+ * from the cleaned text rather than the stored one so that removing HTML from
+ * the stored descriptions (scripts/clean-long-descriptions.ts) does not make
+ * every book look changed: cleaning is idempotent, so the hash is the same
+ * before and after.
+ */
+export function descriptionHash(longDescription: string | null): string {
+  return createHash('md5').update(toCleanDescription(longDescription ?? '')).digest('hex');
+}
+
+/**
+ * Which books are due. A book without a row is due if it has a long
+ * description with text in it. A book with a row is due when its description
+ * no longer hashes the same, including when the description has been removed.
+ *
+ * `force` makes every book with a row due as well, for when the extraction
+ * rules change: an unchanged description would otherwise keep its old result.
+ */
+function dueRows(rows: BookRow[], opts: { retryFallback?: boolean; force?: boolean } = {}): Candidate[] {
+  const due: Candidate[] = [];
+  for (const row of rows) {
+    const hash = descriptionHash(row.long_description);
+    const isDue = row.has_row
+      ? row.old_hash !== hash || !!opts.force || (!!opts.retryFallback && row.old_field === 'rules_fallback')
+      : !row.is_removed && toCleanDescription(row.long_description ?? '') !== '';
+    if (isDue) due.push({ ...row, hash });
+  }
+  return due;
+}
+
+/** The columns every pass reads: the book, and its publisher row if any. */
+const PASS_COLUMNS = sql`
+  b.id, b.isbn13, b.long_description, b.is_removed,
+  (r.id IS NOT NULL) AS has_row, r.review_html AS old_html, r.source_hash AS old_hash, r.source_field AS old_field
+`;
 
 export interface PassStats {
   scanned: number;
@@ -69,23 +113,6 @@ function emptyStats(): PassStats {
   };
 }
 
-/**
- * Which books are due. A book without a row is due if it has a long
- * description to read. A book with a row is due when its description no
- * longer hashes the same, including when the description has been removed.
- *
- * `force` makes every book with a row due as well, for when the extraction
- * rules change: an unchanged description would otherwise keep its old result.
- */
-function dueCondition(opts: { retryFallback?: boolean; force?: boolean } = {}) {
-  return sql`(
-    (r.id IS NULL AND NOT b.is_removed AND btrim(coalesce(b.long_description, '')) <> '')
-    OR (r.id IS NOT NULL AND r.source_hash IS DISTINCT FROM md5(coalesce(b.long_description, '')))
-    ${opts.retryFallback ? sql`OR r.source_field = 'rules_fallback'` : sql``}
-    ${opts.force ? sql`OR r.id IS NOT NULL` : sql``}
-  )`;
-}
-
 async function extractAndStore(rows: Candidate[], stats: PassStats, useLlm: boolean): Promise<void> {
   const limit = pLimit(config.publisherReviews.llmConcurrency);
   const llm = useLlm
@@ -99,26 +126,28 @@ async function extractAndStore(rows: Candidate[], stats: PassStats, useLlm: bool
     rows.map((row) => limit(async () => ({ row, result: await extractPublisherReviews(row.long_description, llm) }))),
   );
 
-  const found = results.filter(({ result }) => result.reviewHtml);
+  const found = results.filter(({ result }) => result.reviewText);
   await storeReviewResults(
     'publisher',
     found.map(({ row, result }) => ({
       isbn13: row.isbn13,
-      reviewHtml: result.reviewHtml,
+      // The column is review_html for the supplier sources; publisher reviews
+      // are stored as plain text (see toReviewText).
+      reviewHtml: result.reviewText,
       sourceField: result.method,
       sourceHash: row.hash,
     })),
   );
 
   // No reviews any more: the row goes, rather than staying as an empty one.
-  const gone = results.filter(({ row, result }) => !result.reviewHtml && row.old_html !== null).map(({ row }) => row.isbn13);
+  const gone = results.filter(({ row, result }) => !result.reviewText && row.old_html !== null).map(({ row }) => row.isbn13);
   if (gone.length > 0) {
     await db.delete(bookReviews).where(and(eq(bookReviews.source, 'publisher'), inArray(bookReviews.isbn13, gone)));
   }
 
   // A book page caches its review for an hour; drop the ones that changed so
   // the new review (or its removal) shows on the next view.
-  const changedIds = results.filter(({ row, result }) => row.old_html !== result.reviewHtml).map(({ row }) => row.id);
+  const changedIds = results.filter(({ row, result }) => row.old_html !== result.reviewText).map(({ row }) => row.id);
   for (let i = 0; i < changedIds.length; i += 500) {
     await redis.del(...changedIds.slice(i, i + 500).map((id) => `book:detail:${id}`)).catch(() => undefined);
   }
@@ -154,34 +183,25 @@ export const publisherReviewsService = {
     let afterId = opts.afterId ?? 0;
 
     while (stats.scanned < limit) {
-      const page = await db.execute<Candidate & { last_id: number }>(sql`
-        WITH page AS (
-          SELECT id FROM books WHERE id > ${afterId} AND isbn13 IS NOT NULL ORDER BY id LIMIT ${PAGE_SIZE}
-        )
-        SELECT b.id, b.isbn13, b.long_description, md5(coalesce(b.long_description, '')) AS hash,
-               r.review_html AS old_html, (SELECT max(id) FROM page) AS last_id
-        FROM page
-        JOIN books b ON b.id = page.id
+      // Books with a description, or a row to remove now that it has none.
+      const page = await db.execute<BookRow>(sql`
+        SELECT ${PASS_COLUMNS}
+        FROM books b
         LEFT JOIN book_reviews r ON r.isbn13 = b.isbn13 AND r.source = 'publisher'
-        WHERE ${dueCondition(opts)}
+        WHERE b.id > ${afterId} AND b.isbn13 IS NOT NULL
+          AND (btrim(coalesce(b.long_description, '')) <> '' OR r.id IS NOT NULL)
         ORDER BY b.id
+        LIMIT ${PAGE_SIZE}
       `);
-      const rows = page as unknown as (Candidate & { last_id: number })[];
+      const rows = page as unknown as BookRow[];
+      if (rows.length === 0) break;
 
-      if (rows.length > 0) {
-        await extractAndStore(rows.slice(0, Math.max(0, limit - stats.scanned)), stats, useLlm);
-        afterId = rows[0].last_id;
-      } else {
-        // Nothing due on this page: move past it without reading descriptions again.
-        const next = await db.execute<{ last_id: number | null }>(sql`
-          SELECT max(id) AS last_id FROM (
-            SELECT id FROM books WHERE id > ${afterId} AND isbn13 IS NOT NULL ORDER BY id LIMIT ${PAGE_SIZE}
-          ) p
-        `);
-        const lastId = (next as unknown as { last_id: number | null }[])[0]?.last_id;
-        if (lastId === null || lastId === undefined) break;
-        afterId = lastId;
-      }
+      const due = dueRows(rows, opts);
+      const room = limit - stats.scanned;
+      const batch = due.slice(0, room);
+      await extractAndStore(batch, stats, useLlm);
+      // Resume point: the end of the page, unless --limit cut the page short.
+      afterId = due.length > room ? batch[batch.length - 1].id : rows[rows.length - 1].id;
       stats.lastId = afterId;
       opts.onPage?.({ ...stats, byMethod: { ...stats.byMethod } });
     }
@@ -200,21 +220,20 @@ export const publisherReviewsService = {
     let cursor: { updatedAt: string; id: number } | null = null;
 
     for (;;) {
-      const page = await db.execute<Candidate & { updated_at: string }>(sql`
-        SELECT b.id, b.isbn13, b.long_description, md5(coalesce(b.long_description, '')) AS hash,
-               r.review_html AS old_html, b.updated_at
+      const page = await db.execute<BookRow & { updated_at: string }>(sql`
+        SELECT ${PASS_COLUMNS}, b.updated_at
         FROM books b
         LEFT JOIN book_reviews r ON r.isbn13 = b.isbn13 AND r.source = 'publisher'
         WHERE b.isbn13 IS NOT NULL
           AND b.updated_at >= ${since.toISOString()}
           ${cursor ? sql`AND (b.updated_at, b.id) > (${cursor.updatedAt}::timestamptz, ${cursor.id})` : sql``}
-          AND ${dueCondition()}
+          AND (btrim(coalesce(b.long_description, '')) <> '' OR r.id IS NOT NULL)
         ORDER BY b.updated_at, b.id
         LIMIT ${PAGE_SIZE}
       `);
-      const rows = page as unknown as (Candidate & { updated_at: string })[];
+      const rows = page as unknown as (BookRow & { updated_at: string })[];
       if (rows.length === 0) break;
-      await extractAndStore(rows, stats, useLlm);
+      await extractAndStore(dueRows(rows), stats, useLlm);
       const last = rows[rows.length - 1];
       cursor = { updatedAt: new Date(last.updated_at).toISOString(), id: last.id };
       if (rows.length < PAGE_SIZE) break;

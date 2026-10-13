@@ -4,7 +4,7 @@ import {
   extractWithRules,
   isAccolade,
   normaliseDescription,
-  toReviewHtml,
+  toReviewText,
   validateItems,
   type ReviewItem,
 } from '../lib/publisher-reviews';
@@ -233,21 +233,22 @@ describe('validateItems', () => {
   });
 });
 
-describe('toReviewHtml', () => {
-  it('uses the BDS layout, accolades first, with text escaped', () => {
+describe('toReviewText', () => {
+  it('is plain text: awards first, then each quote with its source on the next line', () => {
     expect(
-      toReviewHtml([
-        { kind: 'accolade', quote: 'Winner of the <Costa> Prize', attribution: null },
+      toReviewText([
+        { kind: 'accolade', quote: 'Winner of the Costa Prize', attribution: null },
         { kind: 'critic', quote: 'Witty & wise', attribution: 'The Times' },
         { kind: 'reader', quote: 'Loved it', attribution: '? ? ? ? ?' },
+        { kind: 'reader', quote: 'Could not put it down', attribution: null },
       ]),
     ).toBe(
-      '<b>Winner of the &lt;Costa&gt; Prize</b><br /><br />“Witty &amp; wise”<br /><i>The Times</i><br /><br />“Loved it”<br /><i>★★★★★</i>',
+      'Winner of the Costa Prize\n\n“Witty & wise”\n— The Times\n\n“Loved it”\n— ★★★★★\n\n“Could not put it down”\n— Reader review',
     );
   });
 
   it('returns null when there is nothing to show', () => {
-    expect(toReviewHtml([])).toBeNull();
+    expect(toReviewText([])).toBeNull();
   });
 });
 
@@ -259,7 +260,7 @@ describe('extractPublisherReviews', () => {
     const llm = vi.fn();
     const res = await extractPublisherReviews(clean, llm);
     expect(llm).not.toHaveBeenCalled();
-    expect(res).toMatchObject({ method: 'rules', reviewHtml: '“Delightful”<br /><i>Veronica Henry</i>' });
+    expect(res).toMatchObject({ method: 'rules', reviewText: '“Delightful”\n— Veronica Henry' });
   });
 
   it('uses validated LLM items when the rules hand over', async () => {
@@ -283,6 +284,6 @@ describe('extractPublisherReviews', () => {
   });
 
   it('returns nothing for an empty description', async () => {
-    expect(await extractPublisherReviews(null)).toEqual({ reviewHtml: null, items: [], method: 'rules' });
+    expect(await extractPublisherReviews(null)).toEqual({ reviewText: null, items: [], method: 'rules' });
   });
 });
