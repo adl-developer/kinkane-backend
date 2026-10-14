@@ -838,7 +838,7 @@ async function loadTitlesAndAuthors(bookIds: number[]) {
 }
 
 /** Collapses works to one entry per set of match keys and folded author. */
-function dedupeWorks(works: ExcludedWork[]): ExcludedWork[] {
+export function dedupeWorks(works: ExcludedWork[]): ExcludedWork[] {
   const byKey = new Map<string, ExcludedWork>();
   for (const work of works) {
     // Explicit NUL separator so a title/author pair can't collide with a

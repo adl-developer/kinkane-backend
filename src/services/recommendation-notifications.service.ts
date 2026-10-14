@@ -1,4 +1,4 @@
-import { eq, and, sql, isNull, isNotNull } from 'drizzle-orm';
+import { eq, and, sql, isNull, isNotNull, notInArray } from 'drizzle-orm';
 import { db } from '../db';
 import {
   books,
@@ -9,11 +9,14 @@ import {
   recommendationEmailLog,
   userDislikedBooks,
   notifications,
+  savedBooks,
 } from '../db/schema';
 import {
   buildHasAuthorCondition,
   buildWorkExclusionCondition,
+  dedupeWorks,
   getUserExclusions,
+  resolveAllAuthorWorks,
 } from '../lib/exclusions';
 import { buildFeedCondition } from './books.service';
 import { enqueueEmail } from '../lib/email-queue';
@@ -31,18 +34,24 @@ export interface UnsentRecommendation {
 }
 
 /**
- * Runs a pgvector similarity search against the user's preference embedding,
- * excluding books already on their shelf, books we have already emailed them,
- * books they have rejected, and anything with no named author. Returns the top
- * match, or null if the pool is exhausted.
+ * Runs a pgvector similarity search against the user's preference embedding
+ * and returns the top book the reader has never seen, or null if the pool is
+ * exhausted. "Seen" is the shelf (favourites included), the saved list, books
+ * removed from either (user_preferences.removed_book_ids), rejections, and
+ * books already notified. It is matched by work, not edition, so having seen
+ * the paperback rules out the hardback too. Also skips anything with no named
+ * author.
  *
- * Rejected books matter more here than anywhere else: an unwanted book in a
- * feed is a scroll past, the same book in an unprompted email is us not
- * listening.
+ * Quiz results the reader neither picked nor rejected are deliberately not
+ * seen: they can come back here later. Picks are on the shelf and rejections
+ * are recorded, which covers every quiz book the reader acted on.
  */
 export async function pickUnsentRecommendation(userId: number): Promise<UnsentRecommendation | null> {
   const [prefs] = await db
-    .select({ preferenceEmbedding: userPreferences.preferenceEmbedding })
+    .select({
+      preferenceEmbedding: userPreferences.preferenceEmbedding,
+      removedBookIds: userPreferences.removedBookIds,
+    })
     .from(userPreferences)
     .where(eq(userPreferences.userId, userId))
     .limit(1);
@@ -52,21 +61,38 @@ export async function pickUnsentRecommendation(userId: number): Promise<UnsentRe
   const vectorLiteral = `[${prefs.preferenceEmbedding.join(',')}]`;
 
   // Work-level exclusions can't be expressed as a join on book_id — they match
-  // other editions of a rejected book — so they come in as a WHERE predicate.
-  const exclusions = await getUserExclusions(userId);
-  const workExclusion = buildWorkExclusionCondition(exclusions.works);
+  // other editions of a seen or rejected book — so they come in as a WHERE
+  // predicate. getUserExclusions already carries the shelf and rejections,
+  // resolved and Redis-cached; only the other seen books are resolved here.
+  const [exclusions, saved, notified] = await Promise.all([
+    getUserExclusions(userId),
+    db.select({ bookId: savedBooks.bookId }).from(savedBooks).where(eq(savedBooks.userId, userId)),
+    db
+      .select({ bookId: recommendationEmailLog.bookId })
+      .from(recommendationEmailLog)
+      .where(eq(recommendationEmailLog.userId, userId)),
+  ]);
+  const covered = new Set(exclusions.bookIds);
+  const otherSeenIds = [
+    ...new Set([...saved.map((r) => r.bookId), ...notified.map((r) => r.bookId), ...prefs.removedBookIds]),
+  ].filter((id) => !covered.has(id));
+  const seenWorks = await resolveAllAuthorWorks(otherSeenIds);
+  const workExclusion = buildWorkExclusionCondition(dedupeWorks([...exclusions.works, ...seenWorks]));
 
-  // Single query: LEFT JOIN exclusions let Postgres filter on indexed columns
-  // rather than building a potentially large NOT IN (...) list client-side.
-  // userBooks and recommendationEmailLog are joined with the userId condition
-  // pushed into the ON clause so the NULL check correctly identifies non-matches
-  // rather than rows where the book exists for a different user.
+  // Exact-id exclusions are anti-joins on indexed columns, joined with the
+  // userId condition in the ON clause so the NULL check identifies non-matches
+  // rather than rows where the book exists for a different user. Removed books
+  // have no row left to join, so they are the one id list sent from here.
   const [top] = await db
     .select({ id: books.id, title: books.title, coverUrl: books.coverUrl })
     .from(books)
     .leftJoin(
       userBooks,
       and(eq(userBooks.bookId, books.id), eq(userBooks.userId, userId)),
+    )
+    .leftJoin(
+      savedBooks,
+      and(eq(savedBooks.bookId, books.id), eq(savedBooks.userId, userId)),
     )
     .leftJoin(
       recommendationEmailLog,
@@ -80,8 +106,10 @@ export async function pickUnsentRecommendation(userId: number): Promise<UnsentRe
       and(
         sql`(${books.embedding} <=> ${vectorLiteral}::vector) < ${SIMILARITY_THRESHOLD}`,
         isNull(userBooks.bookId),
+        isNull(savedBooks.bookId),
         isNull(recommendationEmailLog.bookId),
         isNull(userDislikedBooks.bookId),
+        prefs.removedBookIds.length > 0 ? notInArray(books.id, prefs.removedBookIds) : undefined,
         workExclusion,
         // Withdrawn and unsellable titles are never emailed out. Same argument
         // as the author check below, only stronger: this pick is unprompted, and
