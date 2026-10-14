@@ -5,7 +5,6 @@ import {
   bookContributors,
   userPreferences,
   userBooks,
-  users,
   notificationPreferences,
   recommendationEmailLog,
   userDislikedBooks,
@@ -23,9 +22,6 @@ import { appLink } from '../lib/app-link';
 import { logger } from '../lib/logger';
 
 const SIMILARITY_THRESHOLD = 0.5;
-
-// 24-hour cooldown on the manual-refresh path so rapid re-refreshes don't flood the user
-const REFRESH_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 export interface UnsentRecommendation {
   bookId: number;
@@ -180,41 +176,4 @@ export async function sendRecommendationEmail(
   ]);
 
   return true;
-}
-
-/**
- * Called after a manual recommendations refresh. Sends a recommendation email
- * only if the newBookSuggestions preference is on and at least 24 hours have
- * passed since the last recommendation email (prevents repeated refreshes from
- * spamming the user).
- */
-export async function maybeSendRecommendationAfterRefresh(userId: number): Promise<void> {
-  const [notifPrefs] = await db
-    .select({
-      newBookSuggestions: notificationPreferences.newBookSuggestions,
-      lastRecommendationSentAt: notificationPreferences.lastRecommendationSentAt,
-    })
-    .from(notificationPreferences)
-    .where(eq(notificationPreferences.userId, userId))
-    .limit(1);
-
-  if (!notifPrefs?.newBookSuggestions) return;
-
-  const lastSent = notifPrefs.lastRecommendationSentAt;
-  if (lastSent && Date.now() - lastSent.getTime() < REFRESH_COOLDOWN_MS) return;
-
-  const [userRow] = await db
-    .select({ email: users.email, name: users.name })
-    .from(users)
-    .where(eq(users.id, userId))
-    .limit(1);
-
-  if (!userRow) return;
-
-  await sendRecommendationEmail(userId, userRow.email, userRow.name).catch((err) => {
-    logger.error('Failed to send recommendation email after refresh', {
-      userId,
-      error: (err as Error).message,
-    });
-  });
 }
