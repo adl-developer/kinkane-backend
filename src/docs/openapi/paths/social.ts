@@ -61,7 +61,7 @@ export const socialPaths = {
     post: {
       tags: [COMMUNITY],
       summary: 'Post a rating or review',
-      description: `Creates a post about a book. \`body\` is optional — a rating on its own is a perfectly valid post — and so is \`rating\` while the book is still being read. \`status\` and \`isPublic\` are required, and \`rating\` is required when \`status\` is \`read\`.\n\n**Requires Kinkané Plus.** ${ASYMMETRY}`,
+      description: `Creates a post about a book. A reader can post about the same book as many times as they like — for instance once while reading and again when finished — and each is a separate post in the feed; nothing is replaced. To change an existing post, use \`PATCH /community/posts/{postId}\` instead.\n\n**Repeat submissions.** Sending a post identical to one the caller made about the same book within the last two minutes (same \`status\`, \`rating\` and \`body\`) does not create a second one: the existing post's \`id\` comes back with **200** instead of 201. This absorbs a double tap or a retry after a timeout; it is safe to retry a create. \`body\` is optional — a rating on its own is a perfectly valid post — and so is \`rating\` while the book is still being read. \`status\` and \`isPublic\` are required, and \`rating\` is required when \`status\` is \`read\`.\n\n**Requires Kinkané Plus.** ${ASYMMETRY}`,
       requestBody: body(object({
         bookId: { type: 'integer', minimum: 1, example: 48213 },
         rating: {
@@ -86,7 +86,8 @@ export const socialPaths = {
         },
       }, ['bookId', 'status', 'isPublic'])),
       responses: {
-        201: json('Post created.', ref('Post')),
+        201: json('Post created.', object({ id: { type: 'integer', example: 3121 } })),
+        200: json('An identical post was made moments ago (a double tap or retry); that post is returned instead of creating another.', object({ id: { type: 'integer', example: 3121 } })),
         400: resp('ValidationError'),
         404: json('No book with that id.', ref('Error'), { error: 'Book not found' }),
         ...plusErrors,
@@ -145,7 +146,7 @@ export const socialPaths = {
     patch: {
       tags: [COMMUNITY],
       summary: 'Edit a post',
-      description: `Patch semantics — only the fields present change. At least one must be supplied. Only the author can edit; anyone else gets a 404.\n\nPass \`body: null\` to strip the review text back to a bare rating.\n\nA \`read\` post must have a rating: \`rating: null\` is only accepted on a \`reading\` post, and switching an unrated post to \`read\` needs a \`rating\` in the same request. Either mistake is a 400.\n\n**Requires Kinkané Plus.** ${ASYMMETRY}`,
+      description: `Patch semantics — only the fields present change. At least one must be supplied. Only the author can edit; anyone else gets a 404.\n\nChanging the body, rating or status marks the post edited (\`isEdited: true\`, \`editedAt\` set) everywhere it appears. Switching only \`isPublic\`, or sending values identical to what is stored, does not. Returns the post as it now stands.\n\nPass \`body: null\` to strip the review text back to a bare rating.\n\nA \`read\` post must have a rating: \`rating: null\` is only accepted on a \`reading\` post, and switching an unrated post to \`read\` needs a \`rating\` in the same request. Either mistake is a 400.\n\n**Requires Kinkané Plus.** ${ASYMMETRY}`,
       parameters: [postIdParam],
       requestBody: body(object({
         rating: { type: 'integer', minimum: 0, maximum: 5, nullable: true, description: 'Null clears the rating — `reading` posts only.', example: 4 },
@@ -154,7 +155,10 @@ export const socialPaths = {
         isPublic: { type: 'boolean', example: true },
       })),
       responses: {
-        200: successResponse,
+        200: json('The edited post.', object({
+          success: { type: 'boolean', example: true },
+          post: ref('Post'),
+        })),
         400: json('Validation failed, no fields were supplied, or the edit would leave a `read` post without a rating.', ref('ValidationError')),
         404: resp('NotFound'),
         ...plusErrors,
@@ -250,13 +254,23 @@ export const socialPaths = {
     patch: {
       tags: [COMMUNITY],
       summary: 'Edit a comment',
-      description: 'Author only. **Requires Kinkané Plus.**',
+      description: 'Author only. A change of text marks the comment edited (`isEdited: true`, `editedAt` set); resending the same text does not. Returns the comment’s new text and edit state. **Requires Kinkané Plus.**',
       parameters: [commentIdParam],
       requestBody: body(object({
         body: { type: 'string', minLength: 1, maxLength: 2000, example: 'Finished it — you were right.' },
       }, ['body'])),
       responses: {
-        200: successResponse,
+        200: json('The edited comment.', object({
+          success: { type: 'boolean', example: true },
+          comment: object({
+            id: { type: 'integer', example: 771 },
+            body: { type: 'string', example: 'Finished it — you were right.' },
+            mentions: { type: 'array', items: ref('MentionRef') },
+            updatedAt: { type: 'string', format: 'date-time' },
+            isEdited: { type: 'boolean', example: true },
+            editedAt: { type: 'string', format: 'date-time', nullable: true },
+          }),
+        })),
         400: resp('ValidationError'),
         404: resp('NotFound'),
         ...plusErrors,
@@ -392,15 +406,17 @@ export const socialPaths = {
             friendPhotoUrl: { type: 'string', format: 'uri', nullable: true, example: null },
             rating: {
               type: 'integer', nullable: true, minimum: 0, maximum: 5,
-              description: 'From their review. `null` when they have not reviewed the book, or their review is private and you are not its author.',
+              description: 'From their latest post about the book — the same post as `review`. `null` when that post is unrated (a `reading` post may be), when they have not reviewed the book, or their review is private and you are not its author.',
               example: 4,
             },
             review: {
               type: 'string', nullable: true,
-              description: 'The text of their review. `null` in the same cases as `rating`, or when they rated without writing anything.',
+              description: 'The text of their latest post about the book (they may have posted more than once). `null` in the same cases as `rating`, or when they rated without writing anything.',
               example: 'Kept me up all night.',
             },
             reviewMentions: { type: 'array', items: ref('MentionRef'), description: 'Linked @handles in `review`. Empty when there are none.' },
+            reviewIsEdited: { type: 'boolean', example: false, description: 'True once they changed that review’s text, rating or status. Show an "Edited" marker when true.' },
+            reviewEditedAt: { type: 'string', format: 'date-time', nullable: true, example: null, description: 'When that review last changed; `null` if never edited or there is no review.' },
             note: {
               type: 'string', nullable: true,
               description: 'Their shelf note, only when they marked it public. Otherwise `null`.',

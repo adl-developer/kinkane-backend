@@ -568,6 +568,13 @@
       "when": 1792013076505,
       "tag": "0080_user_preferences_removed_books",
       "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "7",
+      "when": 1792016361059,
+      "tag": "0081_posts_multiple_per_book_edited_at",
+      "breakpoints": true
     }
   ]
 }

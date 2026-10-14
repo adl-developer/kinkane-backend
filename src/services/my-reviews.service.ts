@@ -1,16 +1,20 @@
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { posts } from '../db/schema';
 import { logger } from '../lib/logger';
 import { withRenderedMentions } from './mentions.service';
 import type { MentionRef } from '../lib/mention-text';
+import { withEditState } from '../lib/edit-state';
 
 /**
- * The caller's own rating and review of a book — their community post for it.
+ * The caller's own rating and review of a book — their latest community post
+ * for it.
  *
- * A reader has at most one post per book (idx_posts_user_book), so this is
- * either that post or null. Private posts are included: it is the caller's own
- * review being shown back to them, not someone else's.
+ * A reader can post about a book more than once (one post while reading,
+ * another when finished), so this is the most recent of them, or null. Every
+ * post still appears in the community feeds; this is the one a book card
+ * shows. Private posts are included: it is the caller's own review being shown
+ * back to them, not someone else's.
  *
  * Matched on the exact book id, not the work. A review of the paperback is not
  * shown against the hardback — editions are grouped by title heuristics (see
@@ -28,7 +32,12 @@ export interface MyReview {
   mentions: MentionRef[];
   isPublic: boolean;
   createdAt: Date;
+  /** Bumped by any change, including a visibility switch — not an edit marker. */
   updatedAt: Date;
+  /** True once the author has changed the body, rating or status. */
+  isEdited: boolean;
+  /** When the body, rating or status last changed; null if never edited. */
+  editedAt: Date | null;
 }
 
 export type WithMyReview<T> = T & { myReview: MyReview | null };
@@ -56,8 +65,9 @@ async function getMyReviews(userId: number, bookIds: number[]): Promise<Map<numb
 }
 
 async function queryMyReviews(userId: number, ids: number[]): Promise<Map<number, MyReview>> {
+  // One row per book: the newest post (id breaks a same-instant tie).
   const rows = await db
-    .select({
+    .selectDistinctOn([posts.bookId], {
       bookId: posts.bookId,
       postId: posts.id,
       rating: posts.rating,
@@ -66,12 +76,14 @@ async function queryMyReviews(userId: number, ids: number[]): Promise<Map<number
       isPublic: posts.isPublic,
       createdAt: posts.createdAt,
       updatedAt: posts.updatedAt,
+      editedAt: posts.editedAt,
     })
     .from(posts)
-    .where(and(eq(posts.userId, userId), inArray(posts.bookId, ids)));
+    .where(and(eq(posts.userId, userId), inArray(posts.bookId, ids)))
+    .orderBy(posts.bookId, desc(posts.createdAt), desc(posts.id));
 
   const rendered = await withRenderedMentions(rows, 'body');
-  return new Map(rendered.map(({ bookId, ...review }) => [bookId, review]));
+  return new Map(rendered.map(({ bookId, ...review }) => [bookId, withEditState(review)]));
 }
 
 /**
