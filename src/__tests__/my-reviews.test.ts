@@ -119,8 +119,9 @@ describe('withMyReviews', () => {
       rating: 4,
       status: 'read',
       body: 'review of 2',
-      // No @mentions in this body, so nothing to link and no lookup made.
+      // No @mentions or addresses in this body, so nothing to link and no lookup made.
       mentions: [],
+      links: [],
       isPublic: false,
       createdAt,
       updatedAt: createdAt,

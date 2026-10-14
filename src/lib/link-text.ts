@@ -1,0 +1,283 @@
+/**
+ * Web addresses in user-written text: finding them as typed, storing them as
+ * short-link tokens, and turning those back into something to show and tap.
+ *
+ * WHY SHORT LINKS. Every address someone writes is stored once in
+ * `short_links` and shown as `APP_URL/l/<code>`, the way LinkedIn shows
+ * `lnkd.in/…`. A tap goes through our redirect, so an address found to be
+ * phishing or spam can be switched off in one place and stops working in every
+ * post that carries it. The text holds a token, `{{l:<id>}}`, for the same
+ * reason mentions do (lib/mention-text.ts): what a link *shows as* is decided
+ * at read time, not frozen into the text.
+ *
+ * Clients never see a token. They send plain text with addresses in it and get
+ * back plain text with short links in it, plus a `links` array saying where
+ * each one sits and where it goes. Sending a short link back — an edit that
+ * leaves the link alone — maps to the same token, so editing round-trips.
+ *
+ * Offsets are UTF-16 code units, as for mentions.
+ *
+ * Nothing here touches the database or the config; the service hands in what
+ * resolved and the base URL. That keeps every rule below pinned by unit tests.
+ */
+
+/** One linked address in rendered text. */
+export interface LinkRef {
+  /** The short link to open: counts the tap and honours a block. */
+  url: string;
+  /** Where it goes. Null when the link has been blocked. */
+  target: string | null;
+  /** The target's host without a leading `www.`, for a label or preview. Null when blocked. */
+  domain: string | null;
+  /** True when an admin has switched the link off; the short link then opens a "removed" page. */
+  blocked: boolean;
+  /** Index of the link's first character, in UTF-16 code units. */
+  start: number;
+  /** Length of the short link as it appears in the text. */
+  length: number;
+}
+
+/** What the renderer needs to know about one stored link. */
+export interface StoredLink {
+  code: string;
+  url: string;
+  blocked: boolean;
+}
+
+/** An address found in typed text. */
+export interface FoundUrl {
+  /** Index of its first character in the text. */
+  start: number;
+  /** Length as typed, after trailing punctuation was left out. */
+  length: number;
+  /** The normalised address — what would be stored. */
+  url: string;
+}
+
+/**
+ * The most distinct addresses one piece of text may link. Beyond this the extra
+ * addresses stay as typed, plain text: each one is a row in `short_links`, and
+ * a comment that is mostly addresses is spam whatever its intent.
+ */
+export const MAX_LINKS_PER_TEXT = 5;
+
+/** Longer addresses are left as plain text rather than stored. */
+export const MAX_URL_LENGTH = 2048;
+
+/** How a token whose row cannot be found reads. Unreachable while rows are never deleted. */
+export const MISSING_LINK = '[link removed]';
+
+// `{{l:123}}` — the stored form.
+const TOKEN_RE = /\{\{l:(\d+)\}\}/g;
+
+// A typed address: `http://`, `https://` or `www.` at a word boundary, up to
+// whitespace or a character that cannot sit in an address unencoded and
+// usually wraps one (`<`, `>`, `"`). Trailing punctuation is trimmed after.
+const URL_RE = /\b(?:https?:\/\/|www\.)[^\s<>"]+/gi;
+
+const TRAILING_PUNCTUATION = /[.,;:!?'*]+$/;
+const BRACKETS: [string, string][] = [['(', ')'], ['[', ']'], ['{', '}']];
+
+function count(s: string, ch: string): number {
+  return s.split(ch).length - 1;
+}
+
+/**
+ * The address minus what belongs to the sentence around it: "see
+ * https://x.com/a." ends at `a`, and "(https://x.com/a)" loses its closing
+ * bracket — but a bracket the address opened itself
+ * (`https://en.wikipedia.org/wiki/Dune_(novel)`) is kept.
+ */
+function trimTrailing(raw: string): string {
+  let s = raw;
+  for (;;) {
+    const before = s;
+    s = s.replace(TRAILING_PUNCTUATION, '');
+    for (const [open, close] of BRACKETS) {
+      if (s.endsWith(close) && count(s, close) > count(s, open)) s = s.slice(0, -1);
+    }
+    if (s === before) return s;
+  }
+}
+
+/**
+ * The address as it would be stored, or null when it is not one worth linking:
+ * not http(s), no dotted host, too long, or carrying a user name — an address
+ * like `https://bank.com@evil.example` reads as the bank and goes to the other.
+ */
+export function normalizeUrl(raw: string): string | null {
+  const withScheme = /^www\./i.test(raw) ? `https://${raw}` : raw;
+  let parsed: URL;
+  try {
+    parsed = new URL(withScheme);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+  if (parsed.username || parsed.password) return null;
+  const host = parsed.hostname;
+  if (!host.includes('.') || host.startsWith('.') || host.endsWith('.')) return null;
+  if (parsed.href.length > MAX_URL_LENGTH) return null;
+  return parsed.href;
+}
+
+/**
+ * Breaks any token-shaped text the user typed themselves, so a literal
+ * `{{l:5}}` can never render as somebody else's link. Same trick as mentions.
+ */
+export function neutralizeLinkTokens(text: string): string {
+  return text.replace(/\{\{l:/g, '{{ l:');
+}
+
+/**
+ * Every linkable address typed in `text`, in order.
+ *
+ * With `base`, our own short links are always found, even on a host
+ * normalizeUrl would refuse (`http://localhost:3000` in development): an edit
+ * sends them back, and they must map to the link they already are.
+ */
+export function findUrls(text: string, base?: string): FoundUrl[] {
+  const found: FoundUrl[] = [];
+  for (const match of text.matchAll(URL_RE)) {
+    const trimmed = trimTrailing(match[0]);
+    const url = normalizeUrl(trimmed) ?? (base && shortLinkCode(trimmed, base) ? trimmed : null);
+    if (url) found.push({ start: match.index!, length: trimmed.length, url });
+  }
+  return found;
+}
+
+/**
+ * The code of one of our own short links (`<base>/l/<code>`), uppercased, or
+ * null for any other address. How a short link sent back in an edit is
+ * recognised.
+ */
+export function shortLinkCode(url: string, base: string): string | null {
+  let parsed: URL;
+  let ours: URL;
+  try {
+    parsed = new URL(url);
+    ours = new URL(base);
+  } catch {
+    return null;
+  }
+  if (parsed.host !== ours.host || parsed.search || parsed.hash) return null;
+  const m = /^\/l\/([A-Za-z0-9]{4,16})\/?$/.exec(parsed.pathname);
+  return m ? m[1].toUpperCase() : null;
+}
+
+/** `<base>/l/<code>` — the form every link is shown as. */
+export function shortLinkUrl(base: string, code: string): string {
+  return `${base.replace(/\/+$/, '')}/l/${code}`;
+}
+
+/**
+ * Rewrites typed addresses into tokens.
+ *
+ * `idFor` maps a found address to its `short_links` id, or undefined when it
+ * did not resolve (an unknown short-link code); those stay as typed. Only the
+ * first MAX_LINKS_PER_TEXT distinct links are tokenised.
+ *
+ * Expects text already passed through neutralizeLinkTokens.
+ */
+export function tokenizeLinks(
+  text: string,
+  found: FoundUrl[],
+  idFor: (f: FoundUrl) => number | undefined,
+): { text: string; linkIds: number[] } {
+  const linked: number[] = [];
+  let out = '';
+  let last = 0;
+  for (const f of found) {
+    const id = idFor(f);
+    if (id === undefined) continue;
+    if (!linked.includes(id)) {
+      if (linked.length >= MAX_LINKS_PER_TEXT) continue;
+      linked.push(id);
+    }
+    out += text.slice(last, f.start) + `{{l:${id}}}`;
+    last = f.start + f.length;
+  }
+  out += text.slice(last);
+  return { text: out, linkIds: linked };
+}
+
+/** Every link id tokenised into `text`. */
+export function linkTokenIds(text: string): number[] {
+  const ids = new Set<number>();
+  for (const match of text.matchAll(TOKEN_RE)) ids.add(Number(match[1]));
+  return [...ids];
+}
+
+/** Cheap pre-check, so text with no links never costs a lookup. */
+export function hasLinkTokens(text: string | null | undefined): boolean {
+  return !!text && text.includes('{{l:');
+}
+
+/** A replacement made while rendering: at `at` in the input, the text grew by `delta`. */
+export interface Shift {
+  at: number;
+  delta: number;
+}
+
+/**
+ * Turns stored link tokens into short links, with the position of each.
+ *
+ * Also returns where the text changed length, so offsets computed on the input
+ * — the mention offsets, when mentions were rendered first — can be moved to
+ * match the output with `shiftOffsets`.
+ */
+export function renderLinks(
+  text: string,
+  linksById: ReadonlyMap<number, StoredLink>,
+  base: string,
+): { text: string; links: LinkRef[]; shifts: Shift[] } {
+  const links: LinkRef[] = [];
+  const shifts: Shift[] = [];
+  let out = '';
+  let last = 0;
+
+  for (const match of text.matchAll(TOKEN_RE)) {
+    const at = match.index!;
+    out += text.slice(last, at);
+    const link = linksById.get(Number(match[1]));
+    let shown: string;
+    if (link) {
+      shown = shortLinkUrl(base, link.code);
+      links.push({
+        url: shown,
+        target: link.blocked ? null : link.url,
+        domain: link.blocked ? null : domainOf(link.url),
+        blocked: link.blocked,
+        start: out.length,
+        length: shown.length,
+      });
+    } else {
+      shown = MISSING_LINK;
+    }
+    out += shown;
+    shifts.push({ at, delta: shown.length - match[0].length });
+    last = at + match[0].length;
+  }
+  out += text.slice(last);
+
+  return { text: out, links, shifts };
+}
+
+/** Moves offsets taken before renderLinks to where the same characters sit after it. */
+export function shiftOffsets<T extends { start: number }>(items: T[], shifts: Shift[]): T[] {
+  if (shifts.length === 0) return items;
+  return items.map((item) => {
+    let delta = 0;
+    for (const s of shifts) if (s.at < item.start) delta += s.delta;
+    return delta ? { ...item, start: item.start + delta } : item;
+  });
+}
+
+/** `www.example.com` → `example.com`. */
+export function domainOf(url: string): string | null {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return null;
+  }
+}

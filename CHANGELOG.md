@@ -10,6 +10,7 @@
 
 ### Bug Fixes
 
+* stop double-tapped posts from appearing twice, and keep friend reviews and "Edited" marks accurate ([ad827cd](https://adl.github.com/adl-developer/kinkane-backend/commit/ad827cd08b444423db19245bbb0a7228129c3107)) — [details](changelog/2026-10-14-short-links-in-posts-and-comments.md)
 * stop retaking the quiz from sending a new-book notification ([a54bb5b](https://adl.github.com/adl-developer/kinkane-backend/commit/a54bb5babbea83e6b35355d665596c5ca33a9280)) — [details](changelog/2026-10-14-new-book-notifications-seen.md)
 
 

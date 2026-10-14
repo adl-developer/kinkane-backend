@@ -10,6 +10,7 @@ import { withRenderedMentions } from './mentions.service';
 import { escapeLike } from '../lib/escape-like';
 import { toFollowStatus, type FollowStatus } from './users.service';
 import type { MentionRef } from '../lib/mention-text';
+import type { LinkRef } from '../lib/link-text';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -35,6 +36,7 @@ export interface GroupResult {
   description: string | null;
   /** Linked @handles in `description`. */
   descriptionMentions: MentionRef[];
+  descriptionLinks: LinkRef[];
   photoUrl: string | null;
   privacy: 'public' | 'private';
   memberCount: number;
@@ -280,7 +282,7 @@ async function searchGroups(
     db.select({ count: sql<number>`count(*)::int` }).from(groups).where(where),
   ]);
 
-  return { results: await withRenderedMentions(results, 'description', 'descriptionMentions'), total: counted?.count ?? 0 };
+  return { results: await withRenderedMentions(results, 'description', 'descriptionMentions', 'descriptionLinks'), total: counted?.count ?? 0 };
 }
 
 export const communitySearchService = {

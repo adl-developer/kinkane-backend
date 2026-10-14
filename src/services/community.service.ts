@@ -8,6 +8,7 @@ import { logger } from '../lib/logger';
 import { mentionsService, renderTexts } from './mentions.service';
 import { assertCanViewShelf, canViewShelfBook } from './users.service';
 import type { MentionRef } from '../lib/mention-text';
+import type { LinkRef } from '../lib/link-text';
 import { isEdited, withEditState } from '../lib/edit-state';
 
 const COMMENT_PREVIEW_LENGTH = 140;
@@ -39,6 +40,7 @@ export interface PostItem {
   body: string | null;
   /** Linked @handles in `body`, by UTF-16 offset. */
   mentions: MentionRef[];
+  links: LinkRef[];
   isPublic: boolean;
   likeCount: number;
   commentCount: number;
@@ -64,11 +66,13 @@ export interface FriendBookDetail {
   rating: number | null;
   review: string | null;
   reviewMentions: MentionRef[];
+  reviewLinks: LinkRef[];
   /** True once the friend has changed that review's body, rating or status. */
   reviewIsEdited: boolean;
   reviewEditedAt: Date | null;
   note: string | null;
   noteMentions: MentionRef[];
+  noteLinks: LinkRef[];
 }
 
 export interface CommentItem {
@@ -80,6 +84,7 @@ export interface CommentItem {
   userPhotoUrl: string | null;
   body: string;
   mentions: MentionRef[];
+  links: LinkRef[];
   likeCount: number;
   likedByMe: boolean;
   createdAt: Date;
@@ -222,7 +227,7 @@ async function notifyPostComment(
 // Also renders each body's @mentions (see mentions.service), so every list that
 // goes through here hands the client usernames rather than stored tokens.
 export async function enrichPosts(
-  rows: Omit<PostItem, 'mentions' | 'isEdited'>[],
+  rows: Omit<PostItem, 'mentions' | 'links' | 'isEdited'>[],
   requesterId: number,
 ): Promise<PostItem[]> {
   if (rows.length === 0) return [];
@@ -256,6 +261,7 @@ export async function enrichPosts(
       ...r,
       body: rendered[i].text,
       mentions: rendered[i].mentions,
+      links: rendered[i].links,
       likeCount: likeMap.get(r.id) ?? 0,
       commentCount: commentMap.get(r.id) ?? 0,
       likedByMe: likedSet.has(r.id),
@@ -343,7 +349,7 @@ export const communityService = {
 
     if (!book) throw Object.assign(new Error('Book not found'), { statusCode: 404 });
 
-    const body = await mentionsService.prepare(fields.body ?? null);
+    const body = await mentionsService.prepare(fields.body ?? null, userId);
     const rating = fields.rating ?? null;
 
     // A reader may post about a book many times, but not the same post twice
@@ -430,6 +436,7 @@ export const communityService = {
       ...postFields,
       body: rendered.text,
       mentions: rendered.mentions,
+      links: rendered.links,
       bookExcerpt: pickExcerpt(bookIsbn13, excerptMap),
       likeCount: likeRow?.count ?? 0,
       commentCount: commentRow?.count ?? 0,
@@ -451,7 +458,7 @@ export const communityService = {
         .from(posts)
         .where(and(eq(posts.id, postId), eq(posts.userId, userId)))
         .limit(1),
-      fields.body !== undefined ? mentionsService.prepare(fields.body) : undefined,
+      fields.body !== undefined ? mentionsService.prepare(fields.body, userId) : undefined,
     ]);
     if (!current) throw Object.assign(new Error('Post not found'), { statusCode: 404 });
 
@@ -742,7 +749,7 @@ export const communityService = {
     assertFound(post, 'Post');
     assertPostVisible(post, userId);
 
-    const prepared = await mentionsService.prepare(body);
+    const prepared = await mentionsService.prepare(body, userId);
     const [row] = await db
       .insert(comments)
       .values({ postId, userId, body: prepared.text })
@@ -783,14 +790,14 @@ export const communityService = {
     commentId: number,
     userId: number,
     body: string,
-  ): Promise<Pick<CommentItem, 'id' | 'body' | 'mentions' | 'updatedAt' | 'isEdited' | 'editedAt'>> {
+  ): Promise<Pick<CommentItem, 'id' | 'body' | 'mentions' | 'links' | 'updatedAt' | 'isEdited' | 'editedAt'>> {
     const [[current], prepared] = await Promise.all([
       db
         .select({ body: comments.body, updatedAt: comments.updatedAt, editedAt: comments.editedAt })
         .from(comments)
         .where(and(eq(comments.id, commentId), eq(comments.userId, userId)))
         .limit(1),
-      mentionsService.prepare(body),
+      mentionsService.prepare(body, userId),
     ]);
     if (!current) throw Object.assign(new Error('Comment not found'), { statusCode: 404 });
 
@@ -802,6 +809,7 @@ export const communityService = {
         id: commentId,
         body: shown.text ?? '',
         mentions: shown.mentions,
+        links: shown.links,
         updatedAt: current.updatedAt,
         editedAt: current.editedAt,
       });
@@ -830,6 +838,7 @@ export const communityService = {
       id: row.id,
       body: rendered.text ?? '',
       mentions: rendered.mentions,
+      links: rendered.links,
       updatedAt: row.updatedAt,
       editedAt: row.editedAt,
     });
@@ -911,6 +920,7 @@ export const communityService = {
         ...r,
         body: rendered[i].text ?? '',
         mentions: rendered[i].mentions,
+        links: rendered[i].links,
         likeCount: likeMap.get(r.id) ?? 0,
         likedByMe: likedSet.has(r.id),
       })).map(withEditState),
@@ -1038,10 +1048,12 @@ export const communityService = {
       rating: postRow?.rating ?? null,
       review: review.text,
       reviewMentions: review.mentions,
+      reviewLinks: review.links,
       reviewIsEdited: isEdited(postRow?.editedAt),
       reviewEditedAt: postRow?.editedAt ?? null,
       note: renderedNote.text,
       noteMentions: renderedNote.mentions,
+      noteLinks: renderedNote.links,
     };
   },
 };
