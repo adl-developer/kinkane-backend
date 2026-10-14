@@ -85,6 +85,12 @@ export const userPreferences = pgTable(
     // 768-dim Gemini text-embedding-004 vector built from preference text.
     // Null until migrateGuestSession completes the async embedding call.
     preferenceEmbedding: vector('preference_embedding', { dimensions: 768 }),
+    // Books the reader once had on their shelf (favourites included) or saved
+    // list and has since removed. Appended by AFTER DELETE triggers on
+    // user_books and saved_books (migration 0080), so every removal path is
+    // covered. Read only by the new-book notification: having seen a book is
+    // not undone by tidying it away, so it must never come back as "new".
+    removedBookIds: jsonb('removed_book_ids').$type<number[]>().notNull().default([]),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },
   // No extra index needed — the .unique() on userId already creates a B-tree index.

@@ -561,6 +561,13 @@
       "when": 1791848788471,
       "tag": "0079_publisher_review_source_hash",
       "breakpoints": true
+    },
+    {
+      "idx": 80,
+      "version": "7",
+      "when": 1792013076505,
+      "tag": "0080_user_preferences_removed_books",
+      "breakpoints": true
     }
   ]
 }

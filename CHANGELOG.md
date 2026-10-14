@@ -1,10 +1,18 @@
 # Changelog
 
 
+## 2026-10-14
+
+### Bug Fixes
+
+* stop retaking the quiz from sending a new-book notification ([a54bb5b](https://adl.github.com/adl-developer/kinkane-backend/commit/a54bb5babbea83e6b35355d665596c5ca33a9280)) — [details](changelog/2026-10-14-new-book-notifications-seen.md)
+
+
 ## 2026-10-13
 
 ### Features
 
+* store publisher reviews as plain text instead of HTML ([ea5fc98](https://adl.github.com/adl-developer/kinkane-backend/commit/ea5fc9880baa9490fb8d20b4e6683a26ec701e80)) — [details](changelog/2026-10-13-plain-text-book-descriptions.md)
 * book pages show descriptions as plain text instead of HTML ([244c474](https://adl.github.com/adl-developer/kinkane-backend/commit/244c474caab4a3073cb2b083300bd26d7c09e835)) — [details](changelog/2026-10-13-plain-text-book-descriptions.md)
 * show review quotes and awards from the publisher's own description on book pages ([9eb1f9a](https://adl.github.com/adl-developer/kinkane-backend/commit/9eb1f9ab32cf2d9606145bb5690c39d275c8a4b2)) — [details](changelog/2026-10-13-publisher-reviews-from-descriptions.md)
 
