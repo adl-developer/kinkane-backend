@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import type { SQL } from 'drizzle-orm';
+import { sql as sqlTag, type SQL } from 'drizzle-orm';
 
 /**
  * Every book a signed-in reader is shown carries `myReview` — their own
@@ -15,18 +15,28 @@ const select = vi.fn();
 // Asserting on the rows alone would pass even if the query stopped filtering
 // by reader — the mock hands back whatever rows the test set up.
 let lastWhere: SQL | undefined;
+// DISTINCT ON columns and ORDER BY of the last query: together they decide
+// which of several posts about one book becomes myReview.
+let lastDistinctOn: unknown[] = [];
+let lastOrderBy: unknown[] = [];
 const warn = vi.fn();
 
 vi.mock('../db', () => ({
   db: {
-    select: (...a: unknown[]) => {
+    selectDistinctOn: (on: unknown[], ...a: unknown[]) => {
+      lastDistinctOn = on;
       select(...a);
       return {
         from: () => ({
-          where: async (cond: SQL) => {
+          where: (cond: SQL) => {
             lastWhere = cond;
-            if (failWith) throw failWith;
-            return rows;
+            return {
+              orderBy: async (...order: unknown[]) => {
+                lastOrderBy = order;
+                if (failWith) throw failWith;
+                return rows;
+              },
+            };
           },
         }),
       };
@@ -50,6 +60,7 @@ const post = (bookId: number, rating: number) => ({
   isPublic: false,
   createdAt,
   updatedAt: createdAt,
+  editedAt: null as Date | null,
 });
 
 beforeEach(() => {
@@ -71,6 +82,30 @@ describe('the reviews query', () => {
     expect(sql).toContain('"posts"."book_id" in ($2, $3)');
     expect(params).toEqual([7, 11, 12]);
   });
+
+  it('keeps one post per book, the newest', async () => {
+    // A reader can post about a book while reading and again when finished;
+    // the card shows the later one. DISTINCT ON keeps the first row per book
+    // in ORDER BY order, so the order must lead with book_id, then newest.
+    await withMyReviews(7, [{ id: 11 }], (b) => b.id);
+
+    const render = (parts: unknown[]) =>
+      dialect.sqlToQuery(sqlTag.join(parts as SQL[], sqlTag`, `)).sql;
+    expect(render(lastDistinctOn)).toBe('"posts"."book_id"');
+    expect(render(lastOrderBy)).toBe('"posts"."book_id", "posts"."created_at" desc, "posts"."id" desc');
+  });
+});
+
+describe('edit state', () => {
+  it('marks a review edited only when editedAt is set', async () => {
+    const editedAt = new Date('2026-10-02T00:00:00Z');
+    rows = [post(1, 4), { ...post(2, 3), editedAt }];
+    const result = await withMyReviews(7, [{ id: 1 }, { id: 2 }], (b) => b.id);
+    expect(result.map((r) => [r.myReview?.isEdited, r.myReview?.editedAt])).toEqual([
+      [false, null],
+      [true, editedAt],
+    ]);
+  });
 });
 
 describe('withMyReviews', () => {
@@ -89,6 +124,8 @@ describe('withMyReviews', () => {
       isPublic: false,
       createdAt,
       updatedAt: createdAt,
+      isEdited: false,
+      editedAt: null,
     });
     // bookId is the join key, not part of the review shape.
     expect(result[1].myReview).not.toHaveProperty('bookId');

@@ -91,8 +91,8 @@ export const communityController = {
     }
     try {
       const postId = parseId(req.params.postId, 'post ID');
-      await communityService.updatePost(postId, req.user.id, parsed.data);
-      res.status(200).json({ success: true });
+      const post = await communityService.updatePost(postId, req.user.id, parsed.data);
+      res.status(200).json({ success: true, post });
     } catch (err: unknown) {
       const e = err as Error & { statusCode?: number };
       res.status(e.statusCode ?? 500).json({ error: e.message });
@@ -243,8 +243,8 @@ export const communityController = {
     }
     try {
       const commentId = parseId(req.params.commentId, 'comment ID');
-      await communityService.updateComment(commentId, req.user.id, parsed.data.body);
-      res.status(200).json({ success: true });
+      const comment = await communityService.updateComment(commentId, req.user.id, parsed.data.body);
+      res.status(200).json({ success: true, comment });
     } catch (err: unknown) {
       const e = err as Error & { statusCode?: number };
       res.status(e.statusCode ?? 500).json({ error: e.message });

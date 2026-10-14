@@ -43,7 +43,12 @@ export interface PostItem {
   commentCount: number;
   likedByMe: boolean;
   createdAt: Date;
+  /** Bumped by any change, including a visibility switch — not an edit marker. */
   updatedAt: Date;
+  /** True once the author has changed the body, rating or status. */
+  isEdited: boolean;
+  /** When the body, rating or status last changed; null if never edited. */
+  editedAt: Date | null;
 }
 
 export interface FriendBookDetail {
@@ -58,6 +63,9 @@ export interface FriendBookDetail {
   rating: number | null;
   review: string | null;
   reviewMentions: MentionRef[];
+  /** True once the friend has changed that review's body, rating or status. */
+  reviewIsEdited: boolean;
+  reviewEditedAt: Date | null;
   note: string | null;
   noteMentions: MentionRef[];
 }
@@ -75,6 +83,9 @@ export interface CommentItem {
   likedByMe: boolean;
   createdAt: Date;
   updatedAt: Date;
+  /** True once the author has changed the body. */
+  isEdited: boolean;
+  editedAt: Date | null;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -210,7 +221,7 @@ async function notifyPostComment(
 // Also renders each body's @mentions (see mentions.service), so every list that
 // goes through here hands the client usernames rather than stored tokens.
 export async function enrichPosts(
-  rows: Omit<PostItem, 'mentions'>[],
+  rows: Omit<PostItem, 'mentions' | 'isEdited'>[],
   requesterId: number,
 ): Promise<PostItem[]> {
   if (rows.length === 0) return [];
@@ -246,6 +257,7 @@ export async function enrichPosts(
     likeCount: likeMap.get(r.id) ?? 0,
     commentCount: commentMap.get(r.id) ?? 0,
     likedByMe: likedSet.has(r.id),
+    isEdited: r.editedAt !== null,
   }));
 }
 
@@ -265,6 +277,7 @@ const POST_SELECT_COLUMNS = {
   isPublic: posts.isPublic,
   createdAt: posts.createdAt,
   updatedAt: posts.updatedAt,
+  editedAt: posts.editedAt,
 } as const;
 
 // One page of posts matching `where`, with its total, excerpts, and the like
@@ -332,12 +345,7 @@ export const communityService = {
         body: body.text,
         isPublic: fields.isPublic,
       })
-      .onConflictDoNothing()
       .returning({ id: posts.id });
-
-    if (!row) {
-      throw Object.assign(new Error('You have already posted about this book'), { statusCode: 409 });
-    }
 
     await mentionsService.afterWrite({ type: 'post', id: row.id }, userId, body.mentionedIds, { isNew: true });
 
@@ -384,6 +392,7 @@ export const communityService = {
       likeCount: likeRow?.count ?? 0,
       commentCount: commentRow?.count ?? 0,
       likedByMe: likedRow.length > 0,
+      isEdited: postFields.editedAt !== null,
     };
   },
 
@@ -391,7 +400,7 @@ export const communityService = {
     postId: number,
     userId: number,
     fields: { rating?: number | null; status?: 'reading' | 'read'; body?: string | null; isPublic?: boolean },
-  ): Promise<void> {
+  ): Promise<PostItem> {
     // A `read` post must keep a rating, so check the post as it will be after
     // the patch: switching to `read` unrated, or clearing a `read` post's
     // rating, is refused. Only the author's own post is looked up — anyone
@@ -413,11 +422,24 @@ export const communityService = {
 
     const body = fields.body !== undefined ? await mentionsService.prepare(fields.body) : undefined;
 
+    // What counts as an edit: a body, rating or status that differs from what
+    // is stored. Visibility switches and resending the same text are not edits,
+    // so the app does not mark a post "Edited" that reads exactly as before.
+    // Compared in SQL against the row being updated, so it cannot race a
+    // concurrent edit the way a read-then-write would.
+    const changed: SQL[] = [];
+    if (fields.rating !== undefined) changed.push(sql`${posts.rating} IS DISTINCT FROM ${fields.rating}`);
+    if (fields.status !== undefined) changed.push(sql`${posts.status} IS DISTINCT FROM ${fields.status}`);
+    if (body !== undefined) changed.push(sql`${posts.body} IS DISTINCT FROM ${body.text}`);
+
     const updateSet: Record<string, unknown> = { updatedAt: new Date() };
     if (fields.rating !== undefined) updateSet.rating = fields.rating;
     if (fields.status !== undefined) updateSet.status = fields.status;
     if (body !== undefined) updateSet.body = body.text;
     if (fields.isPublic !== undefined) updateSet.isPublic = fields.isPublic;
+    if (changed.length > 0) {
+      updateSet.editedAt = sql`CASE WHEN ${sql.join(changed, sql` OR `)} THEN now() ELSE ${posts.editedAt} END`;
+    }
 
     const result = await db
       .update(posts)
@@ -433,6 +455,10 @@ export const communityService = {
     // A private post going public releases the mention notifications that were
     // held back while nobody else could read it — its own and its comments'.
     if (fields.isPublic === true && result[0].isPublic) await mentionsService.releaseUnderPost(postId);
+
+    // The post as it now stands, so the app can show the edit (and its
+    // "Edited" marker) without fetching it again.
+    return communityService.getPost(postId, userId);
   },
 
   async deletePost(postId: number, userId: number): Promise<void> {
@@ -695,19 +721,38 @@ export const communityService = {
     return { id: row.id };
   },
 
-  async updateComment(commentId: number, userId: number, body: string): Promise<void> {
+  async updateComment(
+    commentId: number,
+    userId: number,
+    body: string,
+  ): Promise<Pick<CommentItem, 'id' | 'body' | 'mentions' | 'updatedAt' | 'isEdited' | 'editedAt'>> {
     const prepared = await mentionsService.prepare(body);
-    const result = await db
+    // Resending the same text is not an edit — see updatePost.
+    const [row] = await db
       .update(comments)
-      .set({ body: prepared.text, updatedAt: new Date() })
+      .set({
+        body: prepared.text,
+        updatedAt: new Date(),
+        editedAt: sql`CASE WHEN ${comments.body} IS DISTINCT FROM ${prepared.text} THEN now() ELSE ${comments.editedAt} END`,
+      })
       .where(and(eq(comments.id, commentId), eq(comments.userId, userId)))
-      .returning({ id: comments.id });
+      .returning({ id: comments.id, body: comments.body, updatedAt: comments.updatedAt, editedAt: comments.editedAt });
 
-    if (result.length === 0) {
+    if (!row) {
       throw Object.assign(new Error('Comment not found'), { statusCode: 404 });
     }
 
     await mentionsService.afterWrite({ type: 'comment', id: commentId }, userId, prepared.mentionedIds);
+
+    const [rendered] = await renderTexts([row.body]);
+    return {
+      id: row.id,
+      body: rendered.text ?? '',
+      mentions: rendered.mentions,
+      updatedAt: row.updatedAt,
+      isEdited: row.editedAt !== null,
+      editedAt: row.editedAt,
+    };
   },
 
   async deleteComment(commentId: number, userId: number): Promise<void> {
@@ -750,6 +795,7 @@ export const communityService = {
           body: comments.body,
           createdAt: comments.createdAt,
           updatedAt: comments.updatedAt,
+          editedAt: comments.editedAt,
         })
         .from(comments)
         .innerJoin(users, eq(users.id, comments.userId))
@@ -787,6 +833,7 @@ export const communityService = {
         mentions: rendered[i].mentions,
         likeCount: likeMap.get(r.id) ?? 0,
         likedByMe: likedSet.has(r.id),
+        isEdited: r.editedAt !== null,
       })),
       total: countRow?.count ?? 0,
     };
@@ -837,7 +884,7 @@ export const communityService = {
     // Accepted followers always see one book; everyone else follows the shelf setting
     await assertCanViewShelf(friendId, requesterId, canViewShelfBook);
 
-    const [[bookRow], [postRow], [userBookRow]] = await Promise.all([
+    const [[bookRow], postRows, [userBookRow]] = await Promise.all([
       db
         .select({
           id: books.id,
@@ -853,6 +900,7 @@ export const communityService = {
         .select({
           rating: posts.rating,
           body: posts.body,
+          editedAt: posts.editedAt,
         })
         .from(posts)
         .where(
@@ -864,7 +912,10 @@ export const communityService = {
             or(eq(posts.isPublic, true), eq(posts.userId, requesterId)),
           ),
         )
-        .limit(1),
+        // They may have posted about this book more than once (while reading,
+        // then when finished), newest first. Capped: a handful is the norm.
+        .orderBy(desc(posts.createdAt), desc(posts.id))
+        .limit(20),
 
       db
         .select({
@@ -882,6 +933,11 @@ export const communityService = {
 
     assertFound(bookRow, 'Book');
     assertFound(userBookRow, 'User book');
+
+    // The review is their latest post; the rating is their latest rating, so a
+    // newer unrated "reading" post does not blank out a rating they gave before.
+    const postRow = postRows[0];
+    const rating = postRows.find((p) => p.rating !== null)?.rating ?? null;
 
     const note = userBookRow.noteIsPublic ? (userBookRow.note ?? null) : null;
     const [contributorRows, excerptMap, [review, renderedNote]] = await Promise.all([
@@ -903,9 +959,11 @@ export const communityService = {
       friendName: userBookRow.friendName,
       friendUsername: userBookRow.friendUsername,
       friendPhotoUrl: userBookRow.friendPhotoUrl,
-      rating: postRow?.rating ?? null,
+      rating,
       review: review.text,
       reviewMentions: review.mentions,
+      reviewIsEdited: (postRow?.editedAt ?? null) !== null,
+      reviewEditedAt: postRow?.editedAt ?? null,
       note: renderedNote.text,
       noteMentions: renderedNote.mentions,
     };

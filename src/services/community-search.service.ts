@@ -211,6 +211,7 @@ async function searchPosts(
         isPublic: posts.isPublic,
         createdAt: posts.createdAt,
         updatedAt: posts.updatedAt,
+        editedAt: posts.editedAt,
       })
       .from(posts)
       .innerJoin(users, eq(users.id, posts.userId))

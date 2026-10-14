@@ -33,12 +33,18 @@ export const posts = pgTable(
     body: text('body'),
     isPublic: boolean('is_public').notNull().default(true),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    // Bumped by any change, visibility included — not a signal of an edit.
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+    // Set only when the body, rating or status actually changes, so the app
+    // can mark the post "Edited". Making a post public or private is not an edit.
+    editedAt: timestamp('edited_at', { withTimezone: true }),
   },
   (t) => ({
     userIdIdx: index('idx_posts_user_id').on(t.userId),
     bookIdIdx: index('idx_posts_book_id').on(t.bookId),
-    userBookUniq: uniqueIndex('idx_posts_user_book').on(t.userId, t.bookId),
+    // A reader can post about a book many times (one while reading, another
+    // when finished); this finds their latest post for a book.
+    userBookIdx: index('idx_posts_user_book_created').on(t.userId, t.bookId, t.createdAt.desc()),
     ratingCheck: check('posts_rating_check', sql`${t.rating} BETWEEN 0 AND 5`),
     readRatingCheck: check('posts_read_rating_check', sql`${t.status} <> 'read' OR ${t.rating} IS NOT NULL`),
   }),
@@ -74,6 +80,8 @@ export const comments = pgTable(
     body: text('body').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+    // Set only when the body actually changes — see posts.editedAt.
+    editedAt: timestamp('edited_at', { withTimezone: true }),
   },
   (t) => ({
     postIdIdx: index('idx_comments_post_id').on(t.postId),

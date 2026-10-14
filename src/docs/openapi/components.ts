@@ -198,7 +198,7 @@ const bookSchemas = {
     type: 'object',
     nullable: true,
     description:
-      "The caller's own rating and review of this book — their community post for it, private ones included. `null` when they have not reviewed this exact edition, and always `null` for anonymous callers. Matched by book id, not by work: a review of the paperback does not appear on the hardback. Edit or delete it through `/community/posts/{postId}`.\n\n**Where it sits:** on each book in lists, search, discovery feeds, recommendations, shelves and saved books; on the nested `book` card of group shelf entries; and at the **top level** of the response (beside `book`, not inside it) on `GET /books/{id}` and the friend's-book page.",
+      "The caller's own rating and review of this book — their most recent community post for it, private ones included. A reader can post about a book more than once (say, once while reading and again when finished); every one of those posts appears in the community feeds, and this is the latest. `null` when they have not reviewed this exact edition, and always `null` for anonymous callers. Matched by book id, not by work: a review of the paperback does not appear on the hardback. Edit or delete it through `/community/posts/{postId}`.\n\n**Where it sits:** on each book in lists, search, discovery feeds, recommendations, shelves and saved books; on the nested `book` card of group shelf entries; and at the **top level** of the response (beside `book`, not inside it) on `GET /books/{id}` and the friend's-book page.",
     properties: {
       postId: { type: 'integer', example: 3121 },
       rating: { type: 'integer', minimum: 0, maximum: 5, nullable: true, description: 'Null on a `reading` post the author hasn\'t rated yet. Always set when `status` is `read`.', example: 4 },
@@ -208,6 +208,8 @@ const bookSchemas = {
       isPublic: { type: 'boolean', example: true },
       createdAt: { type: 'string', format: 'date-time', example: '2026-09-21T19:04:00.000Z' },
       updatedAt: { type: 'string', format: 'date-time', example: '2026-09-21T19:04:00.000Z' },
+      isEdited: { type: 'boolean', example: false, description: 'True once the author has changed the body, rating or status. Show an "Edited" marker when true. Switching between public and private does not count, and nor does resending the same text.' },
+      editedAt: { type: 'string', format: 'date-time', nullable: true, example: null, description: 'When the body, rating or status last changed; `null` if never edited. Use this, not `updatedAt`, for "Edited · 2h ago" — `updatedAt` also moves on a visibility switch.' },
     },
   },
 
@@ -567,6 +569,8 @@ const socialSchemas = {
       likedByMe: { type: 'boolean', example: false },
       createdAt: { type: 'string', format: 'date-time', example: '2026-07-30T20:04:00.000Z' },
       updatedAt: { type: 'string', format: 'date-time', example: '2026-07-30T20:04:00.000Z' },
+      isEdited: { type: 'boolean', example: false, description: 'True once the author has changed the body, rating or status. Show an "Edited" marker when true. Switching between public and private does not count, and nor does resending the same text.' },
+      editedAt: { type: 'string', format: 'date-time', nullable: true, example: null, description: 'When the body, rating or status last changed; `null` if never edited. Use this, not `updatedAt`, for "Edited · 2h ago" — `updatedAt` also moves on a visibility switch.' },
     },
   },
 
@@ -607,6 +611,8 @@ const socialSchemas = {
       isMine: { type: 'boolean', example: false, description: 'True on the caller’s own review.' },
       createdAt: { type: 'string', format: 'date-time', example: '2026-07-30T20:04:00.000Z' },
       updatedAt: { type: 'string', format: 'date-time', example: '2026-07-30T20:04:00.000Z' },
+      isEdited: { type: 'boolean', example: false, description: 'True once the author has changed the body, rating or status. Show an "Edited" marker when true. Switching between public and private does not count, and nor does resending the same text.' },
+      editedAt: { type: 'string', format: 'date-time', nullable: true, example: null, description: 'When the body, rating or status last changed; `null` if never edited. Use this, not `updatedAt`, for "Edited · 2h ago" — `updatedAt` also moves on a visibility switch.' },
     },
   },
 
@@ -621,6 +627,9 @@ const socialSchemas = {
       likeCount: { type: 'integer', example: 2 },
       likedByMe: { type: 'boolean', example: false },
       createdAt: { type: 'string', format: 'date-time', example: '2026-07-30T21:10:00.000Z' },
+      updatedAt: { type: 'string', format: 'date-time', example: '2026-07-30T21:10:00.000Z' },
+      isEdited: { type: 'boolean', example: false, description: 'True once the author has changed the comment’s text. Show an "Edited" marker when true. Resending the same text does not count.' },
+      editedAt: { type: 'string', format: 'date-time', nullable: true, example: null, description: 'When the text last changed; `null` if never edited.' },
     },
   },
 

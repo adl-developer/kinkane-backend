@@ -3,6 +3,10 @@
 
 ## 2026-10-14
 
+### Features
+
+* new-book notifications never suggest a book you've already seen ([4e890b3](https://adl.github.com/adl-developer/kinkane-backend/commit/4e890b3a9f2fe9863250964185526f85c0244614)) — [details](changelog/2026-10-14-new-book-notifications-seen.md)
+
 ### Bug Fixes
 
 * stop retaking the quiz from sending a new-book notification ([a54bb5b](https://adl.github.com/adl-developer/kinkane-backend/commit/a54bb5babbea83e6b35355d665596c5ca33a9280)) — [details](changelog/2026-10-14-new-book-notifications-seen.md)
