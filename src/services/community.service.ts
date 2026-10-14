@@ -8,6 +8,7 @@ import { logger } from '../lib/logger';
 import { mentionsService, renderTexts } from './mentions.service';
 import { assertCanViewShelf, canViewShelfBook } from './users.service';
 import type { MentionRef } from '../lib/mention-text';
+import { isEdited, withEditState } from '../lib/edit-state';
 
 const COMMENT_PREVIEW_LENGTH = 140;
 
@@ -250,15 +251,16 @@ export async function enrichPosts(
   const commentMap = new Map(commentCounts.map((r) => [r.postId, r.count]));
   const likedSet = new Set(myLikes.map((r) => r.postId));
 
-  return rows.map((r, i) => ({
-    ...r,
-    body: rendered[i].text,
-    mentions: rendered[i].mentions,
-    likeCount: likeMap.get(r.id) ?? 0,
-    commentCount: commentMap.get(r.id) ?? 0,
-    likedByMe: likedSet.has(r.id),
-    isEdited: r.editedAt !== null,
-  }));
+  return rows.map((r, i) =>
+    withEditState({
+      ...r,
+      body: rendered[i].text,
+      mentions: rendered[i].mentions,
+      likeCount: likeMap.get(r.id) ?? 0,
+      commentCount: commentMap.get(r.id) ?? 0,
+      likedByMe: likedSet.has(r.id),
+    }),
+  );
 }
 
 const POST_SELECT_COLUMNS = {
@@ -319,12 +321,20 @@ async function listPostPage(
   return { posts: enriched, total: countRow?.count ?? 0 };
 }
 
+/**
+ * How long an identical resubmission counts as the same post (a double tap or
+ * a client retry) rather than a deliberate new one. Long enough to cover a
+ * retry after a timeout; short enough that posting the same words about a
+ * book days later is still allowed.
+ */
+const DUPLICATE_POST_WINDOW = '2 minutes';
+
 // ── Service ───────────────────────────────────────────────────────────────────
 
 export const communityService = {
   // ── Posts ──────────────────────────────────────────────────────────────────
 
-  async createPost(userId: number, fields: CreatePostFields): Promise<{ id: number }> {
+  async createPost(userId: number, fields: CreatePostFields): Promise<{ id: number; duplicate: boolean }> {
     const [book] = await db
       .select({ id: books.id })
       .from(books)
@@ -334,22 +344,54 @@ export const communityService = {
     if (!book) throw Object.assign(new Error('Book not found'), { statusCode: 404 });
 
     const body = await mentionsService.prepare(fields.body ?? null);
+    const rating = fields.rating ?? null;
 
-    const [row] = await db
-      .insert(posts)
-      .values({
-        userId,
-        bookId: fields.bookId,
-        rating: fields.rating ?? null,
-        status: fields.status,
-        body: body.text,
-        isPublic: fields.isPublic,
-      })
-      .returning({ id: posts.id });
+    // A reader may post about a book many times, but not the same post twice
+    // in a row: a double tap or a retried request on a flaky connection would
+    // otherwise put two identical posts in the feed. An identical post from the
+    // last DUPLICATE_POST_WINDOW is handed back instead of inserting another.
+    // The advisory lock (released at commit) serialises concurrent creates for
+    // this reader and book, so two simultaneous submits cannot both miss the
+    // check and both insert.
+    const result = await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(${userId}::int, ${fields.bookId}::int)`);
 
-    await mentionsService.afterWrite({ type: 'post', id: row.id }, userId, body.mentionedIds, { isNew: true });
+      const [existing] = await tx
+        .select({ id: posts.id })
+        .from(posts)
+        .where(
+          and(
+            eq(posts.userId, userId),
+            eq(posts.bookId, fields.bookId),
+            eq(posts.status, fields.status),
+            sql`${posts.rating} IS NOT DISTINCT FROM ${rating}`,
+            sql`${posts.body} IS NOT DISTINCT FROM ${body.text}`,
+            sql`${posts.createdAt} > now() - ${DUPLICATE_POST_WINDOW}::interval`,
+          ),
+        )
+        .orderBy(desc(posts.createdAt))
+        .limit(1);
+      if (existing) return { id: existing.id, duplicate: true };
 
-    return { id: row.id };
+      const [row] = await tx
+        .insert(posts)
+        .values({
+          userId,
+          bookId: fields.bookId,
+          rating,
+          status: fields.status,
+          body: body.text,
+          isPublic: fields.isPublic,
+        })
+        .returning({ id: posts.id });
+      return { id: row.id, duplicate: false };
+    });
+
+    if (!result.duplicate) {
+      await mentionsService.afterWrite({ type: 'post', id: result.id }, userId, body.mentionedIds, { isNew: true });
+    }
+
+    return result;
   },
 
   async getPost(postId: number, requesterId: number): Promise<PostItem> {
@@ -366,7 +408,7 @@ export const communityService = {
 
     const { bookIsbn13, ...postFields } = row;
 
-    const [[likeRow], [commentRow], likedRow, excerptMap] = await Promise.all([
+    const [[likeRow], [commentRow], likedRow, excerptMap, [rendered]] = await Promise.all([
       db
         .select({ count: sql<number>`COUNT(*)::int` })
         .from(postLikes)
@@ -381,10 +423,10 @@ export const communityService = {
         .where(and(eq(postLikes.postId, postId), eq(postLikes.userId, requesterId)))
         .limit(1),
       getExcerptsByIsbns([bookIsbn13]),
+      renderTexts([postFields.body]),
     ]);
-    const [rendered] = await renderTexts([postFields.body]);
 
-    return {
+    return withEditState({
       ...postFields,
       body: rendered.text,
       mentions: rendered.mentions,
@@ -392,8 +434,7 @@ export const communityService = {
       likeCount: likeRow?.count ?? 0,
       commentCount: commentRow?.count ?? 0,
       likedByMe: likedRow.length > 0,
-      isEdited: postFields.editedAt !== null,
-    };
+    });
   },
 
   async updatePost(
@@ -401,38 +442,52 @@ export const communityService = {
     userId: number,
     fields: { rating?: number | null; status?: 'reading' | 'read'; body?: string | null; isPublic?: boolean },
   ): Promise<PostItem> {
-    // A `read` post must keep a rating, so check the post as it will be after
-    // the patch: switching to `read` unrated, or clearing a `read` post's
-    // rating, is refused. Only the author's own post is looked up — anyone
-    // else falls through to the 404 below.
-    if (fields.rating === null || fields.status === 'read') {
-      const [current] = await db
-        .select({ rating: posts.rating, status: posts.status })
+    // The post as stored, read alongside the mention lookup for the new body.
+    // Only the author's own post is found — anyone else gets the 404 below,
+    // before any rule about its contents can leak.
+    const [[current], prepared] = await Promise.all([
+      db
+        .select({ rating: posts.rating, status: posts.status, body: posts.body })
         .from(posts)
         .where(and(eq(posts.id, postId), eq(posts.userId, userId)))
-        .limit(1);
-      if (current) {
-        const status = fields.status ?? current.status;
-        const rating = fields.rating !== undefined ? fields.rating : current.rating;
-        if (status === 'read' && rating === null) {
-          throw Object.assign(new Error('A rating is required when status is read'), { statusCode: 400 });
-        }
-      }
+        .limit(1),
+      fields.body !== undefined ? mentionsService.prepare(fields.body) : undefined,
+    ]);
+    if (!current) throw Object.assign(new Error('Post not found'), { statusCode: 404 });
+
+    // A `read` post must keep a rating, so check the post as it will be after
+    // the patch: switching to `read` unrated, or clearing a `read` post's
+    // rating, is refused.
+    const nextStatus = fields.status ?? current.status;
+    const nextRating = fields.rating !== undefined ? fields.rating : current.rating;
+    if (nextStatus === 'read' && nextRating === null) {
+      throw Object.assign(new Error('A rating is required when status is read'), { statusCode: 400 });
     }
 
-    const body = fields.body !== undefined ? await mentionsService.prepare(fields.body) : undefined;
+    // A body that reads exactly as the author already sees it is left alone.
+    // Compared as rendered text, not stored tokens: a handle that has started
+    // (or stopped) naming an account since the post was written would
+    // tokenise differently, and re-storing it would mark an untouched post
+    // "Edited" and notify someone the author never chose to mention.
+    let body = prepared;
+    if (body !== undefined) {
+      const [shown] = await renderTexts([current.body]);
+      if (shown.text === fields.body) body = undefined;
+    }
 
     // What counts as an edit: a body, rating or status that differs from what
-    // is stored. Visibility switches and resending the same text are not edits,
-    // so the app does not mark a post "Edited" that reads exactly as before.
-    // Compared in SQL against the row being updated, so it cannot race a
-    // concurrent edit the way a read-then-write would.
+    // is stored. Visibility switches and resending the same values are not
+    // edits, so the app does not mark a post "Edited" that reads as before.
+    // Compared in SQL against the row being updated, so a concurrent edit
+    // between the read above and this write is still judged correctly.
     const changed: SQL[] = [];
     if (fields.rating !== undefined) changed.push(sql`${posts.rating} IS DISTINCT FROM ${fields.rating}`);
     if (fields.status !== undefined) changed.push(sql`${posts.status} IS DISTINCT FROM ${fields.status}`);
     if (body !== undefined) changed.push(sql`${posts.body} IS DISTINCT FROM ${body.text}`);
 
-    const updateSet: Record<string, unknown> = { updatedAt: new Date() };
+    // Both timestamps from the database clock, in one statement, so editedAt
+    // and updatedAt agree to the microsecond when an edit sets both.
+    const updateSet: Record<string, unknown> = { updatedAt: sql`now()` };
     if (fields.rating !== undefined) updateSet.rating = fields.rating;
     if (fields.status !== undefined) updateSet.status = fields.status;
     if (body !== undefined) updateSet.body = body.text;
@@ -562,14 +617,17 @@ export const communityService = {
   /**
    * Everyone's reviews of one book, with the requester's own pinned first.
    *
-   * Differs from listPostsForBook in two ways: the requester's own review is
-   * included even when it is private (it is theirs being shown back to them —
-   * nobody else's private review ever appears), and it always sorts ahead of
+   * Differs from listPostsForBook in two ways: the requester's own reviews are
+   * included even when private (they are theirs being shown back to them —
+   * nobody else's private review ever appears), and they always sort ahead of
    * everyone else's, whatever `sort` asks for. Each item carries `isMine`.
    *
-   * The pin is part of the ORDER BY, not prepended after the fact, so offset
-   * pagination stays consistent: the own review is item 0 of the whole list,
-   * appears on page one only, and is counted in `total` exactly once.
+   * A reader can post about a book more than once, so "own reviews" may be
+   * several posts; they are pinned as a block, ordered among themselves by
+   * `sort`, and a long run of them can carry past page one. The pin is part of
+   * the ORDER BY, not prepended after the fact, so offset pagination stays
+   * consistent: each post appears exactly once across pages and once in
+   * `total`.
    *
    * Matched on the exact book id, like myReview — see my-reviews.service.
    * Throws a 404 for a book that does not exist.
@@ -726,13 +784,36 @@ export const communityService = {
     userId: number,
     body: string,
   ): Promise<Pick<CommentItem, 'id' | 'body' | 'mentions' | 'updatedAt' | 'isEdited' | 'editedAt'>> {
-    const prepared = await mentionsService.prepare(body);
-    // Resending the same text is not an edit — see updatePost.
+    const [[current], prepared] = await Promise.all([
+      db
+        .select({ body: comments.body, updatedAt: comments.updatedAt, editedAt: comments.editedAt })
+        .from(comments)
+        .where(and(eq(comments.id, commentId), eq(comments.userId, userId)))
+        .limit(1),
+      mentionsService.prepare(body),
+    ]);
+    if (!current) throw Object.assign(new Error('Comment not found'), { statusCode: 404 });
+
+    // Text that reads exactly as it already does is not an edit and is not
+    // re-stored — compared as rendered text for the reason given in updatePost.
+    const [shown] = await renderTexts([current.body]);
+    if (shown.text === body) {
+      return withEditState({
+        id: commentId,
+        body: shown.text ?? '',
+        mentions: shown.mentions,
+        updatedAt: current.updatedAt,
+        editedAt: current.editedAt,
+      });
+    }
+
+    // The CASE still guards against a concurrent edit having already stored
+    // this same text; both timestamps come from the database clock.
     const [row] = await db
       .update(comments)
       .set({
         body: prepared.text,
-        updatedAt: new Date(),
+        updatedAt: sql`now()`,
         editedAt: sql`CASE WHEN ${comments.body} IS DISTINCT FROM ${prepared.text} THEN now() ELSE ${comments.editedAt} END`,
       })
       .where(and(eq(comments.id, commentId), eq(comments.userId, userId)))
@@ -745,14 +826,13 @@ export const communityService = {
     await mentionsService.afterWrite({ type: 'comment', id: commentId }, userId, prepared.mentionedIds);
 
     const [rendered] = await renderTexts([row.body]);
-    return {
+    return withEditState({
       id: row.id,
       body: rendered.text ?? '',
       mentions: rendered.mentions,
       updatedAt: row.updatedAt,
-      isEdited: row.editedAt !== null,
       editedAt: row.editedAt,
-    };
+    });
   },
 
   async deleteComment(commentId: number, userId: number): Promise<void> {
@@ -833,8 +913,7 @@ export const communityService = {
         mentions: rendered[i].mentions,
         likeCount: likeMap.get(r.id) ?? 0,
         likedByMe: likedSet.has(r.id),
-        isEdited: r.editedAt !== null,
-      })),
+      })).map(withEditState),
       total: countRow?.count ?? 0,
     };
   },
@@ -884,7 +963,7 @@ export const communityService = {
     // Accepted followers always see one book; everyone else follows the shelf setting
     await assertCanViewShelf(friendId, requesterId, canViewShelfBook);
 
-    const [[bookRow], postRows, [userBookRow]] = await Promise.all([
+    const [[bookRow], [postRow], [userBookRow]] = await Promise.all([
       db
         .select({
           id: books.id,
@@ -913,9 +992,11 @@ export const communityService = {
           ),
         )
         // They may have posted about this book more than once (while reading,
-        // then when finished), newest first. Capped: a handful is the norm.
+        // then when finished). Their latest post is the review shown — rating,
+        // text and edit state all from that one post, so the page never pairs
+        // an old rating with newer words. Like myReview.
         .orderBy(desc(posts.createdAt), desc(posts.id))
-        .limit(20),
+        .limit(1),
 
       db
         .select({
@@ -933,11 +1014,6 @@ export const communityService = {
 
     assertFound(bookRow, 'Book');
     assertFound(userBookRow, 'User book');
-
-    // The review is their latest post; the rating is their latest rating, so a
-    // newer unrated "reading" post does not blank out a rating they gave before.
-    const postRow = postRows[0];
-    const rating = postRows.find((p) => p.rating !== null)?.rating ?? null;
 
     const note = userBookRow.noteIsPublic ? (userBookRow.note ?? null) : null;
     const [contributorRows, excerptMap, [review, renderedNote]] = await Promise.all([
@@ -959,10 +1035,10 @@ export const communityService = {
       friendName: userBookRow.friendName,
       friendUsername: userBookRow.friendUsername,
       friendPhotoUrl: userBookRow.friendPhotoUrl,
-      rating,
+      rating: postRow?.rating ?? null,
       review: review.text,
       reviewMentions: review.mentions,
-      reviewIsEdited: (postRow?.editedAt ?? null) !== null,
+      reviewIsEdited: isEdited(postRow?.editedAt),
       reviewEditedAt: postRow?.editedAt ?? null,
       note: renderedNote.text,
       noteMentions: renderedNote.mentions,

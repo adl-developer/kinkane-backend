@@ -143,18 +143,60 @@ describeIfDb('several posts per book, and edit markers', () => {
       expect(await getMyReview(reader, bookId)).toMatchObject({ postId: reading, status: 'reading' });
     });
 
-    it('friend page: latest review text, latest rating that exists', async () => {
+    it('friend page: rating and review both come from the latest post', async () => {
       await db.execute(sql`INSERT INTO user_books (user_id, book_id, status) VALUES (${reader}, ${bookId}, 'reading')`);
-      const read = await post({ status: 'read', rating: 4, body: 'First time through.' });
-      const reread = await post({ status: 'reading', body: 'Rereading it.' });
+      const read = await post({ status: 'read', rating: 2, body: 'Not for me.' });
+      const reread = await post({ status: 'reading', body: 'Rereading, loving it.' });
       await backdate(read, 60);
       await backdate(reread, 5);
 
-      const detail = await communityService.getFriendBookDetail(reader, bookId, reader);
-      expect(detail.review).toBe('Rereading it.');
-      // The newer post is unrated; the earlier rating still stands.
-      expect(detail.rating).toBe(4);
-      expect(detail.reviewIsEdited).toBe(false);
+      // Never "2 stars — rereading, loving it": an old rating is not paired
+      // with newer words. The latest post is unrated, so no rating.
+      let detail = await communityService.getFriendBookDetail(reader, bookId, reader);
+      expect(detail).toMatchObject({ review: 'Rereading, loving it.', rating: null, reviewIsEdited: false });
+
+      const finished = await post({ status: 'read', rating: 5, body: 'Changed my mind.' });
+      await backdate(finished, 1);
+      detail = await communityService.getFriendBookDetail(reader, bookId, reader);
+      expect(detail).toMatchObject({ review: 'Changed my mind.', rating: 5 });
+    });
+  });
+
+  describe('repeat submissions', () => {
+    const create = (body: Record<string, unknown>) => call('createPost', { bookId, isPublic: true, ...body });
+
+    it('an identical post moments later returns the first, with 200', async () => {
+      const first = await create({ status: 'reading', body: 'Fifty pages in.' });
+      const again = await create({ status: 'reading', body: 'Fifty pages in.' });
+      expect(first.status).toBe(201);
+      expect(again).toEqual({ status: 200, json: { id: first.json.id } });
+      expect((await communityService.listOwnPosts(reader, 'date_desc', 20, 0)).total).toBe(1);
+    });
+
+    it('two simultaneous identical submits make one post', async () => {
+      const results = await Promise.all([1, 2, 3].map(() => create({ status: 'read', rating: 4, body: 'Done.' })));
+      expect(new Set(results.map((r) => r.json.id)).size).toBe(1);
+      expect(results.map((r) => r.status).sort()).toEqual([200, 200, 201]);
+      expect((await communityService.listOwnPosts(reader, 'date_desc', 20, 0)).total).toBe(1);
+    });
+
+    it('anything different is a new post', async () => {
+      const base = { status: 'reading', rating: 3, body: 'Hmm.' };
+      const ids = new Set<number>();
+      for (const variant of [base, { ...base, body: 'Hmm!' }, { ...base, rating: 4 }, { ...base, status: 'read' }]) {
+        const res = await create(variant);
+        expect(res.status).toBe(201);
+        ids.add(res.json.id);
+      }
+      expect(ids.size).toBe(4);
+    });
+
+    it('the same words again after the window are a new post', async () => {
+      const first = await create({ status: 'reading', body: 'Still going.' });
+      await backdate(first.json.id, 10);
+      const later = await create({ status: 'reading', body: 'Still going.' });
+      expect(later.status).toBe(201);
+      expect(later.json.id).not.toBe(first.json.id);
     });
   });
 
@@ -181,12 +223,37 @@ describeIfDb('several posts per book, and edit markers', () => {
     });
 
     it('changing the rating or status marks it edited', async () => {
-      const a = await post({ status: 'reading', rating: 3 });
+      // Distinct bodies: identical posts in a row would be folded into one.
+      const a = await post({ status: 'reading', rating: 3, body: 'a' });
       expect((await edit(a, { rating: 4 })).json.post.isEdited).toBe(true);
-      const b = await post({ status: 'reading', rating: 3 });
+      const b = await post({ status: 'reading', rating: 3, body: 'b' });
       expect((await edit(b, { status: 'read' })).json.post.isEdited).toBe(true);
-      const c = await post({ status: 'reading', rating: 3 });
+      const c = await post({ status: 'reading', rating: 3, body: 'c' });
       expect((await edit(c, { rating: null })).json.post.isEdited).toBe(true);
+    });
+
+    it('editedAt and updatedAt come from the same clock', async () => {
+      const id = await post({ status: 'reading', body: 'Started.' });
+      const res = await edit(id, { body: 'Started again.' });
+      expect(res.json.post.editedAt).toEqual(res.json.post.updatedAt);
+    });
+
+    it('a handle that has since become a user does not make resent text an edit', async () => {
+      const handle = 'mpe_newcomer';
+      await db.execute(sql`DELETE FROM users WHERE username = ${handle}`);
+      const id = await post({ status: 'reading', body: `Lending this to @${handle} next.` });
+
+      // The handle named nobody when posted; now it does.
+      await db.execute(sql`
+        INSERT INTO users (name, email, email_verified, username)
+        VALUES ('Newcomer', ${`${EMAIL_PREFIX}newcomer@example.com`}, true, ${handle})
+      `);
+
+      const res = await edit(id, { body: `Lending this to @${handle} next.`, isPublic: false });
+      expect(res.json.post).toMatchObject({ isEdited: false, editedAt: null, mentions: [] });
+      const [stored] = (await db.execute(sql`SELECT body FROM posts WHERE id = ${id}`)) as unknown as { body: string }[];
+      expect(stored.body).toBe(`Lending this to @${handle} next.`);
+      await db.execute(sql`DELETE FROM users WHERE username = ${handle}`);
     });
 
     it('a visibility switch alone is not an edit', async () => {

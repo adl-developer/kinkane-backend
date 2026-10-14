@@ -61,7 +61,7 @@ export const socialPaths = {
     post: {
       tags: [COMMUNITY],
       summary: 'Post a rating or review',
-      description: `Creates a post about a book. A reader can post about the same book as many times as they like — for instance once while reading and again when finished — and each is a separate post in the feed; nothing is replaced. To change an existing post, use \`PATCH /community/posts/{postId}\` instead. \`body\` is optional — a rating on its own is a perfectly valid post — and so is \`rating\` while the book is still being read. \`status\` and \`isPublic\` are required, and \`rating\` is required when \`status\` is \`read\`.\n\n**Requires Kinkané Plus.** ${ASYMMETRY}`,
+      description: `Creates a post about a book. A reader can post about the same book as many times as they like — for instance once while reading and again when finished — and each is a separate post in the feed; nothing is replaced. To change an existing post, use \`PATCH /community/posts/{postId}\` instead.\n\n**Repeat submissions.** Sending a post identical to one the caller made about the same book within the last two minutes (same \`status\`, \`rating\` and \`body\`) does not create a second one: the existing post's \`id\` comes back with **200** instead of 201. This absorbs a double tap or a retry after a timeout; it is safe to retry a create. \`body\` is optional — a rating on its own is a perfectly valid post — and so is \`rating\` while the book is still being read. \`status\` and \`isPublic\` are required, and \`rating\` is required when \`status\` is \`read\`.\n\n**Requires Kinkané Plus.** ${ASYMMETRY}`,
       requestBody: body(object({
         bookId: { type: 'integer', minimum: 1, example: 48213 },
         rating: {
@@ -86,7 +86,8 @@ export const socialPaths = {
         },
       }, ['bookId', 'status', 'isPublic'])),
       responses: {
-        201: json('Post created.', ref('Post')),
+        201: json('Post created.', object({ id: { type: 'integer', example: 3121 } })),
+        200: json('An identical post was made moments ago (a double tap or retry); that post is returned instead of creating another.', object({ id: { type: 'integer', example: 3121 } })),
         400: resp('ValidationError'),
         404: json('No book with that id.', ref('Error'), { error: 'Book not found' }),
         ...plusErrors,
@@ -405,7 +406,7 @@ export const socialPaths = {
             friendPhotoUrl: { type: 'string', format: 'uri', nullable: true, example: null },
             rating: {
               type: 'integer', nullable: true, minimum: 0, maximum: 5,
-              description: 'Their most recent rating of the book, across all their posts about it — a later unrated "reading" post does not hide it. `null` when they have not rated the book, or their review is private and you are not its author.',
+              description: 'From their latest post about the book — the same post as `review`. `null` when that post is unrated (a `reading` post may be), when they have not reviewed the book, or their review is private and you are not its author.',
               example: 4,
             },
             review: {

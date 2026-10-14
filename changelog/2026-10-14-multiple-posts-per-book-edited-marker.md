@@ -42,11 +42,21 @@ kept, so existing clients are unaffected.
 
 - **`myReview`** (book cards, shelves, recommendations, book page) is your
   **latest** post for that edition.
-- **Friend's-book page:** the review text comes from their latest visible
-  post. The rating comes from their latest *rated* post, so a newer unrated
-  "reading again" post doesn't hide the rating they gave before.
+- **Friend's-book page:** the rating, review text and edit state all come
+  from their latest visible post. Mixing posts could have shown an old
+  rating next to newer words ("2★ — rereading, loving it"). If that latest
+  post is an unrated "reading" post, no rating is shown.
 - **Feeds, book review lists and search** list every post.
 - **Profile `postCount`** counts every post.
+
+## Repeat submissions
+
+Without the one-per-book rule, a double tap or a retry would put two identical
+posts in the feed. Now, an identical post (same status, rating and body)
+about the same book within two minutes of the last one returns that post's
+`id` with **200** instead of creating another. A per-(reader, book) advisory
+lock inside a transaction covers simultaneous submits. Posting the same words
+again later, or anything different, is a new post as normal.
 
 ## Data
 
@@ -66,6 +76,13 @@ Migration `0081_posts_multiple_per_book_edited_at`:
   `CASE WHEN col IS DISTINCT FROM new THEN now() ELSE edited_at END` inside the
   UPDATE, compared against the row being updated. A read-then-write could race
   a concurrent edit.
+- **Text is compared as the author sees it.** When a PATCH resends a body or
+  comment that reads exactly as it does now, nothing is stored. Without this,
+  a handle that has started naming an account since the post was written
+  would re-tokenise. That would mark the post "Edited" and notify someone the
+  author never chose to mention.
+- **One clock.** `updatedAt` and `editedAt` are both set from the database's
+  `now()` in the same statement, so they agree exactly.
 - **Existing rows start as not edited.** Past text edits can't be told apart
   from past visibility toggles, so no backfill.
 
@@ -83,11 +100,15 @@ Migration `0081_posts_multiple_per_book_edited_at`:
   DISTINCT ON / newest-first ordering and the `isEdited` mapping.
 - **Integration:** a new `multiple-posts-edited.integration.test.ts`, run with
   the rest of the integration suite against a fresh pgvector:pg18 database
-  with all migrations applied. All 151 tests in 15 files pass. It covers:
+  with all migrations applied. All 157 tests in 15 files pass. It covers:
   - Two posts on one book are both listed.
   - `myReview` picks the newest.
-  - The friend page keeps the earlier rating.
+  - The friend page takes its rating and review from the same, latest post.
   - Body, rating and status edits are marked.
   - Visibility-only and identical resends are not marked.
   - An earlier `editedAt` survives a later no-op patch.
   - Comment edit markers.
+  - Repeat submissions: one in sequence, three at once, variants and an
+    expired window.
+  - A newly-existing @handle not counting as an edit.
+  - Matching timestamps.

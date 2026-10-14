@@ -64,8 +64,10 @@ export const communityController = {
       return;
     }
     try {
-      const result = await communityService.createPost(req.user.id, parsed.data);
-      res.status(201).json(result);
+      const { id, duplicate } = await communityService.createPost(req.user.id, parsed.data);
+      // A repeat of a post made moments ago (double tap, retry) returns that
+      // post with 200 rather than creating another — see createPost.
+      res.status(duplicate ? 200 : 201).json({ id });
     } catch (err: unknown) {
       const e = err as Error & { statusCode?: number };
       res.status(e.statusCode ?? 500).json({ error: e.message });

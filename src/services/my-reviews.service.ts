@@ -4,6 +4,7 @@ import { posts } from '../db/schema';
 import { logger } from '../lib/logger';
 import { withRenderedMentions } from './mentions.service';
 import type { MentionRef } from '../lib/mention-text';
+import { withEditState } from '../lib/edit-state';
 
 /**
  * The caller's own rating and review of a book — their latest community post
@@ -82,9 +83,7 @@ async function queryMyReviews(userId: number, ids: number[]): Promise<Map<number
     .orderBy(posts.bookId, desc(posts.createdAt), desc(posts.id));
 
   const rendered = await withRenderedMentions(rows, 'body');
-  return new Map(
-    rendered.map(({ bookId, ...review }) => [bookId, { ...review, isEdited: review.editedAt !== null }]),
-  );
+  return new Map(rendered.map(({ bookId, ...review }) => [bookId, withEditState(review)]));
 }
 
 /**
