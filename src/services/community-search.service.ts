@@ -191,29 +191,36 @@ export function buildPostSearchCondition(q: string): SQL {
 }
 
 /**
- * Ranks the matches from `buildPostSearchCondition`, one CASE branch per tier
- * there and in the same order: the book's title first, as before, then posts
- * that say exactly what was typed, then posts that use the words, then fuzzy
- * title matches. Ties go to the closest text match, then the newest post — the
- * id last so offset pages never overlap.
+ * Ranks the matches from `buildPostSearchCondition`: the book's title first,
+ * as before, then posts that say exactly what was typed, then posts that use
+ * the words, then fuzzy title matches.
+ *
+ * Within a tier, the tie-break fits what put the post there: closeness of the
+ * post text for the two text tiers, title similarity for the title tiers —
+ * the order title matches always had, which group and people search share.
+ * Then the newest post, with the id last so offset pages never overlap.
  */
 function buildPostSearchOrderBy(q: string): SQL[] {
   const prefix = escapeLike(q) + '%';
   const wordPrefix = '% ' + escapeLike(q) + '%';
   const words = postWordsQuery(q);
   const bodyWordsTier = words !== null ? sql`WHEN ${posts.searchVector} @@ ${words} THEN 3` : sql``;
-
-  return [
-    sql`CASE
+  const tier = sql`CASE
       WHEN ${books.title} ILIKE ${prefix}     THEN 0
       WHEN ${books.title} ILIKE ${wordPrefix} THEN 1
       WHEN ${postWordingMatch(posts.searchText, q)} THEN 2
       ${bodyWordsTier}
       WHEN word_similarity(${q}, ${books.title}) > 0.3 THEN 4
       ELSE 5
-    END`,
-    ...(words !== null ? [sql`ts_rank_cd(${posts.searchVector}, ${words}) DESC`] : []),
-    sql`word_similarity(${q}, ${books.title}) DESC`,
+    END`;
+  const titleCloseness = sql`word_similarity(${q}, ${books.title})`;
+  const withinTier = words !== null
+    ? sql`CASE WHEN ${tier} IN (2, 3) THEN ts_rank_cd(${posts.searchVector}, ${words}) ELSE ${titleCloseness} END`
+    : titleCloseness;
+
+  return [
+    tier,
+    sql`${withinTier} DESC`,
     sql`ts_rank(${books.searchVector}, plainto_tsquery('english', ${q})) DESC`,
     sql`${posts.createdAt} DESC`,
     sql`${posts.id} DESC`,

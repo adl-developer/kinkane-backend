@@ -123,6 +123,12 @@ describeIfDb('community search: posts by their own text', () => {
     post.phone = await createPost(plainBook, 'Tolkien\u2019s cravenmoor\u2014truly vespertane\u2026 loved it\u{1F60D}');
     post.slowly = await createPost(plainBook, 'I kept reading thrimbly through the night');
     post.slowlyApart = await createPost(plainBook, 'Thrimbly, I suppose, but reading it was hard');
+    // Two title-prefix matches for "zib": the closer title must stay first,
+    // even though only the other post also says "zib" in its text.
+    const closeTitle = await createBook('zib-close', 'Zib Tales');
+    const looseTitle = await createBook('zib-loose', 'Zibbleworth Grange');
+    post.closeTitle = await createPost(closeTitle, 'Nothing about that here.');
+    post.looseTitle = await createPost(looseTitle, 'zib zib zib, they all said');
   });
 
   afterAll(async () => {
@@ -161,6 +167,12 @@ describeIfDb('community search: posts by their own text', () => {
     const found = await search('marrowfen');
     expect(found[0]).toBe(post.titleMatch);
     expect(found).toEqual(expect.arrayContaining([post.phrase, post.apart]));
+  });
+
+  it('orders title matches by title closeness, not by what the post says', async () => {
+    const found = await search('zib');
+    expect(found.indexOf(post.closeTitle)).toBeGreaterThanOrEqual(0);
+    expect(found.indexOf(post.closeTitle)).toBeLessThan(found.indexOf(post.looseTitle));
   });
 
   it('ignores case on accented letters, which the database ctype alone would not', async () => {
