@@ -306,10 +306,18 @@ const envSchema = z.object({
   APPLE_PRODUCT_PLUS_MONTHLY: z.string().min(1).optional(),
   APPLE_PRODUCT_PLUS_ANNUAL: z.string().min(1).optional(),
   // Founding Member products — the App Store's equivalent of the founding
-  // Stripe prices (App Store Connect calls them "Early"). Optional: unset, only
-  // the two standard products unlock Plus.
-  APPLE_PRODUCT_PLUS_MONTHLY_FOUNDING: z.string().min(1).optional(),
-  APPLE_PRODUCT_PLUS_ANNUAL_FOUNDING: z.string().min(1).optional(),
+  // Stripe prices (App Store Connect calls them "Early"). Optional: unset or
+  // blank, only the two standard products unlock Plus. Blank is treated as
+  // unset so clearing the value in a dashboard switches them off rather than
+  // failing the boot.
+  APPLE_PRODUCT_PLUS_MONTHLY_FOUNDING: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.string().min(1).optional(),
+  ),
+  APPLE_PRODUCT_PLUS_ANNUAL_FOUNDING: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.string().min(1).optional(),
+  ),
   // Sandbox purchases cost nothing, but App Review tests against the
   // production server with sandbox accounts, so they must be accepted there.
   // Sandbox accounts are only creatable by the team, and TestFlight builds use
@@ -707,6 +715,25 @@ if (env.RECO_BOOKS_FROM_EMBEDDINGS && env.RECO_SIMILARITY_MAX >= 0.4) {
   );
 }
 
+// Each App Store product must be one product. A founding ID copied from a
+// standard one would mark every standard buyer a Founding Member, and an ID
+// listed under both plans would record annual buyers as monthly.
+const appleProductEntries = Object.entries({
+  APPLE_PRODUCT_PLUS_MONTHLY: env.APPLE_PRODUCT_PLUS_MONTHLY,
+  APPLE_PRODUCT_PLUS_ANNUAL: env.APPLE_PRODUCT_PLUS_ANNUAL,
+  APPLE_PRODUCT_PLUS_MONTHLY_FOUNDING: env.APPLE_PRODUCT_PLUS_MONTHLY_FOUNDING,
+  APPLE_PRODUCT_PLUS_ANNUAL_FOUNDING: env.APPLE_PRODUCT_PLUS_ANNUAL_FOUNDING,
+}).filter((entry): entry is [string, string] => entry[1] !== undefined);
+const appleProductIds = appleProductEntries.map(([, id]) => id);
+if (new Set(appleProductIds).size !== appleProductIds.length) {
+  const listed = appleProductEntries.map(([k, v]) => `  ${k}=${v}`).join('\n');
+  console.error(
+    `Invalid environment variables: the APPLE_PRODUCT_PLUS_* values must all be different App Store products, ` +
+      `but at least two are the same.\n${listed}`,
+  );
+  process.exit(1);
+}
+
 if (env.RECO_FETCH_POOL < env.RECO_TARGET_RESULTS) {
   console.error(
     `Invalid environment variables: RECO_FETCH_POOL (${env.RECO_FETCH_POOL}) must be >= ` +
@@ -925,9 +952,20 @@ export const config = {
     products: {
       monthly: env.APPLE_PRODUCT_PLUS_MONTHLY,
       annual: env.APPLE_PRODUCT_PLUS_ANNUAL,
-      monthlyFounding: env.APPLE_PRODUCT_PLUS_MONTHLY_FOUNDING,
-      annualFounding: env.APPLE_PRODUCT_PLUS_ANNUAL_FOUNDING,
     },
+    // Every App Store product that unlocks Plus, keyed by its Product ID. The
+    // one place a product's plan and founding status are decided; the IDs are
+    // checked distinct at boot above.
+    productsById: Object.fromEntries(
+      (
+        [
+          [env.APPLE_PRODUCT_PLUS_MONTHLY, { plan: 'monthly', founding: false }],
+          [env.APPLE_PRODUCT_PLUS_ANNUAL, { plan: 'annual', founding: false }],
+          [env.APPLE_PRODUCT_PLUS_MONTHLY_FOUNDING, { plan: 'monthly', founding: true }],
+          [env.APPLE_PRODUCT_PLUS_ANNUAL_FOUNDING, { plan: 'annual', founding: true }],
+        ] as const
+      ).filter(([id]) => id !== undefined),
+    ) as Record<string, { plan: 'monthly' | 'annual'; founding: boolean }>,
     allowSandbox: env.APPLE_IAP_ALLOW_SANDBOX,
   },
   gatingEnabled: env.GATING_ENABLED,
