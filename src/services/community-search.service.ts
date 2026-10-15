@@ -104,34 +104,78 @@ function buildUserSearchOrderBy(q: string): SQL[] {
   ];
 }
 
+/**
+ * What a post search matches the post's own text against. Lowercased here as
+ * posts.search_text/search_vector are lowercased in drizzle/0084 — under ICU
+ * there, and JavaScript's Unicode-aware toLowerCase() here, because the
+ * database's ctype C would leave "É" alone.
+ *
+ * `wording` is the query as literal text, for the "contains these exact words"
+ * tier: straight or curly double quotes are dropped, so a quoted phrase is still
+ * found as typed. Null under three characters — a one- or two-letter substring
+ * is in nearly every post, and the trigram index can't serve it anyway.
+ */
+function postTextTerms(q: string): { words: string; wording: string | null } {
+  const words = q.toLowerCase();
+  const literal = words.replace(/["\u201C\u201D]/g, '').trim();
+  return { words, wording: literal.length >= 3 ? '%' + escapeLike(literal) + '%' : null };
+}
+
+/**
+ * Posts whose book title matches `q` — as before — or whose own text does.
+ *
+ * The text is matched two ways: as words, with websearch_to_tsquery so
+ * `"slow burn"` in quotes must appear as that phrase while unquoted words may
+ * appear anywhere (stemmed, so "reading" finds "read"); and as literal wording,
+ * which also finds part of a word ("gripp"). Both run on the stored columns,
+ * with @mention and link tokens already blanked out.
+ */
 function buildPostSearchCondition(q: string): SQL {
-  const prefix = q + '%';
-  const wordPrefix = '% ' + q + '%';
-  const fts = q.length >= 3
+  const prefix = escapeLike(q) + '%';
+  const wordPrefix = '% ' + escapeLike(q) + '%';
+  const { words, wording } = postTextTerms(q);
+  const bookFts = q.length >= 3
     ? sql` OR ${books.searchVector} @@ plainto_tsquery('english', ${q})`
     : sql``;
+  const bodyWording = wording !== null ? sql` OR ${posts.searchText} LIKE ${wording}` : sql``;
 
   return sql`(
     ${books.title} ILIKE ${prefix}
     OR ${books.title} ILIKE ${wordPrefix}
+    ${bodyWording}
+    OR ${posts.searchVector} @@ websearch_to_tsquery('english', ${words})
     OR word_similarity(${q}, ${books.title}) > 0.3
-    ${fts}
+    ${bookFts}
   )`;
 }
 
+/**
+ * Ranks the matches from `buildPostSearchCondition`, one CASE branch per tier
+ * there and in the same order: the book's title first, as before, then posts
+ * that say exactly what was typed, then posts that use the words, then fuzzy
+ * title matches. Ties go to the closest text match, then the newest post — the
+ * id last so offset pages never overlap.
+ */
 function buildPostSearchOrderBy(q: string): SQL[] {
-  const prefix = q + '%';
-  const wordPrefix = '% ' + q + '%';
+  const prefix = escapeLike(q) + '%';
+  const wordPrefix = '% ' + escapeLike(q) + '%';
+  const { words, wording } = postTextTerms(q);
+  const bodyWordingTier = wording !== null ? sql`WHEN ${posts.searchText} LIKE ${wording} THEN 2` : sql``;
 
   return [
     sql`CASE
       WHEN ${books.title} ILIKE ${prefix}     THEN 0
       WHEN ${books.title} ILIKE ${wordPrefix} THEN 1
-      WHEN word_similarity(${q}, ${books.title}) > 0.3 THEN 2
-      ELSE 3
+      ${bodyWordingTier}
+      WHEN ${posts.searchVector} @@ websearch_to_tsquery('english', ${words}) THEN 3
+      WHEN word_similarity(${q}, ${books.title}) > 0.3 THEN 4
+      ELSE 5
     END`,
+    sql`ts_rank_cd(${posts.searchVector}, websearch_to_tsquery('english', ${words})) DESC`,
     sql`word_similarity(${q}, ${books.title}) DESC`,
     sql`ts_rank(${books.searchVector}, plainto_tsquery('english', ${q})) DESC`,
+    sql`${posts.createdAt} DESC`,
+    sql`${posts.id} DESC`,
   ];
 }
 
