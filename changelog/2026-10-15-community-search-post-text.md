@@ -50,8 +50,8 @@ so this is quick and does not need the concurrent-index path.
   nearly every post, and the trigram index can't serve shorter patterns.
 - **`%` and `_` in the query are literal.** The existing book-title matching
   never escaped them, so `%%%` returned every public post. Fixed for post
-  search here. **People and group search still have this bug** (same pattern in
-  `buildUserSearchCondition` / `buildGroupSearchCondition`).
+  search here; people and group search are fixed separately — see
+  `2026-10-15-search-wildcards-literal.md`.
 
 ## Out of scope
 

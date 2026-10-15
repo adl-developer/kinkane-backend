@@ -69,8 +69,8 @@ function buildUserSearchCondition(q: string): SQL {
   const handlePrefix = usernamePrefixOf(q);
   if (handlePrefix !== null) return sql`${users.username} LIKE ${handlePrefix}`;
 
-  const prefix = q + '%';
-  const wordPrefix = '% ' + q + '%';
+  const prefix = escapeLike(q) + '%';
+  const wordPrefix = '% ' + escapeLike(q) + '%';
   const fts = q.length >= 3
     ? sql` OR ${users.searchVector} @@ plainto_tsquery('simple', ${q})`
     : sql``;
@@ -89,8 +89,8 @@ function buildUserSearchCondition(q: string): SQL {
 function buildUserSearchOrderBy(q: string): SQL[] {
   if (usernamePrefixOf(q) !== null) return [sql`length(${users.username})`, sql`${users.username}`];
 
-  const prefix = q + '%';
-  const wordPrefix = '% ' + q + '%';
+  const prefix = escapeLike(q) + '%';
+  const wordPrefix = '% ' + escapeLike(q) + '%';
 
   return [
     sql`CASE
