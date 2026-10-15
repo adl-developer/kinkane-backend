@@ -10,20 +10,12 @@ import {
   uniqueIndex,
   check,
   pgEnum,
-  customType,
 } from 'drizzle-orm/pg-core';
+import { tsvector } from './column-types';
 import { sql } from 'drizzle-orm';
 import { users } from './users';
 import { books } from './books';
 
-// tsvector type — the column is GENERATED ALWAYS in the migration, never
-// written from the app. Declared so the schema-vs-database column diff in
-// endpoints.contract.test.ts doesn't report it as undeclared.
-const tsvector = customType<{ data: string }>({
-  dataType() {
-    return 'tsvector';
-  },
-});
 
 export const postStatusEnum = pgEnum('post_status', ['reading', 'read']);
 

@@ -11,6 +11,7 @@
 
 ### Bug Fixes
 
+* searching books or authors for % or _ no longer matches everything ([37fd8b5](https://adl.github.com/adl-developer/kinkane-backend/commit/37fd8b50fda35caa39bfc4bf398e63060e9e2a11)) — [details](changelog/2026-10-15-post-search-title-order.md)
 * stop searches for common words filling the server log ([22306b5](https://adl.github.com/adl-developer/kinkane-backend/commit/22306b57f20d331175c844e9b9281ed7b4615809)) — [details](changelog/2026-10-15-community-search-post-text.md)
 * post search keeps the old order for book-title matches ([f3566a8](https://adl.github.com/adl-developer/kinkane-backend/commit/f3566a81131e5c4d4833f3aaac5c70eeacc91b32)) — [details](changelog/2026-10-15-post-search-title-order.md)
 * post search handles phone punctuation, curly quotes and a leading dash ([d463da6](https://adl.github.com/adl-developer/kinkane-backend/commit/d463da6985eabd13bac6bdfe90f403f0e836d94b)) — [details](changelog/2026-10-15-post-search-phone-punctuation.md)
