@@ -8,6 +8,7 @@ import {
   appleStore,
   appAccountTokenFor,
   decodeJws,
+  isFoundingAppleProduct,
   mapAppleStatus,
   planForAppleProduct,
   type AppleNotificationPayload,
@@ -371,6 +372,16 @@ export const appleSubscriptionsService = {
     const pendingPlan = entitled && willRenew && renewsTo && renewsTo !== plan ? renewsTo : null;
     const currentPeriodEnd = transaction.expiresDate ? new Date(transaction.expiresDate) : null;
 
+    // Founding Member comes from buying a founding ("Early") product, and stays
+    // with that purchase chain if it later renews onto a standard product — as
+    // a Stripe founding member keeps the flag after the price rolls over. A flag
+    // from a different chain, Stripe's included, is never carried across.
+    const isFoundingMember =
+      isFoundingAppleProduct(transaction.productId) ||
+      (existing?.billingProvider === 'apple' &&
+        existing.appleOriginalTransactionId === originalTransactionId &&
+        existing.isFoundingMember === true);
+
     // A conversion is this chain starting, or starting again after it ended.
     // Keyed on status rather than tier: a subscription in billing retry is
     // still running (past_due, tier free), and its recovery is a renewal —
@@ -400,9 +411,7 @@ export const appleSubscriptionsService = {
           currentPeriodEnd,
           cancelAtPeriodEnd,
           pendingPlan,
-          // Founding pricing is a Stripe price; nothing on the App Store grants
-          // it yet. A former Stripe founding member keeps the flag otherwise.
-          isFoundingMember: false,
+          isFoundingMember,
           billingProvider: 'apple',
           appleOriginalTransactionId: originalTransactionId,
           appleEnvironment: snapshot.environment,

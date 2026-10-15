@@ -7,6 +7,10 @@
 
 * show short links on www.kinkane.app/s/ instead of the API-only /l/ path ([c185df9](https://adl.github.com/adl-developer/kinkane-backend/commit/c185df9a79d31ca45493937901fc9b794df055d9)) — [details](changelog/2026-10-15-short-links-on-kinkane-domain.md)
 
+### Bug Fixes
+
+* make links in posts safer to block and stop them breaking mentions, edits and quoted links ([84dd6b5](https://adl.github.com/adl-developer/kinkane-backend/commit/84dd6b504148f98489ddbea6868492010660b38f)) — [details](changelog/2026-10-15-short-links-on-kinkane-domain.md)
+
 
 ## 2026-10-14
 

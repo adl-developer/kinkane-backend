@@ -117,9 +117,17 @@ export function assertAppleConfigured(): void {
 /** Which plan an App Store product id is, or null for a product that isn't Plus. */
 export function planForAppleProduct(productId: string | null | undefined): SubscriptionPlan | null {
   if (!productId) return null;
-  if (productId === config.apple.products.monthly) return 'monthly';
-  if (productId === config.apple.products.annual) return 'annual';
+  const { monthly, annual, monthlyFounding, annualFounding } = config.apple.products;
+  if (productId === monthly || productId === monthlyFounding) return 'monthly';
+  if (productId === annual || productId === annualFounding) return 'annual';
   return null;
+}
+
+/** Whether an App Store product id is one of the Founding Member products. */
+export function isFoundingAppleProduct(productId: string | null | undefined): boolean {
+  if (!productId) return false;
+  const { monthlyFounding, annualFounding } = config.apple.products;
+  return productId === monthlyFounding || productId === annualFounding;
 }
 
 /**

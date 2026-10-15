@@ -305,6 +305,11 @@ const envSchema = z.object({
   APPLE_BUNDLE_ID: z.string().min(1).optional(),
   APPLE_PRODUCT_PLUS_MONTHLY: z.string().min(1).optional(),
   APPLE_PRODUCT_PLUS_ANNUAL: z.string().min(1).optional(),
+  // Founding Member products — the App Store's equivalent of the founding
+  // Stripe prices (App Store Connect calls them "Early"). Optional: unset, only
+  // the two standard products unlock Plus.
+  APPLE_PRODUCT_PLUS_MONTHLY_FOUNDING: z.string().min(1).optional(),
+  APPLE_PRODUCT_PLUS_ANNUAL_FOUNDING: z.string().min(1).optional(),
   // Sandbox purchases cost nothing, but App Review tests against the
   // production server with sandbox accounts, so they must be accepted there.
   // Sandbox accounts are only creatable by the team, and TestFlight builds use
@@ -920,6 +925,8 @@ export const config = {
     products: {
       monthly: env.APPLE_PRODUCT_PLUS_MONTHLY,
       annual: env.APPLE_PRODUCT_PLUS_ANNUAL,
+      monthlyFounding: env.APPLE_PRODUCT_PLUS_MONTHLY_FOUNDING,
+      annualFounding: env.APPLE_PRODUCT_PLUS_ANNUAL_FOUNDING,
     },
     allowSandbox: env.APPLE_IAP_ALLOW_SANDBOX,
   },

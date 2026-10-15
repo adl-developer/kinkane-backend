@@ -72,6 +72,8 @@ vi.mock('../db', () => ({
 
 const MONTHLY = 'com.kinkane.plus.monthly';
 const ANNUAL = 'com.kinkane.plus.annual';
+const MONTHLY_FOUNDING = 'com.kinkane.plus.monthly.founding';
+const ANNUAL_FOUNDING = 'com.kinkane.plus.annual.founding';
 const OTID = '2000000111111111';
 const EXPIRES = Date.parse('2026-11-05T00:00:00Z');
 
@@ -130,6 +132,8 @@ async function load() {
   process.env.APPLE_BUNDLE_ID = 'com.kinkane.app';
   process.env.APPLE_PRODUCT_PLUS_MONTHLY = MONTHLY;
   process.env.APPLE_PRODUCT_PLUS_ANNUAL = ANNUAL;
+  process.env.APPLE_PRODUCT_PLUS_MONTHLY_FOUNDING = MONTHLY_FOUNDING;
+  process.env.APPLE_PRODUCT_PLUS_ANNUAL_FOUNDING = ANNUAL_FOUNDING;
   const service = (await import('../services/subscriptions/apple.service')).appleSubscriptionsService;
   const store = await import('../lib/apple-store');
   return { service, store };
@@ -270,6 +274,31 @@ describe('verifyPurchase', () => {
 
     await service.verifyPurchase(7, '2000000999999999');
     expect(written()).toMatchObject({ isFoundingMember: false });
+  });
+
+  it('switches Plus on for a Founding Member product and marks the founding member', async () => {
+    getSubscription.mockResolvedValue(snapshot({ productId: ANNUAL_FOUNDING }));
+    const { service } = await load();
+
+    await service.verifyPurchase(7, '2000000999999999');
+    expect(written()).toMatchObject({ tier: 'plus', plan: 'annual', priceId: ANNUAL_FOUNDING, isFoundingMember: true });
+  });
+
+  it('keeps the founding flag when the same purchase renews onto the standard product', async () => {
+    getSubscription.mockResolvedValue(snapshot({ productId: MONTHLY }));
+    get.mockResolvedValue({ ...TRIALING, status: 'active', plan: 'monthly', billingProvider: 'apple', appleOriginalTransactionId: OTID, isFoundingMember: true });
+    const { service } = await load();
+
+    await service.verifyPurchase(7, OTID);
+    expect(written()).toMatchObject({ plan: 'monthly', isFoundingMember: true });
+  });
+
+  it('does not mark a standard App Store purchase as a founding member', async () => {
+    getSubscription.mockResolvedValue(snapshot({ productId: ANNUAL }));
+    const { service } = await load();
+
+    await service.verifyPurchase(7, '2000000999999999');
+    expect(written()).toMatchObject({ plan: 'annual', isFoundingMember: false });
   });
 
   // Moving from an ended web subscription to the App Store is fine.
@@ -474,6 +503,19 @@ describe('handleNotification', () => {
   it('rejects a body that is not a notification', async () => {
     const { service } = await load();
     await expect(service.handleNotification('not-a-jws')).rejects.toMatchObject({ statusCode: 400 });
+  });
+});
+
+describe('planForAppleProduct', () => {
+  it('maps standard and founding products to their plan, and anything else to null', async () => {
+    const { store } = await load();
+    expect(store.planForAppleProduct(MONTHLY)).toBe('monthly');
+    expect(store.planForAppleProduct(MONTHLY_FOUNDING)).toBe('monthly');
+    expect(store.planForAppleProduct(ANNUAL)).toBe('annual');
+    expect(store.planForAppleProduct(ANNUAL_FOUNDING)).toBe('annual');
+    expect(store.planForAppleProduct('com.other.app.product')).toBeNull();
+    expect(store.isFoundingAppleProduct(ANNUAL_FOUNDING)).toBe(true);
+    expect(store.isFoundingAppleProduct(ANNUAL)).toBe(false);
   });
 });
 
