@@ -114,12 +114,20 @@ export function assertAppleConfigured(): void {
   }
 }
 
+/** What an App Store product id unlocks, or null for a product that isn't Plus. */
+function appleProduct(productId: string | null | undefined) {
+  if (!productId) return null;
+  return Object.hasOwn(config.apple.productsById, productId) ? config.apple.productsById[productId] : null;
+}
+
 /** Which plan an App Store product id is, or null for a product that isn't Plus. */
 export function planForAppleProduct(productId: string | null | undefined): SubscriptionPlan | null {
-  if (!productId) return null;
-  if (productId === config.apple.products.monthly) return 'monthly';
-  if (productId === config.apple.products.annual) return 'annual';
-  return null;
+  return appleProduct(productId)?.plan ?? null;
+}
+
+/** Whether an App Store product id is one of the Founding Member products. */
+export function isFoundingAppleProduct(productId: string | null | undefined): boolean {
+  return appleProduct(productId)?.founding ?? false;
 }
 
 /**

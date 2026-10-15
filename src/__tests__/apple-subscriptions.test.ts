@@ -72,6 +72,8 @@ vi.mock('../db', () => ({
 
 const MONTHLY = 'com.kinkane.plus.monthly';
 const ANNUAL = 'com.kinkane.plus.annual';
+const MONTHLY_FOUNDING = 'com.kinkane.plus.monthly.founding';
+const ANNUAL_FOUNDING = 'com.kinkane.plus.annual.founding';
 const OTID = '2000000111111111';
 const EXPIRES = Date.parse('2026-11-05T00:00:00Z');
 
@@ -94,6 +96,7 @@ function snapshot(overrides: {
   autoRenewProductId?: string;
   appAccountToken?: string;
   revocationDate?: number;
+  purchaseDate?: number;
 } = {}): AppleSubscriptionSnapshot {
   return {
     environment: 'Production',
@@ -103,6 +106,7 @@ function snapshot(overrides: {
       originalTransactionId: OTID,
       bundleId: 'com.kinkane.app',
       productId: overrides.productId ?? MONTHLY,
+      purchaseDate: overrides.purchaseDate,
       expiresDate: EXPIRES,
       price: 8990,
       currency: 'USD',
@@ -122,14 +126,18 @@ function jws(payload: unknown): string {
   return `e30.${Buffer.from(JSON.stringify(payload)).toString('base64url')}.sig`;
 }
 
-async function load() {
+/** The founding offer is open in every test unless one says otherwise. */
+async function load(foundingOfferEndsAt = '2099-01-01T00:00:00Z') {
   vi.resetModules();
+  process.env.FOUNDING_OFFER_ENDS_AT = foundingOfferEndsAt;
   process.env.APPLE_IAP_ISSUER_ID = 'issuer';
   process.env.APPLE_IAP_KEY_ID = 'KEY123';
   process.env.APPLE_IAP_PRIVATE_KEY = 'unused-in-tests';
   process.env.APPLE_BUNDLE_ID = 'com.kinkane.app';
   process.env.APPLE_PRODUCT_PLUS_MONTHLY = MONTHLY;
   process.env.APPLE_PRODUCT_PLUS_ANNUAL = ANNUAL;
+  process.env.APPLE_PRODUCT_PLUS_MONTHLY_FOUNDING = MONTHLY_FOUNDING;
+  process.env.APPLE_PRODUCT_PLUS_ANNUAL_FOUNDING = ANNUAL_FOUNDING;
   const service = (await import('../services/subscriptions/apple.service')).appleSubscriptionsService;
   const store = await import('../lib/apple-store');
   return { service, store };
@@ -272,6 +280,99 @@ describe('verifyPurchase', () => {
     expect(written()).toMatchObject({ isFoundingMember: false });
   });
 
+  it('switches Plus on for a Founding Member product and marks the founding member', async () => {
+    getSubscription.mockResolvedValue(snapshot({ productId: ANNUAL_FOUNDING }));
+    const { service } = await load();
+
+    await service.verifyPurchase(7, '2000000999999999');
+    expect(written()).toMatchObject({ tier: 'plus', plan: 'annual', priceId: ANNUAL_FOUNDING, isFoundingMember: true });
+  });
+
+  it('keeps the founding flag when the same purchase renews onto the standard product', async () => {
+    getSubscription.mockResolvedValue(snapshot({ productId: MONTHLY }));
+    get.mockResolvedValue({ ...TRIALING, status: 'active', plan: 'monthly', billingProvider: 'apple', appleOriginalTransactionId: OTID, isFoundingMember: true });
+    const { service } = await load();
+
+    await service.verifyPurchase(7, OTID);
+    expect(written()).toMatchObject({ plan: 'monthly', isFoundingMember: true });
+  });
+
+  it('does not mark a standard App Store purchase as a founding member', async () => {
+    getSubscription.mockResolvedValue(snapshot({ productId: ANNUAL }));
+    const { service } = await load();
+
+    await service.verifyPurchase(7, '2000000999999999');
+    expect(written()).toMatchObject({ plan: 'annual', isFoundingMember: false });
+  });
+
+  it('tells a founding buyer they are a Founding Member in the confirmation email', async () => {
+    getSubscription.mockResolvedValue(snapshot({ productId: MONTHLY_FOUNDING }));
+    const { service } = await load();
+
+    await service.verifyPurchase(7, '2000000999999999');
+    expect(enqueueEmail).toHaveBeenCalledWith('subscription-confirmed', expect.objectContaining({ isFounding: true }));
+  });
+
+  it('gives no founding status for a founding product bought after the offer closed', async () => {
+    getSubscription.mockResolvedValue(
+      snapshot({ productId: ANNUAL_FOUNDING, purchaseDate: Date.parse('2026-12-01T00:00:00Z') }),
+    );
+    const { service } = await load('2026-11-01T00:00:00Z');
+
+    await service.verifyPurchase(7, '2000000999999999');
+    expect(written()).toMatchObject({ tier: 'plus', plan: 'annual', isFoundingMember: false });
+    expect(enqueueEmail).toHaveBeenCalledWith('subscription-confirmed', expect.objectContaining({ isFounding: false }));
+  });
+
+  it('keeps founding status on a renewal after the offer closed, for a purchase made inside it', async () => {
+    getSubscription.mockResolvedValue(
+      snapshot({ productId: MONTHLY_FOUNDING, purchaseDate: Date.parse('2026-12-01T00:00:00Z') }),
+    );
+    get.mockResolvedValue({ ...TRIALING, status: 'active', plan: 'monthly', billingProvider: 'apple', appleOriginalTransactionId: OTID, isFoundingMember: true, priceId: MONTHLY_FOUNDING });
+    const { service } = await load('2026-11-01T00:00:00Z');
+
+    await service.verifyPurchase(7, OTID);
+    expect(written()).toMatchObject({ isFoundingMember: true });
+  });
+
+  it('drops founding status when an ended chain is resubscribed', async () => {
+    getSubscription.mockResolvedValue(snapshot({ productId: MONTHLY }));
+    get.mockResolvedValue({ ...TRIALING, tier: 'free', status: 'cancelled', plan: 'monthly', billingProvider: 'apple', appleOriginalTransactionId: OTID, isFoundingMember: true, priceId: MONTHLY_FOUNDING });
+    const { service } = await load();
+
+    await service.verifyPurchase(7, OTID);
+    expect(written()).toMatchObject({ tier: 'plus', isFoundingMember: false });
+  });
+
+  it('never carries founding status over from a different App Store purchase', async () => {
+    getSubscription.mockResolvedValue(snapshot({ productId: MONTHLY }));
+    get.mockResolvedValue({ ...TRIALING, tier: 'free', status: 'cancelled', plan: 'monthly', billingProvider: 'apple', appleOriginalTransactionId: '2000000222222222', isFoundingMember: true });
+    const { service } = await load();
+
+    await service.verifyPurchase(7, '2000000999999999');
+    expect(written()).toMatchObject({ isFoundingMember: false });
+  });
+
+  it('records the move from founding to standard pricing on the same plan', async () => {
+    getSubscription.mockResolvedValue(snapshot({ productId: MONTHLY }));
+    get.mockResolvedValue({ ...TRIALING, status: 'active', plan: 'monthly', billingProvider: 'apple', appleOriginalTransactionId: OTID, isFoundingMember: true, priceId: MONTHLY_FOUNDING });
+    const { service } = await load();
+
+    await service.verifyPurchase(7, OTID);
+    expect(events()).toEqual(['plan_changed']);
+    expect(eventsInserted[0]).toMatchObject({ reason: expect.stringContaining(`from ${MONTHLY_FOUNDING} to ${MONTHLY}`) });
+    expect(written()).toMatchObject({ priceId: MONTHLY, isFoundingMember: true });
+  });
+
+  it('records no product change when the product is the same', async () => {
+    getSubscription.mockResolvedValue(snapshot({ productId: MONTHLY }));
+    get.mockResolvedValue({ ...TRIALING, status: 'active', plan: 'monthly', billingProvider: 'apple', appleOriginalTransactionId: OTID, priceId: MONTHLY });
+    const { service } = await load();
+
+    await service.verifyPurchase(7, OTID);
+    expect(events()).toEqual([]);
+  });
+
   // Moving from an ended web subscription to the App Store is fine.
   it('takes over from a Stripe subscription that has already ended', async () => {
     getSubscription.mockResolvedValue(snapshot());
@@ -385,6 +486,15 @@ describe('handleNotification', () => {
     expect(applyState.mock.calls[0][2]).toMatchObject({ reason: 'apple_notification', sourceEventId: 'n-1' });
   });
 
+  it('marks a founding purchase reported by notification as a Founding Member', async () => {
+    getByAppleOriginalTransactionId.mockResolvedValue({ ...bound, tier: 'free', status: 'cancelled' });
+    getSubscription.mockResolvedValue(snapshot({ productId: ANNUAL_FOUNDING }));
+    const { service } = await load();
+
+    await service.handleNotification(notification('SUBSCRIBED', 'RESUBSCRIBE'));
+    expect(written()).toMatchObject({ plan: 'annual', isFoundingMember: true });
+  });
+
   it('switches Plus off when the subscription has expired', async () => {
     getByAppleOriginalTransactionId.mockResolvedValue(bound);
     getSubscription.mockResolvedValue(snapshot({ status: 2 }));
@@ -474,6 +584,19 @@ describe('handleNotification', () => {
   it('rejects a body that is not a notification', async () => {
     const { service } = await load();
     await expect(service.handleNotification('not-a-jws')).rejects.toMatchObject({ statusCode: 400 });
+  });
+});
+
+describe('planForAppleProduct', () => {
+  it('maps standard and founding products to their plan, and anything else to null', async () => {
+    const { store } = await load();
+    expect(store.planForAppleProduct(MONTHLY)).toBe('monthly');
+    expect(store.planForAppleProduct(MONTHLY_FOUNDING)).toBe('monthly');
+    expect(store.planForAppleProduct(ANNUAL)).toBe('annual');
+    expect(store.planForAppleProduct(ANNUAL_FOUNDING)).toBe('annual');
+    expect(store.planForAppleProduct('com.other.app.product')).toBeNull();
+    expect(store.isFoundingAppleProduct(ANNUAL_FOUNDING)).toBe(true);
+    expect(store.isFoundingAppleProduct(ANNUAL)).toBe(false);
   });
 });
 

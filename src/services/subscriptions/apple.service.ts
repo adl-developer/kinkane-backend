@@ -8,6 +8,7 @@ import {
   appleStore,
   appAccountTokenFor,
   decodeJws,
+  isFoundingAppleProduct,
   mapAppleStatus,
   planForAppleProduct,
   type AppleNotificationPayload,
@@ -15,6 +16,7 @@ import {
   type AppleTransaction,
 } from '../../lib/apple-store';
 import { logger } from '../../lib/logger';
+import { isFoundingWindowOpen } from '../../lib/stripe';
 import { reclaimableClaim } from '../../lib/delivery-claim';
 import { enqueueEmail } from '../../lib/email-queue';
 import { subscriptionStateService, type StateChangeReason } from './state.service';
@@ -384,6 +386,28 @@ export const appleSubscriptionsService = {
     const startedCancelling = !converted && cancelAtPeriodEnd && !existing?.cancelAtPeriodEnd;
     const resumed = !converted && entitled && !cancelAtPeriodEnd && !!existing?.cancelAtPeriodEnd;
     const planChanged = !converted && Boolean(existing?.plan && plan && existing.plan !== plan);
+    // Founding and standard products share a plan, so moving between them (the
+    // founding member rolling onto standard pricing) is invisible to
+    // planChanged. Record it as its own plan_changed event, as Stripe's
+    // webhook does when the price id changes.
+    const productChanged =
+      wasRunningHere &&
+      !converted &&
+      !planChanged &&
+      Boolean(existing?.priceId && plan && existing.priceId !== transaction.productId);
+
+    // Founding Member comes from buying a founding ("Early") product while the
+    // offer is open — FOUNDING_OFFER_ENDS_AT, the same window Stripe checkout
+    // honours — judged by when this purchase was made, so a founding product
+    // still on sale after the window grants nothing. The flag then stays while
+    // this chain keeps running, including after it renews onto a standard
+    // product, as a Stripe founding member keeps it after the price rolls over.
+    // It is not carried onto a different chain (Stripe's included), nor back
+    // onto this one after it ended and was resubscribed.
+    const purchasedAt = transaction.purchaseDate ? new Date(transaction.purchaseDate) : new Date();
+    const isFoundingMember =
+      (isFoundingAppleProduct(transaction.productId) && isFoundingWindowOpen(purchasedAt)) ||
+      (wasRunningHere && existing?.isFoundingMember === true);
     const notificationEvent = ctx.notification
       ? eventForNotification(ctx.notification, transaction)
       : null;
@@ -400,9 +424,7 @@ export const appleSubscriptionsService = {
           currentPeriodEnd,
           cancelAtPeriodEnd,
           pendingPlan,
-          // Founding pricing is a Stripe price; nothing on the App Store grants
-          // it yet. A former Stripe founding member keeps the flag otherwise.
-          isFoundingMember: false,
+          isFoundingMember,
           billingProvider: 'apple',
           appleOriginalTransactionId: originalTransactionId,
           appleEnvironment: snapshot.environment,
@@ -432,6 +454,15 @@ export const appleSubscriptionsService = {
             }
             if (planChanged) {
               rows.push({ ...base, event: 'plan_changed', reason: `App Store plan changed from ${existing?.plan} to ${plan}` });
+            }
+            if (productChanged) {
+              rows.push({
+                ...base,
+                event: 'plan_changed',
+                reason: `App Store product changed from ${existing?.priceId} to ${transaction.productId} (${plan}, ${
+                  isFoundingAppleProduct(transaction.productId) ? 'Founding Member' : 'standard'
+                } pricing)`,
+              });
             }
             if (startedCancelling) {
               rows.push({ ...base, event: 'cancelled', reason: 'Auto-renew turned off in the App Store' });
@@ -502,7 +533,7 @@ export const appleSubscriptionsService = {
             to: user.email,
             name: user.name,
             plan: sub.plan ?? 'monthly',
-            isFounding: false,
+            isFounding: sub.isFoundingMember,
             currentPeriodEnd: sub.currentPeriodEnd?.toISOString() ?? null,
           })
         : enqueueEmail('subscription-cancelled', {

@@ -5,7 +5,12 @@
 
 ### Features
 
+* unlock Plus for the App Store Founding Member products ([5fb432f](https://adl.github.com/adl-developer/kinkane-backend/commit/5fb432f94c694a69da3cf0d2696d82c54e104f89)) — [details](changelog/2026-10-15-apple-founding-member-products.md)
 * show short links on www.kinkane.app/s/ instead of the API-only /l/ path ([c185df9](https://adl.github.com/adl-developer/kinkane-backend/commit/c185df9a79d31ca45493937901fc9b794df055d9)) — [details](changelog/2026-10-15-short-links-on-kinkane-domain.md)
+
+### Bug Fixes
+
+* make links in posts safer to block and stop them breaking mentions, edits and quoted links ([84dd6b5](https://adl.github.com/adl-developer/kinkane-backend/commit/84dd6b504148f98489ddbea6868492010660b38f)) — [details](changelog/2026-10-15-short-links-on-kinkane-domain.md)
 
 
 ## 2026-10-14
