@@ -1,4 +1,4 @@
-import { eq, and, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
+import { eq, and, inArray, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { db } from '../db';
 import { alias } from 'drizzle-orm/pg-core';
 import { users, posts, books, postLikes, comments, groups, followRequests } from '../db/schema';
@@ -142,29 +142,52 @@ function postWordingMatch(column: SQLWrapper, q: string): SQL {
   return sql`(char_length(${cleaned}) >= 3 AND ${column} LIKE ('%' || ${cleaned} || '%'))`;
 }
 
+// The posts and books tables again, for the two match subqueries below
+const textMatch = alias(posts, 'text_match');
+const titleMatch = alias(books, 'title_match');
+
 /**
  * Posts whose book title matches `q` — as before — or whose own text does:
  * as words and quoted phrases (postWordsQuery), or as the exact wording
- * (postWordingMatch). Both read the stored columns, where @mention and link
- * tokens are already blanked out.
+ * (postWordingMatch). Both text tests read the stored columns, where @mention
+ * and link tokens are already blanked out.
+ *
+ * Each side is an `IN (subquery)` rather than ORs over the joined row. An OR
+ * mixing books and posts columns can use neither table's indexes, so every
+ * search ran the trigram LIKE, the tsquery and word_similarity once per public
+ * post. Instead:
+ *  - text: a subquery over posts alone ORs the two GIN indexes (a BitmapOr);
+ *  - title: tested once per book that has posts, not once per post — a book
+ *    with forty posts was having its title compared forty times.
+ * The outer query then only checks membership in the two id sets.
  */
-function buildPostSearchCondition(q: string): SQL {
+export function buildPostSearchCondition(q: string): SQL {
   const prefix = escapeLike(q) + '%';
   const wordPrefix = '% ' + escapeLike(q) + '%';
   const words = postWordsQuery(q);
   const bookFts = q.length >= 3
-    ? sql` OR ${books.searchVector} @@ plainto_tsquery('english', ${q})`
+    ? sql` OR ${titleMatch.searchVector} @@ plainto_tsquery('english', ${q})`
     : sql``;
-  const bodyWords = words !== null ? sql` OR ${posts.searchVector} @@ ${words}` : sql``;
+  const textWords = words !== null ? sql` OR ${textMatch.searchVector} @@ ${words}` : sql``;
 
-  return sql`(
-    ${books.title} ILIKE ${prefix}
-    OR ${books.title} ILIKE ${wordPrefix}
-    OR ${postWordingMatch(posts.searchText, q)}
-    ${bodyWords}
-    OR word_similarity(${q}, ${books.title}) > 0.3
-    ${bookFts}
-  )`;
+  const titleMatches = db
+    .select({ id: titleMatch.id })
+    .from(titleMatch)
+    .where(and(
+      inArray(titleMatch.id, db.selectDistinct({ id: posts.bookId }).from(posts)),
+      sql`(
+        ${titleMatch.title} ILIKE ${prefix}
+        OR ${titleMatch.title} ILIKE ${wordPrefix}
+        OR word_similarity(${q}, ${titleMatch.title}) > 0.3
+        ${bookFts}
+      )`,
+    ));
+  const textMatches = db
+    .select({ id: textMatch.id })
+    .from(textMatch)
+    .where(sql`${postWordingMatch(textMatch.searchText, q)} ${textWords}`);
+
+  return sql`(${inArray(posts.bookId, titleMatches)} OR ${inArray(posts.id, textMatches)})`;
 }
 
 /**

@@ -69,5 +69,7 @@ so this is quick and does not need the concurrent-index path.
   quotes), exact-wording-first ranking, title matches staying on top, accented
   capitals, token stripping (checked in the stored columns too), edits keeping
   the index current, private posts excluded, and LIKE wildcards.
-- `EXPLAIN` confirms both new GIN indexes are used.
+- `EXPLAIN` shows both new GIN indexes used by a posts-only query. **The real
+  search query didn't use them** (found in review); fixed in
+  `2026-10-15-post-search-uses-indexes.md`.
 - Full unit (1524), integration (176) and endpoint contract (31) suites pass.
