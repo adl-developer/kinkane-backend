@@ -56,7 +56,9 @@ export const users = pgTable(
     usernameChangedAt: timestamp('username_changed_at', { withTimezone: true }),
     email: varchar('email', { length: 500 }).notNull().unique(),
     passwordHash: varchar('password_hash', { length: 500 }),
-    photoUrl: varchar('photo_url', { length: 1000 }),
+    // text, not varchar: Google profile photo URLs can run past 1,000
+    // characters, and a social sign-in that copies one in must never fail on it.
+    photoUrl: text('photo_url'),
     emailVerified: boolean('email_verified').default(false).notNull(),
     // ── Guest accounts ─────────────────────────────────────────────────────
     // The web shop requires a Bearer token on every cart and checkout call, so
