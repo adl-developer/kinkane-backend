@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   MAX_LINKS_PER_TEXT,
+  addressSpans,
+  domainCandidates,
+  normalizeDomain,
+  shownLength,
   MISSING_LINK,
   domainOf,
   findUrls,
@@ -62,6 +66,25 @@ describe('findUrls', () => {
 
   it('does not treat bare words or a scheme mid-word as addresses', () => {
     expect(typed('example.com and foohttps://a.com')).toEqual([]);
+  });
+
+  it('leaves out the curly quotes phone keyboards type around an address', () => {
+    expect(typed('Read \u201chttps://x.com/a\u201d now')).toEqual(['https://x.com/a']);
+    expect(typed('\u2018https://x.com/b\u2019')).toEqual(['https://x.com/b']);
+    expect(typed('\u00abhttps://x.com/c\u00bb')).toEqual(['https://x.com/c']);
+  });
+
+  it('ends an address at an ellipsis or an emoji typed straight after it', () => {
+    expect(typed('https://x.com/a\u2026 and https://x.com/b\ud83d\udd25\ud83d\udd25')).toEqual(['https://x.com/a', 'https://x.com/b']);
+    expect(findUrls('https://x.com/a\u2764\ufe0f')[0].url).toBe('https://x.com/a');
+  });
+
+  it('leaves out full-width punctuation', () => {
+    expect(typed('\u770b https://x.com/a\u3002')).toEqual(['https://x.com/a']);
+  });
+
+  it('keeps letters with accents in a path', () => {
+    expect(findUrls('https://fr.wikipedia.org/wiki/\u00c9t\u00e9.')[0].url).toBe('https://fr.wikipedia.org/wiki/%C3%89t%C3%A9');
   });
 
   it('measures offsets in UTF-16 code units', () => {
@@ -193,6 +216,14 @@ describe('renderLinks', () => {
   });
 });
 
+describe('addressSpans', () => {
+  it('covers every address-shaped run, linked or not', () => {
+    const text = 'x https://medium.com/@ama/review, y';
+    const [[start, end]] = addressSpans(text);
+    expect(text.slice(start, end)).toBe('https://medium.com/@ama/review');
+  });
+});
+
 describe('mentions and links in the same text', () => {
   it('moves mention offsets to match the rendered links', () => {
     const stored = '{{l:7}} by @{{u:3}}';
@@ -208,5 +239,26 @@ describe('mentions and links in the same text', () => {
 describe('domainOf', () => {
   it('drops a leading www', () => {
     expect(domainOf('https://www.bbc.co.uk/news')).toBe('bbc.co.uk');
+  });
+});
+
+describe('shownLength', () => {
+  it('counts each link token at the short-link length', () => {
+    expect(shownLength('a {{l:7}} b {{l:12}}', 34)).toBe('a  b '.length + 34 * 2);
+    expect(shownLength('no links', 34)).toBe(8);
+  });
+});
+
+describe('domain blocking helpers', () => {
+  it('normalises a domain the way the block list stores it', () => {
+    expect(normalizeDomain('WWW.Evil.Example')).toBe('evil.example');
+    expect(normalizeDomain('localhost')).toBeNull();
+    expect(normalizeDomain('evil.example/path')).toBe('evil.example');
+    expect(normalizeDomain('not a domain')).toBeNull();
+  });
+
+  it('lists the host and every parent domain, but not the bare TLD', () => {
+    expect(domainCandidates('https://login.evil.example/x?a=1')).toEqual(['login.evil.example', 'evil.example']);
+    expect(domainCandidates('https://www.bbc.co.uk/')).toEqual(['www.bbc.co.uk', 'bbc.co.uk', 'co.uk']);
   });
 });

@@ -73,10 +73,16 @@ const TOKEN_RE = /\{\{l:(\d+)\}\}/g;
 
 // A typed address: `http://`, `https://` or `www.` at a word boundary, up to
 // whitespace or a character that cannot sit in an address unencoded and
-// usually wraps one (`<`, `>`, `"`). Trailing punctuation is trimmed after.
-const URL_RE = /\b(?:https?:\/\/|www\.)[^\s<>"]+/gi;
+// usually wraps one: `<`, `>`, `"`, the curly double quotes and guillemets
+// phone keyboards type in place of `"`, an ellipsis, or an emoji. Without
+// those, `“https://x.com/a”` or `https://x.com/a🔥` would store the quote or
+// emoji as part of the address and send readers to a page that doesn't exist.
+// Trailing punctuation is trimmed after.
+const URL_RE = /\b(?:https?:\/\/|www\.)[^\s<>"\u201C\u201D\u201E\u00AB\u00BB\u2039\u203A\u2026\p{Extended_Pictographic}]+/giu;
 
-const TRAILING_PUNCTUATION = /[.,;:!?'*]+$/;
+// ASCII sentence punctuation, curly single quotes (typed for `'`), and the
+// full-width punctuation CJK keyboards use.
+const TRAILING_PUNCTUATION = /[.,;:!?'*\u2018\u2019\u3001\u3002\uFF01\uFF0C\uFF1A\uFF1B\uFF1F\uFF09]+$/u;
 const BRACKETS: [string, string][] = [['(', ')'], ['[', ']'], ['{', '}']];
 
 function count(s: string, ch: string): number {
@@ -147,6 +153,19 @@ export function findUrls(text: string, ownHosts: readonly string[] = []): FoundU
   return found;
 }
 
+/**
+ * Where every address-shaped run of text sits, `[start, end)`, whether or not
+ * it was linked — one past the per-text cap, one too long to store. An `@`
+ * inside any of them is part of an address, never a mention.
+ */
+export function addressSpans(text: string): [number, number][] {
+  const spans: [number, number][] = [];
+  for (const match of text.matchAll(URL_RE)) {
+    spans.push([match.index!, match.index! + trimTrailing(match[0]).length]);
+  }
+  return spans;
+}
+
 /** `www.kinkane.app` and `kinkane.app` are the same site. */
 function bareHost(host: string): string {
   return host.toLowerCase().replace(/^www\./, '');
@@ -209,6 +228,16 @@ export function tokenizeLinks(
   }
   out += text.slice(last);
   return { text: out, linkIds: linked };
+}
+
+/**
+ * How long `text` will read once each link token is shown as a short link of
+ * `shortLinkLength` characters. Mention tokens are counted as stored.
+ */
+export function shownLength(text: string, shortLinkLength: number): number {
+  let length = text.length;
+  for (const match of text.matchAll(TOKEN_RE)) length += shortLinkLength - match[0].length;
+  return length;
 }
 
 /** Every link id tokenised into `text`. */
@@ -281,6 +310,40 @@ export function shiftOffsets<T extends { start: number }>(items: T[], shifts: Sh
     for (const s of shifts) if (s.at < item.start) delta += s.delta;
     return delta ? { ...item, start: item.start + delta } : item;
   });
+}
+
+/**
+ * A domain as the block list stores it: lowercased, punycode, no leading
+ * `www.`. Null for anything that isn't a dotted host name.
+ */
+export function normalizeDomain(raw: string): string | null {
+  let host: string;
+  try {
+    host = new URL(`https://${raw.trim()}`).hostname;
+  } catch {
+    return null;
+  }
+  host = host.replace(/^www\./, '');
+  if (!/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(host)) return null;
+  return host;
+}
+
+/**
+ * Every block-list entry that would cover `url`: its host and each parent
+ * domain, so blocking `evil.example` also covers `login.evil.example`.
+ * Single labels (`example`, a bare TLD) are left out.
+ */
+export function domainCandidates(url: string): string[] {
+  let host: string;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return [];
+  }
+  const labels = host.split('.');
+  const out: string[] = [];
+  for (let i = 0; i < labels.length - 1; i++) out.push(labels.slice(i).join('.'));
+  return out;
 }
 
 /** `www.example.com` → `example.com`. */

@@ -19,6 +19,7 @@ import type { HttpError } from '../lib/route-helpers';
 import { mentionsService, renderTexts } from './mentions.service';
 import type { MentionRef } from '../lib/mention-text';
 import type { LinkRef } from '../lib/link-text';
+import { TEXT_LIMITS } from '../lib/text-limits';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -655,7 +656,7 @@ export const groupBooksService = {
     enforce(decideSetCurrent(input.bookId, current?.bookId ?? null));
 
     const existing = relevant.find((r) => r.bookId === input.bookId);
-    const description = await mentionsService.prepare(input.description ?? null, viewerId);
+    const description = await mentionsService.prepare(input.description ?? null, viewerId, TEXT_LIMITS.groupBookDescription);
     const fields = {
       status: 'currently_reading' as const,
       startedOn: input.startedOn,
@@ -702,7 +703,7 @@ export const groupBooksService = {
     const entry = await loadEntry(groupId, groupBookId);
     enforce(decideEdit(entry, patch));
 
-    const description = patch.description !== undefined ? await mentionsService.prepare(patch.description, viewerId) : undefined;
+    const description = patch.description !== undefined ? await mentionsService.prepare(patch.description, viewerId, TEXT_LIMITS.groupBookDescription) : undefined;
     await db
       .update(groupBooks)
       .set({
@@ -829,7 +830,7 @@ export const groupBooksService = {
     }
     enforce(decideComment(entry.status, groupBookId, parent));
 
-    const prepared = await mentionsService.prepare(body, viewerId);
+    const prepared = await mentionsService.prepare(body, viewerId, TEXT_LIMITS.groupComment);
     const [row] = await db
       .insert(groupBookComments)
       .values({ groupBookId, userId: viewerId, parentId: parentId ?? null, body: prepared.text })
@@ -858,7 +859,7 @@ export const groupBooksService = {
     // not a capability anyone else has, so there is nothing to explain.
     if (comment.userId !== viewerId) throw fail(404, 'Comment not found');
 
-    const prepared = await mentionsService.prepare(body, viewerId);
+    const prepared = await mentionsService.prepare(body, viewerId, TEXT_LIMITS.groupComment);
     await db
       .update(groupBookComments)
       .set({ body: prepared.text, updatedAt: new Date() })

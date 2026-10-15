@@ -1,13 +1,17 @@
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { shortLinks } from '../db/schema';
+import { blockedLinkDomains, shortLinks } from '../db/schema';
 import { config } from '../config';
 import {
   MAX_LINKS_PER_TEXT,
+  domainCandidates,
   findUrls,
   neutralizeLinkTokens,
   shortLinkCode,
+  shortLinkUrl,
+  shownLength,
   tokenizeLinks,
+  type FoundUrl,
   type StoredLink,
 } from '../lib/link-text';
 import { randomCode } from '../lib/random-code';
@@ -24,6 +28,26 @@ const CODE_LENGTH = 8;
 /** What every short link is shown under: SHORT_LINK_URL, or APP_URL/l when unset. */
 export function shortLinkPrefix(): string {
   return config.shortLinkUrl;
+}
+
+/** How many characters every short link takes up in rendered text. */
+export function shortLinkLength(): number {
+  return shortLinkUrl(shortLinkPrefix(), 'X'.repeat(CODE_LENGTH)).length;
+}
+
+/**
+ * Refuses text that will read longer than `maxLength` once its link tokens are
+ * shown as short links — the limit an edit sending it back will be held to.
+ */
+function assertFits(tokenized: string, maxLength: number | undefined): void {
+  if (maxLength === undefined) return;
+  const linkLength = shortLinkLength();
+  if (shownLength(tokenized, linkLength) > maxLength) {
+    throw Object.assign(
+      new Error(`This is too long once links are shortened. Keep it to ${maxLength} characters, counting each link as ${linkLength}.`),
+      { statusCode: 400, code: 'TEXT_TOO_LONG' },
+    );
+  }
 }
 
 /** Hosts whose `/s/<code>` and `/l/<code>` links are ours, so an edit that sends one back keeps the same link. */
@@ -56,6 +80,22 @@ async function idsForUrls(urls: string[], authorId: number | null): Promise<Map<
   return out;
 }
 
+/**
+ * Which of these addresses sit on a blocked domain (or a subdomain of one).
+ * One query however many addresses; none when there are none.
+ */
+async function onBlockedDomains(urls: string[]): Promise<Set<string>> {
+  const candidatesByUrl = new Map(urls.map((u) => [u, domainCandidates(u)]));
+  const all = [...new Set([...candidatesByUrl.values()].flat())];
+  if (all.length === 0) return new Set();
+  const rows = await db
+    .select({ domain: blockedLinkDomains.domain })
+    .from(blockedLinkDomains)
+    .where(inArray(blockedLinkDomains.domain, all));
+  const blocked = new Set(rows.map((r) => r.domain));
+  return new Set(urls.filter((u) => candidatesByUrl.get(u)!.some((d) => blocked.has(d))));
+}
+
 async function idsForCodes(codes: string[]): Promise<Map<string, number>> {
   if (codes.length === 0) return new Map();
   const rows = await db
@@ -71,13 +111,29 @@ export const shortLinksService = {
    * token. A short link of ours sent back unchanged (an edit) maps to the link
    * it already is; one with an unknown code stays as typed text.
    */
-  async prepare(text: string, authorId: number | null): Promise<{ text: string; linkIds: number[] }> {
+  async prepare(text: string, authorId: number | null, maxLength?: number): Promise<{ text: string; linkIds: number[] }> {
     const safe = neutralizeLinkTokens(text);
     const hosts = ownShortLinkHosts();
     const found = findUrls(safe, hosts);
-    if (found.length === 0) return { text: safe, linkIds: [] };
+    if (found.length === 0) {
+      assertFits(safe, maxLength);
+      return { text: safe, linkIds: [] };
+    }
 
     const codeOf = new Map(found.map((f) => [f, shortLinkCode(f.url, hosts)]));
+    const keyOf = (f: FoundUrl) => codeOf.get(f) ?? f.url;
+
+    // Measured on a dry run with stand-in ids, so text that is too long once
+    // its links are shortened is refused before any row is written.
+    if (maxLength !== undefined) {
+      const standIn = new Map<string, number>();
+      const dry = tokenizeLinks(safe, found, (f) => {
+        const key = keyOf(f);
+        if (!standIn.has(key)) standIn.set(key, standIn.size + 1);
+        return standIn.get(key);
+      });
+      assertFits(dry.text, maxLength);
+    }
     const external = found.filter((f) => codeOf.get(f) === null);
     const ownCodes = found.map((f) => codeOf.get(f)).filter((c): c is string => c !== null);
 
@@ -93,35 +149,62 @@ export const shortLinksService = {
     });
   },
 
-  /** What the renderer needs for each of these ids. Ids with no row are absent. */
+  /**
+   * What the renderer needs for each of these ids. Ids with no row are absent.
+   * A link is blocked when it was blocked itself or its domain is.
+   */
   async load(ids: number[]): Promise<Map<number, StoredLink>> {
     if (ids.length === 0) return new Map();
     const rows = await db
       .select({ id: shortLinks.id, code: shortLinks.code, url: shortLinks.url, blockedAt: shortLinks.blockedAt })
       .from(shortLinks)
       .where(inArray(shortLinks.id, ids));
-    return new Map(rows.map((r) => [r.id, { code: r.code, url: r.url, blocked: r.blockedAt !== null }]));
+    const domainBlocked = await onBlockedDomains(rows.map((r) => r.url));
+    return new Map(
+      rows.map((r) => [r.id, { code: r.code, url: r.url, blocked: r.blockedAt !== null || domainBlocked.has(r.url) }]),
+    );
   },
 
   /**
-   * A tap on a short link: counts it and says where to send the reader. Null
-   * for an unknown code. A blocked link is not counted.
+   * A tap on a short link: where to send the reader, or that it is blocked
+   * (itself or by domain). Null for an unknown code. Only taps that are
+   * forwarded are counted.
    */
-  async follow(code: string): Promise<{ url: string; blocked: boolean } | null> {
-    const normalized = code.toUpperCase();
-    const [counted] = await db
+  async follow(code: string): Promise<{ url: string } | { blocked: true } | null> {
+    const [row] = await db
+      .select({ id: shortLinks.id, url: shortLinks.url, blockedAt: shortLinks.blockedAt })
+      .from(shortLinks)
+      .where(eq(shortLinks.code, code.toUpperCase()))
+      .limit(1);
+    if (!row) return null;
+    if (row.blockedAt !== null || (await onBlockedDomains([row.url])).size > 0) return { blocked: true };
+
+    await db
       .update(shortLinks)
       .set({ clickCount: sql`${shortLinks.clickCount} + 1` })
-      .where(and(eq(shortLinks.code, normalized), sql`${shortLinks.blockedAt} IS NULL`))
-      .returning({ url: shortLinks.url });
-    if (counted) return { url: counted.url, blocked: false };
+      .where(eq(shortLinks.id, row.id));
+    return { url: row.url };
+  },
 
-    const [blocked] = await db
-      .select({ url: shortLinks.url })
-      .from(shortLinks)
-      .where(eq(shortLinks.code, normalized))
-      .limit(1);
-    return blocked ? { url: blocked.url, blocked: true } : null;
+  /** Admin: every blocked domain, newest first. */
+  async listBlockedDomains() {
+    return db.select().from(blockedLinkDomains).orderBy(sql`${blockedLinkDomains.blockedAt} DESC`);
+  },
+
+  /** Admin: blocks every link on `domain` and its subdomains. Idempotent; a repeat updates the reason. */
+  async blockDomain(domain: string, reason: string | null) {
+    const [row] = await db
+      .insert(blockedLinkDomains)
+      .values({ domain, reason })
+      .onConflictDoUpdate({ target: blockedLinkDomains.domain, set: { reason } })
+      .returning();
+    return row;
+  },
+
+  /** Admin: lifts a domain block. False when the domain wasn't blocked. */
+  async unblockDomain(domain: string): Promise<boolean> {
+    const rows = await db.delete(blockedLinkDomains).where(eq(blockedLinkDomains.domain, domain)).returning();
+    return rows.length > 0;
   },
 
   /** Admin: everything stored about one link. */

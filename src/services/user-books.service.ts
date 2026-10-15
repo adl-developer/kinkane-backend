@@ -25,6 +25,7 @@ import { interactionsService, type InteractionType } from './interactions.servic
 import { getProductFormLabel } from '../lib/product-form';
 import { addDisplayGenre } from '../lib/genre-display';
 import { availabilityService } from './commerce/availability.service';
+import { TEXT_LIMITS } from '../lib/text-limits';
 
 /**
  * Reading statuses that are also trending signals. Every value the API accepts is
@@ -380,7 +381,7 @@ export const userBooksService = {
     // A note of only whitespace is no note: stored as null, so it never keeps
     // an otherwise empty entry alive.
     const noteInput = fields.note?.trim() === '' ? null : fields.note;
-    const note = noteInput !== undefined ? await mentionsService.prepare(noteInput, userId) : undefined;
+    const note = noteInput !== undefined ? await mentionsService.prepare(noteInput, userId, TEXT_LIMITS.bookNote) : undefined;
 
     // Build the update set — only include keys that were explicitly provided.
     // A flag-only write (liked/owned) keeps the entry's source, as setFlag does:

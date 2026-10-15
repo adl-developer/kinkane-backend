@@ -19,12 +19,13 @@ import {
   MAX_MENTIONS_PER_TEXT,
   extractHandles,
   hasTokens,
+  neutralizeTokens,
   render,
   tokenIds,
   tokenize,
   type MentionRef,
 } from '../lib/mention-text';
-import { hasLinkTokens, linkTokenIds, renderLinks, shiftOffsets, type LinkRef } from '../lib/link-text';
+import { addressSpans, hasLinkTokens, linkTokenIds, renderLinks, shiftOffsets, type LinkRef } from '../lib/link-text';
 import { shortLinkPrefix, shortLinksService } from './short-links.service';
 import { enqueuePush } from '../lib/push-queue';
 import { logger } from '../lib/logger';
@@ -259,14 +260,22 @@ export async function withRenderedMentions<
 async function prepare<T extends string | null | undefined>(
   input: T,
   authorId: number | null = null,
+  maxLength?: number,
 ): Promise<{ text: T; mentionedIds: number[] }> {
   if (input === null || input === undefined) return { text: input, mentionedIds: [] };
-  const { text } = await shortLinksService.prepare(input, authorId);
+  // `maxLength` is checked against the text as it will read, links shortened
+  // (see lib/text-limits), before anything is stored.
+  const linked = await shortLinksService.prepare(input, authorId, maxLength);
+  // Neutralised here rather than inside tokenize so the address positions
+  // below are measured on exactly the text tokenize walks.
+  const text = neutralizeTokens(linked.text);
+  // Addresses past the link cap stay as typed; an `@` in one is not a mention.
+  const skip = addressSpans(text);
 
   // Only so many people can be linked per text anyway (MAX_MENTIONS_PER_TEXT);
   // looking up more than a margin over that is a query sized by whoever wrote
   // the longest list of handles.
-  const handles = extractHandles(text).slice(0, MAX_MENTIONS_PER_TEXT * 2);
+  const handles = extractHandles(text, skip).slice(0, MAX_MENTIONS_PER_TEXT * 2);
   const rows = handles.length
     ? await db
         .select({ id: users.id, username: users.username })
@@ -274,7 +283,7 @@ async function prepare<T extends string | null | undefined>(
         .where(inArray(users.username, handles))
     : [];
   const ids = new Map(rows.map((r) => [r.username!, r.id]));
-  const result = tokenize(text, ids);
+  const result = tokenize(text, ids, skip);
   return { text: result.text as T, mentionedIds: result.mentionedIds };
 }
 

@@ -41,5 +41,22 @@ export const shortLinks = pgTable(
   }),
 );
 
+/**
+ * Domains whose every link is switched off, subdomains included.
+ *
+ * Blocking one short link covers one exact address; the same phishing page
+ * posted again with `?a=1` on the end is a different address with its own
+ * code. A blocked domain covers every address on it — and on any subdomain —
+ * whenever it was posted, before or after the block.
+ */
+export const blockedLinkDomains = pgTable('blocked_link_domains', {
+  // Lowercased host without a leading `www.` (`evil.example`).
+  domain: text('domain').primaryKey(),
+  reason: text('reason'),
+  blockedAt: timestamp('blocked_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+export type BlockedLinkDomain = typeof blockedLinkDomains.$inferSelect;
+
 export type ShortLink = typeof shortLinks.$inferSelect;
 export type NewShortLink = typeof shortLinks.$inferInsert;

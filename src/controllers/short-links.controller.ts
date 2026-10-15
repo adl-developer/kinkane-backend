@@ -1,8 +1,13 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
 import { shortLinksService } from '../services/short-links.service';
+import { normalizeDomain } from '../lib/link-text';
 
 const CODE_RE = /^[A-Za-z0-9]{4,16}$/;
+
+const domainBlockSchema = z.object({
+  reason: z.string().trim().max(500).optional(),
+});
 
 const blockSchema = z.object({
   blocked: z.boolean(),
@@ -38,7 +43,7 @@ export const shortLinksController = {
       linkPage(res, 404, 'Link not found', 'This link doesn’t exist. Check that it was copied in full.');
       return;
     }
-    if (link.blocked) {
+    if ('blocked' in link) {
       linkPage(res, 410, 'Link removed', 'This link has been removed by Kinkané because it may be unsafe.');
       return;
     }
@@ -73,5 +78,36 @@ export const shortLinksController = {
       return;
     }
     res.json({ link });
+  },
+
+  /** GET /admin/short-links/domains — every blocked domain. */
+  async adminListDomains(_req: Request, res: Response): Promise<void> {
+    res.json({ domains: await shortLinksService.listBlockedDomains() });
+  },
+
+  /**
+   * PUT /admin/short-links/domains/:domain — block every link on a domain and
+   * its subdomains, posted before or after.
+   *
+   * Body: { reason?: string }
+   */
+  async adminBlockDomain(req: Request, res: Response): Promise<void> {
+    const domain = normalizeDomain(String(req.params.domain));
+    const parsed = domainBlockSchema.safeParse(req.body ?? {});
+    if (!domain || !parsed.success) {
+      res.status(400).json({ error: domain ? 'Invalid request' : 'Not a valid domain' });
+      return;
+    }
+    res.json({ domain: await shortLinksService.blockDomain(domain, parsed.data.reason ?? null) });
+  },
+
+  /** DELETE /admin/short-links/domains/:domain — lift a domain block. */
+  async adminUnblockDomain(req: Request, res: Response): Promise<void> {
+    const domain = normalizeDomain(String(req.params.domain));
+    if (!domain || !(await shortLinksService.unblockDomain(domain))) {
+      res.status(404).json({ error: 'Domain is not blocked' });
+      return;
+    }
+    res.status(204).end();
   },
 };

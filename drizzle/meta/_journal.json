@@ -582,6 +582,13 @@
       "when": 1792021653896,
       "tag": "0082_short_links",
       "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1792062780434,
+      "tag": "0083_blocked_link_domains",
+      "breakpoints": true
     }
   ]
 }

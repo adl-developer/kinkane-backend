@@ -8,6 +8,22 @@ import { wrap } from '../lib/route-helpers';
  */
 const router = Router();
 
+// Domain routes first: `/domains` would otherwise be read as a link code.
+
+/** GET /admin/short-links/domains — every blocked domain. */
+router.get('/domains', wrap(shortLinksController.adminListDomains));
+
+/**
+ * PUT /admin/short-links/domains/:domain
+ *
+ * Blocks every link on a domain and its subdomains — whatever the path or
+ * query string, posted before or after. Body: { reason?: string }
+ */
+router.put('/domains/:domain', wrap(shortLinksController.adminBlockDomain));
+
+/** DELETE /admin/short-links/domains/:domain — lifts a domain block. */
+router.delete('/domains/:domain', wrap(shortLinksController.adminUnblockDomain));
+
 /** GET /admin/short-links/:code — the link's address, tap count and block state. */
 router.get('/:code', wrap(shortLinksController.adminGet));
 

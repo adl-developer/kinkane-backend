@@ -10,6 +10,7 @@ import { assertCanViewShelf, canViewShelfBook } from './users.service';
 import type { MentionRef } from '../lib/mention-text';
 import type { LinkRef } from '../lib/link-text';
 import { isEdited, withEditState } from '../lib/edit-state';
+import { TEXT_LIMITS } from '../lib/text-limits';
 
 const COMMENT_PREVIEW_LENGTH = 140;
 
@@ -349,7 +350,7 @@ export const communityService = {
 
     if (!book) throw Object.assign(new Error('Book not found'), { statusCode: 404 });
 
-    const body = await mentionsService.prepare(fields.body ?? null, userId);
+    const body = await mentionsService.prepare(fields.body ?? null, userId, TEXT_LIMITS.post);
     const rating = fields.rating ?? null;
 
     // A reader may post about a book many times, but not the same post twice
@@ -449,17 +450,13 @@ export const communityService = {
     userId: number,
     fields: { rating?: number | null; status?: 'reading' | 'read'; body?: string | null; isPublic?: boolean },
   ): Promise<PostItem> {
-    // The post as stored, read alongside the mention lookup for the new body.
-    // Only the author's own post is found — anyone else gets the 404 below,
-    // before any rule about its contents can leak.
-    const [[current], prepared] = await Promise.all([
-      db
-        .select({ rating: posts.rating, status: posts.status, body: posts.body })
-        .from(posts)
-        .where(and(eq(posts.id, postId), eq(posts.userId, userId)))
-        .limit(1),
-      fields.body !== undefined ? mentionsService.prepare(fields.body, userId) : undefined,
-    ]);
+    // The post as stored. Only the author's own post is found — anyone else
+    // gets the 404 below, before any rule about its contents can leak.
+    const [current] = await db
+      .select({ rating: posts.rating, status: posts.status, body: posts.body })
+      .from(posts)
+      .where(and(eq(posts.id, postId), eq(posts.userId, userId)))
+      .limit(1);
     if (!current) throw Object.assign(new Error('Post not found'), { statusCode: 404 });
 
     // A `read` post must keep a rating, so check the post as it will be after
@@ -476,10 +473,14 @@ export const communityService = {
     // (or stopped) naming an account since the post was written would
     // tokenise differently, and re-storing it would mark an untouched post
     // "Edited" and notify someone the author never chose to mention.
-    let body = prepared;
-    if (body !== undefined) {
+    //
+    // Prepared only after the ownership check and only when the text really
+    // changed: preparing stores short links, and a request that ends in a 404
+    // or changes nothing must not write rows.
+    let body: Awaited<ReturnType<typeof mentionsService.prepare<string | null>>> | undefined;
+    if (fields.body !== undefined) {
       const [shown] = await renderTexts([current.body]);
-      if (shown.text === fields.body) body = undefined;
+      if (shown.text !== fields.body) body = await mentionsService.prepare(fields.body, userId, TEXT_LIMITS.post);
     }
 
     // What counts as an edit: a body, rating or status that differs from what
@@ -749,7 +750,7 @@ export const communityService = {
     assertFound(post, 'Post');
     assertPostVisible(post, userId);
 
-    const prepared = await mentionsService.prepare(body, userId);
+    const prepared = await mentionsService.prepare(body, userId, TEXT_LIMITS.comment);
     const [row] = await db
       .insert(comments)
       .values({ postId, userId, body: prepared.text })
@@ -769,6 +770,9 @@ export const communityService = {
     });
 
     if (notifyOwner && actor) {
+      // The preview reads as the comment does in the app: short links, not the
+      // addresses as typed, so blocking a link also covers the notification.
+      const [shown] = await renderTexts([prepared.text]);
       notifyPostComment(
         post.userId,
         userId,
@@ -779,7 +783,7 @@ export const communityService = {
         actor.name,
         actor.photoUrl,
         row.id,
-        body,
+        shown.text ?? body,
       ).catch((err) => logger.error('Failed to dispatch post-comment notification', { err, postId }));
     }
 
@@ -791,14 +795,11 @@ export const communityService = {
     userId: number,
     body: string,
   ): Promise<Pick<CommentItem, 'id' | 'body' | 'mentions' | 'links' | 'updatedAt' | 'isEdited' | 'editedAt'>> {
-    const [[current], prepared] = await Promise.all([
-      db
-        .select({ body: comments.body, updatedAt: comments.updatedAt, editedAt: comments.editedAt })
-        .from(comments)
-        .where(and(eq(comments.id, commentId), eq(comments.userId, userId)))
-        .limit(1),
-      mentionsService.prepare(body, userId),
-    ]);
+    const [current] = await db
+      .select({ body: comments.body, updatedAt: comments.updatedAt, editedAt: comments.editedAt })
+      .from(comments)
+      .where(and(eq(comments.id, commentId), eq(comments.userId, userId)))
+      .limit(1);
     if (!current) throw Object.assign(new Error('Comment not found'), { statusCode: 404 });
 
     // Text that reads exactly as it already does is not an edit and is not
@@ -814,6 +815,10 @@ export const communityService = {
         editedAt: current.editedAt,
       });
     }
+
+    // Prepared only now, after the ownership check and the unchanged check:
+    // preparing stores short links, which a refused or no-op edit must not.
+    const prepared = await mentionsService.prepare(body, userId, TEXT_LIMITS.comment);
 
     // The CASE still guards against a concurrent edit having already stored
     // this same text; both timestamps come from the database clock.

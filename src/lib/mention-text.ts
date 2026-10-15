@@ -84,13 +84,25 @@ function cleanHandle(raw: string): { handle: string; consumed: number } | null {
 }
 
 /**
+ * Character ranges, `[start, end)`, where an `@` is never a mention — the web
+ * addresses left in the text (`medium.com/@ama`). Positions are in the text as
+ * passed to `extractHandles` / `tokenize`, after neutralizeTokens.
+ */
+export type SkipRanges = readonly (readonly [number, number])[];
+
+function skipped(at: number, skip: SkipRanges): boolean {
+  return skip.some(([start, end]) => at >= start && at < end);
+}
+
+/**
  * Every distinct username typed in `text`, lowercased, in order of first
  * appearance. What the service looks up before calling `tokenize`.
  */
-export function extractHandles(text: string): string[] {
+export function extractHandles(text: string, skip: SkipRanges = []): string[] {
   const seen = new Set<string>();
   for (const match of text.matchAll(HANDLE_RE)) {
     if (!isHandleBoundary(text[match.index! - 1])) continue;
+    if (skipped(match.index!, skip)) continue;
     const cleaned = cleanHandle(match[1]);
     if (cleaned) seen.add(cleaned.handle);
   }
@@ -103,7 +115,7 @@ export function extractHandles(text: string): string[] {
  * having been through the lookup (and the notification) that a real mention
  * gets. The space is the smallest change that stops TOKEN_RE matching.
  */
-function neutralizeTokens(text: string): string {
+export function neutralizeTokens(text: string): string {
   return text.replace(/\{\{u:/g, '{{ u:');
 }
 
@@ -119,6 +131,7 @@ function neutralizeTokens(text: string): string {
 export function tokenize(
   text: string,
   idsByUsername: ReadonlyMap<string, number>,
+  skip: SkipRanges = [],
 ): { text: string; mentionedIds: number[] } {
   const safe = neutralizeTokens(text);
   const linked: number[] = [];
@@ -128,6 +141,7 @@ export function tokenize(
   for (const match of safe.matchAll(HANDLE_RE)) {
     const at = match.index!;
     if (!isHandleBoundary(safe[at - 1])) continue;
+    if (skipped(at, skip)) continue;
     const cleaned = cleanHandle(match[1]);
     if (!cleaned) continue;
     const id = idsByUsername.get(cleaned.handle);

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { userBooksService } from '../services/user-books.service';
 import { withMyReviews } from '../services/my-reviews.service';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
+import { TEXT_LIMITS } from '../lib/text-limits';
 
 const listSchema = z.object({
   q: z.string().min(1).max(200).optional(),
@@ -35,7 +36,7 @@ const upsertSchema = z
   .object({
     // null clears the reading status, leaving Favourite and Owned as they are.
     status: z.enum(['want_to_read', 'reading', 'read']).nullable().optional(),
-    note: z.string().max(1000).nullable().optional(),
+    note: z.string().max(TEXT_LIMITS.bookNote).nullable().optional(),
     noteIsPublic: z.boolean().optional(),
     liked: z.boolean().optional(),
     owned: z.boolean().optional(),

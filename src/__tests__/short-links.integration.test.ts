@@ -59,7 +59,12 @@ describeIfDb('short links', () => {
   async function cleanUp(): Promise<void> {
     await db.execute(sql`DELETE FROM users WHERE email LIKE ${EMAIL_PREFIX + '%'}`);
     await db.execute(sql`DELETE FROM books WHERE record_reference = ${BOOK_REF}`);
-    await db.execute(sql`DELETE FROM short_links WHERE url LIKE ${'https://www.example.org/short-link-test%'} OR url LIKE ${'https://medium.com/@sl_test%'}`);
+    await db.execute(sql`
+      DELETE FROM short_links
+      WHERE url LIKE ${'https://www.example.org/short-link-test%'} OR url LIKE ${'https://medium.com/@sl_%'}
+         OR url LIKE ${'%short-link-test.example%'} OR url = ${'https://www.slt.example/'}
+    `);
+    await db.execute(sql`DELETE FROM blocked_link_domains WHERE domain = ${'short-link-test.example'}`);
   }
 
   async function createUser(name: string, username: string): Promise<number> {
@@ -185,5 +190,85 @@ describeIfDb('short links', () => {
 
     expect((await tap('ZZZZZZZZ')).status).toBe(404);
     await links.setBlocked(row.code, false, null);
+  });
+
+  it('does not read an @ in an address past the link cap as a mention', async (ctx) => {
+    if (!redisUp) return ctx.skip();
+    const five = [1, 2, 3, 4, 5].map((n) => `https://www.example.org/short-link-test/cap${n}`).join(' ');
+    const { id: postId } = await community.createPost(ama, {
+      bookId, rating: 3, status: 'read', body: `${five} https://medium.com/@sl_kofi/sixth`, isPublic: true,
+    });
+    const post = await community.getPost(postId, kofi);
+    expect(post.links).toHaveLength(5);
+    expect(post.mentions).toEqual([]);
+    expect(post.body).toContain('https://medium.com/@sl_kofi/sixth');
+    const rows = (await db.execute(sql`SELECT 1 FROM mentions WHERE post_id = ${postId}`)) as unknown as unknown[];
+    expect(rows).toHaveLength(0);
+  });
+
+  it('writes no short links for an edit that is refused or changes nothing', async (ctx) => {
+    if (!redisUp) return ctx.skip();
+    const intruder = 'https://www.example.org/short-link-test/intruder';
+    const [post] = (await db.execute(sql`SELECT id FROM posts WHERE user_id = ${ama} ORDER BY id LIMIT 1`)) as unknown as { id: number }[];
+    await expect(community.updatePost(post.id, kofi, { body: `mine now ${intruder}` })).rejects.toMatchObject({ statusCode: 404 });
+    const rows = (await db.execute(sql`SELECT 1 FROM short_links WHERE url = ${intruder}`)) as unknown as unknown[];
+    expect(rows).toHaveLength(0);
+  });
+
+  it('refuses text that would read longer than the limit once its links are shortened, storing nothing', async (ctx) => {
+    if (!redisUp) return ctx.skip();
+    const [post] = (await db.execute(sql`SELECT id FROM posts WHERE user_id = ${ama} ORDER BY id LIMIT 1`)) as unknown as { id: number }[];
+    // 1996 characters as typed (under the 2000 comment limit), but the
+    // 15-character address shows as a 34-character short link: 2015.
+    const body = `${'x'.repeat(1980)} www.slt.example`;
+    await expect(community.addComment(post.id, kofi, body)).rejects.toMatchObject({ statusCode: 400, code: 'TEXT_TOO_LONG' });
+    const rows = (await db.execute(sql`SELECT 1 FROM short_links WHERE url = ${'https://www.slt.example/'}`)) as unknown as unknown[];
+    expect(rows).toHaveLength(0);
+  });
+
+  it('a blocked domain covers every address on it and its subdomains', async (ctx) => {
+    if (!redisUp) return ctx.skip();
+    const { id: postId } = await community.createPost(ama, {
+      bookId, rating: 2, status: 'read', body: 'Phish https://login.short-link-test.example/a?x=1', isPublic: true,
+    });
+    const before = await community.getPost(postId, kofi);
+    expect(before.links[0].blocked).toBe(false);
+
+    await links.blockDomain('short-link-test.example', 'test');
+    const after = await community.getPost(postId, kofi);
+    expect(after.links[0]).toMatchObject({ blocked: true, target: null });
+
+    const code = after.links[0].url.split('/').pop()!;
+    const keys = await redis.keys('rl:short-link:*');
+    if (keys.length) await redis.del(...keys);
+    const tapped = await fetch(`${harness.baseUrl}/s/${code}`, { redirect: 'manual' });
+    expect(tapped.status).toBe(410);
+    expect((await links.get(code))!.clickCount).toBe(0);
+
+    // A variant posted after the block is blocked too.
+    const { id: laterId } = await community.createPost(ama, {
+      bookId, rating: 2, status: 'read', body: 'Again https://short-link-test.example/b?y=2', isPublic: true,
+    });
+    expect((await community.getPost(laterId, kofi)).links[0].blocked).toBe(true);
+
+    expect(await links.unblockDomain('short-link-test.example')).toBe(true);
+    expect((await community.getPost(postId, kofi)).links[0].blocked).toBe(false);
+  });
+
+  it('shows the short link, not the typed address, in the new-comment notification', async (ctx) => {
+    if (!redisUp) return ctx.skip();
+    const [post] = (await db.execute(sql`SELECT id FROM posts WHERE user_id = ${ama} ORDER BY id LIMIT 1`)) as unknown as { id: number }[];
+    await community.addComment(post.id, kofi, 'Notify https://www.example.org/short-link-test/notify');
+    // The notification is sent in the background.
+    let preview: string | undefined;
+    for (let i = 0; i < 20 && !preview?.includes('Notify'); i++) {
+      const [row] = (await db.execute(sql`
+        SELECT data->>'commentPreview' AS preview FROM notifications
+        WHERE user_id = ${ama} AND type = 'post_comment' ORDER BY id DESC LIMIT 1
+      `)) as unknown as { preview: string }[];
+      preview = row?.preview;
+      if (!preview?.includes('Notify')) await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(preview).toMatch(/^Notify https:\/\/www\.kinkane\.app\/s\/[0-9A-Z]{8}$/);
   });
 });

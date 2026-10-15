@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-10-15
+
+### Features
+
+* show short links on www.kinkane.app/s/ instead of the API-only /l/ path ([c185df9](https://adl.github.com/adl-developer/kinkane-backend/commit/c185df9a79d31ca45493937901fc9b794df055d9)) — [details](changelog/2026-10-15-short-links-on-kinkane-domain.md)
+
+
 ## 2026-10-14
 
 ### Features
