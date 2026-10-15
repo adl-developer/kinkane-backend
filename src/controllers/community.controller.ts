@@ -5,6 +5,7 @@ import { communitySearchService } from '../services/community-search.service';
 import { getMyReview } from '../services/my-reviews.service';
 import { parseId } from '../lib/route-helpers';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
+import { TEXT_LIMITS } from '../lib/text-limits';
 
 // A `reading` post may leave the rating out (or send null); a `read` post must
 // rate the book. Updates are checked against the merged post in the service.
@@ -12,7 +13,7 @@ const createPostSchema = z.object({
   bookId: z.number().int().positive(),
   rating: z.number().int().min(0).max(5).nullable().optional(),
   status: z.enum(['reading', 'read']),
-  body: z.string().max(5000).optional(),
+  body: z.string().max(TEXT_LIMITS.post).optional(),
   isPublic: z.boolean(),
 }).refine(
   (d) => d.status === 'reading' || (d.rating !== undefined && d.rating !== null),
@@ -22,7 +23,7 @@ const createPostSchema = z.object({
 const updatePostSchema = z.object({
   rating: z.number().int().min(0).max(5).nullable().optional(),
   status: z.enum(['reading', 'read']).optional(),
-  body: z.string().max(5000).nullable().optional(),
+  body: z.string().max(TEXT_LIMITS.post).nullable().optional(),
   isPublic: z.boolean().optional(),
 }).refine(
   (d) => d.rating !== undefined || d.status !== undefined || d.body !== undefined || d.isPublic !== undefined,
@@ -30,11 +31,11 @@ const updatePostSchema = z.object({
 );
 
 const addCommentSchema = z.object({
-  body: z.string().min(1).max(2000),
+  body: z.string().min(1).max(TEXT_LIMITS.comment),
 });
 
 const updateCommentSchema = z.object({
-  body: z.string().min(1).max(2000),
+  body: z.string().min(1).max(TEXT_LIMITS.comment),
 });
 
 // Offset is capped: Postgres walks and discards every skipped row, so an

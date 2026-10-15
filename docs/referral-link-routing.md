@@ -41,6 +41,12 @@ the app still lands on the right web page. This keeps the public link on
 humans, and `kinkane-server.onrender.com/r/...` looks like something you
 shouldn't click.
 
+Short links in posts, comments and reviews (`www.kinkane.app/s/<code>`, see
+`lib/link-text.ts`) need the same treatment: proxy `/s/*` too, and once that is
+live set `SHORT_LINK_URL=https://www.kinkane.app/s` on the API. Until it is
+set, short links are shown as `APP_URL/l/<code>`, which only works where
+`APP_URL` is the API itself.
+
 Apply **one** of the following in the frontend project, replacing the API host
 with the real one.
 
@@ -58,6 +64,10 @@ module.exports = {
         source: '/r/:path*',
         destination: 'https://kinkane-server.onrender.com/r/:path*',
       },
+      {
+        source: '/s/:code',
+        destination: 'https://kinkane-server.onrender.com/s/:code',
+      },
     ];
   },
 };
@@ -69,7 +79,8 @@ module.exports = {
 {
   "rewrites": [
     { "source": "/redirect/:path*", "destination": "https://kinkane-server.onrender.com/redirect/:path*" },
-    { "source": "/r/:path*", "destination": "https://kinkane-server.onrender.com/r/:path*" }
+    { "source": "/r/:path*", "destination": "https://kinkane-server.onrender.com/r/:path*" },
+    { "source": "/s/:code", "destination": "https://kinkane-server.onrender.com/s/:code" }
   ]
 }
 ```
@@ -80,6 +91,7 @@ module.exports = {
 /redirect  https://kinkane-server.onrender.com/redirect  200
 /redirect/*  https://kinkane-server.onrender.com/redirect/:splat  200
 /r/*  https://kinkane-server.onrender.com/r/:splat  200
+/s/*  https://kinkane-server.onrender.com/s/:splat  200
 ```
 
 Note the `200` rather than `301`: it proxies rather than redirecting, so the

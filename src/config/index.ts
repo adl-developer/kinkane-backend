@@ -214,6 +214,13 @@ const envSchema = z.object({
   // will just send users somewhere wrong.
   APP_URL: z.string().url().default('https://kinkane.app'),
 
+  // The prefix every short link in user-written text is shown under, e.g.
+  // `https://www.kinkane.app/s` (lib/link-text). The web host has to forward
+  // `/s/:code` to this server for that to work. Unset, links fall back to
+  // `APP_URL/l`, served by this server directly. Stored text holds tokens, not
+  // links, so changing this changes every existing post's links at once.
+  SHORT_LINK_URL: z.string().url().optional(),
+
   // Where the admin console is served. Only used to build the link in an admin
   // password-reset email, which lands on `<this>/reset-password?token=...`.
   // Defaults to `APP_URL/admin`; set it if the console lives elsewhere.
@@ -865,6 +872,7 @@ export const config = {
     supportInbox: env.SUPPORT_INBOX ?? env.EMAIL_FROM,
   },
   appUrl: env.APP_URL,
+  shortLinkUrl: (env.SHORT_LINK_URL ?? `${env.APP_URL}/l`).replace(/\/+$/, ''),
   adminConsoleUrl: (env.ADMIN_CONSOLE_URL ?? `${env.APP_URL}/admin`).replace(/\/+$/, ''),
   referrals: {
     videoUrl: env.REFERRAL_VIDEO_URL,

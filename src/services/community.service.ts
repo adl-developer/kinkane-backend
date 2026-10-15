@@ -8,7 +8,9 @@ import { logger } from '../lib/logger';
 import { mentionsService, renderTexts } from './mentions.service';
 import { assertCanViewShelf, canViewShelfBook } from './users.service';
 import type { MentionRef } from '../lib/mention-text';
+import type { LinkRef } from '../lib/link-text';
 import { isEdited, withEditState } from '../lib/edit-state';
+import { TEXT_LIMITS } from '../lib/text-limits';
 
 const COMMENT_PREVIEW_LENGTH = 140;
 
@@ -39,6 +41,7 @@ export interface PostItem {
   body: string | null;
   /** Linked @handles in `body`, by UTF-16 offset. */
   mentions: MentionRef[];
+  links: LinkRef[];
   isPublic: boolean;
   likeCount: number;
   commentCount: number;
@@ -64,11 +67,13 @@ export interface FriendBookDetail {
   rating: number | null;
   review: string | null;
   reviewMentions: MentionRef[];
+  reviewLinks: LinkRef[];
   /** True once the friend has changed that review's body, rating or status. */
   reviewIsEdited: boolean;
   reviewEditedAt: Date | null;
   note: string | null;
   noteMentions: MentionRef[];
+  noteLinks: LinkRef[];
 }
 
 export interface CommentItem {
@@ -80,6 +85,7 @@ export interface CommentItem {
   userPhotoUrl: string | null;
   body: string;
   mentions: MentionRef[];
+  links: LinkRef[];
   likeCount: number;
   likedByMe: boolean;
   createdAt: Date;
@@ -222,7 +228,7 @@ async function notifyPostComment(
 // Also renders each body's @mentions (see mentions.service), so every list that
 // goes through here hands the client usernames rather than stored tokens.
 export async function enrichPosts(
-  rows: Omit<PostItem, 'mentions' | 'isEdited'>[],
+  rows: Omit<PostItem, 'mentions' | 'links' | 'isEdited'>[],
   requesterId: number,
 ): Promise<PostItem[]> {
   if (rows.length === 0) return [];
@@ -256,6 +262,7 @@ export async function enrichPosts(
       ...r,
       body: rendered[i].text,
       mentions: rendered[i].mentions,
+      links: rendered[i].links,
       likeCount: likeMap.get(r.id) ?? 0,
       commentCount: commentMap.get(r.id) ?? 0,
       likedByMe: likedSet.has(r.id),
@@ -343,7 +350,7 @@ export const communityService = {
 
     if (!book) throw Object.assign(new Error('Book not found'), { statusCode: 404 });
 
-    const body = await mentionsService.prepare(fields.body ?? null);
+    const body = await mentionsService.prepare(fields.body ?? null, userId, TEXT_LIMITS.post);
     const rating = fields.rating ?? null;
 
     // A reader may post about a book many times, but not the same post twice
@@ -430,6 +437,7 @@ export const communityService = {
       ...postFields,
       body: rendered.text,
       mentions: rendered.mentions,
+      links: rendered.links,
       bookExcerpt: pickExcerpt(bookIsbn13, excerptMap),
       likeCount: likeRow?.count ?? 0,
       commentCount: commentRow?.count ?? 0,
@@ -442,17 +450,13 @@ export const communityService = {
     userId: number,
     fields: { rating?: number | null; status?: 'reading' | 'read'; body?: string | null; isPublic?: boolean },
   ): Promise<PostItem> {
-    // The post as stored, read alongside the mention lookup for the new body.
-    // Only the author's own post is found — anyone else gets the 404 below,
-    // before any rule about its contents can leak.
-    const [[current], prepared] = await Promise.all([
-      db
-        .select({ rating: posts.rating, status: posts.status, body: posts.body })
-        .from(posts)
-        .where(and(eq(posts.id, postId), eq(posts.userId, userId)))
-        .limit(1),
-      fields.body !== undefined ? mentionsService.prepare(fields.body) : undefined,
-    ]);
+    // The post as stored. Only the author's own post is found — anyone else
+    // gets the 404 below, before any rule about its contents can leak.
+    const [current] = await db
+      .select({ rating: posts.rating, status: posts.status, body: posts.body })
+      .from(posts)
+      .where(and(eq(posts.id, postId), eq(posts.userId, userId)))
+      .limit(1);
     if (!current) throw Object.assign(new Error('Post not found'), { statusCode: 404 });
 
     // A `read` post must keep a rating, so check the post as it will be after
@@ -469,10 +473,14 @@ export const communityService = {
     // (or stopped) naming an account since the post was written would
     // tokenise differently, and re-storing it would mark an untouched post
     // "Edited" and notify someone the author never chose to mention.
-    let body = prepared;
-    if (body !== undefined) {
+    //
+    // Prepared only after the ownership check and only when the text really
+    // changed: preparing stores short links, and a request that ends in a 404
+    // or changes nothing must not write rows.
+    let body: Awaited<ReturnType<typeof mentionsService.prepare<string | null>>> | undefined;
+    if (fields.body !== undefined) {
       const [shown] = await renderTexts([current.body]);
-      if (shown.text === fields.body) body = undefined;
+      if (shown.text !== fields.body) body = await mentionsService.prepare(fields.body, userId, TEXT_LIMITS.post);
     }
 
     // What counts as an edit: a body, rating or status that differs from what
@@ -742,7 +750,7 @@ export const communityService = {
     assertFound(post, 'Post');
     assertPostVisible(post, userId);
 
-    const prepared = await mentionsService.prepare(body);
+    const prepared = await mentionsService.prepare(body, userId, TEXT_LIMITS.comment);
     const [row] = await db
       .insert(comments)
       .values({ postId, userId, body: prepared.text })
@@ -762,6 +770,9 @@ export const communityService = {
     });
 
     if (notifyOwner && actor) {
+      // The preview reads as the comment does in the app: short links, not the
+      // addresses as typed, so blocking a link also covers the notification.
+      const [shown] = await renderTexts([prepared.text]);
       notifyPostComment(
         post.userId,
         userId,
@@ -772,7 +783,7 @@ export const communityService = {
         actor.name,
         actor.photoUrl,
         row.id,
-        body,
+        shown.text ?? body,
       ).catch((err) => logger.error('Failed to dispatch post-comment notification', { err, postId }));
     }
 
@@ -783,15 +794,12 @@ export const communityService = {
     commentId: number,
     userId: number,
     body: string,
-  ): Promise<Pick<CommentItem, 'id' | 'body' | 'mentions' | 'updatedAt' | 'isEdited' | 'editedAt'>> {
-    const [[current], prepared] = await Promise.all([
-      db
-        .select({ body: comments.body, updatedAt: comments.updatedAt, editedAt: comments.editedAt })
-        .from(comments)
-        .where(and(eq(comments.id, commentId), eq(comments.userId, userId)))
-        .limit(1),
-      mentionsService.prepare(body),
-    ]);
+  ): Promise<Pick<CommentItem, 'id' | 'body' | 'mentions' | 'links' | 'updatedAt' | 'isEdited' | 'editedAt'>> {
+    const [current] = await db
+      .select({ body: comments.body, updatedAt: comments.updatedAt, editedAt: comments.editedAt })
+      .from(comments)
+      .where(and(eq(comments.id, commentId), eq(comments.userId, userId)))
+      .limit(1);
     if (!current) throw Object.assign(new Error('Comment not found'), { statusCode: 404 });
 
     // Text that reads exactly as it already does is not an edit and is not
@@ -802,10 +810,15 @@ export const communityService = {
         id: commentId,
         body: shown.text ?? '',
         mentions: shown.mentions,
+        links: shown.links,
         updatedAt: current.updatedAt,
         editedAt: current.editedAt,
       });
     }
+
+    // Prepared only now, after the ownership check and the unchanged check:
+    // preparing stores short links, which a refused or no-op edit must not.
+    const prepared = await mentionsService.prepare(body, userId, TEXT_LIMITS.comment);
 
     // The CASE still guards against a concurrent edit having already stored
     // this same text; both timestamps come from the database clock.
@@ -830,6 +843,7 @@ export const communityService = {
       id: row.id,
       body: rendered.text ?? '',
       mentions: rendered.mentions,
+      links: rendered.links,
       updatedAt: row.updatedAt,
       editedAt: row.editedAt,
     });
@@ -911,6 +925,7 @@ export const communityService = {
         ...r,
         body: rendered[i].text ?? '',
         mentions: rendered[i].mentions,
+        links: rendered[i].links,
         likeCount: likeMap.get(r.id) ?? 0,
         likedByMe: likedSet.has(r.id),
       })).map(withEditState),
@@ -1038,10 +1053,12 @@ export const communityService = {
       rating: postRow?.rating ?? null,
       review: review.text,
       reviewMentions: review.mentions,
+      reviewLinks: review.links,
       reviewIsEdited: isEdited(postRow?.editedAt),
       reviewEditedAt: postRow?.editedAt ?? null,
       note: renderedNote.text,
       noteMentions: renderedNote.mentions,
+      noteLinks: renderedNote.links,
     };
   },
 };

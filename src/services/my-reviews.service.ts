@@ -4,6 +4,7 @@ import { posts } from '../db/schema';
 import { logger } from '../lib/logger';
 import { withRenderedMentions } from './mentions.service';
 import type { MentionRef } from '../lib/mention-text';
+import type { LinkRef } from '../lib/link-text';
 import { withEditState } from '../lib/edit-state';
 
 /**
@@ -30,6 +31,7 @@ export interface MyReview {
   body: string | null;
   /** Linked @handles in `body`. */
   mentions: MentionRef[];
+  links: LinkRef[];
   isPublic: boolean;
   createdAt: Date;
   /** Bumped by any change, including a visibility switch — not an edit marker. */

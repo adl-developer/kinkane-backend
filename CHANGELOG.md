@@ -1,15 +1,24 @@
 # Changelog
 
 
+## 2026-10-15
+
+### Features
+
+* show short links on www.kinkane.app/s/ instead of the API-only /l/ path ([c185df9](https://adl.github.com/adl-developer/kinkane-backend/commit/c185df9a79d31ca45493937901fc9b794df055d9)) — [details](changelog/2026-10-15-short-links-on-kinkane-domain.md)
+
+
 ## 2026-10-14
 
 ### Features
 
+* turn web addresses in posts, comments and reviews into tappable short links ([c4bb1ad](https://adl.github.com/adl-developer/kinkane-backend/commit/c4bb1ad0f1ba44e75eda0422e467301eb1c214ad)) — [details](changelog/2026-10-14-short-links-in-posts-and-comments.md)
 * let readers post about a book more than once, and mark edited posts and comments ([0da5a5a](https://adl.github.com/adl-developer/kinkane-backend/commit/0da5a5a4f7b67a3a8b86f01ae6317bc5f915c3f3)) — [details](changelog/2026-10-14-multiple-posts-per-book-edited-marker.md)
 * new-book notifications never suggest a book you've already seen ([4e890b3](https://adl.github.com/adl-developer/kinkane-backend/commit/4e890b3a9f2fe9863250964185526f85c0244614)) — [details](changelog/2026-10-14-new-book-notifications-seen.md)
 
 ### Bug Fixes
 
+* stop double-tapped posts from appearing twice, and keep friend reviews and "Edited" marks accurate ([ad827cd](https://adl.github.com/adl-developer/kinkane-backend/commit/ad827cd08b444423db19245bbb0a7228129c3107)) — [details](changelog/2026-10-14-short-links-in-posts-and-comments.md)
 * stop retaking the quiz from sending a new-book notification ([a54bb5b](https://adl.github.com/adl-developer/kinkane-backend/commit/a54bb5babbea83e6b35355d665596c5ca33a9280)) — [details](changelog/2026-10-14-new-book-notifications-seen.md)
 
 

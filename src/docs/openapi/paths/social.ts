@@ -266,6 +266,7 @@ export const socialPaths = {
             id: { type: 'integer', example: 771 },
             body: { type: 'string', example: 'Finished it — you were right.' },
             mentions: { type: 'array', items: ref('MentionRef') },
+            links: { type: 'array', items: ref('LinkRef') },
             updatedAt: { type: 'string', format: 'date-time' },
             isEdited: { type: 'boolean', example: true },
             editedAt: { type: 'string', format: 'date-time', nullable: true },
@@ -415,6 +416,7 @@ export const socialPaths = {
               example: 'Kept me up all night.',
             },
             reviewMentions: { type: 'array', items: ref('MentionRef'), description: 'Linked @handles in `review`. Empty when there are none.' },
+            reviewLinks: { type: 'array', items: ref('LinkRef'), description: 'Short links in `review`. Empty when there are none.' },
             reviewIsEdited: { type: 'boolean', example: false, description: 'True once they changed that review’s text, rating or status. Show an "Edited" marker when true.' },
             reviewEditedAt: { type: 'string', format: 'date-time', nullable: true, example: null, description: 'When that review last changed; `null` if never edited or there is no review.' },
             note: {
@@ -423,6 +425,7 @@ export const socialPaths = {
               example: 'Best thing I read this year.',
             },
             noteMentions: { type: 'array', items: ref('MentionRef'), description: 'Linked @handles in `note`. Empty when there are none.' },
+            noteLinks: { type: 'array', items: ref('LinkRef'), description: 'Short links in `note`. Empty when there are none.' },
             myReview: {
               allOf: [ref('MyReview')],
               description: 'Your own rating and review of the same book, to show beside theirs.',

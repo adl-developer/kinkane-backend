@@ -575,6 +575,20 @@
       "when": 1792016361059,
       "tag": "0081_posts_multiple_per_book_edited_at",
       "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1792021653896,
+      "tag": "0082_short_links",
+      "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1792062780434,
+      "tag": "0083_blocked_link_domains",
+      "breakpoints": true
     }
   ]
 }

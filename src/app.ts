@@ -16,6 +16,8 @@ import gardnersDropshipRoutes from './routes/gardners-dropship.routes';
 import referralRedirectRoutes from './routes/referral-redirect.routes';
 import appLinkRedirectRoutes from './routes/app-link-redirect.routes';
 import adminReferralsRoutes from './routes/admin-referrals.routes';
+import adminShortLinksRoutes from './routes/admin-short-links.routes';
+import shortLinkRedirectRoutes from './routes/short-link-redirect.routes';
 import adminConsoleRoutes from './routes/admin';
 import { referralsController } from './controllers/referrals.controller';
 import { wrap } from './lib/route-helpers';
@@ -128,12 +130,26 @@ app.use('/admin/console', adminConsoleRoutes);
 app.use('/admin/referrals', requireAdminToken, adminReferralsRoutes);
 app.patch('/admin/users/:id/country', requireAdminToken, wrap(referralsController.adminSetCountry));
 
+// ── Short links admin ─────────────────────────────────────────────────────────
+// Look up a link from a post and block it everywhere it appears.
+app.use('/admin/short-links', requireAdminToken, adminShortLinksRoutes);
+
 // ── Referral links ────────────────────────────────────────────────────────────
 // Mounted at the root, above /api, because /r/CODE/name is a link a person sends
 // over WhatsApp — putting /api/v1 in the middle of it would be absurd. Also the
 // path registered as the universal/app link, so an installed app opens straight
 // through with the code.
 app.use('/r', referralRedirectRoutes);
+
+// ── Short links ───────────────────────────────────────────────────────────────
+// Web addresses in posts, comments and notes are shown as short links and
+// followed through here, so a tap is counted and a blocked link stops working.
+// /s is the current form: www.kinkane.app/s/CODE, which the web host forwards
+// here (SHORT_LINK_URL). /l is the form links were first shown in, kept so any
+// already shared keep working. At the root for the same reason as /r, and
+// outside /redirect so the app never claims a link that leaves Kinkané.
+app.use('/s', shortLinkRedirectRoutes);
+app.use('/l', shortLinkRedirectRoutes);
 
 // ── App links ─────────────────────────────────────────────────────────────────
 // Every link meant to open the mobile app is sent under /redirect, so the

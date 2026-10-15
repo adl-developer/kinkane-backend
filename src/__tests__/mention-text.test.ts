@@ -45,6 +45,21 @@ describe('extractHandles', () => {
   });
 });
 
+describe('skip ranges (web addresses)', () => {
+  const text = 'by https://medium.com/@kofi/review and @ama';
+  const url = 'https://medium.com/@kofi/review';
+  const skip: [number, number][] = [[3, 3 + url.length]];
+
+  it('does not extract a handle inside an address', () => {
+    expect(extractHandles(text, skip)).toEqual(['ama']);
+  });
+
+  it('does not tokenize a handle inside an address', () => {
+    const result = tokenize(text, ids([['kofi', 2], ['ama', 1]]), skip);
+    expect(result).toEqual({ text: `by ${url} and @{{u:1}}`, mentionedIds: [1] });
+  });
+});
+
 describe('tokenize', () => {
   it('replaces handles that name an account and leaves everything else as typed', () => {
     const out = tokenize('Hey @Ama, have you met @nobody? cc @kofi.', ids([['ama', 1], ['kofi', 2]]));

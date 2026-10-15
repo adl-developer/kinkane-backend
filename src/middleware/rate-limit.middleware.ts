@@ -355,3 +355,16 @@ export const usernameCheckLimiter = rateLimit({
   keyGenerator: byUser,
   store: new RedisStore({ prefix: 'rl:username-check:', sendCommand }),
 });
+
+// Short-link taps: 300 per 15 minutes per IP. Public and unauthenticated, and
+// each tap is a counter update; generous enough for a busy shared network, but
+// tight enough that walking the code space to find links in private posts is
+// hopeless.
+export const shortLinkRedirectLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: json429,
+  store: new RedisStore({ prefix: 'rl:short-link:', sendCommand }),
+});

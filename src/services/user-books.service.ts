@@ -20,10 +20,12 @@ import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-ex
 import { mentionsService, renderTexts } from './mentions.service';
 import { escapeLike } from '../lib/escape-like';
 import type { MentionRef } from '../lib/mention-text';
+import type { LinkRef } from '../lib/link-text';
 import { interactionsService, type InteractionType } from './interactions.service';
 import { getProductFormLabel } from '../lib/product-form';
 import { addDisplayGenre } from '../lib/genre-display';
 import { availabilityService } from './commerce/availability.service';
+import { TEXT_LIMITS } from '../lib/text-limits';
 
 /**
  * Reading statuses that are also trending signals. Every value the API accepts is
@@ -49,6 +51,7 @@ export interface UserBookItem {
   note: string | null;
   /** Linked @handles in `note`. */
   noteMentions: MentionRef[];
+  noteLinks: LinkRef[];
   noteIsPublic: boolean;
   addedAt: Date;
   isbn13: string | null;
@@ -78,6 +81,7 @@ export interface UserBookStatus {
   owned: boolean;
   note: string | null;
   noteMentions: MentionRef[];
+  noteLinks: LinkRef[];
   noteIsPublic: boolean;
 }
 
@@ -88,12 +92,13 @@ export interface PublicNote {
   userPhotoUrl: string | null;
   note: string;
   noteMentions: MentionRef[];
+  noteLinks: LinkRef[];
   status: string | null;
   addedAt: Date;
 }
 
 /** A public note as cached: stored text, mentions not yet rendered. */
-type CachedPublicNote = Omit<PublicNote, 'noteMentions'>;
+type CachedPublicNote = Omit<PublicNote, 'noteMentions' | 'noteLinks'>;
 
 export interface ListUserBooksOptions {
   userId: number;
@@ -345,6 +350,7 @@ export const userBooksService = {
         ...r,
         note: renderedNotes[i].text,
         noteMentions: renderedNotes[i].mentions,
+        noteLinks: renderedNotes[i].links,
         productFormLabel: getProductFormLabel(r.productForm),
         ...relations.get(r.bookId)!,
         excerpt: pickExcerpt(r.isbn13, excerptMap),
@@ -375,7 +381,7 @@ export const userBooksService = {
     // A note of only whitespace is no note: stored as null, so it never keeps
     // an otherwise empty entry alive.
     const noteInput = fields.note?.trim() === '' ? null : fields.note;
-    const note = noteInput !== undefined ? await mentionsService.prepare(noteInput) : undefined;
+    const note = noteInput !== undefined ? await mentionsService.prepare(noteInput, userId, TEXT_LIMITS.bookNote) : undefined;
 
     // Build the update set — only include keys that were explicitly provided.
     // A flag-only write (liked/owned) keeps the entry's source, as setFlag does:
@@ -593,7 +599,7 @@ export const userBooksService = {
 
     if (!row) return null;
     const [note] = await renderTexts([row.note]);
-    return { ...row, note: note.text, noteMentions: note.mentions };
+    return { ...row, note: note.text, noteMentions: note.mentions, noteLinks: note.links };
   },
 
   /**
@@ -612,6 +618,7 @@ export const userBooksService = {
       userUsername: n.userUsername ?? null,
       note: rendered[i].text!,
       noteMentions: rendered[i].mentions,
+      noteLinks: rendered[i].links,
     }));
   },
 };

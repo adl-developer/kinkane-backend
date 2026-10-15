@@ -13,8 +13,10 @@ import {
 } from '../db/schema';
 import { enqueuePush } from '../lib/push-queue';
 import { logger } from '../lib/logger';
-import { mentionsService, renderTexts } from './mentions.service';
+import { mentionsService, renderTexts, type RenderedRichText } from './mentions.service';
 import type { MentionRef } from '../lib/mention-text';
+import type { LinkRef } from '../lib/link-text';
+import { TEXT_LIMITS } from '../lib/text-limits';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -47,6 +49,7 @@ export interface GroupSummary {
   description: string | null;
   /** Linked @handles in `description`. */
   descriptionMentions: MentionRef[];
+  descriptionLinks: LinkRef[];
   photoUrl: string | null;
   privacy: GroupPrivacy;
   memberCount: number;
@@ -502,12 +505,13 @@ type GroupSummaryRow = {
   [K in keyof typeof groupSummaryColumns]: Group[K & keyof Group];
 };
 
-function toSummary(row: GroupSummaryRow, rendered: { text: string | null; mentions: MentionRef[] }): GroupSummary {
+function toSummary(row: GroupSummaryRow, rendered: RenderedRichText): GroupSummary {
   return {
     id: row.id,
     name: row.name,
     description: rendered.text,
     descriptionMentions: rendered.mentions,
+    descriptionLinks: rendered.links,
     photoUrl: row.photoUrl,
     privacy: row.privacy,
     memberCount: row.memberCount,
@@ -532,7 +536,7 @@ export const groupsService = {
    * means the same thing on every surface.
    */
   async create(ownerId: number, input: CreateGroupInput): Promise<GroupSummary> {
-    const description = await mentionsService.prepare(input.description ?? null);
+    const description = await mentionsService.prepare(input.description ?? null, ownerId, TEXT_LIMITS.groupDescription);
     const created = await db.transaction(async (tx) => {
       const [group] = await tx
         .insert(groups)
@@ -710,7 +714,19 @@ export const groupsService = {
   },
 
   async update(groupId: number, ownerId: number, input: UpdateGroupInput): Promise<GroupSummary> {
-    const description = input.description !== undefined ? await mentionsService.prepare(input.description) : undefined;
+    // Ownership is checked before the description is prepared: preparing
+    // stores short links, and someone else's group must not get rows written
+    // on its behalf. The UPDATE below still scopes to the owner as the guard.
+    let description: Awaited<ReturnType<typeof mentionsService.prepare<string | null>>> | undefined;
+    if (input.description !== undefined) {
+      const [owned] = await db
+        .select({ id: groups.id })
+        .from(groups)
+        .where(and(eq(groups.id, groupId), eq(groups.ownerId, ownerId)))
+        .limit(1);
+      if (!owned) throw notFound();
+      description = await mentionsService.prepare(input.description, ownerId, TEXT_LIMITS.groupDescription);
+    }
     const [updated] = await db
       .update(groups)
       .set({

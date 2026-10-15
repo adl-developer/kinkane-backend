@@ -18,6 +18,8 @@ import { addDisplayGenre, type GenreRef } from '../lib/genre-display';
 import type { HttpError } from '../lib/route-helpers';
 import { mentionsService, renderTexts } from './mentions.service';
 import type { MentionRef } from '../lib/mention-text';
+import type { LinkRef } from '../lib/link-text';
+import { TEXT_LIMITS } from '../lib/text-limits';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -40,6 +42,7 @@ export interface GroupShelfItem {
   description: string | null;
   /** Linked @handles in `description`. */
   descriptionMentions: MentionRef[];
+  descriptionLinks: LinkRef[];
   startedOn: string | null;
   finishedOn: string | null;
   addedAt: Date;
@@ -90,6 +93,7 @@ export interface GroupCommentItem {
   body: string;
   /** Linked @handles in `body`. */
   mentions: MentionRef[];
+  links: LinkRef[];
   likeCount: number;
   /** Top-level comments only; always 0 on a reply, which cannot have replies. */
   replyCount: number;
@@ -428,6 +432,7 @@ async function toItems(rows: ShelfRow[]): Promise<GroupShelfItem[]> {
       book,
       description: rendered[i].text,
       descriptionMentions: rendered[i].mentions,
+      descriptionLinks: rendered[i].links,
       startedOn: r.startedOn,
       finishedOn: r.finishedOn,
       addedAt: r.addedAt,
@@ -438,7 +443,7 @@ async function toItems(rows: ShelfRow[]): Promise<GroupShelfItem[]> {
 
 /** Like counts, reply counts and the viewer's likes for a page of comments. */
 async function enrichComments(
-  rows: Omit<GroupCommentItem, 'likeCount' | 'replyCount' | 'likedByMe' | 'mentions'>[],
+  rows: Omit<GroupCommentItem, 'likeCount' | 'replyCount' | 'likedByMe' | 'mentions' | 'links'>[],
   viewerId: number,
 ): Promise<GroupCommentItem[]> {
   if (rows.length === 0) return [];
@@ -470,6 +475,7 @@ async function enrichComments(
     ...r,
     body: rendered[i].text ?? '',
     mentions: rendered[i].mentions,
+    links: rendered[i].links,
     likeCount: likeMap.get(r.id) ?? 0,
     replyCount: replyMap.get(r.id) ?? 0,
     likedByMe: liked.has(r.id),
@@ -650,7 +656,7 @@ export const groupBooksService = {
     enforce(decideSetCurrent(input.bookId, current?.bookId ?? null));
 
     const existing = relevant.find((r) => r.bookId === input.bookId);
-    const description = await mentionsService.prepare(input.description ?? null);
+    const description = await mentionsService.prepare(input.description ?? null, viewerId, TEXT_LIMITS.groupBookDescription);
     const fields = {
       status: 'currently_reading' as const,
       startedOn: input.startedOn,
@@ -697,7 +703,7 @@ export const groupBooksService = {
     const entry = await loadEntry(groupId, groupBookId);
     enforce(decideEdit(entry, patch));
 
-    const description = patch.description !== undefined ? await mentionsService.prepare(patch.description) : undefined;
+    const description = patch.description !== undefined ? await mentionsService.prepare(patch.description, viewerId, TEXT_LIMITS.groupBookDescription) : undefined;
     await db
       .update(groupBooks)
       .set({
@@ -824,7 +830,7 @@ export const groupBooksService = {
     }
     enforce(decideComment(entry.status, groupBookId, parent));
 
-    const prepared = await mentionsService.prepare(body);
+    const prepared = await mentionsService.prepare(body, viewerId, TEXT_LIMITS.groupComment);
     const [row] = await db
       .insert(groupBookComments)
       .values({ groupBookId, userId: viewerId, parentId: parentId ?? null, body: prepared.text })
@@ -839,7 +845,7 @@ export const groupBooksService = {
       .where(eq(groupBookComments.id, row.id))
       .limit(1);
     const [rendered] = await renderTexts([created.body]);
-    return { ...created, body: rendered.text ?? '', mentions: rendered.mentions, likeCount: 0, replyCount: 0, likedByMe: false };
+    return { ...created, body: rendered.text ?? '', mentions: rendered.mentions, links: rendered.links, likeCount: 0, replyCount: 0, likedByMe: false };
   },
 
   /**
@@ -853,7 +859,7 @@ export const groupBooksService = {
     // not a capability anyone else has, so there is nothing to explain.
     if (comment.userId !== viewerId) throw fail(404, 'Comment not found');
 
-    const prepared = await mentionsService.prepare(body);
+    const prepared = await mentionsService.prepare(body, viewerId, TEXT_LIMITS.groupComment);
     await db
       .update(groupBookComments)
       .set({ body: prepared.text, updatedAt: new Date() })

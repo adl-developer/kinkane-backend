@@ -37,3 +37,4 @@ export * from './commerce';
 export * from './shipping-rates';
 export * from './book-reviews';
 export * from './book-author-bios';
+export * from './short-links';

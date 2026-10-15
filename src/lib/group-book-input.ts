@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { TEXT_LIMITS } from './text-limits';
 
 /**
  * Request shapes for a group's bookshelf and its discussion.
@@ -34,7 +35,7 @@ export const readingDateSchema = z
     message: 'Must be a real date in YYYY-MM-DD form, not in the future',
   });
 
-const descriptionSchema = z.string().trim().max(2000);
+const descriptionSchema = z.string().trim().max(TEXT_LIMITS.groupBookDescription);
 
 const paginationSchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).default(20),
@@ -76,7 +77,7 @@ export const finishGroupBookSchema = z.object({
 
 // Same bounds as community comments. `.trim()` before `.min(1)` so a comment of
 // only spaces is refused — see the note on groupNameSchema.
-export const groupCommentBodySchema = z.string().trim().min(1).max(2000);
+export const groupCommentBodySchema = z.string().trim().min(1).max(TEXT_LIMITS.groupComment);
 
 export const createGroupCommentSchema = z.object({
   body: groupCommentBodySchema,

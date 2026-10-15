@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { isCloudinaryUrl, cloudinaryUrlMessage } from './cloudinary-url';
+import { TEXT_LIMITS } from './text-limits';
 
 /**
  * Request shapes for creating and editing a group.
@@ -30,7 +31,7 @@ export const groupPhotoUrlSchema = z
 
 export const createGroupSchema = z.object({
   name: groupNameSchema,
-  description: z.string().max(2000).nullable().optional(),
+  description: z.string().max(TEXT_LIMITS.groupDescription).nullable().optional(),
   photoUrl: groupPhotoUrlSchema.nullable().optional(),
   privacy: z.enum(['public', 'private']).default('public'),
 });
@@ -40,7 +41,7 @@ export const createGroupSchema = z.object({
 export const updateGroupSchema = z
   .object({
     name: groupNameSchema.optional(),
-    description: z.string().max(2000).nullable().optional(),
+    description: z.string().max(TEXT_LIMITS.groupDescription).nullable().optional(),
     photoUrl: groupPhotoUrlSchema.nullable().optional(),
     privacy: z.enum(['public', 'private']).optional(),
   })

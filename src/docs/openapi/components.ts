@@ -205,6 +205,7 @@ const bookSchemas = {
       status: { type: 'string', enum: ['reading', 'read'], example: 'read' },
       body: { type: 'string', nullable: true, example: 'Twelve voices and not one wasted.' },
       mentions: { type: 'array', items: { $ref: '#/components/schemas/MentionRef' }, description: 'Linked @handles in `body`. Empty when there are none.' },
+      links: { type: 'array', items: { $ref: '#/components/schemas/LinkRef' }, description: 'Short links in `body`. Empty when there are none.' },
       isPublic: { type: 'boolean', example: true },
       createdAt: { type: 'string', format: 'date-time', example: '2026-09-21T19:04:00.000Z' },
       updatedAt: { type: 'string', format: 'date-time', example: '2026-09-21T19:04:00.000Z' },
@@ -381,6 +382,22 @@ const socialSchemas = {
     },
   },
 
+  LinkRef: {
+    type: 'object',
+    description:
+      'One web address inside a piece of user-written text — the same texts that can hold mentions. Addresses are stored once and shown as a **short link** on our own domain (`https://www.kinkane.app/s/<code>` in production; older text may have been shown as `…/l/<code>`, which still works), the way LinkedIn shows `lnkd.in/…`; the text itself already reads as that short link, and this says where it sits and where it goes.\n\n' +
+      'Open `url`, not `target`: the short link counts the tap and honours a block. `target` and `domain` are for showing where it leads (a label or preview). When an admin blocks a link, `blocked` is true, `target` and `domain` are null, and `url` opens a "link removed" page — grey the span out.\n\n' +
+      '`start` and `length` are in UTF-16 code units, as for MentionRef. Clients send plain text with ordinary addresses in it (`https://…`, `http://…` or `www.…`); trailing punctuation and an unmatched closing bracket are left out of the link. Up to 5 distinct addresses per text are linked; any more stay plain text. Length limits count each linked address at the length of its short link (34 characters in production), since that is how the text reads; text over the limit on that count is refused with 400 `TEXT_TOO_LONG`. An address ends at whitespace, quotes (straight or curly), an ellipsis or an emoji. Editing round-trips: send back exactly what you were shown and each short link stays the same link (either the `/s/` or the older `/l/` form).',
+    properties: {
+      url: { type: 'string', example: 'https://www.kinkane.app/s/7KQ2M9XA' },
+      target: { type: 'string', nullable: true, example: 'https://www.theguardian.com/books/2016/dec/31/homegoing-review' },
+      domain: { type: 'string', nullable: true, example: 'theguardian.com' },
+      blocked: { type: 'boolean', example: false },
+      start: { type: 'integer', example: 12 },
+      length: { type: 'integer', example: 34 },
+    },
+  },
+
   MentionFeedItem: {
     type: 'object',
     description: 'One place the caller was @-mentioned, as `GET /user/mentions` returns it.',
@@ -401,6 +418,7 @@ const socialSchemas = {
         example: 'You have to read this, @ama_reads — the ending!',
       },
       mentions: { type: 'array', items: { $ref: '#/components/schemas/MentionRef' }, description: 'Linked handles within `excerpt`.' },
+      links: { type: 'array', items: { $ref: '#/components/schemas/LinkRef' }, description: 'Short links within `excerpt`. Empty when there are none.' },
       restricted: {
         type: 'boolean',
         description:
@@ -559,6 +577,7 @@ const socialSchemas = {
         example: 'Twelve voices and not one wasted page.',
       },
       mentions: { type: 'array', items: { $ref: '#/components/schemas/MentionRef' }, description: 'Linked @handles in `body`. Empty when there are none.' },
+      links: { type: 'array', items: { $ref: '#/components/schemas/LinkRef' }, description: 'Short links in `body`. Empty when there are none.' },
       isPublic: {
         type: 'boolean',
         description: 'False restricts the post to the author’s accepted followers.',
@@ -600,6 +619,7 @@ const socialSchemas = {
       status: { type: 'string', enum: ['reading', 'read'], example: 'read' },
       body: { type: 'string', nullable: true, example: 'Twelve voices and not one wasted page.' },
       mentions: { type: 'array', items: { $ref: '#/components/schemas/MentionRef' }, description: 'Linked @handles in `body`. Empty when there are none.' },
+      links: { type: 'array', items: { $ref: '#/components/schemas/LinkRef' }, description: 'Short links in `body`. Empty when there are none.' },
       isPublic: {
         type: 'boolean',
         example: true,
@@ -624,6 +644,7 @@ const socialSchemas = {
       author: { $ref: '#/components/schemas/UserSummary' },
       body: { type: 'string', example: 'Adding it to my list right now, @kofi.reads.' },
       mentions: { type: 'array', items: { $ref: '#/components/schemas/MentionRef' }, description: 'Linked @handles in `body`. Empty when there are none.' },
+      links: { type: 'array', items: { $ref: '#/components/schemas/LinkRef' }, description: 'Short links in `body`. Empty when there are none.' },
       likeCount: { type: 'integer', example: 2 },
       likedByMe: { type: 'boolean', example: false },
       createdAt: { type: 'string', format: 'date-time', example: '2026-07-30T21:10:00.000Z' },
@@ -639,7 +660,7 @@ const socialSchemas = {
       'One item in the notifications feed. Every kind is a stored row, so `id` is always an integer and any item can be marked read or cleared.\n\n' +
       '`friend_request` goes to the person a follow request was sent *to*; its `data` carries `followRequestId` (what the accept/decline endpoints take), `senderId`, `senderName`, `senderPhotoUrl` and `status` (`pending`, `accepted` or `declined`). Status, name and photo are always current. Accepting or declining also marks it read; a re-sent request moves it back to the top as unread; a withdrawn request removes it.\n\n' +
       '`follow_accepted` goes to the person whose request was accepted; its `data` carries `followRequestId`, `accepterId`, `accepterName` and `accepterPhotoUrl`. `new_recommendation` carries `bookId`, `bookTitle`, `bookAuthor` and `bookCoverUrl`.\n\n' +
-      '`mention` — someone @-mentioned you. `data` carries `sourceType` (as on MentionFeedItem), the navigation ids that apply (`postId`, `commentId`, `groupId`, `groupName`, `groupBookId`, `groupCommentId`, `parentCommentId`, `bookId`, `bookTitle`), `mentionerId`, `mentionerName`, `mentionerUsername`, `mentionerPhotoUrl`, `excerpt` with `excerptMentions`, and `restricted`. When `restricted` is true you were mentioned in a private group you are not in: `excerpt` is null and comment ids are omitted. Mentions in a private post or private note are not notified until it is made public.',
+      '`mention` — someone @-mentioned you. `data` carries `sourceType` (as on MentionFeedItem), the navigation ids that apply (`postId`, `commentId`, `groupId`, `groupName`, `groupBookId`, `groupCommentId`, `parentCommentId`, `bookId`, `bookTitle`), `mentionerId`, `mentionerName`, `mentionerUsername`, `mentionerPhotoUrl`, `excerpt` with `excerptMentions` and `excerptLinks`, and `restricted`. When `restricted` is true you were mentioned in a private group you are not in: `excerpt` is null and comment ids are omitted. Mentions in a private post or private note are not notified until it is made public.',
     properties: {
       id: { type: 'integer', example: 5521 },
       type: {

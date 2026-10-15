@@ -19,11 +19,14 @@ import {
   MAX_MENTIONS_PER_TEXT,
   extractHandles,
   hasTokens,
+  neutralizeTokens,
   render,
   tokenIds,
   tokenize,
   type MentionRef,
 } from '../lib/mention-text';
+import { addressSpans, hasLinkTokens, linkTokenIds, renderLinks, shiftOffsets, type LinkRef } from '../lib/link-text';
+import { shortLinkPrefix, shortLinksService } from './short-links.service';
 import { enqueuePush } from '../lib/push-queue';
 import { logger } from '../lib/logger';
 
@@ -95,6 +98,8 @@ export interface MentionFeedItem {
   excerpt: string | null;
   /** Linked handles within `excerpt`. */
   mentions: MentionRef[];
+  /** Short links within `excerpt`. */
+  links: LinkRef[];
   /** True when `excerpt` is withheld. */
   restricted: boolean;
   target: MentionTarget;
@@ -180,58 +185,97 @@ async function usernamesFor(ids: number[]): Promise<Map<number, string>> {
   return new Map(rows.filter((r) => r.username !== null).map((r) => [r.id, r.username!]));
 }
 
+/** Stored text as a reader sees it: handles and short links in place, with where each sits. */
+export interface RenderedRichText {
+  text: string | null;
+  mentions: MentionRef[];
+  links: LinkRef[];
+}
+
 /**
- * Renders stored texts for a response, in one lookup however many there are,
- * and none at all when no text has a mention in it — which is most of them.
+ * Renders stored texts for a response — mention tokens to usernames, link
+ * tokens to short links — in one lookup of each kind however many texts there
+ * are, and none at all when no text has a token in it, which is most of them.
  */
-export async function renderTexts(
-  texts: (string | null | undefined)[],
-): Promise<{ text: string | null; mentions: MentionRef[] }[]> {
-  const ids = new Set<number>();
-  for (const t of texts) if (hasTokens(t)) for (const id of tokenIds(t!)) ids.add(id);
-  const names = await usernamesFor([...ids]);
+export async function renderTexts(texts: (string | null | undefined)[]): Promise<RenderedRichText[]> {
+  const userIds = new Set<number>();
+  const linkIds = new Set<number>();
+  for (const t of texts) {
+    if (hasTokens(t)) for (const id of tokenIds(t!)) userIds.add(id);
+    if (hasLinkTokens(t)) for (const id of linkTokenIds(t!)) linkIds.add(id);
+  }
+  const [names, links] = await Promise.all([usernamesFor([...userIds]), shortLinksService.load([...linkIds])]);
+  const prefix = shortLinkPrefix();
 
   return texts.map((t) => {
-    if (t === null || t === undefined) return { text: null, mentions: [] };
-    if (!hasTokens(t)) return { text: t, mentions: [] };
-    return render(t, names);
+    if (t === null || t === undefined) return { text: null, mentions: [], links: [] };
+    const withMentions = hasTokens(t) ? render(t, names) : { text: t, mentions: [] };
+    if (!hasLinkTokens(withMentions.text)) return { ...withMentions, links: [] };
+    // Mentions first, then links; the mention offsets are moved to match.
+    const withLinks = renderLinks(withMentions.text, links, prefix);
+    return { text: withLinks.text, mentions: shiftOffsets(withMentions.mentions, withLinks.shifts), links: withLinks.links };
   });
 }
 
 /**
  * Replaces `item[key]` with its rendered text and adds the positions of the
- * linked handles as `mentions` (or `mentionsKey`). The usual way a read path
- * hands mentionable text to a client.
+ * linked handles as `mentions` (or `mentionsKey`) and of the short links as
+ * `links` (or `linksKey`). The usual way a read path hands user-written text
+ * to a client.
  */
-export async function withRenderedMentions<T extends Record<K, string | null>, K extends keyof T, M extends string = 'mentions'>(
+export async function withRenderedMentions<
+  T extends Record<K, string | null>,
+  K extends keyof T,
+  M extends string = 'mentions',
+  L extends string = 'links',
+>(
   items: T[],
   key: K,
   mentionsKey: M = 'mentions' as M,
-): Promise<(T & Record<M, MentionRef[]>)[]> {
+  linksKey: L = 'links' as L,
+): Promise<(T & Record<M, MentionRef[]> & Record<L, LinkRef[]>)[]> {
   const rendered = await renderTexts(items.map((i) => i[key]));
   return items.map((item, i) => ({
     ...item,
     [key]: rendered[i].text,
     [mentionsKey]: rendered[i].mentions,
-  })) as (T & Record<M, MentionRef[]>)[];
+    [linksKey]: rendered[i].links,
+  })) as (T & Record<M, MentionRef[]> & Record<L, LinkRef[]>)[];
 }
 
 // ── Write path ────────────────────────────────────────────────────────────────
 
 /**
- * Prepares user-typed text for storage: every `@handle` that names an account
- * becomes a token. Returns the text to store and who it mentions. Null and
- * undefined pass through, so callers can feed it an optional field as-is.
+ * Prepares user-typed text for storage: every web address becomes a short-link
+ * token, and every `@handle` that names an account becomes a mention token.
+ * Returns the text to store and who it mentions. Null and undefined pass
+ * through, so callers can feed it an optional field as-is.
+ *
+ * `authorId` is recorded as whoever first posted an address; null for text
+ * with no single author.
+ *
+ * Links go first: an address can contain an `@` (`medium.com/@ama`) that must
+ * not be read as a mention.
  */
 async function prepare<T extends string | null | undefined>(
-  text: T,
+  input: T,
+  authorId: number | null = null,
+  maxLength?: number,
 ): Promise<{ text: T; mentionedIds: number[] }> {
-  if (text === null || text === undefined) return { text, mentionedIds: [] };
+  if (input === null || input === undefined) return { text: input, mentionedIds: [] };
+  // `maxLength` is checked against the text as it will read, links shortened
+  // (see lib/text-limits), before anything is stored.
+  const linked = await shortLinksService.prepare(input, authorId, maxLength);
+  // Neutralised here rather than inside tokenize so the address positions
+  // below are measured on exactly the text tokenize walks.
+  const text = neutralizeTokens(linked.text);
+  // Addresses past the link cap stay as typed; an `@` in one is not a mention.
+  const skip = addressSpans(text);
 
   // Only so many people can be linked per text anyway (MAX_MENTIONS_PER_TEXT);
   // looking up more than a margin over that is a query sized by whoever wrote
   // the longest list of handles.
-  const handles = extractHandles(text).slice(0, MAX_MENTIONS_PER_TEXT * 2);
+  const handles = extractHandles(text, skip).slice(0, MAX_MENTIONS_PER_TEXT * 2);
   const rows = handles.length
     ? await db
         .select({ id: users.id, username: users.username })
@@ -239,7 +283,7 @@ async function prepare<T extends string | null | undefined>(
         .where(inArray(users.username, handles))
     : [];
   const ids = new Map(rows.map((r) => [r.username!, r.id]));
-  const result = tokenize(text, ids);
+  const result = tokenize(text, ids, skip);
   return { text: result.text as T, mentionedIds: result.mentionedIds };
 }
 
@@ -443,13 +487,15 @@ function groupIdOf(ctx: SourceContext): number | null {
   return ctx.audience.kind === 'group' ? ctx.audience.groupId : null;
 }
 
-/** The first EXCERPT_LENGTH characters of the rendered text, and the handles that fit inside them. */
-function excerptOf(rendered: { text: string | null; mentions: MentionRef[] }): { excerpt: string | null; mentions: MentionRef[] } {
-  if (rendered.text === null) return { excerpt: null, mentions: [] };
-  if (rendered.text.length <= EXCERPT_LENGTH) return { excerpt: rendered.text, mentions: rendered.mentions };
+/** The first EXCERPT_LENGTH characters of the rendered text, and the handles and links that fit inside them. */
+function excerptOf(rendered: RenderedRichText): { excerpt: string | null; mentions: MentionRef[]; links: LinkRef[] } {
+  if (rendered.text === null) return { excerpt: null, mentions: [], links: [] };
+  if (rendered.text.length <= EXCERPT_LENGTH) return { excerpt: rendered.text, mentions: rendered.mentions, links: rendered.links };
+  const fits = (r: { start: number; length: number }) => r.start + r.length <= EXCERPT_LENGTH;
   return {
     excerpt: `${rendered.text.slice(0, EXCERPT_LENGTH)}…`,
-    mentions: rendered.mentions.filter((m) => m.start + m.length <= EXCERPT_LENGTH),
+    mentions: rendered.mentions.filter(fits),
+    links: rendered.links.filter(fits),
   };
 }
 
@@ -579,7 +625,7 @@ export const mentionsService = {
       renderTexts([ctx.text]),
       loadPeople(recipients.map((r) => r.authorId).filter((id): id is number => id !== null)),
     ]);
-    const { excerpt, mentions: excerptMentions } = excerptOf(rendered);
+    const { excerpt, mentions: excerptMentions, links: excerptLinks } = excerptOf(rendered);
 
     const rows = recipients.map((r) => {
       const author = r.authorId !== null ? people.get(r.authorId) : undefined;
@@ -599,6 +645,7 @@ export const mentionsService = {
           mentionerPhotoUrl: author?.photoUrl ?? null,
           excerpt: restricted ? null : excerpt,
           excerptMentions: restricted ? [] : excerptMentions,
+          excerptLinks: restricted ? [] : excerptLinks,
           restricted,
         },
       };
@@ -682,7 +729,9 @@ export const mentionsService = {
       // rather than dropped so the page length always matches `limit`.
       const decision: Decision = ctx ? decide(ctx.audience, userId, members) : 'restricted';
       const visible = decision === 'full';
-      const { excerpt, mentions: excerptMentions } = visible ? excerptOf(rendered[i]) : { excerpt: null, mentions: [] };
+      const { excerpt, mentions: excerptMentions, links: excerptLinks } = visible
+        ? excerptOf(rendered[i])
+        : { excerpt: null, mentions: [], links: [] };
       return {
         id: r.id,
         sourceType: source.type,
@@ -690,6 +739,7 @@ export const mentionsService = {
         author: r.authorId !== null ? (people.get(r.authorId) ?? null) : null,
         excerpt,
         mentions: excerptMentions,
+        links: excerptLinks,
         restricted: !visible,
         target: ctx ? (visible ? ctx.target : withheldTarget(ctx.target)) : {},
       };

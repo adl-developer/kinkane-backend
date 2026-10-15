@@ -61,6 +61,9 @@ const describeIfDb = testUrl ? describe : describe.skip;
 const EMAIL_PREFIX = 'mention-render-test-';
 const BOOK_REF = 'mention-render-test-book';
 const TOKEN = '@{{u:';
+// Short-link tokens (lib/link-text) ride the same render path and must not leak either.
+const LINK_TOKEN = '{{l:';
+const LINK = ' https://www.example.org/render-test';
 
 /**
  * The parts of the API that can carry user-written text. Everything else —
@@ -130,15 +133,15 @@ describeIfDb('mention rendering across the API', () => {
 
     // A mention in every kind of text that can hold one, all of it public.
     const { id: postId } = await communityService.createPost(ama, {
-      bookId: book.id, rating: 5, status: 'read', body: 'Read it with @mtr_kofi', isPublic: true,
+      bookId: book.id, rating: 5, status: 'read', body: `Read it with @mtr_kofi${LINK}`, isPublic: true,
     });
-    const { id: commentId } = await communityService.addComment(postId, kofi, 'Thanks @mtr_ama');
-    const group = await groupsService.create(kofi, { name: 'Render Club', description: 'Run with @mtr_ama', privacy: 'public' });
+    const { id: commentId } = await communityService.addComment(postId, kofi, `Thanks @mtr_ama${LINK}`);
+    const group = await groupsService.create(kofi, { name: 'Render Club', description: `Run with @mtr_ama${LINK}`, privacy: 'public' });
     const shelf = await groupBooksService.setCurrent(group.id, kofi, {
-      bookId: book.id, startedOn: '2026-10-01', description: 'Picked by @mtr_ama',
+      bookId: book.id, startedOn: '2026-10-01', description: `Picked by @mtr_ama${LINK}`,
     });
-    const groupComment = await groupBooksService.addComment(group.id, shelf.id, kofi, 'Over to you @mtr_ama');
-    await userBooksService.upsert(ama, book.id, { status: 'read', note: 'Lent to @mtr_kofi', noteIsPublic: true });
+    const groupComment = await groupBooksService.addComment(group.id, shelf.id, kofi, `Over to you @mtr_ama${LINK}`);
+    await userBooksService.upsert(ama, book.id, { status: 'read', note: `Lent to @mtr_kofi${LINK}`, noteIsPublic: true });
     await userBooksService.upsert(kofi, book.id, { status: 'reading', note: 'Ask @mtr_ama', noteIsPublic: false });
 
     Object.assign(params, {
@@ -193,6 +196,8 @@ describeIfDb('mention rendering across the API', () => {
     );
 
     const leaked: string[] = [];
+    // Routes showing a short link without saying where it sits.
+    const unlisted: string[] = [];
     const rendered = new Set<string>();
     for (const route of routes) {
       // Rate limits are not what this measures.
@@ -204,11 +209,15 @@ describeIfDb('mention rendering across the API', () => {
         redirect: 'manual',
       });
       const body = await res.text();
-      if (body.includes(TOKEN)) leaked.push(`GET ${route.path} -> ${body.slice(body.indexOf(TOKEN) - 40, body.indexOf(TOKEN) + 20)}`);
+      for (const t of [TOKEN, LINK_TOKEN]) {
+        if (body.includes(t)) leaked.push(`GET ${route.path} -> ${body.slice(body.indexOf(t) - 40, body.indexOf(t) + 20)}`);
+      }
+      if (body.includes('/l/') && !body.includes('"links"') && !body.includes('Links"')) unlisted.push(route.path);
       if (/@mtr_(ama|kofi)/.test(body)) rendered.add(route.path);
     }
 
-    expect(leaked, `responses containing a raw mention token:\n${leaked.join('\n')}`).toEqual([]);
+    expect(leaked, `responses containing a raw mention or link token:\n${leaked.join('\n')}`).toEqual([]);
+    expect(unlisted, 'responses with a short link but no links array').toEqual([]);
 
     // The sweep is only worth something if it reached the seeded text. One
     // route per kind of source, so a broken seed fails loudly instead of the
