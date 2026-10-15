@@ -221,6 +221,19 @@ describeIfDb('community search: posts by their own text', () => {
     expect(found).not.toContain(post.slowlyApart);
   });
 
+  it('searches stop words quietly instead of printing a Postgres notice', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      // Matching by exact wording may still find these; only the notice matters
+      await search('the');
+      await search('"the a"');
+      const notices = log.mock.calls.filter(([arg]) => String((arg as { message?: string })?.message ?? '').includes('text-search'));
+      expect(notices).toEqual([]);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it('never returns a private post', async () => {
     expect(await search('skelderwine')).not.toContain(post.hidden);
   });

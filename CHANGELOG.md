@@ -11,6 +11,7 @@
 
 ### Bug Fixes
 
+* post search keeps the old order for book-title matches ([f3566a8](https://adl.github.com/adl-developer/kinkane-backend/commit/f3566a81131e5c4d4833f3aaac5c70eeacc91b32)) — [details](changelog/2026-10-15-post-search-title-order.md)
 * post search handles phone punctuation, curly quotes and a leading dash ([d463da6](https://adl.github.com/adl-developer/kinkane-backend/commit/d463da6985eabd13bac6bdfe90f403f0e836d94b)) — [details](changelog/2026-10-15-post-search-phone-punctuation.md)
 * searching for % or _ no longer returns every person or group ([580a62b](https://adl.github.com/adl-developer/kinkane-backend/commit/580a62bb917d471dccf14eb88935d0ef4c8bbdb5)) — [details](changelog/2026-10-15-post-search-title-order.md)
 * only grant App Store Founding Member status inside the offer window, and keep it honest ([7dc3052](https://adl.github.com/adl-developer/kinkane-backend/commit/7dc30520454c8009db084ce06071b5997a1e65f7)) — [details](changelog/2026-10-15-apple-founding-member-products.md)
