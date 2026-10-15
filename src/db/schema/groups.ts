@@ -9,20 +9,11 @@ import {
   uniqueIndex,
   check,
   pgEnum,
-  customType,
 } from 'drizzle-orm/pg-core';
+import { tsvector } from './column-types';
 import { sql, desc } from 'drizzle-orm';
 import { users } from './users';
 
-// tsvector type — the column is GENERATED ALWAYS in the migration, never
-// written from the app. Same shape as the declarations in users.ts/books.ts;
-// it has to be declared here or the schema-vs-database column diff in
-// endpoints.contract.test.ts reports search_vector as an undeclared column.
-const tsvector = customType<{ data: string }>({
-  dataType() {
-    return 'tsvector';
-  },
-});
 
 /**
  * Public groups can be joined by anyone. Private groups are invite-only.

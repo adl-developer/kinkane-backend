@@ -17,6 +17,7 @@ import { mentionsService, renderTexts, type RenderedRichText } from './mentions.
 import type { MentionRef } from '../lib/mention-text';
 import type { LinkRef } from '../lib/link-text';
 import { TEXT_LIMITS } from '../lib/text-limits';
+import { likePrefix, likeWordPrefix } from '../lib/escape-like';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -257,8 +258,8 @@ export function groupViewerCapabilities(
  * author-search.test.ts does.
  */
 export function buildGroupSearchCondition(q: string): SQL {
-  const prefix = q + '%';
-  const wordPrefix = '% ' + q + '%';
+  const prefix = likePrefix(q);
+  const wordPrefix = likeWordPrefix(q);
   const fts = q.length >= 3
     ? sql` OR ${groups.searchVector} @@ plainto_tsquery('simple', ${q})`
     : sql``;
@@ -279,8 +280,8 @@ export function buildGroupSearchCondition(q: string): SQL {
  * arbitrary, which is far harder to notice than a missing result.
  */
 export function buildGroupSearchOrderBy(q: string): SQL[] {
-  const prefix = q + '%';
-  const wordPrefix = '% ' + q + '%';
+  const prefix = likePrefix(q);
+  const wordPrefix = likeWordPrefix(q);
 
   return [
     sql`CASE
@@ -371,7 +372,7 @@ export function friendOfCondition(viewerId: number): SQL {
  * should narrow to people called Theo rather than fuzzily rank strangers.
  */
 export function buildFriendNameCondition(q: string): SQL {
-  return sql`(${users.name} ILIKE ${q + '%'} OR ${users.name} ILIKE ${'% ' + q + '%'})`;
+  return sql`(${users.name} ILIKE ${likePrefix(q)} OR ${users.name} ILIKE ${likeWordPrefix(q)})`;
 }
 
 /**

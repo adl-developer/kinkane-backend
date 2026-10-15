@@ -11,14 +11,9 @@ import {
   index,
   uniqueIndex,
   pgEnum,
-  customType,
 } from 'drizzle-orm/pg-core';
+import { tsvector } from './column-types';
 
-const tsvector = customType<{ data: string }>({
-  dataType() {
-    return 'tsvector';
-  },
-});
 
 export const shelfVisibilityEnum = pgEnum('shelf_visibility', ['public', 'friends', 'private']);
 

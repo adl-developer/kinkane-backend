@@ -2,7 +2,7 @@ import { and, asc, eq, isNotNull, isNull, ne, or, sql, type SQL } from 'drizzle-
 import { db } from '../db';
 import { users, groups, groupMemberships, posts, comments, groupBooks, groupBookComments } from '../db/schema';
 import { friendOfCondition } from './groups.service';
-import { escapeLike } from '../lib/escape-like';
+import { likePrefix, likeWordPrefix } from '../lib/escape-like';
 
 export interface MentionSuggestion {
   id: number;
@@ -106,12 +106,12 @@ export const mentionSuggestionsService = {
     let match: SQL | undefined;
     let usernamePrefix: SQL = sql`false`;
     if (q) {
-      const prefix = `${escapeLike(q)}%`;
+      const prefix = likePrefix(q);
       usernamePrefix = sql`${users.username} LIKE ${prefix}`;
       match = or(
         usernamePrefix,
         sql`${users.name} ILIKE ${prefix}`,
-        sql`${users.name} ILIKE ${`% ${escapeLike(q)}%`}`,
+        sql`${users.name} ILIKE ${likeWordPrefix(q)}`,
       );
     } else {
       match = participants ? or(participants, friends) : friends;

@@ -132,4 +132,9 @@ describe('the picker search box', () => {
   it('parameterises the term rather than inlining it', () => {
     expect(compiled("th'); drop table users;--")).not.toContain('drop table');
   });
+
+  it('escapes % and _ so they match themselves, not every friend', () => {
+    const { params } = dialect.sqlToQuery(buildFriendNameCondition('a_%'));
+    expect(params).toEqual(['a\\_\\%%', '% a\\_\\%%']);
+  });
 });

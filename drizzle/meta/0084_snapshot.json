@@ -1,5 +1,5 @@
 {
-  "id": "46c5ec00-b144-4e05-b60c-1cf5d202c317",
+  "id": "88d9c66b-bcee-4de7-84bd-dee0818bf674",
   "prevId": "56ab78b4-80c5-4175-9dc3-22d23adc9bc0",
   "version": "7",
   "dialect": "postgresql",
@@ -412,7 +412,7 @@
         },
         "photo_url": {
           "name": "photo_url",
-          "type": "text",
+          "type": "varchar(1000)",
           "primaryKey": false,
           "notNull": false
         },
@@ -5603,6 +5603,18 @@
         "edited_at": {
           "name": "edited_at",
           "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "search_text": {
+          "name": "search_text",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "search_vector": {
+          "name": "search_vector",
+          "type": "tsvector",
           "primaryKey": false,
           "notNull": false
         }

@@ -3,7 +3,7 @@
 ## What changed
 
 `users.photo_url` is now `text` instead of `varchar(1000)` (migration
-`0084_user_photo_url_text`). Social sign-in also checks the provider's photo URL
+`0086_user_photo_url_text`). Social sign-in also checks the provider's photo URL
 before storing it. If the URL is missing, isn't http(s), or is longer than 8,192
 characters, the account is created without a photo and sign-in continues. When a
 returning account links Google and has no photo yet, the photo is backfilled. If

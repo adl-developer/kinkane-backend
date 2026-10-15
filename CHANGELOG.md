@@ -10,6 +10,7 @@
 
 ### Bug Fixes
 
+* Google sign-in no longer fails for people with long profile photo links ([5496bc7](https://adl.github.com/adl-developer/kinkane-backend/commit/5496bc72580ae9db87d788cdc3fe6fbb3c25d5c1)) — [details](changelog/2026-10-15-google-sign-in-long-profile-photo.md)
 * only grant App Store Founding Member status inside the offer window, and keep it honest ([7dc3052](https://adl.github.com/adl-developer/kinkane-backend/commit/7dc30520454c8009db084ce06071b5997a1e65f7)) — [details](changelog/2026-10-15-apple-founding-member-products.md)
 * make links in posts safer to block and stop them breaking mentions, edits and quoted links ([84dd6b5](https://adl.github.com/adl-developer/kinkane-backend/commit/84dd6b504148f98489ddbea6868492010660b38f)) — [details](changelog/2026-10-15-short-links-on-kinkane-domain.md)
 

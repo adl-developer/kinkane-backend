@@ -70,6 +70,8 @@ export const MISSING_LINK = '[link removed]';
 
 // `{{l:123}}` — the stored form.
 const TOKEN_RE = /\{\{l:(\d+)\}\}/g;
+/** For drift checks against SQL that matches the same token (drizzle/0085). */
+export const LINK_TOKEN_RE = TOKEN_RE;
 
 // A typed address: `http://`, `https://` or `www.` at a word boundary, up to
 // whitespace or a character that cannot sit in an address unencoded and
