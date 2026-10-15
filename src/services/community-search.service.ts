@@ -1,4 +1,4 @@
-import { eq, and, sql, type SQL } from 'drizzle-orm';
+import { eq, and, inArray, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { db } from '../db';
 import { alias } from 'drizzle-orm/pg-core';
 import { users, posts, books, postLikes, comments, groups, followRequests } from '../db/schema';
@@ -7,7 +7,7 @@ import { enrichPosts } from './community.service';
 import type { PostItem } from './community.service';
 import { getExcerptsByIsbns, pickExcerpt } from './book-excerpts.service';
 import { withRenderedMentions } from './mentions.service';
-import { escapeLike } from '../lib/escape-like';
+import { likePrefix, likeWordPrefix } from '../lib/escape-like';
 import { toFollowStatus, type FollowStatus } from './users.service';
 import type { MentionRef } from '../lib/mention-text';
 import type { LinkRef } from '../lib/link-text';
@@ -53,7 +53,7 @@ export interface SearchResult {
 
 /** A handle as a LIKE prefix — lowercased, as usernames are stored, and escaped (`_` is a username character). */
 function usernameLikePrefix(handle: string): string {
-  return escapeLike(handle.toLowerCase()) + '%';
+  return likePrefix(handle.toLowerCase());
 }
 
 /**
@@ -69,8 +69,8 @@ function buildUserSearchCondition(q: string): SQL {
   const handlePrefix = usernamePrefixOf(q);
   if (handlePrefix !== null) return sql`${users.username} LIKE ${handlePrefix}`;
 
-  const prefix = q + '%';
-  const wordPrefix = '% ' + q + '%';
+  const prefix = likePrefix(q);
+  const wordPrefix = likeWordPrefix(q);
   const fts = q.length >= 3
     ? sql` OR ${users.searchVector} @@ plainto_tsquery('simple', ${q})`
     : sql``;
@@ -89,8 +89,8 @@ function buildUserSearchCondition(q: string): SQL {
 function buildUserSearchOrderBy(q: string): SQL[] {
   if (usernamePrefixOf(q) !== null) return [sql`length(${users.username})`, sql`${users.username}`];
 
-  const prefix = q + '%';
-  const wordPrefix = '% ' + q + '%';
+  const prefix = likePrefix(q);
+  const wordPrefix = likeWordPrefix(q);
 
   return [
     sql`CASE
@@ -104,34 +104,126 @@ function buildUserSearchOrderBy(q: string): SQL[] {
   ];
 }
 
-function buildPostSearchCondition(q: string): SQL {
-  const prefix = q + '%';
-  const wordPrefix = '% ' + q + '%';
-  const fts = q.length >= 3
-    ? sql` OR ${books.searchVector} @@ plainto_tsquery('english', ${q})`
-    : sql``;
+// Straight, curly and low double quotes — what phone keyboards type.
+const QUOTED = /["\u201C\u201D\u201E]([^"\u201C\u201D\u201E]*)["\u201C\u201D\u201E]/g;
+const HAS_WORD = /[\p{L}\p{N}]/u;
 
-  return sql`(
-    ${books.title} ILIKE ${prefix}
-    OR ${books.title} ILIKE ${wordPrefix}
-    OR word_similarity(${q}, ${books.title}) > 0.3
-    ${fts}
-  )`;
+/**
+ * `q` as a tsquery over posts.search_vector, or null when it has no words.
+ *
+ * Built from plainto_tsquery and phraseto_tsquery rather than
+ * websearch_to_tsquery: websearch reads a leading `-` as NOT and `or` as OR,
+ * so "-gripping" matched every post without the word. Here each quoted part
+ * must appear as that phrase and the rest are plain words, in any order — all
+ * stemmed, so "reading" finds "read". Every part goes through
+ * post_search_text(), the function the stored column is built with
+ * (drizzle/0085), so the two sides are cleaned identically.
+ */
+function postWordsQuery(q: string): SQL | null {
+  const phrases = [...q.matchAll(QUOTED)].map((m) => m[1]).filter((p) => HAS_WORD.test(p));
+  const loose = q.replace(QUOTED, ' ');
+  const parts = [
+    ...(HAS_WORD.test(loose) ? [sql`plainto_tsquery('english', post_search_text(${loose}))`] : []),
+    ...phrases.map((p) => sql`phraseto_tsquery('english', post_search_text(${p}))`),
+  ];
+  return parts.length > 0 ? sql`(${sql.join(parts, sql` && `)})` : null;
 }
 
-function buildPostSearchOrderBy(q: string): SQL[] {
-  const prefix = q + '%';
-  const wordPrefix = '% ' + q + '%';
+/**
+ * Whether `column` (posts.search_text) contains `q` as written, part words
+ * included ("gripp"). The query is cleaned by the same post_search_text() as
+ * the column, so curly and straight apostrophes match each other, and the
+ * cleaning leaves no LIKE metacharacters to escape. Needs three characters
+ * once cleaned — one or two letters are in nearly every post, and the trigram
+ * index can't serve them.
+ */
+function postWordingMatch(column: SQLWrapper, q: string): SQL {
+  const cleaned = sql`post_search_text(${q})`;
+  return sql`(char_length(${cleaned}) >= 3 AND ${column} LIKE ('%' || ${cleaned} || '%'))`;
+}
 
-  return [
-    sql`CASE
+// The posts and books tables again, for the two match subqueries below
+const textMatch = alias(posts, 'text_match');
+const titleMatch = alias(books, 'title_match');
+
+/**
+ * Posts whose book title matches `q` — as before — or whose own text does:
+ * as words and quoted phrases (postWordsQuery), or as the exact wording
+ * (postWordingMatch). Both text tests read the stored columns, where @mention
+ * and link tokens are already blanked out.
+ *
+ * Each side is an `IN (subquery)` rather than ORs over the joined row. An OR
+ * mixing books and posts columns can use neither table's indexes, so every
+ * search ran the trigram LIKE, the tsquery and word_similarity once per public
+ * post. Instead:
+ *  - text: a subquery over posts alone ORs the two GIN indexes (a BitmapOr);
+ *  - title: tested once per book that has posts, not once per post — a book
+ *    with forty posts was having its title compared forty times.
+ * The outer query then only checks membership in the two id sets.
+ */
+export function buildPostSearchCondition(q: string): SQL {
+  const prefix = likePrefix(q);
+  const wordPrefix = likeWordPrefix(q);
+  const words = postWordsQuery(q);
+  const bookFts = q.length >= 3
+    ? sql` OR ${titleMatch.searchVector} @@ plainto_tsquery('english', ${q})`
+    : sql``;
+  const textWords = words !== null ? sql` OR ${textMatch.searchVector} @@ ${words}` : sql``;
+
+  const titleMatches = db
+    .select({ id: titleMatch.id })
+    .from(titleMatch)
+    .where(and(
+      inArray(titleMatch.id, db.selectDistinct({ id: posts.bookId }).from(posts)),
+      sql`(
+        ${titleMatch.title} ILIKE ${prefix}
+        OR ${titleMatch.title} ILIKE ${wordPrefix}
+        OR word_similarity(${q}, ${titleMatch.title}) > 0.3
+        ${bookFts}
+      )`,
+    ));
+  const textMatches = db
+    .select({ id: textMatch.id })
+    .from(textMatch)
+    .where(sql`${postWordingMatch(textMatch.searchText, q)} ${textWords}`);
+
+  return sql`(${inArray(posts.bookId, titleMatches)} OR ${inArray(posts.id, textMatches)})`;
+}
+
+/**
+ * Ranks the matches from `buildPostSearchCondition`: the book's title first,
+ * as before, then posts that say exactly what was typed, then posts that use
+ * the words, then fuzzy title matches.
+ *
+ * Within a tier, the tie-break fits what put the post there: closeness of the
+ * post text for the two text tiers, title similarity for the title tiers —
+ * the order title matches always had, which group and people search share.
+ * Then the newest post, with the id last so offset pages never overlap.
+ */
+function buildPostSearchOrderBy(q: string): SQL[] {
+  const prefix = likePrefix(q);
+  const wordPrefix = likeWordPrefix(q);
+  const words = postWordsQuery(q);
+  const bodyWordsTier = words !== null ? sql`WHEN ${posts.searchVector} @@ ${words} THEN 3` : sql``;
+  const tier = sql`CASE
       WHEN ${books.title} ILIKE ${prefix}     THEN 0
       WHEN ${books.title} ILIKE ${wordPrefix} THEN 1
-      WHEN word_similarity(${q}, ${books.title}) > 0.3 THEN 2
-      ELSE 3
-    END`,
-    sql`word_similarity(${q}, ${books.title}) DESC`,
+      WHEN ${postWordingMatch(posts.searchText, q)} THEN 2
+      ${bodyWordsTier}
+      WHEN word_similarity(${q}, ${books.title}) > 0.3 THEN 4
+      ELSE 5
+    END`;
+  const titleCloseness = sql`word_similarity(${q}, ${books.title})`;
+  const withinTier = words !== null
+    ? sql`CASE WHEN ${tier} IN (2, 3) THEN ts_rank_cd(${posts.searchVector}, ${words}) ELSE ${titleCloseness} END`
+    : titleCloseness;
+
+  return [
+    tier,
+    sql`${withinTier} DESC`,
     sql`ts_rank(${books.searchVector}, plainto_tsquery('english', ${q})) DESC`,
+    sql`${posts.createdAt} DESC`,
+    sql`${posts.id} DESC`,
   ];
 }
 

@@ -11,9 +11,11 @@ import {
   check,
   pgEnum,
 } from 'drizzle-orm/pg-core';
+import { tsvector } from './column-types';
 import { sql } from 'drizzle-orm';
 import { users } from './users';
 import { books } from './books';
+
 
 export const postStatusEnum = pgEnum('post_status', ['reading', 'read']);
 
@@ -38,6 +40,12 @@ export const posts = pgTable(
     // Set only when the body, rating or status actually changes, so the app
     // can mark the post "Edited". Making a post public or private is not an edit.
     editedAt: timestamp('edited_at', { withTimezone: true }),
+    // Both GENERATED ALWAYS from `body` in drizzle/0084 — never written from
+    // the app. The body with its @mention and link tokens blanked out and
+    // lowercased: `searchText` for substring matches, `searchVector` for words
+    // and phrases. Their indexes (GIN, gin_trgm_ops) are hand-written there too.
+    searchText: text('search_text'),
+    searchVector: tsvector('search_vector'),
   },
   (t) => ({
     userIdIdx: index('idx_posts_user_id').on(t.userId),

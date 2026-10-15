@@ -22,6 +22,7 @@ import {
   customType,
   index,
 } from 'drizzle-orm/pg-core';
+import { tsvector } from './column-types';
 
 // pgvector type — mirrors onix_ingester definition. Exported for use in other schema files.
 export const vector = customType<{
@@ -40,12 +41,6 @@ export const vector = customType<{
   },
 });
 
-// tsvector type — maintained by DB trigger, never written from app
-const tsvector = customType<{ data: string }>({
-  dataType() {
-    return 'tsvector';
-  },
-});
 
 export const books = pgTable(
   'books',

@@ -52,6 +52,8 @@ export const MAX_MENTIONS_PER_TEXT = 20;
 
 // `@{{u:123}}` — the stored form.
 const TOKEN_RE = /@\{\{u:(\d+)\}\}/g;
+/** For drift checks against SQL that matches the same token (drizzle/0085). */
+export const MENTION_TOKEN_RE = TOKEN_RE;
 
 // A typed handle: `@` then the username alphabet. The character before the `@`
 // is checked separately (see isHandleBoundary) rather than with a lookbehind,
