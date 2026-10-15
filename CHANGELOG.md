@@ -5,6 +5,7 @@
 
 ### Features
 
+* turn web addresses in posts, comments and reviews into tappable short links ([c4bb1ad](https://adl.github.com/adl-developer/kinkane-backend/commit/c4bb1ad0f1ba44e75eda0422e467301eb1c214ad)) — [details](changelog/2026-10-14-short-links-in-posts-and-comments.md)
 * let readers post about a book more than once, and mark edited posts and comments ([0da5a5a](https://adl.github.com/adl-developer/kinkane-backend/commit/0da5a5a4f7b67a3a8b86f01ae6317bc5f915c3f3)) — [details](changelog/2026-10-14-multiple-posts-per-book-edited-marker.md)
 * new-book notifications never suggest a book you've already seen ([4e890b3](https://adl.github.com/adl-developer/kinkane-backend/commit/4e890b3a9f2fe9863250964185526f85c0244614)) — [details](changelog/2026-10-14-new-book-notifications-seen.md)
 

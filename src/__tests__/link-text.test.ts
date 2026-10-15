@@ -23,7 +23,8 @@ import { render } from '../lib/mention-text';
  * edit, and that maps to the same stored link.
  */
 
-const BASE = 'https://kinkane.app';
+const PREFIX = 'https://www.kinkane.app/s';
+const HOSTS = ['www.kinkane.app', 'kinkane.app'];
 const typed = (text: string) => findUrls(text).map((f) => text.slice(f.start, f.start + f.length));
 
 describe('findUrls', () => {
@@ -71,7 +72,7 @@ describe('findUrls', () => {
 
 describe('findUrls with our own base', () => {
   it('finds our short links even on a host without a dot', () => {
-    const dev = 'http://localhost:3000';
+    const dev = ['localhost:3000'];
     expect(findUrls('see http://localhost:3000/l/AB12CD34.', dev)).toEqual([
       { start: 4, length: 'http://localhost:3000/l/AB12CD34'.length, url: 'http://localhost:3000/l/AB12CD34' },
     ]);
@@ -100,14 +101,25 @@ describe('normalizeUrl', () => {
 
 describe('shortLinkCode', () => {
   it('recognises our own short links, whatever the case', () => {
-    expect(shortLinkCode('https://kinkane.app/l/ab12cd34', BASE)).toBe('AB12CD34');
-    expect(shortLinkCode('https://kinkane.app/l/AB12CD34/', BASE)).toBe('AB12CD34');
+    expect(shortLinkCode('https://www.kinkane.app/s/ab12cd34', HOSTS)).toBe('AB12CD34');
+    expect(shortLinkCode('https://www.kinkane.app/s/AB12CD34/', HOSTS)).toBe('AB12CD34');
+  });
+
+  it('still recognises the original /l/ form, so older links keep the same link on edit', () => {
+    expect(shortLinkCode('https://www.kinkane.app/s/AB12CD34', HOSTS)).toBe('AB12CD34');
+  });
+
+  it('treats www and the bare domain as the same site', () => {
+    expect(shortLinkCode('https://kinkane.app/s/AB12CD34', ['www.kinkane.app'])).toBe('AB12CD34');
+    expect(shortLinkCode('www.kinkane.app/s/AB12CD34', ['kinkane.app'])).toBe('AB12CD34');
   });
 
   it('ignores other hosts and other paths', () => {
-    expect(shortLinkCode('https://evil.example/l/AB12CD34', BASE)).toBeNull();
-    expect(shortLinkCode('https://kinkane.app/r/AB12CD34', BASE)).toBeNull();
-    expect(shortLinkCode('https://kinkane.app/l/AB12CD34?x=1', BASE)).toBeNull();
+    expect(shortLinkCode('https://evil.example/s/AB12CD34', HOSTS)).toBeNull();
+    expect(shortLinkCode('https://kinkane.app.evil.example/s/AB12CD34', HOSTS)).toBeNull();
+    expect(shortLinkCode('https://kinkane.app/r/AB12CD34', HOSTS)).toBeNull();
+    expect(shortLinkCode('https://kinkane.app/s/AB12CD34?x=1', HOSTS)).toBeNull();
+    expect(shortLinkCode('https://kinkane.app/s/AB12CD34', [])).toBeNull();
   });
 });
 
@@ -150,34 +162,34 @@ describe('renderLinks', () => {
   ]);
 
   it('shows each token as its short link, with where it goes', () => {
-    const out = renderLinks('Read {{l:7}}.', links, BASE);
-    expect(out.text).toBe('Read https://kinkane.app/l/AB12CD34.');
+    const out = renderLinks('Read {{l:7}}.', links, PREFIX);
+    expect(out.text).toBe('Read https://www.kinkane.app/s/AB12CD34.');
     expect(out.links).toEqual([
       {
-        url: 'https://kinkane.app/l/AB12CD34',
+        url: 'https://www.kinkane.app/s/AB12CD34',
         target: 'https://www.goodreads.com/book/1',
         domain: 'goodreads.com',
         blocked: false,
         start: 5,
-        length: 'https://kinkane.app/l/AB12CD34'.length,
+        length: 'https://www.kinkane.app/s/AB12CD34'.length,
       },
     ]);
   });
 
   it('withholds the target of a blocked link', () => {
-    const [ref] = renderLinks('{{l:8}}', links, BASE).links;
+    const [ref] = renderLinks('{{l:8}}', links, PREFIX).links;
     expect(ref).toMatchObject({ blocked: true, target: null, domain: null });
   });
 
   it('renders a token with no row as plain text, unlinked', () => {
-    const out = renderLinks('x {{l:99}}', links, BASE);
+    const out = renderLinks('x {{l:99}}', links, PREFIX);
     expect(out).toMatchObject({ text: `x ${MISSING_LINK}`, links: [] });
   });
 
   it('round-trips: the rendered short link resolves back to the same stored link', () => {
-    const shown = renderLinks('{{l:7}}', links, BASE).text;
+    const shown = renderLinks('{{l:7}}', links, PREFIX).text;
     const [found] = findUrls(shown);
-    expect(shortLinkCode(found.url, BASE)).toBe('AB12CD34');
+    expect(shortLinkCode(found.url, HOSTS)).toBe('AB12CD34');
   });
 });
 
@@ -185,11 +197,11 @@ describe('mentions and links in the same text', () => {
   it('moves mention offsets to match the rendered links', () => {
     const stored = '{{l:7}} by @{{u:3}}';
     const m = render(stored, new Map([[3, 'ama']]));
-    const l = renderLinks(m.text, new Map([[7, { code: 'AB12CD34', url: 'https://a.com/', blocked: false }]]), BASE);
+    const l = renderLinks(m.text, new Map([[7, { code: 'AB12CD34', url: 'https://a.com/', blocked: false }]]), PREFIX);
     const mentions = shiftOffsets(m.mentions, l.shifts);
-    expect(l.text).toBe('https://kinkane.app/l/AB12CD34 by @ama');
+    expect(l.text).toBe('https://www.kinkane.app/s/AB12CD34 by @ama');
     expect(l.text.slice(mentions[0].start, mentions[0].start + mentions[0].length)).toBe('@ama');
-    expect(l.text.slice(l.links[0].start, l.links[0].start + l.links[0].length)).toBe('https://kinkane.app/l/AB12CD34');
+    expect(l.text.slice(l.links[0].start, l.links[0].start + l.links[0].length)).toBe('https://www.kinkane.app/s/AB12CD34');
   });
 });
 

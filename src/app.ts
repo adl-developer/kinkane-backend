@@ -142,10 +142,13 @@ app.use('/admin/short-links', requireAdminToken, adminShortLinksRoutes);
 app.use('/r', referralRedirectRoutes);
 
 // ── Short links ───────────────────────────────────────────────────────────────
-// Web addresses in posts, comments and notes are shown as /l/CODE and followed
-// through here, so a tap is counted and a blocked link stops working. At the
-// root for the same reason as /r, and outside /redirect so the app never claims
-// a link that leaves Kinkané.
+// Web addresses in posts, comments and notes are shown as short links and
+// followed through here, so a tap is counted and a blocked link stops working.
+// /s is the current form: www.kinkane.app/s/CODE, which the web host forwards
+// here (SHORT_LINK_URL). /l is the form links were first shown in, kept so any
+// already shared keep working. At the root for the same reason as /r, and
+// outside /redirect so the app never claims a link that leaves Kinkané.
+app.use('/s', shortLinkRedirectRoutes);
 app.use('/l', shortLinkRedirectRoutes);
 
 // ── App links ─────────────────────────────────────────────────────────────────

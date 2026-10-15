@@ -385,16 +385,16 @@ const socialSchemas = {
   LinkRef: {
     type: 'object',
     description:
-      'One web address inside a piece of user-written text — the same texts that can hold mentions. Addresses are stored once and shown as a **short link** on our own domain (`APP_URL/l/<code>`), the way LinkedIn shows `lnkd.in/…`; the text itself already reads as that short link, and this says where it sits and where it goes.\n\n' +
+      'One web address inside a piece of user-written text — the same texts that can hold mentions. Addresses are stored once and shown as a **short link** on our own domain (`https://www.kinkane.app/s/<code>` in production; older text may have been shown as `…/l/<code>`, which still works), the way LinkedIn shows `lnkd.in/…`; the text itself already reads as that short link, and this says where it sits and where it goes.\n\n' +
       'Open `url`, not `target`: the short link counts the tap and honours a block. `target` and `domain` are for showing where it leads (a label or preview). When an admin blocks a link, `blocked` is true, `target` and `domain` are null, and `url` opens a "link removed" page — grey the span out.\n\n' +
-      '`start` and `length` are in UTF-16 code units, as for MentionRef. Clients send plain text with ordinary addresses in it (`https://…`, `http://…` or `www.…`); trailing punctuation and an unmatched closing bracket are left out of the link. Up to 5 distinct addresses per text are linked; any more stay plain text. Editing round-trips: send back exactly what you were shown and each short link stays the same link.',
+      '`start` and `length` are in UTF-16 code units, as for MentionRef. Clients send plain text with ordinary addresses in it (`https://…`, `http://…` or `www.…`); trailing punctuation and an unmatched closing bracket are left out of the link. Up to 5 distinct addresses per text are linked; any more stay plain text. Editing round-trips: send back exactly what you were shown and each short link stays the same link (either the `/s/` or the older `/l/` form).',
     properties: {
-      url: { type: 'string', example: 'https://kinkane.app/l/7KQ2M9XA' },
+      url: { type: 'string', example: 'https://www.kinkane.app/s/7KQ2M9XA' },
       target: { type: 'string', nullable: true, example: 'https://www.theguardian.com/books/2016/dec/31/homegoing-review' },
       domain: { type: 'string', nullable: true, example: 'theguardian.com' },
       blocked: { type: 'boolean', example: false },
       start: { type: 'integer', example: 12 },
-      length: { type: 'integer', example: 30 },
+      length: { type: 'integer', example: 34 },
     },
   },
 

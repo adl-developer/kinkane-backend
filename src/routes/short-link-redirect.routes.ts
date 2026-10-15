@@ -6,12 +6,13 @@ import { wrap } from '../lib/route-helpers';
 const router = Router();
 
 /**
- * GET /l/:code
+ * GET /s/:code (and GET /l/:code, the original form)
  *
- * Where every short link in user-written text goes (see lib/link-text). Mounted
- * at the root, like /r, because it is a link people see and share. Not under
- * /redirect: these leave Kinkané for another site, so they must open in a
- * browser rather than be claimed by the app.
+ * Where every short link in user-written text goes (see lib/link-text). In
+ * production readers tap www.kinkane.app/s/CODE and the web host forwards it
+ * here. Mounted at the root, like /r, because it is a link people see and
+ * share. Not under /redirect: these leave Kinkané for another site, so they
+ * must open in a browser rather than be claimed by the app.
  *
  * 302 to the address; 404 page for an unknown code; 410 page for a blocked link.
  */

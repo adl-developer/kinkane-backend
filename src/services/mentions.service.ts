@@ -25,7 +25,7 @@ import {
   type MentionRef,
 } from '../lib/mention-text';
 import { hasLinkTokens, linkTokenIds, renderLinks, shiftOffsets, type LinkRef } from '../lib/link-text';
-import { shortLinkBase, shortLinksService } from './short-links.service';
+import { shortLinkPrefix, shortLinksService } from './short-links.service';
 import { enqueuePush } from '../lib/push-queue';
 import { logger } from '../lib/logger';
 
@@ -204,14 +204,14 @@ export async function renderTexts(texts: (string | null | undefined)[]): Promise
     if (hasLinkTokens(t)) for (const id of linkTokenIds(t!)) linkIds.add(id);
   }
   const [names, links] = await Promise.all([usernamesFor([...userIds]), shortLinksService.load([...linkIds])]);
-  const base = shortLinkBase();
+  const prefix = shortLinkPrefix();
 
   return texts.map((t) => {
     if (t === null || t === undefined) return { text: null, mentions: [], links: [] };
     const withMentions = hasTokens(t) ? render(t, names) : { text: t, mentions: [] };
     if (!hasLinkTokens(withMentions.text)) return { ...withMentions, links: [] };
     // Mentions first, then links; the mention offsets are moved to match.
-    const withLinks = renderLinks(withMentions.text, links, base);
+    const withLinks = renderLinks(withMentions.text, links, prefix);
     return { text: withLinks.text, mentions: shiftOffsets(withMentions.mentions, withLinks.shifts), links: withLinks.links };
   });
 }

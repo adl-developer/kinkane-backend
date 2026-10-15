@@ -35,6 +35,9 @@ if (testUrl) {
   }
   process.env.DATABASE_URL = testUrl;
 }
+// Links shown the way production shows them. APP_URL stays whatever the
+// environment says, so links in the original APP_URL/l form can be checked too.
+process.env.SHORT_LINK_URL = 'https://www.kinkane.app/s';
 
 const describeIfDb = testUrl ? describe : describe.skip;
 const EMAIL_PREFIX = 'short-link-test-';
@@ -116,11 +119,20 @@ describeIfDb('short links', () => {
     const [link] = post.links;
     expect(link).toMatchObject({ target: ADDRESS, domain: 'example.org', blocked: false });
     expect(post.body!.slice(link.start, link.start + link.length)).toBe(link.url);
-    expect(link.url).toMatch(/\/l\/[0-9A-Z]{8}$/);
+    expect(link.url).toMatch(/^https:\/\/www\.kinkane\.app\/s\/[0-9A-Z]{8}$/);
 
     // The app sends back exactly what it was shown: not an edit.
     const updated = await community.updatePost(postId, ama, { body: post.body });
     expect(updated.isEdited).toBe(false);
+
+    // The same link sent back in its original APP_URL/l form (from an older
+    // copy of the text): the same stored link, so the post is unchanged.
+    const { config } = await import('../config');
+    const code = link.url.split('/').pop()!;
+    const oldForm = post.body!.replace(link.url, `${config.appUrl}/l/${code}`);
+    const resent = await community.updatePost(postId, ama, { body: oldForm });
+    expect(resent.isEdited).toBe(false);
+    expect(resent.body).toBe(post.body);
 
     // Text changed around the link: an edit, and still the same link.
     const edited = await community.updatePost(postId, ama, { body: `${post.body} Worth it.` });
@@ -149,19 +161,23 @@ describeIfDb('short links', () => {
     if (keys.length) await redis.del(...keys);
 
     const [row] = (await db.execute(sql`SELECT code FROM short_links WHERE url = ${ADDRESS}`)) as unknown as { code: string }[];
-    const tap = (code: string) => fetch(`${harness.baseUrl}/l/${code}`, { redirect: 'manual' });
+    const tap = (code: string, path = 's') => fetch(`${harness.baseUrl}/${path}/${code}`, { redirect: 'manual' });
 
     const followed = await tap(row.code.toLowerCase());
     expect(followed.status).toBe(302);
     expect(followed.headers.get('location')).toBe(ADDRESS);
     expect(followed.headers.get('cache-control')).toBe('no-store');
-    expect((await links.get(row.code))!.clickCount).toBe(1);
+    // The original /l/ form still works, for links already shared.
+    const old = await tap(row.code, 'l');
+    expect(old.status).toBe(302);
+    expect(old.headers.get('location')).toBe(ADDRESS);
+    expect((await links.get(row.code))!.clickCount).toBe(2);
 
     await links.setBlocked(row.code, true, 'test');
     const blocked = await tap(row.code);
     expect(blocked.status).toBe(410);
     expect(await blocked.text()).not.toContain('example.org');
-    expect((await links.get(row.code))!.clickCount).toBe(1);
+    expect((await links.get(row.code))!.clickCount).toBe(2);
 
     const [post] = (await db.execute(sql`SELECT id FROM posts WHERE user_id = ${ama} ORDER BY id LIMIT 1`)) as unknown as { id: number }[];
     const shown = await community.getPost(post.id, kofi);

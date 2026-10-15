@@ -3,7 +3,8 @@
  * short-link tokens, and turning those back into something to show and tap.
  *
  * WHY SHORT LINKS. Every address someone writes is stored once in
- * `short_links` and shown as `APP_URL/l/<code>`, the way LinkedIn shows
+ * `short_links` and shown as `SHORT_LINK_URL/<code>` — in production
+ * `https://www.kinkane.app/s/<code>` — the way LinkedIn shows
  * `lnkd.in/…`. A tap goes through our redirect, so an address found to be
  * phishing or spam can be switched off in one place and stops working in every
  * post that carries it. The text holds a token, `{{l:<id>}}`, for the same
@@ -18,7 +19,7 @@
  * Offsets are UTF-16 code units, as for mentions.
  *
  * Nothing here touches the database or the config; the service hands in what
- * resolved and the base URL. That keeps every rule below pinned by unit tests.
+ * resolved, the prefix and our own hosts. That keeps every rule below pinned by unit tests.
  */
 
 /** One linked address in rendered text. */
@@ -132,42 +133,51 @@ export function neutralizeLinkTokens(text: string): string {
 /**
  * Every linkable address typed in `text`, in order.
  *
- * With `base`, our own short links are always found, even on a host
- * normalizeUrl would refuse (`http://localhost:3000` in development): an edit
- * sends them back, and they must map to the link they already are.
+ * With `ownHosts`, our own short links are always found, even on a host
+ * normalizeUrl would refuse (`localhost:3000` in development): an edit sends
+ * them back, and they must map to the link they already are.
  */
-export function findUrls(text: string, base?: string): FoundUrl[] {
+export function findUrls(text: string, ownHosts: readonly string[] = []): FoundUrl[] {
   const found: FoundUrl[] = [];
   for (const match of text.matchAll(URL_RE)) {
     const trimmed = trimTrailing(match[0]);
-    const url = normalizeUrl(trimmed) ?? (base && shortLinkCode(trimmed, base) ? trimmed : null);
+    const url = normalizeUrl(trimmed) ?? (shortLinkCode(trimmed, ownHosts) ? trimmed : null);
     if (url) found.push({ start: match.index!, length: trimmed.length, url });
   }
   return found;
 }
 
+/** `www.kinkane.app` and `kinkane.app` are the same site. */
+function bareHost(host: string): string {
+  return host.toLowerCase().replace(/^www\./, '');
+}
+
 /**
- * The code of one of our own short links (`<base>/l/<code>`), uppercased, or
- * null for any other address. How a short link sent back in an edit is
- * recognised.
+ * The code of one of our own short links, uppercased, or null for any other
+ * address. How a short link sent back in an edit is recognised.
+ *
+ * Ours means: on one of `ownHosts` (with or without `www.`), at `/s/<code>` —
+ * the current form — or `/l/<code>`, the form links were first shown in.
+ * Accepting both keeps an edit of an older post, or a link pasted from one,
+ * pointing at the link it already is.
  */
-export function shortLinkCode(url: string, base: string): string | null {
+export function shortLinkCode(url: string, ownHosts: readonly string[]): string | null {
+  if (ownHosts.length === 0) return null;
   let parsed: URL;
-  let ours: URL;
   try {
-    parsed = new URL(url);
-    ours = new URL(base);
+    parsed = new URL(/^www\./i.test(url) ? `https://${url}` : url);
   } catch {
     return null;
   }
-  if (parsed.host !== ours.host || parsed.search || parsed.hash) return null;
-  const m = /^\/l\/([A-Za-z0-9]{4,16})\/?$/.exec(parsed.pathname);
+  if (parsed.search || parsed.hash) return null;
+  if (!ownHosts.some((h) => bareHost(h) === bareHost(parsed.host))) return null;
+  const m = /^\/[ls]\/([A-Za-z0-9]{4,16})\/?$/.exec(parsed.pathname);
   return m ? m[1].toUpperCase() : null;
 }
 
-/** `<base>/l/<code>` — the form every link is shown as. */
-export function shortLinkUrl(base: string, code: string): string {
-  return `${base.replace(/\/+$/, '')}/l/${code}`;
+/** `<prefix>/<code>` — the form every link is shown as, e.g. `https://www.kinkane.app/s/7KQ2M9XA`. */
+export function shortLinkUrl(prefix: string, code: string): string {
+  return `${prefix.replace(/\/+$/, '')}/${code}`;
 }
 
 /**
@@ -229,7 +239,7 @@ export interface Shift {
 export function renderLinks(
   text: string,
   linksById: ReadonlyMap<number, StoredLink>,
-  base: string,
+  prefix: string,
 ): { text: string; links: LinkRef[]; shifts: Shift[] } {
   const links: LinkRef[] = [];
   const shifts: Shift[] = [];
@@ -242,7 +252,7 @@ export function renderLinks(
     const link = linksById.get(Number(match[1]));
     let shown: string;
     if (link) {
-      shown = shortLinkUrl(base, link.code);
+      shown = shortLinkUrl(prefix, link.code);
       links.push({
         url: shown,
         target: link.blocked ? null : link.url,

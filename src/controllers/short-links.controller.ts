@@ -24,7 +24,7 @@ function linkPage(res: Response, status: number, heading: string, message: strin
 
 export const shortLinksController = {
   /**
-   * GET /l/:code — a tap on a short link from a post, comment, review, group
+   * GET /s/:code (or /l/:code) — a tap on a short link from a post, comment, review, group
    * text or shelf note. Counts it and forwards to the address.
    *
    * Never cached, so a block takes effect on the very next tap.

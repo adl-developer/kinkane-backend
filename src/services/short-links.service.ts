@@ -21,9 +21,14 @@ import { randomCode } from '../lib/random-code';
 /** 32^8 ≈ 10^12 codes: walking them to find links in private posts is not practical behind the rate limit. */
 const CODE_LENGTH = 8;
 
-/** The base every short link sits under — the same host that serves GET /l/:code. */
-export function shortLinkBase(): string {
-  return config.appUrl;
+/** What every short link is shown under: SHORT_LINK_URL, or APP_URL/l when unset. */
+export function shortLinkPrefix(): string {
+  return config.shortLinkUrl;
+}
+
+/** Hosts whose `/s/<code>` and `/l/<code>` links are ours, so an edit that sends one back keeps the same link. */
+export function ownShortLinkHosts(): string[] {
+  return [config.shortLinkUrl, config.appUrl].map((u) => new URL(u).host);
 }
 
 /**
@@ -68,11 +73,11 @@ export const shortLinksService = {
    */
   async prepare(text: string, authorId: number | null): Promise<{ text: string; linkIds: number[] }> {
     const safe = neutralizeLinkTokens(text);
-    const base = shortLinkBase();
-    const found = findUrls(safe, base);
+    const hosts = ownShortLinkHosts();
+    const found = findUrls(safe, hosts);
     if (found.length === 0) return { text: safe, linkIds: [] };
 
-    const codeOf = new Map(found.map((f) => [f, shortLinkCode(f.url, base)]));
+    const codeOf = new Map(found.map((f) => [f, shortLinkCode(f.url, hosts)]));
     const external = found.filter((f) => codeOf.get(f) === null);
     const ownCodes = found.map((f) => codeOf.get(f)).filter((c): c is string => c !== null);
 
