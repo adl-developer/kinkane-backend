@@ -9,6 +9,7 @@ import { appLink } from '../lib/app-link';
 import { admin } from '../lib/firebase';
 import { adminNotificationsService } from './admin/notifications.service';
 import { logger } from '../lib/logger';
+import { usableSocialPhotoUrl } from '../lib/social-photo-url';
 import { quizPickShelfRows } from '../lib/quiz-picks';
 import { touchLastSignIn } from './user-activity.service';
 import { enqueueEmail } from '../lib/email-queue';
@@ -1133,7 +1134,7 @@ export const authService = {
     const providerUid = decoded.uid;
     const email = decoded.email?.toLowerCase().trim();
     const name = decoded.name ?? '';
-    const photoUrl = decoded.picture ?? null;
+    const photoUrl = usableSocialPhotoUrl(decoded.picture);
 
     if (!email) {
       throw Object.assign(new Error('Social account has no email address'), { statusCode: 422 });
@@ -1185,9 +1186,17 @@ export const authService = {
 
       await db.insert(userProviders).values({ userId: existingUser.id, provider, providerUid });
 
-      // Backfill photo if missing
+      // Backfill photo if missing. Best effort: a photo that won't save must not
+      // fail a sign-in that has already linked the provider above.
       if (!existingUser.photoUrl && photoUrl) {
-        await db.update(users).set({ photoUrl }).where(eq(users.id, existingUser.id));
+        try {
+          await db.update(users).set({ photoUrl }).where(eq(users.id, existingUser.id));
+        } catch (err) {
+          logger.warn('Could not backfill social photo — skipping', {
+            userId: existingUser.id,
+            error: (err as Error).message,
+          });
+        }
       }
 
       // Linking a Google account to an unverified one *is* verification: the
