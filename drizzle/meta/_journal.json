@@ -596,6 +596,13 @@
       "when": 1792085937651,
       "tag": "0084_posts_text_search",
       "breakpoints": true
+    },
+    {
+      "idx": 85,
+      "version": "7",
+      "when": 1792088207311,
+      "tag": "0085_post_search_text_normalised",
+      "breakpoints": true
     }
   ]
 }

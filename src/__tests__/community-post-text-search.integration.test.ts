@@ -119,6 +119,10 @@ describeIfDb('community search: posts by their own text', () => {
     post.accented = await createPost(plainBook, 'Émile Vantrobe would have loved this.');
     post.tokens = await createPost(plainBook, `Ask @{{u:${mentioned}}} about it, see {{l:987654}} — brindlewick`);
     post.hidden = await createPost(plainBook, 'A private skelderwine note', false);
+    // As an iPhone types it: curly apostrophe, em dash, ellipsis, emoji
+    post.phone = await createPost(plainBook, 'Tolkien\u2019s cravenmoor\u2014truly vespertane\u2026 loved it\u{1F60D}');
+    post.slowly = await createPost(plainBook, 'I kept reading thrimbly through the night');
+    post.slowlyApart = await createPost(plainBook, 'Thrimbly, I suppose, but reading it was hard');
   });
 
   afterAll(async () => {
@@ -181,6 +185,28 @@ describeIfDb('community search: posts by their own text', () => {
     await db.execute(sql`UPDATE posts SET body = 'Now it is about glimmerhusk' WHERE id = ${post.word}`);
     expect(await search('glimmerhusk')).toContain(post.word);
     expect(await search('zorbleflux')).not.toContain(post.word);
+  });
+
+  it('does not read a leading dash or "or" as search operators', async () => {
+    // websearch_to_tsquery read "-word" as NOT word, matching every other post
+    expect(await search('-zorbleflux')).not.toContain(post.accented);
+    expect(await search('-zorbleflux')).not.toContain(post.tokens);
+    expect(await search('brindlewick or anything')).not.toContain(post.accented);
+  });
+
+  it('splits words at curly apostrophes, dashes, ellipses and emoji', async () => {
+    expect(await search('cravenmoor truly')).toContain(post.phone);
+    expect(await search('"truly vespertane"')).toContain(post.phone);
+    expect(await search('vespertane')).toContain(post.phone);
+    // A straight apostrophe finds the curly one, and the other way round
+    expect(await search("tolkien's cravenmoor")).toContain(post.phone);
+    expect(await search('\u201Cloved it\u201D')).toContain(post.phone);
+  });
+
+  it('stems words inside a curly-quoted phrase and holds them together', async () => {
+    const found = await search('\u201Cread thrimbly\u201D');
+    expect(found).toContain(post.slowly);
+    expect(found).not.toContain(post.slowlyApart);
   });
 
   it('never returns a private post', async () => {

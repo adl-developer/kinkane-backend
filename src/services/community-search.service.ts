@@ -1,4 +1,4 @@
-import { eq, and, sql, type SQL } from 'drizzle-orm';
+import { eq, and, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { db } from '../db';
 import { alias } from 'drizzle-orm/pg-core';
 import { users, posts, books, postLikes, comments, groups, followRequests } from '../db/schema';
@@ -104,46 +104,64 @@ function buildUserSearchOrderBy(q: string): SQL[] {
   ];
 }
 
+// Straight, curly and low double quotes — what phone keyboards type.
+const QUOTED = /["\u201C\u201D\u201E]([^"\u201C\u201D\u201E]*)["\u201C\u201D\u201E]/g;
+const HAS_WORD = /[\p{L}\p{N}]/u;
+
 /**
- * What a post search matches the post's own text against. Lowercased here as
- * posts.search_text/search_vector are lowercased in drizzle/0084 — under ICU
- * there, and JavaScript's Unicode-aware toLowerCase() here, because the
- * database's ctype C would leave "É" alone.
+ * `q` as a tsquery over posts.search_vector, or null when it has no words.
  *
- * `wording` is the query as literal text, for the "contains these exact words"
- * tier: straight or curly double quotes are dropped, so a quoted phrase is still
- * found as typed. Null under three characters — a one- or two-letter substring
- * is in nearly every post, and the trigram index can't serve it anyway.
+ * Built from plainto_tsquery and phraseto_tsquery rather than
+ * websearch_to_tsquery: websearch reads a leading `-` as NOT and `or` as OR,
+ * so "-gripping" matched every post without the word. Here each quoted part
+ * must appear as that phrase and the rest are plain words, in any order — all
+ * stemmed, so "reading" finds "read". Every part goes through
+ * post_search_text(), the function the stored column is built with
+ * (drizzle/0085), so the two sides are cleaned identically.
  */
-function postTextTerms(q: string): { words: string; wording: string | null } {
-  const words = q.toLowerCase();
-  const literal = words.replace(/["\u201C\u201D]/g, '').trim();
-  return { words, wording: literal.length >= 3 ? '%' + escapeLike(literal) + '%' : null };
+function postWordsQuery(q: string): SQL | null {
+  const phrases = [...q.matchAll(QUOTED)].map((m) => m[1]).filter((p) => HAS_WORD.test(p));
+  const loose = q.replace(QUOTED, ' ');
+  const parts = [
+    ...(HAS_WORD.test(loose) ? [sql`plainto_tsquery('english', post_search_text(${loose}))`] : []),
+    ...phrases.map((p) => sql`phraseto_tsquery('english', post_search_text(${p}))`),
+  ];
+  return parts.length > 0 ? sql`(${sql.join(parts, sql` && `)})` : null;
 }
 
 /**
- * Posts whose book title matches `q` — as before — or whose own text does.
- *
- * The text is matched two ways: as words, with websearch_to_tsquery so
- * `"slow burn"` in quotes must appear as that phrase while unquoted words may
- * appear anywhere (stemmed, so "reading" finds "read"); and as literal wording,
- * which also finds part of a word ("gripp"). Both run on the stored columns,
- * with @mention and link tokens already blanked out.
+ * Whether `column` (posts.search_text) contains `q` as written, part words
+ * included ("gripp"). The query is cleaned by the same post_search_text() as
+ * the column, so curly and straight apostrophes match each other, and the
+ * cleaning leaves no LIKE metacharacters to escape. Needs three characters
+ * once cleaned — one or two letters are in nearly every post, and the trigram
+ * index can't serve them.
+ */
+function postWordingMatch(column: SQLWrapper, q: string): SQL {
+  const cleaned = sql`post_search_text(${q})`;
+  return sql`(char_length(${cleaned}) >= 3 AND ${column} LIKE ('%' || ${cleaned} || '%'))`;
+}
+
+/**
+ * Posts whose book title matches `q` — as before — or whose own text does:
+ * as words and quoted phrases (postWordsQuery), or as the exact wording
+ * (postWordingMatch). Both read the stored columns, where @mention and link
+ * tokens are already blanked out.
  */
 function buildPostSearchCondition(q: string): SQL {
   const prefix = escapeLike(q) + '%';
   const wordPrefix = '% ' + escapeLike(q) + '%';
-  const { words, wording } = postTextTerms(q);
+  const words = postWordsQuery(q);
   const bookFts = q.length >= 3
     ? sql` OR ${books.searchVector} @@ plainto_tsquery('english', ${q})`
     : sql``;
-  const bodyWording = wording !== null ? sql` OR ${posts.searchText} LIKE ${wording}` : sql``;
+  const bodyWords = words !== null ? sql` OR ${posts.searchVector} @@ ${words}` : sql``;
 
   return sql`(
     ${books.title} ILIKE ${prefix}
     OR ${books.title} ILIKE ${wordPrefix}
-    ${bodyWording}
-    OR ${posts.searchVector} @@ websearch_to_tsquery('english', ${words})
+    OR ${postWordingMatch(posts.searchText, q)}
+    ${bodyWords}
     OR word_similarity(${q}, ${books.title}) > 0.3
     ${bookFts}
   )`;
@@ -159,19 +177,19 @@ function buildPostSearchCondition(q: string): SQL {
 function buildPostSearchOrderBy(q: string): SQL[] {
   const prefix = escapeLike(q) + '%';
   const wordPrefix = '% ' + escapeLike(q) + '%';
-  const { words, wording } = postTextTerms(q);
-  const bodyWordingTier = wording !== null ? sql`WHEN ${posts.searchText} LIKE ${wording} THEN 2` : sql``;
+  const words = postWordsQuery(q);
+  const bodyWordsTier = words !== null ? sql`WHEN ${posts.searchVector} @@ ${words} THEN 3` : sql``;
 
   return [
     sql`CASE
       WHEN ${books.title} ILIKE ${prefix}     THEN 0
       WHEN ${books.title} ILIKE ${wordPrefix} THEN 1
-      ${bodyWordingTier}
-      WHEN ${posts.searchVector} @@ websearch_to_tsquery('english', ${words}) THEN 3
+      WHEN ${postWordingMatch(posts.searchText, q)} THEN 2
+      ${bodyWordsTier}
       WHEN word_similarity(${q}, ${books.title}) > 0.3 THEN 4
       ELSE 5
     END`,
-    sql`ts_rank_cd(${posts.searchVector}, websearch_to_tsquery('english', ${words})) DESC`,
+    ...(words !== null ? [sql`ts_rank_cd(${posts.searchVector}, ${words}) DESC`] : []),
     sql`word_similarity(${q}, ${books.title}) DESC`,
     sql`ts_rank(${books.searchVector}, plainto_tsquery('english', ${q})) DESC`,
     sql`${posts.createdAt} DESC`,
