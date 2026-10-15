@@ -72,6 +72,7 @@ import { config } from '../config';
 import { getProductFormLabel } from '../lib/product-form';
 import { addDisplayGenre, genreDisplayName, genreFamilySlug, toDisplayGenres, type GenreRef } from '../lib/genre-display';
 import { genresService } from './genres.service';
+import { likePrefix, likeWordPrefix, likeContains } from '../lib/escape-like';
 
 const BOOK_DETAIL_TTL    = 60 * 60;    // 1 hour
 const LIST_TTL           = 5 * 60;     // 5 minutes
@@ -740,8 +741,8 @@ function feedPoolMultiplier(): number {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function buildSearchCondition(q: string): SQL {
-  const prefix = q + '%';
-  const wordPrefix = '% ' + q + '%';
+  const prefix = likePrefix(q);
+  const wordPrefix = likeWordPrefix(q);
   // Tier 3 (FTS on description/subtitle) only fires for complete words
   const fts = q.length >= 3
     ? sql` OR ${books.searchVector} @@ plainto_tsquery('english', ${q})`
@@ -765,8 +766,8 @@ function buildSearchCondition(q: string): SQL {
 // which rows a page contains and in what order, and a divergence between them is a
 // reordering bug that only shows up on the fuzzy path.
 function buildSearchRankOrderBy(q: string, title: SQL, searchVector: SQL): SQL[] {
-  const prefix = q + '%';
-  const wordPrefix = '% ' + q + '%';
+  const prefix = likePrefix(q);
+  const wordPrefix = likeWordPrefix(q);
 
   return [
     sql`CASE
@@ -878,8 +879,8 @@ export function buildAuthorMatchSource(rawQ: string, tier: 'cheap' | 'broad'): S
   // name tiers through this function. Stray punctuation at either end is trimmed too, so
   // "barbara," searches the same as "barbara" — see canonicalNameQuery.
   const q = canonicalNameQuery(rawQ);
-  const prefix = q + '%';
-  const wordPrefix = '% ' + q + '%';
+  const prefix = likePrefix(q);
+  const wordPrefix = likeWordPrefix(q);
   // Interpolated raw, because it is a column expression rather than a value. It must stay
   // character-identical to the index definition in db/setup.ts — that is the whole reason
   // both come from the same constant.
@@ -1066,13 +1067,13 @@ async function fetchAuthorBranch(
 // which forces Postgres to materialize and rank every fuzzy-matching row in
 // the table before it can apply a LIMIT.
 function buildTitlePrefixCondition(q: string): SQL {
-  const prefix = q + '%';
-  const wordPrefix = '% ' + q + '%';
+  const prefix = likePrefix(q);
+  const wordPrefix = likeWordPrefix(q);
   return sql`(${books.title} ILIKE ${prefix} OR ${books.title} ILIKE ${wordPrefix})`;
 }
 
 function buildTitlePrefixOrderBy(q: string): SQL[] {
-  const prefix = q + '%';
+  const prefix = likePrefix(q);
   // id last, for the same reason rankAuthorMatches carries one: without a total order,
   // tied titles are returned in whatever order Postgres finds convenient, and since each
   // page fetches a larger LIMIT than the last, two pages get different arbitrary subsets
@@ -1098,7 +1099,7 @@ function buildTitlePrefixOrderBy(q: string): SQL[] {
 // alone already fills the requested window, no tier-1 row would have appeared in it
 // anyway.
 function buildFastTitlePrefixCondition(q: string): SQL {
-  const prefix = q + '%';
+  const prefix = likePrefix(q);
   return sql`lower(${books.title}) LIKE lower(${prefix})`;
 }
 
@@ -1128,8 +1129,8 @@ const SUGGESTION_NAME = sql.raw(NORMALISED_PERSON_NAME);
 function buildPersonNameExactCondition(q: string): SQL {
   const anyOrder = anyOrderNameMatch(SUGGESTION_NAME, q);
   return sql`(
-    lower(${SUGGESTION_NAME}) LIKE lower(${q + '%'})
-    OR ${SUGGESTION_NAME} ILIKE ${'% ' + q + '%'}
+    lower(${SUGGESTION_NAME}) LIKE lower(${likePrefix(q)})
+    OR ${SUGGESTION_NAME} ILIKE ${likeWordPrefix(q)}
     ${anyOrder ? sql`OR ${anyOrder}` : sql``}
   )`;
 }
@@ -1138,8 +1139,8 @@ function buildPersonNameExactCondition(q: string): SQL {
 function buildPersonNameTier(q: string): SQL {
   const anyOrder = anyOrderNameMatch(SUGGESTION_NAME, q);
   return sql`CASE
-    WHEN lower(${SUGGESTION_NAME}) LIKE lower(${q + '%'}) THEN 0
-    WHEN ${SUGGESTION_NAME} ILIKE ${'% ' + q + '%'} THEN 1
+    WHEN lower(${SUGGESTION_NAME}) LIKE lower(${likePrefix(q)}) THEN 0
+    WHEN ${SUGGESTION_NAME} ILIKE ${likeWordPrefix(q)} THEN 1
     ${anyOrder ? sql`WHEN ${anyOrder} THEN 2` : sql``}
     ELSE 3
   END`;
@@ -1848,14 +1849,14 @@ function buildSplitMatchSource(candidates: SplitCandidate[]): SQL {
     arms.push(sql`(
       SELECT bc.book_id, ${run} AS run, ${runLength} AS run_len, bc.role
       FROM book_contributors bc
-      WHERE lower(${NAME}) LIKE lower(${name + '%'})
+      WHERE lower(${NAME}) LIKE lower(${likePrefix(name)})
       LIMIT ${SPLIT_NAME_LIMIT}
     )`);
     arms.push(sql`(
       SELECT bc.book_id, ${run} AS run, ${runLength} AS run_len, bc.role
       FROM book_contributors bc
       WHERE bc.person_name IS NOT NULL
-        AND ${NAME} ILIKE ${'% ' + name + '%'}
+        AND ${NAME} ILIKE ${likeWordPrefix(name)}
       LIMIT ${SPLIT_NAME_LIMIT}
     )`);
   });
@@ -1879,7 +1880,7 @@ function buildSplitMatchSource(candidates: SplitCandidate[]): SQL {
 function buildSplitTitleHits(candidates: SplitCandidate[]): SQL {
   const branches = candidates.map((candidate, index) => {
     const tests = candidate.titleMatchTokens.map(
-      (token) => sql`(CASE WHEN ${books.title} ILIKE ${'%' + token + '%'} THEN 1 ELSE 0 END)`,
+      (token) => sql`(CASE WHEN ${books.title} ILIKE ${likeContains(token)} THEN 1 ELSE 0 END)`,
     );
     return sql`WHEN ${sql.raw(String(index))} THEN (${sql.join(tests, sql` + `)})`;
   });

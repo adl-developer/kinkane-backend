@@ -93,13 +93,18 @@ function execute(query: unknown): Promise<{ count: number }[]> {
 // Their WHERE and ORDER BY are recorded here instead — which tier served a page, and
 // whether its ordering breaks ties, are only visible in those two.
 let selectWheres: string[] = [];
+// Their parameters, in step with selectWheres
+let selectWhereParams: unknown[][] = [];
 let selectOrderBys: string[] = [];
 
 function selectChain(): unknown {
   const chain: Record<string, unknown> = {
     from: () => chain,
     where: (w: unknown) => {
-      if (w !== undefined) selectWheres.push(render(w));
+      if (w !== undefined) {
+        selectWheres.push(render(w));
+        selectWhereParams.push(params(w));
+      }
       return chain;
     },
     orderBy: (...parts: unknown[]) => {
@@ -181,6 +186,7 @@ beforeEach(() => {
   cachedCount = null;
   cacheWrites = [];
   selectWheres = [];
+  selectWhereParams = [];
   selectOrderBys = [];
   warn.mockClear();
 });
@@ -915,3 +921,20 @@ describe('the split search band', () => {
   });
 });
 
+describe('typed LIKE wildcards', () => {
+  // `%` and `_` typed into search are characters to find. Built by hand as
+  // `q + '%'`, they were wildcards: "%%%" matched every title in the catalogue.
+  // Every LIKE pattern a search sends ends in `%`, so each one carrying the
+  // query must carry it escaped.
+  it('reach every title and author pattern escaped', async () => {
+    for (const searchType of ['title', 'author']) {
+      await list({ q: 'zq%_x', searchType });
+    }
+    const patterns = [...issuedParams, ...selectWhereParams]
+      .flat()
+      .filter((p): p is string => typeof p === 'string' && p.includes('zq') && p.endsWith('%'));
+
+    expect(patterns.length, 'no LIKE pattern carried the query').toBeGreaterThan(0);
+    for (const p of patterns) expect(p).toContain('zq\\%\\_x');
+  });
+});

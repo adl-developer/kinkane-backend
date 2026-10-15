@@ -7,7 +7,7 @@ import { enrichPosts } from './community.service';
 import type { PostItem } from './community.service';
 import { getExcerptsByIsbns, pickExcerpt } from './book-excerpts.service';
 import { withRenderedMentions } from './mentions.service';
-import { escapeLike } from '../lib/escape-like';
+import { likePrefix, likeWordPrefix } from '../lib/escape-like';
 import { toFollowStatus, type FollowStatus } from './users.service';
 import type { MentionRef } from '../lib/mention-text';
 import type { LinkRef } from '../lib/link-text';
@@ -53,7 +53,7 @@ export interface SearchResult {
 
 /** A handle as a LIKE prefix — lowercased, as usernames are stored, and escaped (`_` is a username character). */
 function usernameLikePrefix(handle: string): string {
-  return escapeLike(handle.toLowerCase()) + '%';
+  return likePrefix(handle.toLowerCase());
 }
 
 /**
@@ -69,8 +69,8 @@ function buildUserSearchCondition(q: string): SQL {
   const handlePrefix = usernamePrefixOf(q);
   if (handlePrefix !== null) return sql`${users.username} LIKE ${handlePrefix}`;
 
-  const prefix = escapeLike(q) + '%';
-  const wordPrefix = '% ' + escapeLike(q) + '%';
+  const prefix = likePrefix(q);
+  const wordPrefix = likeWordPrefix(q);
   const fts = q.length >= 3
     ? sql` OR ${users.searchVector} @@ plainto_tsquery('simple', ${q})`
     : sql``;
@@ -89,8 +89,8 @@ function buildUserSearchCondition(q: string): SQL {
 function buildUserSearchOrderBy(q: string): SQL[] {
   if (usernamePrefixOf(q) !== null) return [sql`length(${users.username})`, sql`${users.username}`];
 
-  const prefix = escapeLike(q) + '%';
-  const wordPrefix = '% ' + escapeLike(q) + '%';
+  const prefix = likePrefix(q);
+  const wordPrefix = likeWordPrefix(q);
 
   return [
     sql`CASE
@@ -162,8 +162,8 @@ const titleMatch = alias(books, 'title_match');
  * The outer query then only checks membership in the two id sets.
  */
 export function buildPostSearchCondition(q: string): SQL {
-  const prefix = escapeLike(q) + '%';
-  const wordPrefix = '% ' + escapeLike(q) + '%';
+  const prefix = likePrefix(q);
+  const wordPrefix = likeWordPrefix(q);
   const words = postWordsQuery(q);
   const bookFts = q.length >= 3
     ? sql` OR ${titleMatch.searchVector} @@ plainto_tsquery('english', ${q})`
@@ -201,8 +201,8 @@ export function buildPostSearchCondition(q: string): SQL {
  * Then the newest post, with the id last so offset pages never overlap.
  */
 function buildPostSearchOrderBy(q: string): SQL[] {
-  const prefix = escapeLike(q) + '%';
-  const wordPrefix = '% ' + escapeLike(q) + '%';
+  const prefix = likePrefix(q);
+  const wordPrefix = likeWordPrefix(q);
   const words = postWordsQuery(q);
   const bodyWordsTier = words !== null ? sql`WHEN ${posts.searchVector} @@ ${words} THEN 3` : sql``;
   const tier = sql`CASE

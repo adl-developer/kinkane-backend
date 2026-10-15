@@ -16,9 +16,8 @@ Post search got the same fix with post-text search
 ## Not changed
 
 - The `@handle` username search already escaped, so it is unchanged.
-- **Book and author search in `books.service.ts` still build patterns the same
-  unescaped way.** That's a separate surface (Explore, typeahead) with its own
-  index-matching constraints, so it was left out of this change.
+- Book and author search in `books.service.ts` built patterns the same
+  unescaped way. Fixed separately: `2026-10-15-like-pattern-helpers.md`.
 - No API or response shape change.
 
 ## Verification
