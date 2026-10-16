@@ -1,16 +1,29 @@
 # Changelog
 
 
+## 2026-10-16
+
+### Bug Fixes
+
+* tell people their referral code is wrong instead of signing them up without it ([8ec1f20](https://adl.github.com/adl-developer/kinkane-backend/commit/8ec1f20987d9f961777c332f7474e24733868c84)) — [details](changelog/2026-10-16-referral-code-validation.md)
+
+
 ## 2026-10-15
 
 ### Features
 
+* community search finds posts by what people wrote in them ([f45a183](https://adl.github.com/adl-developer/kinkane-backend/commit/f45a1831050debb0f6752a589647d1794eb6a193)) — [details](changelog/2026-10-15-community-search-post-text.md)
 * unlock Plus for the App Store Founding Member products ([5fb432f](https://adl.github.com/adl-developer/kinkane-backend/commit/5fb432f94c694a69da3cf0d2696d82c54e104f89)) — [details](changelog/2026-10-15-apple-founding-member-products.md)
 * show short links on www.kinkane.app/s/ instead of the API-only /l/ path ([c185df9](https://adl.github.com/adl-developer/kinkane-backend/commit/c185df9a79d31ca45493937901fc9b794df055d9)) — [details](changelog/2026-10-15-google-sign-in-long-profile-photo.md)
 
 ### Bug Fixes
 
+* searching books or authors for % or _ no longer matches everything ([37fd8b5](https://adl.github.com/adl-developer/kinkane-backend/commit/37fd8b50fda35caa39bfc4bf398e63060e9e2a11)) — [details](changelog/2026-10-15-google-sign-in-long-profile-photo.md)
 * Google sign-in no longer fails for people with long profile photo links ([5496bc7](https://adl.github.com/adl-developer/kinkane-backend/commit/5496bc72580ae9db87d788cdc3fe6fbb3c25d5c1)) — [details](changelog/2026-10-15-google-sign-in-long-profile-photo.md)
+* stop searches for common words filling the server log ([22306b5](https://adl.github.com/adl-developer/kinkane-backend/commit/22306b57f20d331175c844e9b9281ed7b4615809)) — [details](changelog/2026-10-15-community-search-post-text.md)
+* post search keeps the old order for book-title matches ([f3566a8](https://adl.github.com/adl-developer/kinkane-backend/commit/f3566a81131e5c4d4833f3aaac5c70eeacc91b32)) — [details](changelog/2026-10-15-post-search-title-order.md)
+* post search handles phone punctuation, curly quotes and a leading dash ([d463da6](https://adl.github.com/adl-developer/kinkane-backend/commit/d463da6985eabd13bac6bdfe90f403f0e836d94b)) — [details](changelog/2026-10-15-post-search-phone-punctuation.md)
+* searching for % or _ no longer returns every person or group ([580a62b](https://adl.github.com/adl-developer/kinkane-backend/commit/580a62bb917d471dccf14eb88935d0ef4c8bbdb5)) — [details](changelog/2026-10-15-google-sign-in-long-profile-photo.md)
 * only grant App Store Founding Member status inside the offer window, and keep it honest ([7dc3052](https://adl.github.com/adl-developer/kinkane-backend/commit/7dc30520454c8009db084ce06071b5997a1e65f7)) — [details](changelog/2026-10-15-apple-founding-member-products.md)
 * make links in posts safer to block and stop them breaking mentions, edits and quoted links ([84dd6b5](https://adl.github.com/adl-developer/kinkane-backend/commit/84dd6b504148f98489ddbea6868492010660b38f)) — [details](changelog/2026-10-15-short-links-on-kinkane-domain.md)
 

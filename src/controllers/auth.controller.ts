@@ -4,13 +4,17 @@ import { authService } from '../services/auth.service';
 import { AuthenticatedRequest } from '../middleware/auth.middleware';
 import { logger } from '../lib/logger';
 import { geoService } from '../services/geo.service';
-import type { SignupContext } from '../services/auth.service';
+import { INVALID_REFERRAL_CODE_MESSAGE, type SignupContext } from '../services/auth.service';
 import { optionalUsernameInput } from '../lib/username';
 
-// Referral codes are Crockford base32 (no I/L/O/U), but accept anything of the
-// right shape and let the lookup decide — a typo'd code has to read as "no
-// referral", never as a 400 that blocks the account.
-const referralCodeSchema = z.string().trim().regex(/^[0-9A-Za-z]{6,32}$/).optional();
+// A missing key, null, "" and whitespace all mean "no referral" and sign the
+// person up. Anything else is checked by the service, which answers a wrong
+// code with 400 "Invalid referral code." so the person can fix or clear it —
+// shape and existence fail with the same message, not a field-error object.
+const referralCodeSchema = z.preprocess(
+  (v) => (v == null || (typeof v === 'string' && v.trim() === '') ? undefined : v),
+  z.string({ invalid_type_error: INVALID_REFERRAL_CODE_MESSAGE }).trim().optional(),
+);
 
 const channelSchema = z.enum(['whatsapp', 'sms', 'email', 'copy', 'link']).optional();
 
