@@ -221,6 +221,14 @@ const envSchema = z.object({
   // links, so changing this changes every existing post's links at once.
   SHORT_LINK_URL: z.string().url().optional(),
 
+  // Store listings a referral link sends people to when they don't have the app
+  // (lib/invite-landing). Android gets the Play listing with the code in the
+  // install referrer. APP_STORE_URL has no default because the App Store ID
+  // isn't known here; until it is set the invite page tells iPhone users to
+  // search the App Store instead of showing a button.
+  PLAY_STORE_URL: z.string().url().default('https://play.google.com/store/apps/details?id=com.kinkaneapp.kinkane'),
+  APP_STORE_URL: z.string().url().optional(),
+
   // Where the admin console is served. Only used to build the link in an admin
   // password-reset email, which lands on `<this>/reset-password?token=...`.
   // Defaults to `APP_URL/admin`; set it if the console lives elsewhere.
@@ -905,6 +913,8 @@ export const config = {
   },
   appUrl: env.APP_URL,
   shortLinkUrl: (env.SHORT_LINK_URL ?? `${env.APP_URL}/l`).replace(/\/+$/, ''),
+  playStoreUrl: env.PLAY_STORE_URL,
+  appStoreUrl: env.APP_STORE_URL,
   adminConsoleUrl: (env.ADMIN_CONSOLE_URL ?? `${env.APP_URL}/admin`).replace(/\/+$/, ''),
   referrals: {
     videoUrl: env.REFERRAL_VIDEO_URL,

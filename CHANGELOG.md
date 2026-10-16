@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-10-16
+
+### Bug Fixes
+
+* tell people their referral code is wrong instead of signing them up without it ([8ec1f20](https://adl.github.com/adl-developer/kinkane-backend/commit/8ec1f20987d9f961777c332f7474e24733868c84)) — [details](changelog/2026-10-16-referral-code-validation-and-store-invites.md)
+
+
 ## 2026-10-15
 
 ### Features

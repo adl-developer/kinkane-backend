@@ -36,8 +36,10 @@ const router = Router();
  * homepage rather than 404ing, so the endpoint can't be used to test which codes
  * exist.
  *
- * Query: c — optional channel tag (whatsapp | sms | email | copy)
- * Always 302 — to the invite landing page on a hit, to the homepage otherwise.
+ * Query: c — optional channel tag (whatsapp | sms | email | copy | link)
+ * A hit sends Android to the Play Store (302, code in the install referrer) and
+ * shows iPhone and computers a page with the code and store buttons (200). An
+ * unknown code is a 302 to the homepage.
  */
 router.get('/:code/:slug', redirectLimiter, wrap(referralsController.redirect));
 

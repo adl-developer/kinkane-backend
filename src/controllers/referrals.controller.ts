@@ -9,6 +9,7 @@ import { referralAnalyticsService } from '../services/referral-analytics.service
 import { geoService } from '../services/geo.service';
 import { enqueueEmail } from '../lib/email-queue';
 import { config } from '../config';
+import { detectInvitePlatform, inviteLandingPage, knownChannel, playStoreInviteUrl } from '../lib/invite-landing';
 import { logger } from '../lib/logger';
 import { parseId } from '../lib/route-helpers';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
@@ -236,6 +237,11 @@ export const referralsController = {
    * The slug is read but never used to resolve anything; it exists so the link
    * carries the referrer's name. Unknown and revoked codes redirect to the plain
    * homepage rather than 404ing — a 404 would confirm which codes exist.
+   *
+   * A known code sends Android to the Play Store with the code in the install
+   * referrer, and shows iPhone and computers a page with the code and the store
+   * buttons — there is no web sign-up from an invite (see lib/invite-landing).
+   * Phones with the app installed open it from the link and never get here.
    */
   async redirect(req: Request, res: Response): Promise<void> {
     const code = String(req.params.code ?? '');
@@ -248,7 +254,7 @@ export const referralsController = {
     }
 
     const country = await geoService.resolveFromRequest(req);
-    const clickId = await referralsService.logClick({
+    await referralsService.logClick({
       codeId: resolved.id,
       channel,
       ip: req.ip,
@@ -256,11 +262,10 @@ export const referralsController = {
       countryCode: country.code,
     });
 
-    // The code travels in the query string so the landing page can put it in
-    // the signup form, and in a cookie so it survives a user who wanders around
-    // the site before creating an account. Lax rather than Strict: the whole
-    // point is that this arrives via a link from WhatsApp or an email client,
-    // which is exactly the cross-site navigation Strict drops.
+    // Kept for anyone who then wanders onto the website: it survives 90 days.
+    // Lax rather than Strict: the whole point is that this arrives via a link
+    // from WhatsApp or an email client, which is exactly the cross-site
+    // navigation Strict drops.
     res.cookie('kk_ref', code.toUpperCase(), {
       maxAge: 90 * 24 * 60 * 60 * 1000,
       httpOnly: true,
@@ -268,12 +273,26 @@ export const referralsController = {
       secure: config.nodeEnv === 'production',
     });
 
-    const target = new URL('/invite', config.appUrl);
-    target.searchParams.set('ref', code.toUpperCase());
-    if (channel) target.searchParams.set('c', channel);
-    if (clickId) target.searchParams.set('cid', String(clickId));
+    // The answer depends on the user agent and names a code, so no cache —
+    // shared or private — may hand it to anyone else.
+    res.set('Cache-Control', 'no-store');
+    res.vary('User-Agent');
 
-    res.redirect(302, target.toString());
+    const platform = detectInvitePlatform(req.headers['user-agent']);
+    if (platform === 'android') {
+      res.redirect(302, playStoreInviteUrl(config.playStoreUrl, code.toUpperCase(), knownChannel(channel)));
+      return;
+    }
+
+    res
+      .status(200)
+      .type('html')
+      .send(inviteLandingPage({
+        code: code.toUpperCase(),
+        platform,
+        appStoreUrl: config.appStoreUrl,
+        playStoreUrl: config.playStoreUrl,
+      }));
   },
 
   /**
