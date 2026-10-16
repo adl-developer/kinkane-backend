@@ -18,15 +18,21 @@ export function escapeLike(value: string): string {
  * The catalogue mixes them — most feed titles carry `'`, a minority carry `’` — so a
  * query cannot know which one the book it wants was stored with.
  */
-const APOSTROPHE = /['’‘ʼ]/g;
+const APOSTROPHE_CHARS = `'’‘ʼ`;
+const APOSTROPHE = new RegExp(`[${APOSTROPHE_CHARS}]`, 'g');
 
 /**
- * An apostrophe right after a letter or digit — "segi’s", "o’brien", or a trailing "segi’"
- * mid-typing — becomes LIKE's single-character wildcard, so it matches whichever apostrophe
- * the title was stored with. One that opens a word, or stands alone, stays a literal `'`:
- * a bare `'` turned into `_` would match every row, the same hole escapeLike closes for `_`.
+ * An apostrophe inside a word — "segi’s", "o’brien" — becomes LIKE's single-character
+ * wildcard, so it matches whichever apostrophe the title was stored with. "Inside" means a
+ * letter, digit or combining mark on both sides; the mark covers decomposed text, where
+ * "ĩ’" arrives as "i", U+0303, "’".
+ *
+ * Any other apostrophe stays a literal `'`. One that stands alone would otherwise match
+ * every row, the hole escapeLike closes for `_`. One that ends the query ("the’", "jones’")
+ * would otherwise match any next character, so "the’" would mean "the" plus anything,
+ * which is about a third of the catalogue.
  */
-const WORD_APOSTROPHE = /(?<=[\p{L}\p{N}])['’‘ʼ]/gu;
+const WORD_APOSTROPHE = new RegExp(`(?<=[\\p{L}\\p{M}\\p{N}])[${APOSTROPHE_CHARS}](?=[\\p{L}\\p{M}\\p{N}])`, 'gu');
 
 /** escapeLike, plus apostrophe folding — see WORD_APOSTROPHE. */
 function escapeSearchText(value: string): string {
@@ -51,6 +57,9 @@ export function apostropheVariants(value: string): string[] {
  * that matches typed text with LIKE/ILIKE goes through these rather than
  * concatenating `%` itself — a hand-built `q + '%'` is how `%%%` came to match
  * every user, group, post and book.
+ *
+ * Typed text matches literally, with one exception: an apostrophe inside a word
+ * matches any apostrophe (see WORD_APOSTROPHE).
  */
 
 /** Starts with `value`. */

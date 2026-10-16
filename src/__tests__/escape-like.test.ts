@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { escapeLike, likePrefix, likeWordPrefix, likeContains, apostropheVariants } from '../lib/escape-like';
 
 // The patterns every search builds from typed text. Only the `%` each helper
-// adds is a wildcard; whatever was typed matches literally.
+// adds is a wildcard; whatever was typed matches literally, except an apostrophe
+// inside a word, which matches any apostrophe.
 
 describe('LIKE pattern helpers', () => {
   it('escapes the metacharacters, backslash first so it is not doubled twice', () => {
@@ -32,8 +33,13 @@ describe('apostrophes in search patterns', () => {
     expect(likeContains('Thiongʼo')).toBe('%Thiong_o%');
   });
 
-  it('wildcards a trailing apostrophe typed mid-word', () => {
-    expect(likePrefix('baba segi’')).toBe('baba segi_%');
+  it('keeps a trailing apostrophe literal, so "the’" does not mean "the" plus any character', () => {
+    expect(likePrefix('baba segi’')).toBe("baba segi'%");
+    expect(likePrefix('the’')).toBe("the'%");
+  });
+
+  it('wildcards an apostrophe after a combining mark (decomposed text)', () => {
+    expect(likePrefix('Ngi\u0303\u2019s')).toBe('Ngi\u0303_s%');
   });
 
   it('keeps an apostrophe that opens a word, or stands alone, literal — never match-everything', () => {

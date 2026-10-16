@@ -73,7 +73,7 @@ function buildUserSearchCondition(q: string): SQL {
   const prefix = likePrefix(q);
   const wordPrefix = likeWordPrefix(q);
   const fts = q.length >= 3
-    ? sql` OR ${users.searchVector} @@ plainto_tsquery('simple', ${q})`
+    ? sql` OR ${users.searchVector} @@ ${plainTsQuery('simple', q)}`
     : sql``;
 
   // Usernames match by prefix alongside the name, so "amareads" finds
@@ -101,7 +101,7 @@ function buildUserSearchOrderBy(q: string): SQL[] {
       ELSE 3
     END`,
     sql`word_similarity(${q}, ${users.name}) DESC`,
-    sql`ts_rank(${users.searchVector}, plainto_tsquery('simple', ${q})) DESC`,
+    sql`ts_rank(${users.searchVector}, ${plainTsQuery('simple', q)}) DESC`,
   ];
 }
 

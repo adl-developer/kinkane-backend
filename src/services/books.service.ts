@@ -1971,7 +1971,8 @@ async function resolveSplitBandIds(
     currency: _currency,
     ...keyed
   } = opts;
-  const cacheKey = `books:split:v1:${createHash('sha256')
+  // v2: an apostrophe inside a word matches either ' or ’ — v1 entries miss such titles.
+  const cacheKey = `books:split:v2:${createHash('sha256')
     .update(JSON.stringify(keyed))
     .digest('hex')}`;
 
@@ -2466,7 +2467,9 @@ export const booksService = {
     // v11: every row now carries `mainGenre`; a v10 page has no such field at all.
     // v12: a deduped search shows one edition per work again instead of every edition
     // grouped — a v11 page lists the editions this version hides.
-    const rowsCacheKey = `books:list:v12:${createHash('sha256').update(JSON.stringify(opts)).digest('hex')}`;
+    // v13: an apostrophe inside a word matches either ' or ’ — a v12 page for "segi’s"
+    // holds the unrelated fuzzy matches that query used to fall through to.
+    const rowsCacheKey = `books:list:v13:${createHash('sha256').update(JSON.stringify(opts)).digest('hex')}`;
     // Keyed only on the fields that affect the count (not limit/offset/sort) so every
     // page of the same filter — and every sort direction — shares one cached total.
     //
@@ -2511,7 +2514,9 @@ export const booksService = {
     // v7: and back — a shoppable total counts only the sellable books again, now that
     // `shoppable=true` excludes the rest. A v6 entry would report the whole catalogue
     // against a listing that ends well short of it.
-    const countCacheKey = `books:count:v7:${createHash('sha256')
+    // v8: an apostrophe inside a word matches either ' or ’, so a v7 total for such a
+    // query undercounts — usually to zero.
+    const countCacheKey = `books:count:v8:${createHash('sha256')
       .update(JSON.stringify(countFilters))
       .digest('hex')}`;
 
@@ -3279,7 +3284,8 @@ export const booksService = {
     // v5: dedupe now lists every edition grouped by work, hardback first, instead of one per title.
     // v6: dedupe shows one edition per work (hardback first) again.
     // v7: only sellable, non-removed books — v6 entries can hold either.
-    const cacheKey = `suggestions:v7:${type}:${dedupe}:${createHash('sha256').update(`${q}:${limit}`).digest('hex')}`;
+    // v8: an apostrophe inside a word matches either ' or ’ — v7 entries miss such titles.
+    const cacheKey = `suggestions:v8:${type}:${dedupe}:${createHash('sha256').update(`${q}:${limit}`).digest('hex')}`;
     const cached = await redis.get(cacheKey);
     if (cached) return JSON.parse(cached) as SuggestionItem[];
 
@@ -3568,7 +3574,8 @@ export const booksService = {
   ): Promise<{ authors: AuthorSuggestion[]; hasMore: boolean }> {
     const q = canonicalNameQuery(rawQ);
     // v3: every role, and paged. A v2 entry holds an authors-only first page.
-    const cacheKey = `author-suggestions:v3:${createHash('sha256').update(`${q}:${limit}:${offset}`).digest('hex')}`;
+    // v4: an apostrophe inside a word matches either ' or ’ ("O’Brien" / "O'Brien").
+    const cacheKey = `author-suggestions:v4:${createHash('sha256').update(`${q}:${limit}:${offset}`).digest('hex')}`;
     const cached = await redis.get(cacheKey);
     if (cached) return JSON.parse(cached) as { authors: AuthorSuggestion[]; hasMore: boolean };
 

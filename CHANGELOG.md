@@ -5,6 +5,7 @@
 
 ### Bug Fixes
 
+* search finds books with an apostrophe whichever apostrophe you type ([a96af9b](https://adl.github.com/adl-developer/kinkane-backend/commit/a96af9bef1671cbd431c809f3fc8dd5955991c4b)) — [details](changelog/2026-10-16-search-curly-apostrophes.md)
 * tell people their referral code is wrong instead of signing them up without it ([d106254](https://adl.github.com/adl-developer/kinkane-backend/commit/d106254dbfcb651a3c4114e576910ca0462992b4)) — [details](changelog/2026-10-16-referral-code-validation.md)
 
 

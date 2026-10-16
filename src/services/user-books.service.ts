@@ -287,6 +287,7 @@ export const userBooksService = {
 
     if (opts.q) {
       // C8 fix: escape metacharacters so _ and % in the query are treated as literals
+      // (an apostrophe inside a word still matches either kind — see likeContains)
       conditions.push(ilike(books.title, likeContains(opts.q)));
     }
 

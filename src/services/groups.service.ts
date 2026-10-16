@@ -18,6 +18,7 @@ import type { MentionRef } from '../lib/mention-text';
 import type { LinkRef } from '../lib/link-text';
 import { TEXT_LIMITS } from '../lib/text-limits';
 import { likePrefix, likeWordPrefix } from '../lib/escape-like';
+import { plainTsQuery } from '../lib/tsquery';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -261,7 +262,7 @@ export function buildGroupSearchCondition(q: string): SQL {
   const prefix = likePrefix(q);
   const wordPrefix = likeWordPrefix(q);
   const fts = q.length >= 3
-    ? sql` OR ${groups.searchVector} @@ plainto_tsquery('simple', ${q})`
+    ? sql` OR ${groups.searchVector} @@ ${plainTsQuery('simple', q)}`
     : sql``;
 
   return sql`(
@@ -291,7 +292,7 @@ export function buildGroupSearchOrderBy(q: string): SQL[] {
       ELSE 3
     END`,
     sql`word_similarity(${q}, ${groups.name}) DESC`,
-    sql`ts_rank(${groups.searchVector}, plainto_tsquery('simple', ${q})) DESC`,
+    sql`ts_rank(${groups.searchVector}, ${plainTsQuery('simple', q)}) DESC`,
   ];
 }
 
