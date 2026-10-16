@@ -15,11 +15,16 @@ const passwordSchema = {
 
 const referralCodeSchema = {
   type: 'string',
-  pattern: '^[0-9A-Za-z]{6,32}$',
+  nullable: true,
   description:
-    'The code from the invite link the user arrived through, if any. An unknown code is treated as "no referral" rather than failing signup. Falls back to whatever was parked on the guest session.',
+    'The referral code in the signup form: typed by the user, or prefilled by the app from the store install referrer. Omitted, `null`, an empty string or spaces all mean "no referral" and the account is created. Anything else must be an active code (6–32 letters/digits, case-insensitive), or the request fails with 400 `INVALID_REFERRAL_CODE` and no account is created — show the message under the field so they can fix or clear it. Only checked when this request creates an account. When omitted, falls back to whatever was parked on the guest session; a bad parked code is ignored, never an error.',
   example: 'K7M2QX',
 };
+
+const invalidReferralCode = json(
+  'Validation failed, or (`code: INVALID_REFERRAL_CODE`) the referral code does not exist or is no longer active. No account is created.',
+  ref('Error'),
+  { error: 'Invalid referral code.', code: 'INVALID_REFERRAL_CODE' });
 
 const referralChannelSchema = {
   type: 'string',
@@ -85,7 +90,7 @@ export const authPaths = {
       }, ['name', 'email', 'password'])),
       responses: {
         201: json('Account created and signed in.', ref('AuthSuccess')),
-        400: resp('ValidationError'),
+        400: invalidReferralCode,
         409: json(
           'That email is already registered, or (`code: USERNAME_TAKEN`) the chosen username is taken. Tell them apart by `code`. No account is created either way.',
           ref('Error'),
@@ -159,7 +164,7 @@ export const authPaths = {
       responses: {
         200: json('Returning user, or an existing account newly linked to this provider.', ref('AuthSuccess')),
         201: json('New account created, trial started.', ref('AuthSuccess')),
-        400: resp('ValidationError'),
+        400: invalidReferralCode,
         401: json('The Firebase ID token is invalid or expired.', ref('Error'),
           { error: 'Invalid authentication token' }),
         409: json('New account only: the chosen username is taken (`code: USERNAME_TAKEN`). No account is created.', ref('Error'),

@@ -406,16 +406,40 @@ export interface SignupContext {
   username?: string;
 }
 
+export const INVALID_REFERRAL_CODE_MESSAGE = 'Invalid referral code.';
+
+// Codes are Crockford base32 (no I/L/O/U), but the lookup is the real test; this
+// only stops obvious junk from reaching the database.
+const REFERRAL_CODE_SHAPE = /^[0-9A-Za-z]{6,32}$/;
+
 /**
  * Resolves which referral code applies: an explicit one from the request wins,
  * otherwise whatever was parked on the guest session when the user followed an
  * invite link before creating an account.
+ *
+ * Only the explicit code is checked. It is in the signup form — typed, or
+ * prefilled by the app from the store's install referrer — so the person can
+ * see it and fix or clear it, and a wrong one is a 400 rather than a referral
+ * that silently scores nothing. A parked code is never shown to them, so a bad
+ * one still reads as "no referral" (attributeSignup drops it) instead of
+ * blocking an account over someone else's broken link.
+ *
+ * Throws before anything is written. A code deactivated between this check and
+ * attribution is dropped the same way, and the signup still succeeds.
  */
-async function resolveReferralCode(
+export async function resolveReferralCode(
   explicit: string | undefined,
   guestSessionId: string | undefined,
 ): Promise<string | undefined> {
-  if (explicit) return explicit;
+  if (explicit) {
+    if (!REFERRAL_CODE_SHAPE.test(explicit) || !(await referralsService.resolveCode(explicit))) {
+      throw Object.assign(new Error(INVALID_REFERRAL_CODE_MESSAGE), {
+        statusCode: 400,
+        code: 'INVALID_REFERRAL_CODE',
+      });
+    }
+    return explicit;
+  }
   if (!guestSessionId) return undefined;
 
   const [session] = await db
