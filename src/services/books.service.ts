@@ -73,6 +73,7 @@ import { getProductFormLabel } from '../lib/product-form';
 import { addDisplayGenre, genreDisplayName, genreFamilySlug, toDisplayGenres, type GenreRef } from '../lib/genre-display';
 import { genresService } from './genres.service';
 import { likePrefix, likeWordPrefix, likeContains } from '../lib/escape-like';
+import { plainTsQuery } from '../lib/tsquery';
 
 const BOOK_DETAIL_TTL    = 60 * 60;    // 1 hour
 const LIST_TTL           = 5 * 60;     // 5 minutes
@@ -745,7 +746,7 @@ function buildSearchCondition(q: string): SQL {
   const wordPrefix = likeWordPrefix(q);
   // Tier 3 (FTS on description/subtitle) only fires for complete words
   const fts = q.length >= 3
-    ? sql` OR ${books.searchVector} @@ plainto_tsquery('english', ${q})`
+    ? sql` OR ${books.searchVector} @@ ${plainTsQuery('english', q)}`
     : sql``;
 
   // Uses the <% operator, not word_similarity() as a plain function call —
@@ -777,7 +778,7 @@ function buildSearchRankOrderBy(q: string, title: SQL, searchVector: SQL): SQL[]
       ELSE 3
     END`,
     sql`word_similarity(${q}, ${title}) DESC`,
-    sql`ts_rank(${searchVector}, plainto_tsquery('english', ${q})) DESC`,
+    sql`ts_rank(${searchVector}, ${plainTsQuery('english', q)}) DESC`,
   ];
 }
 
@@ -932,7 +933,7 @@ export function buildAuthorMatchSource(rawQ: string, tier: 'cheap' | 'broad'): S
           ${q} <% ${NAME}
           ${
             q.length >= 3
-              ? sql` OR to_tsvector('simple', ${NAME}) @@ plainto_tsquery('simple', ${q})`
+              ? sql` OR to_tsvector('simple', ${NAME}) @@ ${plainTsQuery('simple', q)}`
               : sql``
           }
         )
