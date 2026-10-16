@@ -144,7 +144,10 @@ describe('buildAuthorMatchCondition', () => {
   it('parameterises the query rather than interpolating it', () => {
     const { sql, params } = dialect.sqlToQuery(buildAuthorMatchCondition("o'brien", 'broad'));
     expect(sql).not.toContain("o'brien");
-    expect(params).toContain("o'brien%");
+    // The raw query still goes in as a parameter (for the fuzzy arm); the prefix pattern
+    // carries the apostrophe as a wildcard so O’Brien and O'Brien both match.
+    expect(params).toContain("o'brien");
+    expect(params).toContain('o_brien%');
   });
 });
 

@@ -18,7 +18,7 @@ import { redis } from '../lib/redis';
 import { bustUserExclusions } from '../lib/exclusions';
 import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-excerpts.service';
 import { mentionsService, renderTexts } from './mentions.service';
-import { escapeLike } from '../lib/escape-like';
+import { likeContains } from '../lib/escape-like';
 import type { MentionRef } from '../lib/mention-text';
 import type { LinkRef } from '../lib/link-text';
 import { interactionsService, type InteractionType } from './interactions.service';
@@ -287,7 +287,8 @@ export const userBooksService = {
 
     if (opts.q) {
       // C8 fix: escape metacharacters so _ and % in the query are treated as literals
-      conditions.push(ilike(books.title, `%${escapeLike(opts.q)}%`));
+      // (an apostrophe inside a word still matches either kind — see likeContains)
+      conditions.push(ilike(books.title, likeContains(opts.q)));
     }
 
     const where = and(...conditions);

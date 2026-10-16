@@ -8,6 +8,7 @@ import type { PostItem } from './community.service';
 import { getExcerptsByIsbns, pickExcerpt } from './book-excerpts.service';
 import { withRenderedMentions } from './mentions.service';
 import { likePrefix, likeWordPrefix } from '../lib/escape-like';
+import { plainTsQuery } from '../lib/tsquery';
 import { toFollowStatus, type FollowStatus } from './users.service';
 import type { MentionRef } from '../lib/mention-text';
 import type { LinkRef } from '../lib/link-text';
@@ -72,7 +73,7 @@ function buildUserSearchCondition(q: string): SQL {
   const prefix = likePrefix(q);
   const wordPrefix = likeWordPrefix(q);
   const fts = q.length >= 3
-    ? sql` OR ${users.searchVector} @@ plainto_tsquery('simple', ${q})`
+    ? sql` OR ${users.searchVector} @@ ${plainTsQuery('simple', q)}`
     : sql``;
 
   // Usernames match by prefix alongside the name, so "amareads" finds
@@ -100,7 +101,7 @@ function buildUserSearchOrderBy(q: string): SQL[] {
       ELSE 3
     END`,
     sql`word_similarity(${q}, ${users.name}) DESC`,
-    sql`ts_rank(${users.searchVector}, plainto_tsquery('simple', ${q})) DESC`,
+    sql`ts_rank(${users.searchVector}, ${plainTsQuery('simple', q)}) DESC`,
   ];
 }
 
@@ -166,7 +167,7 @@ export function buildPostSearchCondition(q: string): SQL {
   const wordPrefix = likeWordPrefix(q);
   const words = postWordsQuery(q);
   const bookFts = q.length >= 3
-    ? sql` OR ${titleMatch.searchVector} @@ plainto_tsquery('english', ${q})`
+    ? sql` OR ${titleMatch.searchVector} @@ ${plainTsQuery('english', q)}`
     : sql``;
   const textWords = words !== null ? sql` OR ${textMatch.searchVector} @@ ${words}` : sql``;
 
@@ -221,7 +222,7 @@ function buildPostSearchOrderBy(q: string): SQL[] {
   return [
     tier,
     sql`${withinTier} DESC`,
-    sql`ts_rank(${books.searchVector}, plainto_tsquery('english', ${q})) DESC`,
+    sql`ts_rank(${books.searchVector}, ${plainTsQuery('english', q)}) DESC`,
     sql`${posts.createdAt} DESC`,
     sql`${posts.id} DESC`,
   ];
