@@ -184,6 +184,21 @@ export const contactLimiter = rateLimit({
 });
 
 /**
+ * "Request Restock". Public, and every request lands in the admin list and the
+ * bell, so without a cap a script could bury both. Twenty an hour per IP is far
+ * above what a real shopper does, and the client wanted no limit on real
+ * customers at all; this is only a brake on bots.
+ */
+export const restockRequestLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: json429,
+  store: new RedisStore({ prefix: 'rl:restock-request:', sendCommand }),
+});
+
+/**
  * App Store Server Notifications. Unauthenticated, so bounded per IP. Apple
  * sends from a handful of addresses, and even a large subscriber base renews in
  * the low hundreds a minute — this is a ceiling against a script, not a

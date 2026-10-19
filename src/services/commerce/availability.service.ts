@@ -420,6 +420,22 @@ export const availabilityService = {
     return map;
   },
 
+  /**
+   * Whether this ISBN may not be sold to a customer in `country`, by the same
+   * rules add-to-cart applies.
+   *
+   * For the restock button, which needs the answer for books that are out of
+   * stock — check() stops at out_of_stock before it ever looks at rights, so it
+   * cannot say.
+   */
+  async isRestrictedIn(isbn13: string, country: string): Promise<boolean> {
+    const rows = await db
+      .select({ flag: gardnersMarketRestrictions.flag, regionCode: gardnersMarketRestrictions.regionCode })
+      .from(gardnersMarketRestrictions)
+      .where(eq(gardnersMarketRestrictions.isbn13, isbn13));
+    return isRestricted(rows, normalizeCountry(country) ?? '', isbn13);
+  },
+
   /** Single-book convenience wrapper for add-to-cart. */
   async checkOne(bookId: number, destinationCountry: string): Promise<BuyableBook | UnbuyableReason> {
     const { buyable, rejected } = await this.check([bookId], destinationCountry);

@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { booksController } from '../controllers/books.controller';
 import { optionalAuth, requireAuth } from '../middleware/auth.middleware';
 import { wrapHttp } from '../lib/route-helpers';
+import { restockRequestLimiter } from '../middleware/rate-limit.middleware';
+import { restockRequestsController } from '../controllers/restock-requests.controller';
 
 const router = Router();
 
@@ -154,5 +156,26 @@ router.get('/:id/similar', optionalAuth, booksController.similar);
  * Requires auth: the pin and `isMine` are the point of this endpoint.
  */
 router.get('/:id/reviews', requireAuth, wrapHttp(booksController.reviews));
+
+/**
+ * POST /books/:id/restock-requests
+ *
+ * "Request Restock" on an out-of-stock edition. Public: signed in or not, the
+ * web shop and the app both call it.
+ *
+ * Body: { name?, email?, website? } — all optional. A signed-in customer (not a
+ * web-shop guest account) can send an empty body and is filed under their
+ * account's name and email. `website` is a honeypot, as on the contact form.
+ *
+ * Returns 201: { requested: true }
+ * Errors: 400 validation | 404 BOOK_NOT_FOUND | 409 IN_STOCK, NOT_FOR_SALE,
+ * MARKET_RESTRICTED | 429 rate limited (20 an hour per IP)
+ */
+router.post(
+  '/:id/restock-requests',
+  restockRequestLimiter,
+  optionalAuth,
+  wrapHttp(restockRequestsController.submit),
+);
 
 export default router;

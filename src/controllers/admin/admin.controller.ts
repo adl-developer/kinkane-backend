@@ -10,6 +10,7 @@ import { adminSettingsService, BANNER_SLOTS } from '../../services/admin/setting
 import { adminNotificationsService } from '../../services/admin/notifications.service';
 import { adminShippingMarginService } from '../../services/admin/shipping-margin.service';
 import { adminReferralsService } from '../../services/admin/referrals.service';
+import { adminRestockRequestsService } from '../../services/admin/restock-requests.service';
 import { csvDocument } from '../../lib/csv';
 import { formatMinor } from '../../lib/money';
 import { logger } from '../../lib/logger';
@@ -74,6 +75,18 @@ const reportsQuerySchema = pageSchema.extend({
   // `reportedUser` attached.
   targetType: z.enum(['user', 'group']).optional(),
 });
+
+const restockQuerySchema = pageSchema.extend({
+  // The design's tabs: All (no status), Pending, Fulfilled.
+  status: z.enum(['all', 'pending', 'fulfilled']).default('all')
+    .transform((v) => (v === 'all' ? undefined : v)),
+  q: z.string().trim().min(1).max(200).optional(),
+});
+
+function positiveId(raw: string): number | null {
+  const id = Number(raw);
+  return Number.isInteger(id) && id > 0 ? id : null;
+}
 
 const blacklistSchema = z.object({
   reason: z.string().trim().max(500).optional(),
@@ -360,6 +373,73 @@ export const adminController = {
     }
     const admin = (req as AdminRequest).admin;
     res.status(200).json(await adminReportsService.blacklistAndResolve(id, admin.id));
+  },
+
+  /** GET /admin/console/restock-requests */
+  async restockRequests(req: Request, res: Response): Promise<void> {
+    const parsed = restockQuerySchema.safeParse(req.query);
+    if (!parsed.success) return badRequest(res, parsed.error);
+    res.status(200).json(await adminRestockRequestsService.list(parsed.data));
+  },
+
+  /** GET /admin/console/restock-requests/export */
+  async restockRequestsExport(req: Request, res: Response): Promise<void> {
+    const parsed = restockQuerySchema.safeParse(req.query);
+    if (!parsed.success) return badRequest(res, parsed.error);
+
+    // The current tab and search, as with every other export here.
+    const result = await adminRestockRequestsService.exportRows(parsed.data, EXPORT_ROW_CAP);
+
+    const csv = csvDocument(
+      ['Reference', 'Requested', 'Title', 'Author', 'Format', 'ISBN', 'Customer', 'Email', 'Signed in', 'Status', 'Fulfilled'],
+      result.rows.map((r) => [
+        r.reference ?? '',
+        r.requestedAt.toISOString(),
+        r.title,
+        r.author ?? '',
+        r.format ?? '',
+        r.isbn13,
+        r.name ?? 'Anonymous',
+        r.email ?? '',
+        r.userId !== null ? 'Yes' : 'No',
+        r.status === 'fulfilled' ? 'Fulfilled' : 'Pending',
+        r.fulfilledAt?.toISOString() ?? '',
+      ]),
+    );
+
+    sendCsv(res, 'restock-requests', result.rows.length, result.total, csv);
+  },
+
+  /** POST /admin/console/restock-requests/:id/fulfil */
+  async fulfilRestockRequest(req: Request, res: Response): Promise<void> {
+    const id = positiveId(req.params.id);
+    if (id === null) {
+      res.status(400).json({ error: 'Invalid restock request id' });
+      return;
+    }
+    const admin = (req as AdminRequest).admin;
+    res.status(200).json(await adminRestockRequestsService.fulfil(id, admin.id));
+  },
+
+  /** POST /admin/console/restock-requests/:id/reopen */
+  async reopenRestockRequest(req: Request, res: Response): Promise<void> {
+    const id = positiveId(req.params.id);
+    if (id === null) {
+      res.status(400).json({ error: 'Invalid restock request id' });
+      return;
+    }
+    res.status(200).json(await adminRestockRequestsService.reopen(id));
+  },
+
+  /** POST /admin/console/restock-requests/books/:bookId/fulfil */
+  async fulfilRestockRequestsForBook(req: Request, res: Response): Promise<void> {
+    const bookId = positiveId(req.params.bookId);
+    if (bookId === null) {
+      res.status(400).json({ error: 'Invalid book id' });
+      return;
+    }
+    const admin = (req as AdminRequest).admin;
+    res.status(200).json(await adminRestockRequestsService.fulfilAllForBook(bookId, admin.id));
   },
 
   /** GET /admin/settings/banners */

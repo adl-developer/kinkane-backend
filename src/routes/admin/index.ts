@@ -84,6 +84,17 @@ router.post('/reports/:id/blacklist', wrapHttp(adminController.blacklistFromRepo
 router.get('/referrals/analytics', wrapHttp(adminController.referralAnalytics));
 router.get('/referrals/travellers', wrapHttp(adminController.referralTravellers));
 
+// ── Restock requests ──────────────────────────────────────────────────────────
+// "Request Restock" presses from the shop. Marking one fulfilled changes nothing
+// but its status: the admin arranges the restock and contacts the customer
+// themselves.
+router.get('/restock-requests', wrapHttp(adminController.restockRequests));
+router.get('/restock-requests/export', wrapHttp(adminController.restockRequestsExport));
+router.post('/restock-requests/:id/fulfil', wrapHttp(adminController.fulfilRestockRequest));
+router.post('/restock-requests/:id/reopen', wrapHttp(adminController.reopenRestockRequest));
+// "Fulfil all" on a card: every pending request for one edition.
+router.post('/restock-requests/books/:bookId/fulfil', wrapHttp(adminController.fulfilRestockRequestsForBook));
+
 // ── Settings ──────────────────────────────────────────────────────────────────
 router.get('/settings/banners', wrapHttp(adminController.banners));
 router.put('/settings/banners', wrapHttp(adminController.updateBanners));

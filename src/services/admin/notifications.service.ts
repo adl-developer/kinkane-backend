@@ -3,7 +3,12 @@ import { db } from '../../db';
 import { adminNotifications } from '../../db/schema';
 import { logger } from '../../lib/logger';
 
-type AdminNotificationType = 'report_filed' | 'order_received' | 'customer_registered' | 'order_delivered';
+type AdminNotificationType =
+  | 'report_filed'
+  | 'order_received'
+  | 'customer_registered'
+  | 'order_delivered'
+  | 'restock_requested';
 
 export const adminNotificationsService = {
   /**

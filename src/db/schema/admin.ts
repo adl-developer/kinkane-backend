@@ -93,12 +93,13 @@ export const announcementBanners = pgTable('announcement_banners', {
 
 export type AnnouncementBanner = typeof announcementBanners.$inferSelect;
 
-/** The four events the admin bell reports. */
+/** The events the admin bell reports. */
 export const adminNotificationTypeEnum = pgEnum('admin_notification_type', [
   'report_filed',
   'order_received',
   'customer_registered',
   'order_delivered',
+  'restock_requested',
 ]);
 
 /**
