@@ -955,7 +955,7 @@ const commerceSchemas = {
       id: { type: 'integer', example: 12 },
       type: {
         type: 'string',
-        enum: ['report_filed', 'order_received', 'customer_registered', 'order_delivered'],
+        enum: ['report_filed', 'order_received', 'customer_registered', 'order_delivered', 'restock_requested'],
         description: 'order_delivered never fires yet — nothing marks an order delivered until there is a courier signal.',
         example: 'order_received',
       },

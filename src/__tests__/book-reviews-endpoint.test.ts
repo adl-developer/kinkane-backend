@@ -28,6 +28,11 @@ vi.mock('../services/commerce/pricing', () => ({}));
 vi.mock('../services/commerce/gardners-regions', () => ({}));
 vi.mock('../lib/money', () => ({}));
 vi.mock('../lib/logger', () => ({ logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } }));
+// The restock route's limiter opens a Redis store at import.
+vi.mock('../middleware/rate-limit.middleware', () => ({
+  restockRequestLimiter: (_req: unknown, _res: unknown, next: () => void) => next(),
+}));
+vi.mock('../controllers/restock-requests.controller', () => ({ restockRequestsController: {} }));
 
 import booksRoutes from '../routes/books.routes';
 

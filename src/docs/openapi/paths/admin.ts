@@ -215,12 +215,13 @@ export const adminPaths = {
     get: {
       tags: [TAG],
       summary: 'Sidebar badge counts',
-      description: 'The three numbers the console chrome shows: orders awaiting fulfilment, reports awaiting a decision, and unread notifications. One call rather than one per badge.',
+      description: 'The numbers the console chrome shows: orders awaiting fulfilment, reports awaiting a decision, pending restock requests, and unread notifications. One call rather than one per badge.',
       responses: {
         200: json('The counts.', object({
           orders: { type: 'integer', example: 1 },
           reports: { type: 'integer', example: 3 },
           unreadNotifications: { type: 'integer', example: 3 },
+          restockRequests: { type: 'integer', example: 5, description: 'Pending restock requests.' },
         })),
         ...adminErrors,
       },
@@ -611,6 +612,143 @@ export const adminPaths = {
         })),
         400: json('Invalid report id.', ref('ValidationError')),
         404: resp('NotFound'),
+        ...adminErrors,
+      },
+    },
+  },
+
+  '/admin/console/restock-requests': {
+    get: {
+      tags: [TAG],
+      summary: 'Restock requests, one card per edition',
+      description: [
+        'The Restock Requests screen. Each card is one **edition** (ISBN): a paperback and a hardback of the same title are separate cards, because restocking at Gardners is per ISBN. A card lists its requests, newest first.',
+        '',
+        '**Paged by card, not by request**, so one book’s requests are never split across two pages. Cards are ordered by their newest matching request.',
+        '',
+        '**What the filter does.** `status` and `q` decide which requests appear, and a card appears when it has at least one. On the Fulfilled tab a card shows, and counts, only its fulfilled requests.',
+        '',
+        '**`counts` follows the search but not the tab**, so "Pending (5)" still says 5 while Fulfilled is open. Like the design, it counts requests, not books. `totalRequests` is the "6 requests" beside the tabs: the requests matching both tab and search.',
+        '',
+        'A request with no name is shown as *Anonymous*, and one with no email as *No contact details provided*. `anonymous` is true when there is no name.',
+        '',
+        'Marking a request fulfilled changes nothing but its status. The admin arranges the restock with Gardners and contacts the customer themselves.',
+      ].join('\n'),
+      parameters: [
+        param('status', 'query', { type: 'string', enum: ['all', 'pending', 'fulfilled'], default: 'all' }, 'The tab.'),
+        param('q', 'query', { type: 'string', maxLength: 200 }, 'Matches title, author, ISBN, and the customer’s name or email. `%` and `_` match literally.'),
+        param('limit', 'query', { type: 'integer', minimum: 1, maximum: 100, default: 20 }, 'Cards per page.'),
+        param('offset', 'query', { type: 'integer', minimum: 0, default: 0 }, 'Cards to skip.'),
+      ],
+      responses: {
+        200: json('The cards.', object({
+          cards: arrayOf(object({
+            book: object({
+              id: { type: 'integer', example: 812 },
+              title: { type: 'string', example: 'Wandering Stars' },
+              author: { type: 'string', nullable: true, example: 'Tommy Orange' },
+              isbn13: { type: 'string', nullable: true, example: '9780593318256' },
+              coverUrl: { type: 'string', nullable: true, example: 'https://res.cloudinary.com/…/cover.jpg' },
+              format: { type: 'string', nullable: true, example: 'Paperback', description: '`Paperback`, `Hardcover`, or the full ONIX label for anything else.' },
+            }),
+            requestCount: { type: 'integer', example: 1, description: 'Requests on this card in the current filter: the "1 request" label.' },
+            pendingCount: { type: 'integer', example: 1, description: 'Of those, how many are pending. Use it to show or hide "Fulfil all".' },
+            requests: arrayOf(object({
+              id: { type: 'integer', example: 1 },
+              reference: { type: 'string', example: 'RR001' },
+              name: { type: 'string', nullable: true, example: 'Amara Diallo' },
+              email: { type: 'string', nullable: true, example: 'amara.diallo@email.com' },
+              anonymous: { type: 'boolean', example: false },
+              userId: { type: 'integer', nullable: true, example: 4412, description: 'Set when the customer was signed in.' },
+              status: { type: 'string', enum: ['pending', 'fulfilled'], example: 'pending' },
+              requestedAt: { type: 'string', format: 'date-time' },
+              fulfilledAt: { type: 'string', format: 'date-time', nullable: true },
+            })),
+          })),
+          totalRequests: { type: 'integer', example: 6 },
+          totalCards: { type: 'integer', example: 6 },
+          counts: object({
+            total: { type: 'integer', example: 6 },
+            pending: { type: 'integer', example: 5 },
+            fulfilled: { type: 'integer', example: 1 },
+          }),
+        })),
+        400: json('Validation failed.', ref('ValidationError')),
+        ...adminErrors,
+      },
+    },
+  },
+
+  '/admin/console/restock-requests/export': {
+    get: {
+      tags: [TAG],
+      summary: 'Export restock requests as CSV',
+      description: 'One row per request in **the current tab and search**, newest first. Capped at 5,000 rows, with the same truncation headers and filename as the other exports. Columns: Reference, Requested, Title, Author, Format, ISBN, Customer, Email, Signed in, Status, Fulfilled.',
+      parameters: [
+        param('status', 'query', { type: 'string', enum: ['all', 'pending', 'fulfilled'], default: 'all' }, 'Same tab as the listing.'),
+        param('q', 'query', { type: 'string', maxLength: 200 }, 'Same search as the listing.'),
+      ],
+      responses: {
+        200: {
+          description: 'A CSV attachment.',
+          content: { 'text/csv': { schema: { type: 'string', format: 'binary' } } },
+        },
+        400: json('Validation failed.', ref('ValidationError')),
+        ...adminErrors,
+      },
+    },
+  },
+
+  '/admin/console/restock-requests/{id}/fulfil': {
+    post: {
+      tags: [TAG],
+      summary: 'Mark one restock request fulfilled',
+      description: 'The "Mark fulfilled" button on one person’s row. Records who and when. **Idempotent:** fulfilling a fulfilled request changes nothing, so a double click does not rewrite who dealt with it.',
+      parameters: [param('id', 'path', { type: 'integer' }, 'Restock request id.', { required: true })],
+      responses: {
+        200: json('Fulfilled.', object({
+          id: { type: 'integer', example: 1 },
+          status: { type: 'string', example: 'fulfilled' },
+          fulfilledAt: { type: 'string', format: 'date-time' },
+        })),
+        400: json('Invalid restock request id.', ref('ValidationError')),
+        404: resp('NotFound'),
+        ...adminErrors,
+      },
+    },
+  },
+
+  '/admin/console/restock-requests/{id}/reopen': {
+    post: {
+      tags: [TAG],
+      summary: 'Undo: move a restock request back to pending',
+      description: 'For a request marked fulfilled by mistake. Clears who fulfilled it and when.',
+      parameters: [param('id', 'path', { type: 'integer' }, 'Restock request id.', { required: true })],
+      responses: {
+        200: json('Pending again.', object({
+          id: { type: 'integer', example: 1 },
+          status: { type: 'string', example: 'pending' },
+          fulfilledAt: { type: 'string', nullable: true, example: null },
+        })),
+        400: json('Invalid restock request id.', ref('ValidationError')),
+        404: resp('NotFound'),
+        ...adminErrors,
+      },
+    },
+  },
+
+  '/admin/console/restock-requests/books/{bookId}/fulfil': {
+    post: {
+      tags: [TAG],
+      summary: 'Fulfil every pending request on a card',
+      description: '"Fulfil all" on one edition’s card: one restock at Gardners answers everyone who asked. Returns the ids it changed, so a mistake can be undone one by one with `reopen`. A card with nothing pending returns an empty list.',
+      parameters: [param('bookId', 'path', { type: 'integer' }, 'The card’s book id (`book.id`).', { required: true })],
+      responses: {
+        200: json('Fulfilled.', object({
+          bookId: { type: 'integer', example: 812 },
+          fulfilledIds: arrayOf({ type: 'integer' }, 'The requests this marked fulfilled.'),
+        })),
+        400: json('Invalid book id.', ref('ValidationError')),
         ...adminErrors,
       },
     },

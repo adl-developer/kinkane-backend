@@ -1,6 +1,6 @@
 import { and, desc, eq, gte, isNotNull, sql, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
-import { orders, users, userReports } from '../../db/schema';
+import { orders, users, userReports, restockRequests } from '../../db/schema';
 import { statusesInBucket } from '../commerce/orders.service';
 
 /**
@@ -196,9 +196,9 @@ export const adminDashboardService = {
     };
   },
 
-  /** The two sidebar badges: orders awaiting fulfilment, reports awaiting a decision. */
+  /** The sidebar badges: orders awaiting fulfilment, reports awaiting a decision, pending restock requests. */
   async badges() {
-    const [[orderCount], [reportCount], [unreadCount]] = await Promise.all([
+    const [[orderCount], [reportCount], [unreadCount], [restockCount]] = await Promise.all([
       db
         .select({ n: sql<number>`count(*)` })
         .from(orders)
@@ -211,12 +211,17 @@ export const adminDashboardService = {
         .select({ n: sql<number>`count(*)` })
         .from(sql`admin_notifications`)
         .where(sql`read_at is null`),
+      db
+        .select({ n: sql<number>`count(*)` })
+        .from(restockRequests)
+        .where(eq(restockRequests.status, 'pending')),
     ]);
 
     return {
       orders: Number(orderCount.n),
       reports: Number(reportCount.n),
       unreadNotifications: Number(unreadCount.n),
+      restockRequests: Number(restockCount.n),
     };
   },
 };

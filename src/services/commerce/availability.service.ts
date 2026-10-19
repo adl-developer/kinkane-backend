@@ -123,7 +123,7 @@ function poundsToPence(rrpGbp: string | null): number | null {
  * restricted titles into territories nobody has checked. Titles with no
  * restriction rows — the overwhelming majority — are unaffected.
  */
-function isRestricted(
+export function isRestricted(
   rows: { flag: string; regionCode: string }[],
   destinationCountry: string,
   isbn13: string,
