@@ -34,7 +34,8 @@ Which editions qualify:
 |---|---|
 | Out of stock, reprinting, or out of stock indefinitely | `201` |
 | In stock, or supplied to order (extended catalogue, print on demand) | `409 IN_STOCK` |
-| Not licensed for sale in the customer's country (when known) | `409 MARKET_RESTRICTED` |
+| Out of print, cancelled, not yet published, postponed, refer to publisher | `409 UNAVAILABLE` |
+| Not licensed for sale in the customer's country (when known and mapped) | `409 MARKET_RESTRICTED` |
 | No price | `409 NOT_FOR_SALE` |
 | Withdrawn or missing | `404 BOOK_NOT_FOUND` |
 
@@ -47,7 +48,9 @@ Which editions qualify:
   mark one person's request fulfilled, and undo it.
 - `POST /restock-requests/books/:bookId/fulfil`: "fulfil all" on a card.
 - `GET /badges` now includes `restockRequests` (pending).
-- The bell gets a new `restock_requested` event.
+- The bell gets a new `restock_requested` event. Its text names the book, never
+  the customer: the endpoint is public, so a name there would let anyone write
+  into the staff feed.
 
 ## Data model
 
@@ -73,7 +76,12 @@ All settled with the client on 2026-10-19:
 - **Only out-of-stock editions.** Supplied-to-order books stay buyable and get no
   button, because the customer can simply order one. Restricted books get no
   button, because restocking would not let that customer buy it. An unknown
-  country is never a reason to refuse.
+  country is never a reason to refuse, and nor is a country missing from the
+  Gardners region mapping (add-to-cart blocks those, because it is about to sell).
+- **Only restocks that can happen.** Reprinting and out-of-stock-indefinitely
+  titles are accepted; out of print, cancelled, not yet published, postponed and
+  refer-to-publisher titles are refused, so the admin's Pending list holds only
+  requests someone can act on.
 - **No de-duplication and no quantity.** Every press is a row. Repeat requests
   read as demand, which is what the admin wants to see. The only brake is a rate
   limit of 20 an hour per IP, aimed at scripts, not shoppers.
@@ -100,10 +108,12 @@ All settled with the client on 2026-10-19:
 
 ## How it was verified
 
-- `restock-requests.integration.test.ts`: 20 tests against a scratch Postgres,
+- `restock-requests.integration.test.ts`: 31 tests against a scratch Postgres,
   covering every eligibility rule, guest and real accounts, no de-duplication, the
   bell entry, cards, counts, search (with literal `%`/`_`), paging, fulfil, undo,
-  fulfil all, export and the badge.
-- `restock-requests-endpoint.test.ts`: the HTTP layer (optional form, cleared
-  fields, honeypot, bad ids and emails) and the reference and format helpers.
+  fulfil all, export and the badge, plus the admin routes over HTTP (session,
+  tab validation, CSV columns, id handling).
+- `restock-requests-endpoint.test.ts`: the customer HTTP layer (optional form,
+  cleared fields, honeypot, bad ids and emails), the eligibility rules as a pure
+  function, and the reference and format helpers.
 - Full unit suite, type-check, and the migration applied to the scratch database.

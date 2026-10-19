@@ -5,6 +5,7 @@
 
 ### Features
 
+* let customers request a restock of out-of-stock books, and list the requests in the admin console ([66e96f5](https://adl.github.com/adl-developer/kinkane-backend/commit/66e96f527e6586395c6be74c3f9ebdc72bf70c74)) — [details](changelog/2026-10-19-admin-customer-totals.md)
 * admins can see referral competition analytics and every Traveller ([6dd020f](https://adl.github.com/adl-developer/kinkane-backend/commit/6dd020ffe6f5de9eb50476abc54d5f6953c606a8)) — [details](changelog/2026-10-19-admin-referral-analytics.md)
 
 ### Bug Fixes

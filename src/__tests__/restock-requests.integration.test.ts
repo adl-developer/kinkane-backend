@@ -1,6 +1,10 @@
 import { readFileSync } from 'fs';
 import * as dotenv from 'dotenv';
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import express from 'express';
+import jwt from 'jsonwebtoken';
+import type { Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 
 /**
  * Restock requests, end to end against a real Postgres: who may file one, what
@@ -42,6 +46,15 @@ if (testUrl) {
   process.env.DATABASE_URL = testUrl;
 }
 
+// The admin router is mounted for real below; its limiters need Redis and its
+// controllers pull in the mail and push queues.
+vi.mock('../lib/email-queue', () => ({ enqueueEmail: vi.fn().mockResolvedValue(undefined) }));
+vi.mock('../lib/push-queue', () => ({ enqueuePush: vi.fn().mockResolvedValue(undefined) }));
+vi.mock('../middleware/rate-limit.middleware', () => {
+  const pass = (_req: unknown, _res: unknown, next: () => void) => next();
+  return { adminLoginLimiter: pass, adminPasswordResetLimiter: pass, adminPasswordResetEmailLimiter: pass };
+});
+
 let db: typeof import('../db').db;
 let sql: typeof import('drizzle-orm').sql;
 let customer: typeof import('../services/restock-requests.service').restockRequestsService;
@@ -58,6 +71,9 @@ const ISBN = {
   toOrder: '9798888000004',
   noPrice: '9798888000005',
   restrictedGb: '9798888000006',
+  outOfPrint: '9798888000007',
+  reprinting: '9798888000008',
+  inStockRestrictedGb: '9798888000009',
 };
 const ISBNS = Object.values(ISBN);
 const EMAIL_PREFIX = 'restock-test-';
@@ -122,11 +138,16 @@ describeIfDb('restock requests', () => {
     await book('toOrder', 'Silver Sparrow', 'BC', { rrp: '9.99', qty: 0, reportCode: 'GXC' });
     await book('noPrice', 'The Sun and Her Flowers', 'BB', { rrp: null, qty: 0 });
     await book('restrictedGb', 'Restricted Title', 'BC', { rrp: '9.99', qty: 0 });
+    await book('outOfPrint', 'Out Of Print', 'BC', { rrp: '9.99', qty: 0, reportCode: 'O/P' });
+    await book('reprinting', 'Reprinting', 'BC', { rrp: '9.99', qty: 0, reportCode: 'R/P' });
+    await book('inStockRestrictedGb', 'Restricted In Stock', 'BC', { rrp: '9.99', qty: 5 });
     // Not to be sold in the UK.
-    await db.execute(sql`
-      INSERT INTO gardners_market_restrictions (isbn13, flag, region_code, synced_at)
-      VALUES (${ISBN.restrictedGb}, 'N', 'UKI', now())
-    `);
+    for (const isbn of [ISBN.restrictedGb, ISBN.inStockRestrictedGb]) {
+      await db.execute(sql`
+        INSERT INTO gardners_market_restrictions (isbn13, flag, region_code, synced_at)
+        VALUES (${isbn}, 'N', 'UKI', now())
+      `);
+    }
 
     const users = await db.execute<{ id: number }>(sql`
       INSERT INTO users (name, email, is_guest) VALUES
@@ -164,7 +185,8 @@ describeIfDb('restock requests', () => {
         WHERE type = 'restock_requested' AND body LIKE ${'%' + TITLE_PREFIX + ' Wandering Stars (Paperback)%'}
       `);
       expect(rows.length).toBeGreaterThan(0);
-      expect(rows[0].body).toContain('Priya Nair asked for');
+      // Never the customer's own text: the endpoint is public.
+      expect(rows[0].body).toBe(`A customer asked for ${TITLE_PREFIX} Wandering Stars (Paperback) to be restocked.`);
     });
 
     it('refuses a book that is in stock', async () => {
@@ -188,6 +210,35 @@ describeIfDb('restock requests', () => {
 
     it('does not turn a customer away when their country is unknown', async () => {
       await expect(submit('restrictedGb', { country: null })).resolves.toHaveProperty('reference');
+    });
+
+    it('refuses an out-of-print book, which no restock will bring back', async () => {
+      await expect(submit('outOfPrint')).rejects.toMatchObject({ statusCode: 409, code: 'UNAVAILABLE' });
+    });
+
+    it('accepts a book that is reprinting', async () => {
+      await expect(submit('reprinting', { country: null })).resolves.toHaveProperty('reference');
+    });
+
+    it('does not refuse a customer whose country has no Gardners region mapping', async () => {
+      // XX is a valid-looking code that maps to no region; add-to-cart would block.
+      await expect(submit('restrictedGb', { country: 'XX' })).resolves.toHaveProperty('reference');
+    });
+
+    it('calls an in-stock title restricted for the customer restricted, not in stock', async () => {
+      await expect(submit('inStockRestrictedGb', { country: 'GB' })).rejects.toMatchObject({
+        statusCode: 409,
+        code: 'MARKET_RESTRICTED',
+      });
+      await expect(submit('inStockRestrictedGb', { country: null })).rejects.toMatchObject({ code: 'IN_STOCK' });
+    });
+
+    it('stamps the reference in the same write as the row', async () => {
+      const [{ n }] = await db.execute<{ n: number }>(sql`
+        SELECT count(*)::int AS n FROM restock_requests
+        WHERE isbn13 IN (${sql.join(ISBNS.map((i) => sql`${i}`), sql`, `)}) AND reference IS NULL
+      `);
+      expect(n).toBe(0);
     });
 
     it('404s a book that does not exist', async () => {
@@ -229,10 +280,10 @@ describeIfDb('restock requests', () => {
     it('shows one card per edition, newest request first, with request counts', async () => {
       const result = await admin.list({ q, limit: 20, offset: 0 });
 
-      // Paperback (2 requests), hardback (2), restricted title (1).
-      expect(result.totalCards).toBe(3);
-      expect(result.totalRequests).toBe(5);
-      expect(result.counts).toEqual({ total: 5, pending: 5, fulfilled: 0 });
+      // Paperback (2 requests), hardback (2), restricted title (2), reprinting (1).
+      expect(result.totalCards).toBe(4);
+      expect(result.totalRequests).toBe(7);
+      expect(result.counts).toEqual({ total: 7, pending: 7, fulfilled: 0 });
 
       // The paperback got the most recent request.
       const [first] = result.cards;
@@ -277,7 +328,7 @@ describeIfDb('restock requests', () => {
       expect(again.fulfilledAt?.getTime()).toBe(first.fulfilledAt?.getTime());
 
       const counts = (await admin.list({ q, limit: 20, offset: 0 })).counts;
-      expect(counts).toEqual({ total: 5, pending: 4, fulfilled: 1 });
+      expect(counts).toEqual({ total: 7, pending: 6, fulfilled: 1 });
 
       const undone = await admin.reopen(id);
       expect(undone).toMatchObject({ status: 'pending', fulfilledAt: null });
@@ -290,7 +341,7 @@ describeIfDb('restock requests', () => {
       const fulfilled = await admin.list({ q, status: 'fulfilled', limit: 20, offset: 0 });
       expect(fulfilled.cards.map((c) => c.book.id)).toEqual([bookIds.outOfStockHardback]);
       // Tab counts ignore the tab.
-      expect(fulfilled.counts).toEqual({ total: 5, pending: 3, fulfilled: 2 });
+      expect(fulfilled.counts).toEqual({ total: 7, pending: 5, fulfilled: 2 });
 
       const pending = await admin.list({ q, status: 'pending', limit: 20, offset: 0 });
       expect(pending.cards.map((c) => c.book.id)).not.toContain(bookIds.outOfStockHardback);
@@ -306,7 +357,7 @@ describeIfDb('restock requests', () => {
 
     it('exports one row per request in the current filter', async () => {
       const { rows, total } = await admin.exportRows({ q, status: 'pending' }, 5000);
-      expect(total).toBe(3);
+      expect(total).toBe(5);
       expect(rows.every((r) => r.status === 'pending')).toBe(true);
       expect(rows[0]).toMatchObject({ author: 'Tommy Orange' });
     });
@@ -317,8 +368,89 @@ describeIfDb('restock requests', () => {
     });
 
     it('counts pending requests on the sidebar badge', async () => {
+      const [{ n }] = await db.execute<{ n: number }>(sql`
+        SELECT count(*)::int AS n FROM restock_requests WHERE status = 'pending'
+      `);
       const result = await badges.badges();
-      expect(result.restockRequests).toBeGreaterThanOrEqual(3);
+      expect(result.restockRequests).toBe(n);
+    });
+  });
+
+  describe('the admin routes, over HTTP', () => {
+    let server: Server;
+    let base: string;
+    let token: string;
+
+    beforeAll(async () => {
+      const { default: adminRoutes } = await import('../routes/admin');
+      const { config } = await import('../config');
+      const app = express();
+      app.use(express.json());
+      app.use('/admin/console', adminRoutes);
+      server = app.listen(0);
+      await new Promise((resolve) => server.once('listening', resolve));
+      base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      token = jwt.sign(
+        { sub: adminId, email: EMAIL_PREFIX + 'admin@example.com', kind: 'admin', iat: Math.floor(Date.now() / 1000) - 60 },
+        config.jwt.adminSecret!,
+        { expiresIn: 3600 },
+      );
+    });
+
+    afterAll(async () => {
+      await new Promise((resolve) => server?.close(resolve));
+    });
+
+    function call(method: string, path: string, bearer: string | null = token) {
+      return fetch(`${base}/admin/console${path}`, {
+        method,
+        headers: bearer ? { authorization: `Bearer ${bearer}` } : {},
+      });
+    }
+
+    it('needs an admin session', async () => {
+      expect((await call('GET', '/restock-requests', null)).status).toBe(401);
+    });
+
+    it('treats status=all as no filter, and rejects an unknown tab', async () => {
+      const all = await call('GET', `/restock-requests?status=all&q=${TITLE_PREFIX}`);
+      expect(all.status).toBe(200);
+      const body = (await all.json()) as { totalRequests: number; counts: { total: number } };
+      expect(body.totalRequests).toBe(body.counts.total);
+
+      expect((await call('GET', '/restock-requests?status=dismissed')).status).toBe(400);
+    });
+
+    it('exports a CSV with the agreed columns, one row per request', async () => {
+      const res = await call('GET', `/restock-requests/export?status=pending&q=${TITLE_PREFIX}`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toContain('text/csv');
+      const lines = (await res.text()).replace(/^\uFEFF/, '').trim().split(/\r?\n/);
+      expect(lines[0]).toBe('Reference,Requested,Title,Author,Format,ISBN,Customer,Email,Signed in,Status,Fulfilled');
+      expect(lines).toHaveLength(1 + Number(res.headers.get('x-total-rows')));
+      expect(lines.slice(1).every((l) => l.includes(',Pending,'))).toBe(true);
+    });
+
+    it('400s a bad id and 404s an unknown one', async () => {
+      expect((await call('POST', '/restock-requests/abc/fulfil')).status).toBe(400);
+      expect((await call('POST', '/restock-requests/0/reopen')).status).toBe(400);
+      expect((await call('POST', '/restock-requests/books/x/fulfil')).status).toBe(400);
+      expect((await call('POST', '/restock-requests/2000000000/fulfil')).status).toBe(404);
+    });
+
+    it('fulfils and reopens through the routes', async () => {
+      const [{ id }] = await db.execute<{ id: number }>(sql`
+        SELECT id FROM restock_requests WHERE isbn13 = ${ISBN.reprinting} LIMIT 1
+      `);
+      const fulfilled = await call('POST', `/restock-requests/${id}/fulfil`);
+      expect(await fulfilled.json()).toMatchObject({ id, status: 'fulfilled' });
+      const reopened = await call('POST', `/restock-requests/${id}/reopen`);
+      expect(await reopened.json()).toMatchObject({ id, status: 'pending', fulfilledAt: null });
+    });
+
+    it('fulfils a whole card through the route', async () => {
+      const res = await call('POST', `/restock-requests/books/${bookIds.reprinting}/fulfil`);
+      expect(await res.json()).toMatchObject({ bookId: bookIds.reprinting, fulfilledIds: [expect.any(Number)] });
     });
   });
 });

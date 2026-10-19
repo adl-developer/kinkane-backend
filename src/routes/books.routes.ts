@@ -168,8 +168,8 @@ router.get('/:id/reviews', requireAuth, wrapHttp(booksController.reviews));
  * account's name and email. `website` is a honeypot, as on the contact form.
  *
  * Returns 201: { requested: true }
- * Errors: 400 validation | 404 BOOK_NOT_FOUND | 409 IN_STOCK, NOT_FOR_SALE,
- * MARKET_RESTRICTED | 429 rate limited (20 an hour per IP)
+ * Errors: 400 validation | 404 BOOK_NOT_FOUND | 409 IN_STOCK, UNAVAILABLE,
+ * NOT_FOR_SALE, MARKET_RESTRICTED | 429 rate limited (20 an hour per IP)
  */
 router.post(
   '/:id/restock-requests',

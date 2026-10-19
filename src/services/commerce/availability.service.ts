@@ -123,7 +123,7 @@ function poundsToPence(rrpGbp: string | null): number | null {
  * restricted titles into territories nobody has checked. Titles with no
  * restriction rows — the overwhelming majority — are unaffected.
  */
-function isRestricted(
+export function isRestricted(
   rows: { flag: string; regionCode: string }[],
   destinationCountry: string,
   isbn13: string,
@@ -418,22 +418,6 @@ export const availabilityService = {
       map.set(row.isbn13, stockTierFor(row, config.commerce.cart.maxQuantityPerLine));
     }
     return map;
-  },
-
-  /**
-   * Whether this ISBN may not be sold to a customer in `country`, by the same
-   * rules add-to-cart applies.
-   *
-   * For the restock button, which needs the answer for books that are out of
-   * stock — check() stops at out_of_stock before it ever looks at rights, so it
-   * cannot say.
-   */
-  async isRestrictedIn(isbn13: string, country: string): Promise<boolean> {
-    const rows = await db
-      .select({ flag: gardnersMarketRestrictions.flag, regionCode: gardnersMarketRestrictions.regionCode })
-      .from(gardnersMarketRestrictions)
-      .where(eq(gardnersMarketRestrictions.isbn13, isbn13));
-    return isRestricted(rows, normalizeCountry(country) ?? '', isbn13);
   },
 
   /** Single-book convenience wrapper for add-to-cart. */

@@ -1,9 +1,11 @@
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { books, restockRequests, users } from '../db/schema';
-import { availabilityService } from './commerce/availability.service';
+import { books, gardnersMarketRestrictions, gardnersStock, restockRequests, users } from '../db/schema';
+import { isRestricted } from './commerce/availability.service';
+import { gardnersRegionsForCountry } from './commerce/gardners-regions';
 import { adminNotificationsService } from './admin/notifications.service';
 import { getProductFormLabel } from '../lib/product-form';
+import { UNSUPPLIABLE_REPORT_CODE_SET, isSupplyToOrder } from '../lib/shoppable';
 
 export interface RestockSubmission {
   bookId: number;
@@ -27,74 +29,132 @@ export function restockReference(id: number): string {
   return `RR${String(id).padStart(3, '0')}`;
 }
 
+/**
+ * The unsuppliable report codes a restock can still answer: reprinting (R/P)
+ * and out of stock indefinitely (OSI). Gardners will have copies again, so a
+ * call is worth making.
+ *
+ * The rest of UNSUPPLIABLE_REPORT_CODES are refused: out of print and cancelled
+ * books will never come back, and not-yet-published, postponed and
+ * refer-to-publisher titles are not out of stock, they are not out at all. A
+ * request for one would sit in the admin's Pending list with nothing anyone can
+ * do about it.
+ */
+export const RESTOCKABLE_REPORT_CODES: ReadonlySet<string> = new Set(['R/P', 'RP', 'OSI']);
+
+export type RestockRefusal = 'BOOK_NOT_FOUND' | 'NOT_FOR_SALE' | 'UNAVAILABLE' | 'MARKET_RESTRICTED' | 'IN_STOCK';
+
+/**
+ * Whether an edition can take a restock request, and if not, why. Pure, so the
+ * rules are pinned by unit tests; `restricted` is null when the customer's
+ * country cannot be judged.
+ *
+ * Mirrors the add-to-cart gate (availabilityService.check) in what it means by
+ * a price and by supply-to-order, but asks the opposite question.
+ */
+export function restockEligibility(
+  book: { isRemoved: boolean; isbn13: string | null; rrpGbp: string | null; stockQty: number | null; reportCode: string | null } | undefined,
+  restricted: boolean | null,
+): RestockRefusal | null {
+  if (!book || book.isRemoved || !book.isbn13) return 'BOOK_NOT_FOUND';
+
+  const rrp = book.rrpGbp === null ? NaN : Number(book.rrpGbp);
+  if (!Number.isFinite(rrp) || rrp <= 0) return 'NOT_FOR_SALE';
+
+  const reportCode = book.reportCode?.trim().toUpperCase() ?? '';
+  const unsuppliable = UNSUPPLIABLE_REPORT_CODE_SET.has(reportCode);
+  if (unsuppliable && !RESTOCKABLE_REPORT_CODES.has(reportCode)) return 'UNAVAILABLE';
+
+  // Before the stock test: a restricted customer cannot buy an in-stock copy
+  // either, and "it can be ordered now" would be untrue for them.
+  if (restricted) return 'MARKET_RESTRICTED';
+
+  if (!unsuppliable && (isSupplyToOrder(book.reportCode) || (book.stockQty ?? 0) > 0)) return 'IN_STOCK';
+
+  return null;
+}
+
+const REFUSALS: Record<RestockRefusal, { statusCode: number; message: string }> = {
+  BOOK_NOT_FOUND: { statusCode: 404, message: 'Book not found' },
+  NOT_FOR_SALE: { statusCode: 409, message: 'This book is not currently for sale' },
+  UNAVAILABLE: { statusCode: 409, message: 'This book cannot be restocked' },
+  MARKET_RESTRICTED: { statusCode: 409, message: 'This book cannot be sold in your country' },
+  IN_STOCK: { statusCode: 409, message: 'This book can be ordered now, so there is nothing to restock' },
+};
+
 export const restockRequestsService = {
   /**
    * Records a "Request Restock" press.
    *
    * **Only for an edition that is out of stock.** The book page shows the button
    * beside a greyed-out "Out of Stock", and the server holds the same line so a
-   * stale page cannot file a request for something buyable:
+   * stale page cannot file a request for something that can be bought, or that
+   * no restock will ever bring back. See restockEligibility for the rules.
    *
-   *   - out of stock, or unsuppliable for now (reprinting, out of stock
-   *     indefinitely) → accepted. Both render as "Out of Stock" in the shop, and
-   *     both are something only a conversation with Gardners can change.
-   *   - supplied to order (extended catalogue, print on demand) → refused with
-   *     IN_STOCK. The client decided these stay buyable with no button: the
-   *     customer can simply order one.
-   *   - market-restricted in the customer's country → refused. Restocking would
-   *     not let them buy it. Only checked when the country is known; an unknown
-   *     country is not a reason to turn a customer away from a request.
-   *   - no price, withdrawn, or no such book → the book is not on sale at all.
+   * Rights are judged only when the customer's country is known *and* mapped to
+   * Gardners regions. Add-to-cart blocks a restricted title for an unmapped
+   * country, because it is about to sell one; here nothing is being sold, and
+   * the client's rule is that not knowing where someone is never turns them away.
    *
    * Not de-duplicated, on purpose — see the table.
    *
-   * The bell entry is written after the row and never fails the request. The
-   * admin email is a later phase; `admin_emailed_at` stays null until then.
+   * The row and its reference are written in one transaction, so a request
+   * never exists without its RR number. The bell entry follows and never fails
+   * the request. The admin email is a later phase; `admin_emailed_at` stays null.
    */
   async submit(input: RestockSubmission): Promise<{ reference: string }> {
-    const availability = await availabilityService.check([input.bookId], input.country ?? '');
-    const reason = availability.rejected.get(input.bookId);
+    // The edition and its stock in one query, its restriction rows alongside.
+    // The ISBN is looked up inside the second query so the two can run together.
+    const [[book], restrictionRows] = await Promise.all([
+      db
+        .select({
+          title: books.title,
+          isbn13: books.isbn13,
+          productForm: books.productForm,
+          isRemoved: books.isRemoved,
+          rrpGbp: gardnersStock.rrpGbp,
+          stockQty: gardnersStock.stockQty,
+          reportCode: gardnersStock.reportCode,
+        })
+        .from(books)
+        // On isbn13, as add-to-cart joins it: gardners_stock.book_id is backfilled late.
+        .leftJoin(gardnersStock, eq(gardnersStock.isbn13, books.isbn13))
+        .where(eq(books.id, input.bookId))
+        .limit(1),
+      db
+        .select({ flag: gardnersMarketRestrictions.flag, regionCode: gardnersMarketRestrictions.regionCode })
+        .from(gardnersMarketRestrictions)
+        .where(sql`${gardnersMarketRestrictions.isbn13} = (SELECT b.isbn13 FROM books b WHERE b.id = ${input.bookId})`),
+    ]);
 
-    if (availability.buyable.has(input.bookId)) {
-      throw httpError('This book can be ordered now, so there is nothing to restock', 409, 'IN_STOCK');
-    }
-    if (reason === 'not_found') throw httpError('Book not found', 404, 'BOOK_NOT_FOUND');
-    if (reason === 'no_price') {
-      throw httpError('This book is not currently for sale', 409, 'NOT_FOR_SALE');
-    }
-    // check() only reaches market restrictions for books that are otherwise
-    // buyable, so an in-stock restricted title lands here.
-    if (reason === 'market_restricted') {
-      throw httpError('This book cannot be sold in your country', 409, 'MARKET_RESTRICTED');
-    }
+    const judgeable = input.country !== null && gardnersRegionsForCountry(input.country).length > 0;
+    const restricted =
+      judgeable && book?.isbn13 ? isRestricted(restrictionRows, input.country as string, book.isbn13) : null;
 
-    const [book] = await db
-      .select({ isbn13: books.isbn13, title: books.title, productForm: books.productForm })
-      .from(books)
-      .where(eq(books.id, input.bookId))
-      .limit(1);
-    // check() said not_found for anything without an ISBN, so this is present.
+    const refusal = restockEligibility(book, restricted);
+    if (refusal) throw httpError(REFUSALS[refusal].message, REFUSALS[refusal].statusCode, refusal);
+
     const isbn13 = book.isbn13 as string;
-
-    if (input.country && (await availabilityService.isRestrictedIn(isbn13, input.country))) {
-      throw httpError('This book cannot be sold in your country', 409, 'MARKET_RESTRICTED');
-    }
-
     const contact = await contactFor(input);
 
-    const [row] = await db
-      .insert(restockRequests)
-      .values({ bookId: input.bookId, isbn13, userId: input.userId, ...contact })
-      .returning({ id: restockRequests.id });
+    const reference = await db.transaction(async (tx) => {
+      const [row] = await tx
+        .insert(restockRequests)
+        .values({ bookId: input.bookId, isbn13, userId: input.userId, ...contact })
+        .returning({ id: restockRequests.id });
+      const ref = restockReference(row.id);
+      await tx.update(restockRequests).set({ reference: ref }).where(eq(restockRequests.id, row.id));
+      return ref;
+    });
 
-    const reference = restockReference(row.id);
-    await db.update(restockRequests).set({ reference }).where(eq(restockRequests.id, row.id));
-
+    // No customer-typed text in the bell. This endpoint is public, so a name
+    // here would let anyone write whatever they like into the staff feed; the
+    // name is on the Restock Requests screen, one click away.
     const format = shortFormat(book.productForm);
     await adminNotificationsService.emit({
       type: 'restock_requested',
       title: 'New restock request',
-      body: `${contact.name ?? 'Someone'} asked for ${book.title}${format ? ` (${format})` : ''} to be restocked.`,
+      body: `A customer asked for ${book.title}${format ? ` (${format})` : ''} to be restocked.`,
       userId: input.userId ?? undefined,
     });
 

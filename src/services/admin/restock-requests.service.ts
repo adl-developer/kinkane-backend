@@ -30,7 +30,6 @@ function searchCondition(q: string): SQL {
   const like = likeContains(q);
   return sql`(
     b.title ILIKE ${like}
-    OR b.isbn13 ILIKE ${like}
     OR rr.isbn13 ILIKE ${like}
     OR rr.name ILIKE ${like}
     OR rr.email ILIKE ${like}

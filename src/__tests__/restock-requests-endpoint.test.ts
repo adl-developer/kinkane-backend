@@ -90,7 +90,7 @@ describe('POST /books/:id/restock-requests', () => {
 
 describe('restock helpers', async () => {
   // The service is mocked above for the controller; these are its real helpers.
-  const { restockReference, shortFormat } = await vi.importActual<
+  const { restockReference, shortFormat, restockEligibility } = await vi.importActual<
     typeof import('../services/restock-requests.service')
   >('../services/restock-requests.service');
 
@@ -104,5 +104,45 @@ describe('restock helpers', async () => {
     expect(shortFormat('BB')).toBe('Hardcover');
     expect(shortFormat('BH')).toBe("Child's board book");
     expect(shortFormat(null)).toBeNull();
+  });
+
+  describe('which editions can be requested', () => {
+    const outOfStock = { isRemoved: false, isbn13: '9780000000000', rrpGbp: '9.99', stockQty: 0, reportCode: null };
+
+    it('accepts an out-of-stock edition', () => {
+      expect(restockEligibility(outOfStock, null)).toBeNull();
+      expect(restockEligibility(outOfStock, false)).toBeNull();
+    });
+
+    it('accepts reprinting and out of stock indefinitely, even with stock on the row', () => {
+      for (const reportCode of ['R/P', 'RP', 'OSI', ' osi ']) {
+        expect(restockEligibility({ ...outOfStock, stockQty: 4, reportCode }, null)).toBeNull();
+      }
+    });
+
+    it('refuses codes no restock can answer', () => {
+      for (const reportCode of ['O/P', 'OP', 'CNC', 'NYP', 'POS', 'REF']) {
+        expect(restockEligibility({ ...outOfStock, reportCode }, null)).toBe('UNAVAILABLE');
+      }
+    });
+
+    it('refuses what can already be ordered', () => {
+      expect(restockEligibility({ ...outOfStock, stockQty: 3 }, null)).toBe('IN_STOCK');
+      expect(restockEligibility({ ...outOfStock, reportCode: 'GXC' }, null)).toBe('IN_STOCK');
+      expect(restockEligibility({ ...outOfStock, reportCode: 'M/D' }, null)).toBe('IN_STOCK');
+    });
+
+    it('calls a restricted edition restricted, in stock or not', () => {
+      expect(restockEligibility(outOfStock, true)).toBe('MARKET_RESTRICTED');
+      expect(restockEligibility({ ...outOfStock, stockQty: 3 }, true)).toBe('MARKET_RESTRICTED');
+    });
+
+    it('refuses what is not on sale at all', () => {
+      expect(restockEligibility(undefined, null)).toBe('BOOK_NOT_FOUND');
+      expect(restockEligibility({ ...outOfStock, isRemoved: true }, null)).toBe('BOOK_NOT_FOUND');
+      expect(restockEligibility({ ...outOfStock, isbn13: null }, null)).toBe('BOOK_NOT_FOUND');
+      expect(restockEligibility({ ...outOfStock, rrpGbp: null }, null)).toBe('NOT_FOR_SALE');
+      expect(restockEligibility({ ...outOfStock, rrpGbp: '0' }, null)).toBe('NOT_FOR_SALE');
+    });
   });
 });
