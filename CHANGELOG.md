@@ -3,8 +3,14 @@
 
 ## 2026-10-19
 
+### Features
+
+* admins can see referral competition analytics and every Traveller ([6dd020f](https://adl.github.com/adl-developer/kinkane-backend/commit/6dd020ffe6f5de9eb50476abc54d5f6953c606a8)) — [details](changelog/2026-10-19-admin-referral-analytics.md)
+
 ### Bug Fixes
 
+* admin Customers search treats % and _ as ordinary characters ([dbc82f0](https://adl.github.com/adl-developer/kinkane-backend/commit/dbc82f010f4ca387376b0b6e5b1bd097659a4475)) — [details](changelog/2026-10-19-admin-customer-totals.md)
+* referral cumulative chart always ends at the signup total ([217942f](https://adl.github.com/adl-developer/kinkane-backend/commit/217942f443117bb0ab8d470185ac88faeeb86451)) — [details](changelog/2026-10-19-referral-cumulative-chart.md)
 * admin Customers screen shows each customer's real orders and spend ([c3490e4](https://adl.github.com/adl-developer/kinkane-backend/commit/c3490e4106ddfcffd4e3a5ef4581bd23bf14f0d5)) — [details](changelog/2026-10-19-admin-customer-totals.md)
 
 

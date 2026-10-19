@@ -260,8 +260,10 @@ export const referralPaths = {
               weekStart: { type: 'string', format: 'date', description: 'Monday, UTC.', example: '2026-07-06' },
               weekEnd: { type: 'string', format: 'date', description: 'The Sunday that closes the bucket, inclusive.', example: '2026-07-12' },
               sent: { type: 'integer', example: 190 },
-              converted: { type: 'integer', example: 61 },
-              cumulative: { type: 'integer', description: 'Running total of converted.', example: 284 },
+              converted: { type: 'integer', description: 'Signups this week, verified or not.', example: 61 },
+              successful: { type: 'integer', description: 'Of this week\'s signups, the ones now verified.', example: 57 },
+              cumulative: { type: 'integer', description: 'Running total of converted, **including signups from before week 1**, so the last bucket equals `totals.signups`.', example: 284 },
+              cumulativeSuccessful: { type: 'integer', description: 'Running total of successful, on the same basis; the last bucket equals `totals.successful`.', example: 268 },
             })),
             topReferrers: arrayOf(object({
               rank: { type: 'integer', example: 1 },
