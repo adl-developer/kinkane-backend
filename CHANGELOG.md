@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-10-19
+
+### Features
+
+* admins can see referral competition analytics and every Traveller ([6dd020f](https://adl.github.com/adl-developer/kinkane-backend/commit/6dd020ffe6f5de9eb50476abc54d5f6953c606a8)) — [details](changelog/2026-10-19-admin-referral-analytics.md)
+
+
 ## 2026-10-16
 
 ### Bug Fixes

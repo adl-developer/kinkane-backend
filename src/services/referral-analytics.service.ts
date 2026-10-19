@@ -199,9 +199,18 @@ export interface CampaignAnalytics {
   };
   weekly: (WeekBucket & {
     sent: number;
+    /** Everyone who signed up this week, verified or not. */
     converted: number;
-    /** Running total of converted, for the cumulative chart. */
+    /** Of this week's signups, the ones now verified — the same rule as `totals.successful`. */
+    successful: number;
+    /**
+     * Running total of converted, for the cumulative chart. Includes every
+     * signup from before the window, so the last bucket always equals
+     * `totals.signups`.
+     */
     cumulative: number;
+    /** Running total of successful; the last bucket equals `totals.successful`. */
+    cumulativeSuccessful: number;
   })[];
   topReferrers: { rank: number; name: string; country: string | null; signups: number; points: number }[];
 }
@@ -215,7 +224,7 @@ export const referralAnalyticsService = {
    * separate table scans for one page view.
    */
   async campaign(): Promise<CampaignAnalytics> {
-    return cached('referrals:analytics:v2', () => this.computeCampaign());
+    return cached('referrals:analytics:v3', () => this.computeCampaign());
   },
 
   /** The uncached aggregate. Split out so the cache wrapper stays readable. */
@@ -262,6 +271,13 @@ export const referralAnalyticsService = {
         .select({
           signups: sql<number>`count(*)::int`,
           successful: sql<number>`count(*) filter (where ${referrals.creditedAt} is not null)::int`,
+          // Signups from before the first week the chart draws. The running
+          // totals start from these rather than from zero; without them the
+          // cumulative line ends below the total on the card beside it whenever
+          // the campaign start is configured after the first referrals, or the
+          // first referral predates the first recorded invite.
+          beforeWindow: sql<number>`count(*) filter (where ${referrals.signedUpAt} < ${since.toISOString()}::timestamptz)::int`,
+          successfulBeforeWindow: sql<number>`count(*) filter (where ${referrals.signedUpAt} < ${since.toISOString()}::timestamptz and ${referrals.creditedAt} is not null)::int`,
         })
         .from(referrals)
         .where(eq(referrals.status, 'active')),
@@ -292,6 +308,7 @@ export const referralAnalyticsService = {
         .select({
           week: sql<string>`date_trunc('week', ${referrals.signedUpAt} at time zone 'UTC')::date::text`,
           n: sql<number>`count(*)::int`,
+          successful: sql<number>`count(*) filter (where ${referrals.creditedAt} is not null)::int`,
         })
         .from(referrals)
         .where(and(eq(referrals.status, 'active'), gte(referrals.signedUpAt, since)))
@@ -302,11 +319,24 @@ export const referralAnalyticsService = {
 
     const sentWeeks = densify(weeklySent, buckets);
     const convWeeks = densify(weeklyConverted, buckets);
+    const successfulWeeks = densify(
+      weeklyConverted.map((r) => ({ week: r.week, n: r.successful })),
+      buckets,
+    );
 
-    let running = 0;
+    let running = signupRow.beforeWindow;
+    let runningSuccessful = signupRow.successfulBeforeWindow;
     const weekly = buckets.map((b, i) => {
       running += convWeeks[i];
-      return { ...b, sent: sentWeeks[i], converted: convWeeks[i], cumulative: running };
+      runningSuccessful += successfulWeeks[i];
+      return {
+        ...b,
+        sent: sentWeeks[i],
+        converted: convWeeks[i],
+        successful: successfulWeeks[i],
+        cumulative: running,
+        cumulativeSuccessful: runningSuccessful,
+      };
     });
 
     const sent = sentRow.n;

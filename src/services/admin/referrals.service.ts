@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, ilike, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { users } from '../../db/schema';
+import { likeContains } from '../../lib/escape-like';
 import { referralAnalyticsService, type CampaignAnalytics } from '../referral-analytics.service';
 
 /**
@@ -25,17 +26,6 @@ export interface AdminTravellerQuery {
 }
 
 /**
- * Who counts as a Traveller: anyone with a referral link, or anyone who arrived
- * through one.
- *
- * A link is created the first time someone opens their invite screen, so the
- * first half is "has taken part in the competition", whether or not anyone has
- * signed up under them yet — a Traveller with zero signups is exactly who an
- * operator looking for stalled referrers wants to see. The second half catches
- * people who joined through a link and have not opened their own invite screen.
- * Voided referrals do not make someone a Traveller.
- */
-/**
  * The outer row's user id, spelled out in full.
  *
  * Interpolating `users.id` is not safe here. In a single-table select, Drizzle
@@ -46,6 +36,17 @@ export interface AdminTravellerQuery {
  */
 const outerUserId = sql.raw('"users"."id"');
 
+/**
+ * Who counts as a Traveller: anyone with a referral link, or anyone who arrived
+ * through one.
+ *
+ * A link is created the first time someone opens their invite screen, so the
+ * first half is "has taken part in the competition", whether or not anyone has
+ * signed up under them yet — a Traveller with zero signups is exactly who an
+ * operator looking for stalled referrers wants to see. The second half catches
+ * people who joined through a link and have not opened their own invite screen.
+ * Voided referrals do not make someone a Traveller.
+ */
 const isTraveller: SQL = sql`(
   exists (select 1 from referral_codes c where c.user_id = ${outerUserId})
   or exists (select 1 from referrals r where r.referred_user_id = ${outerUserId} and r.status = 'active')
@@ -140,7 +141,9 @@ export const adminReferralsService = {
   async travellers(query: AdminTravellerQuery) {
     const conditions: SQL[] = [isTraveller];
     if (query.q) {
-      const like = `%${query.q}%`;
+      // Escaped, so a `_` in a username or a `%` typed by mistake matches
+      // literally instead of acting as a wildcard.
+      const like = likeContains(query.q);
       conditions.push(or(ilike(users.name, like), ilike(users.email, like), ilike(users.username, like))!);
     }
     const where = and(...conditions);

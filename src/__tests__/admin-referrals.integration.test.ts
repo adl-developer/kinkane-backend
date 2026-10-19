@@ -94,16 +94,17 @@ describeIfDb('admin referral analytics and Travellers', () => {
     referred: string,
     path: string[],
     country: string | null,
-    opts: { credited?: boolean; voided?: boolean } = {},
+    opts: { credited?: boolean; voided?: boolean; signedUpAt?: string } = {},
   ): Promise<number> {
     const ancestorPath = `{${path.map((k) => ids[k]).join(',')}}`;
     const rows = await db.execute<{ id: number }>(sql`
       INSERT INTO referrals (
         referrer_user_id, referred_user_id, depth, root_referrer_id, ancestor_path,
-        redeemer_country, credited_at, status
+        redeemer_country, credited_at, status, signed_up_at
       ) VALUES (
         ${ids[referrer]}, ${ids[referred]}, ${path.length}, ${ids[path[0]]}, ${ancestorPath}::integer[],
-        ${country}, ${opts.credited ? sql`now()` : null}, ${opts.voided ? 'voided' : 'active'}
+        ${country}, ${opts.credited ? sql`now()` : null}, ${opts.voided ? 'voided' : 'active'},
+        ${opts.signedUpAt ?? sql`now()`}
       )
       RETURNING id
     `);
@@ -136,7 +137,9 @@ describeIfDb('admin referral analytics and Travellers', () => {
 
     const amaToBayo = await refer('ama', 'bayo', ['ama'], 'NG', { credited: true });
     await refer('bayo', 'claire', ['ama', 'bayo'], 'FR', { credited: true });
-    await refer('ama', 'dede', ['ama'], 'GH');
+    // Years before any campaign window, so it can only reach the cumulative
+    // line through the before-the-window starting total.
+    await refer('ama', 'dede', ['ama'], 'GH', { signedUpAt: '2020-01-06T12:00:00Z' });
     await refer('efua', 'yaw', ['efua'], 'GH', { voided: true });
 
     await db.execute(sql`
@@ -223,13 +226,19 @@ describeIfDb('admin referral analytics and Travellers', () => {
     expect(new Set(seen).size).toBe(5);
   });
 
+  it('treats LIKE wildcards in a search as literal characters', async () => {
+    // Unescaped, `_` matches the `-` in every fixture email.
+    const { total } = await service.travellers({ q: 'admin_referrals_test', sort: 'points', limit: 20, offset: 0 });
+    expect(total).toBe(0);
+  });
+
   it('searches by name', async () => {
     const { travellers } = await service.travellers({ q: 'Claire Martin', sort: 'points', limit: 20, offset: 0 });
     expect(travellers.map((t) => t.id)).toContain(ids.claire);
     expect(travellers.map((t) => t.id)).not.toContain(ids.ama);
   });
 
-  it('adds the fixture to the campaign totals, and the weekly series sums to them', async () => {
+  it('adds the fixture to the campaign totals, and each cumulative line ends at its total', async () => {
     const { totals, weekly } = await service.analytics();
 
     expect(totals.travellers - before.travellers).toBe(5);
@@ -239,10 +248,11 @@ describeIfDb('admin referral analytics and Travellers', () => {
     expect(totals.successful - before.successful).toBe(2);
     expect(totals.countries).toBeGreaterThanOrEqual(3);
 
-    // The cumulative chart ends where the total is.
+    // Each cumulative line ends at the card it sits beside, even though Dede
+    // signed up before the first week the chart draws.
     const last = weekly[weekly.length - 1];
-    expect(last.cumulative).toBe(weekly.reduce((n, w) => n + w.converted, 0));
     expect(last.cumulative).toBe(totals.signups);
-    expect(weekly.reduce((n, w) => n + w.sent, 0)).toBe(totals.sent);
+    expect(last.cumulativeSuccessful).toBe(totals.successful);
+    expect(weekly.every((w) => w.successful <= w.converted)).toBe(true);
   });
 });

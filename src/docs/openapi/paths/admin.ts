@@ -367,7 +367,9 @@ export const adminPaths = {
         '',
         '**Uncached**, unlike the public endpoint: an operator checking a figure after a correction sees it immediately rather than up to five minutes later.',
         '',
-        '`sent` is invites and share-sheet opens; `successful` is verified signups (the ones that scored); `countries` is distinct countries of everyone who signed up through a link. `weekly` has one bucket per campaign week, zero or not, with `cumulative` as the running total of signups. See the public endpoint for how weeks are anchored.',
+        '`sent` is invites and share-sheet opens; `successful` is verified signups (the ones that scored); `countries` is distinct countries of everyone who signed up through a link. `weekly` has one bucket per campaign week, zero or not. See the public endpoint for how weeks are anchored.',
+        '',
+        '**Two cumulative lines, one per card.** `cumulative` runs over all signups and ends at `totals.signups`; `cumulativeSuccessful` runs over verified signups and ends at `totals.successful`. Plot the one that matches the card beside the chart. Both start from the signups made before week 1, so neither can end below its total.',
       ].join('\n'),
       responses: {
         200: json('Campaign figures.', object({
@@ -386,8 +388,10 @@ export const adminPaths = {
             weekStart: { type: 'string', format: 'date', example: '2026-07-06' },
             weekEnd: { type: 'string', format: 'date', example: '2026-07-12' },
             sent: { type: 'integer', example: 190 },
-            converted: { type: 'integer', example: 61 },
-            cumulative: { type: 'integer', description: 'Running total of signups.', example: 284 },
+            converted: { type: 'integer', description: 'Signups this week, verified or not.', example: 61 },
+            successful: { type: 'integer', description: 'Of this week\'s signups, the ones now verified.', example: 57 },
+            cumulative: { type: 'integer', description: 'Running total of signups; the last bucket equals `totals.signups`.', example: 284 },
+            cumulativeSuccessful: { type: 'integer', description: 'Running total of verified signups; the last bucket equals `totals.successful`.', example: 268 },
           })),
         })),
         ...adminErrors,
