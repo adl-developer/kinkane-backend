@@ -19,9 +19,16 @@ function httpError(message: string, statusCode: number, code?: string): Error {
 // Every per-customer aggregate the screen needs, computed once. Correlated
 // subqueries rather than a join + GROUP BY: the page is at most 50 customers,
 // and grouping the whole orders table to render 50 rows is the wrong shape.
-const orderCount = sql<number>`(select count(*) from orders o where o.user_id = ${users.id} and o.paid_at is not null)`;
-const totalSpent = sql<number>`(select coalesce(sum(o.total_minor), 0) from orders o where o.user_id = ${users.id} and o.paid_at is not null)`;
-const lastOrderAt = sql<Date | null>`(select max(o.paid_at) from orders o where o.user_id = ${users.id} and o.paid_at is not null)`;
+//
+// The customer's id is spelled out rather than interpolated as `users.id`. In a
+// select with no joins, Drizzle prints select-list columns without their table,
+// so `${users.id}` became a bare "id" — which inside `from orders o` means
+// `o.id`. Every customer's figures were silently counted against orders whose
+// own id happened to equal their user_id.
+const customerId = sql.raw('"users"."id"');
+const orderCount = sql<number>`(select count(*) from orders o where o.user_id = ${customerId} and o.paid_at is not null)`;
+const totalSpent = sql<number>`(select coalesce(sum(o.total_minor), 0) from orders o where o.user_id = ${customerId} and o.paid_at is not null)`;
+const lastOrderAt = sql<Date | null>`(select max(o.paid_at) from orders o where o.user_id = ${customerId} and o.paid_at is not null)`;
 
 export const adminCustomersService = {
   async list(query: AdminCustomerQuery) {
