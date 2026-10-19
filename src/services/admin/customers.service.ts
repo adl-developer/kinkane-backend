@@ -1,6 +1,7 @@
 import { and, desc, eq, gte, ilike, isNotNull, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { users, orders, refreshTokens } from '../../db/schema';
+import { likeContains } from '../../lib/escape-like';
 
 /** Either the pool or an open transaction, so callers can share one. */
 type DbHandle = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -38,7 +39,9 @@ export const adminCustomersService = {
     // roughly ten per real signup they buried the people who are.
     const conditions: SQL[] = [countsAsCustomer];
     if (query.q) {
-      const like = `%${query.q}%`;
+      // Escaped, so a `%` or `_` in the search box matches literally instead
+      // of acting as a wildcard.
+      const like = likeContains(query.q);
       conditions.push(or(ilike(users.name, like), ilike(users.email, like))!);
     }
     const where = and(...conditions);

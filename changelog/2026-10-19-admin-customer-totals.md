@@ -12,7 +12,8 @@ The bug turned up while building the referral Travellers list, which uses the sa
 
 ## Decisions
 
-- The customer's id is now written as `"users"."id"`, which can only mean the outer row. This is the same fix the referral Travellers list uses.
+- The customer's id is now written as `"users"."id"`, which can only mean the outer row.
+- **Search escaped too.** The Customers search now treats `%` and `_` literally. Before, `_` matched any character, so searching for an email with an underscore also returned near-misses.
 - **Checked the rest of the codebase for the same bug.** Every SQL fragment containing a subquery that interpolates a column was reviewed. The quirk only affects fragments used as **select-list fields in a query with no joins**. WHERE, ORDER BY, HAVING and raw `execute` SQL are always table-qualified. The Customers screen was the only place affected. The order item counts on the Dashboard and Orders screens, and the sale price in checkout availability, are safe because those queries join.
 - The headline cards above the table (customers, active, total spent) were never affected. They don't use these subqueries.
 
@@ -22,4 +23,4 @@ The bug turned up while building the referral Travellers list, which uses the sa
 
 ## Verified
 
-`admin-customer-totals.integration.test.ts` runs against a scratch Postgres. It sets up a customer with two paid orders and one unpaid order, and makes sure no order id can equal the customer's id. It expects 2 orders, 4000 spent and the later paid date. With the fix reverted, the same test fails with 0 orders and 0 spent. Typecheck is clean and the unit suite passes (1569 tests).
+A second test checks that `_` in a search matches literally. `admin-customer-totals.integration.test.ts` runs against a scratch Postgres. It sets up a customer with two paid orders and one unpaid order, and makes sure no order id can equal the customer's id. It expects 2 orders, 4000 spent and the later paid date. With the fix reverted, the same test fails with 0 orders and 0 spent. Typecheck is clean and the unit suite passes (1569 tests).

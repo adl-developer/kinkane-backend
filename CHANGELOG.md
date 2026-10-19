@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-10-19
+
+### Bug Fixes
+
+* admin Customers screen shows each customer's real orders and spend ([c3490e4](https://adl.github.com/adl-developer/kinkane-backend/commit/c3490e4106ddfcffd4e3a5ef4581bd23bf14f0d5)) — [details](changelog/2026-10-19-admin-customer-totals.md)
+
+
 ## 2026-10-16
 
 ### Bug Fixes

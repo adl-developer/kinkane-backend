@@ -119,4 +119,10 @@ describeIfDb('admin Customers per-row totals', () => {
     expect(customers[0]).toMatchObject({ id: userId, orders: 2, totalSpentMinor: 4000 });
     expect(new Date(customers[0].lastOrderAt as unknown as string).toISOString()).toBe('2026-10-01T10:00:00.000Z');
   });
+
+  it('treats LIKE wildcards in a search as literal characters', async () => {
+    // Unescaped, `_` matches the `-` in the fixture email.
+    const { total } = await service.list({ q: 'admin_customer_totals', limit: 20, offset: 0 });
+    expect(total).toBe(0);
+  });
 });
