@@ -9,6 +9,7 @@ import { adminReportsService } from '../../services/admin/reports.service';
 import { adminSettingsService, BANNER_SLOTS } from '../../services/admin/settings.service';
 import { adminNotificationsService } from '../../services/admin/notifications.service';
 import { adminShippingMarginService } from '../../services/admin/shipping-margin.service';
+import { adminReferralsService } from '../../services/admin/referrals.service';
 import { csvDocument } from '../../lib/csv';
 import { formatMinor } from '../../lib/money';
 import { logger } from '../../lib/logger';
@@ -58,6 +59,11 @@ const shippingMarginQuerySchema = z.object({
 
 const customersQuerySchema = pageSchema.extend({
   q: z.string().trim().min(1).max(200).optional(),
+});
+
+const travellersQuerySchema = pageSchema.extend({
+  q: z.string().trim().min(1).max(200).optional(),
+  sort: z.enum(['points', 'signups', 'recent']).default('points'),
 });
 
 const reportsQuerySchema = pageSchema.extend({
@@ -223,6 +229,18 @@ export const adminController = {
     if (!parsed.success) return badRequest(res, parsed.error);
 
     res.status(200).json(await adminShippingMarginService.report(parsed.data));
+  },
+
+  /** GET /admin/console/referrals/analytics — totals, weekly and cumulative. */
+  async referralAnalytics(_req: Request, res: Response): Promise<void> {
+    res.status(200).json(await adminReferralsService.analytics());
+  },
+
+  /** GET /admin/console/referrals/travellers — every Traveller, paginated. */
+  async referralTravellers(req: Request, res: Response): Promise<void> {
+    const parsed = travellersQuerySchema.safeParse(req.query);
+    if (!parsed.success) return badRequest(res, parsed.error);
+    res.status(200).json(await adminReferralsService.travellers(parsed.data));
   },
 
   /** GET /admin/orders/export */

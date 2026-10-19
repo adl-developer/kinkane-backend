@@ -78,6 +78,12 @@ router.post('/reports/:id/dismiss', wrapHttp(adminController.dismissReport));
 // Blocks the reported account and closes every pending report against them.
 router.post('/reports/:id/blacklist', wrapHttp(adminController.blacklistFromReport));
 
+// ── Referrals ─────────────────────────────────────────────────────────────────
+// Read-only. Corrections (voiding a referral, fixing a country) stay on the
+// token-guarded /admin/referrals surface.
+router.get('/referrals/analytics', wrapHttp(adminController.referralAnalytics));
+router.get('/referrals/travellers', wrapHttp(adminController.referralTravellers));
+
 // ── Settings ──────────────────────────────────────────────────────────────────
 router.get('/settings/banners', wrapHttp(adminController.banners));
 router.put('/settings/banners', wrapHttp(adminController.updateBanners));

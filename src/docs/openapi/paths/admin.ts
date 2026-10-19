@@ -358,6 +358,91 @@ export const adminPaths = {
     },
   },
 
+  '/admin/console/referrals/analytics': {
+    get: {
+      tags: [TAG],
+      summary: 'Referral competition: totals, weekly and cumulative',
+      description: [
+        'The figures behind the public `/api/v1/referrals/analytics`, computed by the same queries so the console and the app cannot disagree, plus a `travellers` count.',
+        '',
+        '**Uncached**, unlike the public endpoint: an operator checking a figure after a correction sees it immediately rather than up to five minutes later.',
+        '',
+        '`sent` is invites and share-sheet opens; `successful` is verified signups (the ones that scored); `countries` is distinct countries of everyone who signed up through a link. `weekly` has one bucket per campaign week, zero or not, with `cumulative` as the running total of signups. See the public endpoint for how weeks are anchored.',
+      ].join('\n'),
+      responses: {
+        200: json('Campaign figures.', object({
+          totals: object({
+            travellers: { type: 'integer', description: 'Everyone with a referral link or who joined through one — the size of the Travellers list.', example: 530 },
+            sent: { type: 'integer', example: 1247 },
+            clicks: { type: 'integer', example: 1247 },
+            signups: { type: 'integer', description: 'Everyone who signed up through a link, verified or not.', example: 412 },
+            successful: { type: 'integer', description: 'Verified signups.', example: 389 },
+            conversionRate: { type: 'number', description: '`successful ÷ clicks` as a percentage. An upper bound; see the public endpoint.', example: 31.2 },
+            countries: { type: 'integer', example: 14 },
+            continents: { type: 'integer', example: 3 },
+          }),
+          weekly: arrayOf(object({
+            weekNumber: { type: 'integer', example: 3 },
+            weekStart: { type: 'string', format: 'date', example: '2026-07-06' },
+            weekEnd: { type: 'string', format: 'date', example: '2026-07-12' },
+            sent: { type: 'integer', example: 190 },
+            converted: { type: 'integer', example: 61 },
+            cumulative: { type: 'integer', description: 'Running total of signups.', example: 284 },
+          })),
+        })),
+        ...adminErrors,
+      },
+    },
+  },
+
+  '/admin/console/referrals/travellers': {
+    get: {
+      tags: [TAG],
+      summary: 'Every Traveller in the referral competition',
+      description: [
+        'A **Traveller** is anyone with a referral link (created the first time they open their invite screen) or anyone who joined through someone else\'s link. Travellers with no signups yet are included — they are who you look at to find stalled referrers.',
+        '',
+        'Per-row figures match what that person sees on their own invite screen: `signups`/`successful`/`pending` are **direct** referrals only, while `countriesReached` spans their **whole network** at any depth. `points` is counted (not voided) points.',
+        '',
+        '`sort`: `points` (default), `signups` (verified signups), or `recent` (newest account first). Ties break on user id, so paging never repeats or skips a row.',
+      ].join('\n'),
+      parameters: [
+        param('q', 'query', { type: 'string', maxLength: 200 }, 'Matches name, email or username.'),
+        param('sort', 'query', { type: 'string', enum: ['points', 'signups', 'recent'], default: 'points' }, 'Ordering.'),
+        ...pagingParams,
+      ],
+      responses: {
+        200: json('The page.', object({
+          travellers: arrayOf(object({
+            id: { type: 'integer', example: 42 },
+            name: { type: 'string', example: 'Kwame Mensah' },
+            username: { type: 'string', nullable: true, example: 'kwame' },
+            email: { type: 'string', example: 'kwame@example.com' },
+            countryCode: { type: 'string', nullable: true, example: 'GH' },
+            city: { type: 'string', nullable: true, example: 'Accra' },
+            joinedAt: { type: 'string', format: 'date-time' },
+            referredBy: {
+              type: 'object',
+              nullable: true,
+              description: 'Who brought them in. Null for someone who started their own branch.',
+              properties: { id: { type: 'integer', example: 7 }, name: { type: 'string', example: 'Ama Owusu' } },
+            },
+            invitesSent: { type: 'integer', example: 12 },
+            clicks: { type: 'integer', example: 30 },
+            signups: { type: 'integer', example: 9 },
+            successful: { type: 'integer', example: 8 },
+            pending: { type: 'integer', description: 'Signed up, not yet verified.', example: 1 },
+            countriesReached: { type: 'integer', example: 4 },
+            points: { type: 'integer', example: 120 },
+          })),
+          total: { type: 'integer', example: 530 },
+        })),
+        400: json('Validation failed.', ref('ValidationError')),
+        ...adminErrors,
+      },
+    },
+  },
+
   '/admin/console/customers': {
     get: {
       tags: [TAG],
