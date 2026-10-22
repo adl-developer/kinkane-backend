@@ -10,6 +10,7 @@
 
 ### Bug Fixes
 
+* stop community search returning loosely related people, groups and posts ([51ce619](https://adl.github.com/adl-developer/kinkane-backend/commit/51ce6194a942739f98c38c60dbf142e5c42b6a08)) — [details](changelog/2026-10-22-community-fuzzy-threshold.md)
 * send the restock team email to the admin console, with the book's ISBN, and update the customer's wording ([530e0ef](https://adl.github.com/adl-developer/kinkane-backend/commit/530e0ef7eaa73754881069b8841e3e85d9831f84)) — [details](changelog/2026-10-22-restock-email-links.md)
 
 
