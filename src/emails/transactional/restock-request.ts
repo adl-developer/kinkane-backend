@@ -8,7 +8,7 @@ export interface RestockEmailBook {
   /** "Paperback", "Hardcover", …, or null when the format is unknown. */
   format: string | null;
   coverUrl: string | null;
-  /** The book's page in the web shop. */
+  /** The book's page in the web shop. Used by the customer email; staff get the console. */
   url: string;
 }
 
@@ -28,6 +28,15 @@ export function requesterLabel(name: string | null, email: string | null): strin
 }
 
 /**
+ * The console's Restock Requests page, searched to one ISBN, so the admin email
+ * opens on that book's card rather than on the whole list. The console lives in
+ * the web app (ADMIN_CONSOLE_URL), not on this server. Exported for the tests.
+ */
+export function restockConsoleUrl(isbn13: string): string {
+  return `${config.adminConsoleUrl}/restock-requests?q=${encodeURIComponent(isbn13)}`;
+}
+
+/**
  * The staff notification for one restock request, to RESTOCK_INBOX.
  *
  * Sent **from** EMAIL_CONTACT_FROM (contactus@), not the no-reply sender the
@@ -38,21 +47,23 @@ export function requesterLabel(name: string | null, email: string | null): strin
  */
 export async function sendRestockRequestAdminEmail(payload: {
   reference: string;
+  isbn13: string;
   name: string | null;
   email: string | null;
   book: RestockEmailBook;
 }): Promise<void> {
   const { book } = payload;
+  const consoleUrl = restockConsoleUrl(payload.isbn13);
   const who = requesterLabel(payload.name, payload.email);
   const subject = `Restock request: ${titleWithFormat(book)}`;
   const author = book.author ?? 'Author unknown';
 
   const body = [
     p(`${escapeHtml(who)} has requested a restocking of this book:`),
-    bookCard(escapeHtml(titleWithFormat(book)), escapeHtml(author), book.coverUrl, book.url),
-    p(`<a href="${book.url}" style="color:#262626;">View the book on kinkane.app</a>`),
+    bookCard(escapeHtml(titleWithFormat(book)), escapeHtml(author), book.coverUrl, consoleUrl),
+    p(`<a href="${consoleUrl}" style="color:#262626;">View this request in the admin console</a>`),
     p('Please contact your publisher to request restocking of the book.'),
-    p(`Reference: ${escapeHtml(payload.reference)}`, true),
+    p(`Reference: ${escapeHtml(payload.reference)}<br />ISBN: ${escapeHtml(payload.isbn13)}`, true),
   ].join('\n');
 
   await sendEmail({
@@ -65,11 +76,12 @@ export async function sendRestockRequestAdminEmail(payload: {
       '',
       titleWithFormat(book),
       `by ${author}`,
-      book.url,
+      consoleUrl,
       '',
       'Please contact your publisher to request restocking of the book.',
       '',
       `Reference: ${payload.reference}`,
+      `ISBN: ${payload.isbn13}`,
     ].join('\n'),
   });
 }
@@ -87,8 +99,7 @@ export async function sendRestockRequestCustomerEmail(
 ): Promise<void> {
   const subject = 'We’ve passed on your restock request';
   const author = book.author ?? 'Author unknown';
-  const message =
-    'We’ve told the Kinkané team you’re after this book. They’ll be in touch if they can get it back in stock.';
+  const message = 'We’ve received your request to restock this book. We’ll be in touch when it’s back in stock.';
 
   const body = [
     greeting(name ? escapeHtml(name) : 'there'),

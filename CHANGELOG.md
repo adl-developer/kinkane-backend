@@ -1,6 +1,17 @@
 # Changelog
 
 
+## 2026-10-22
+
+### Features
+
+* email the Kinkané team and the customer about each restock request ([7a3e726](https://adl.github.com/adl-developer/kinkane-backend/commit/7a3e7260dc996b57def15346f17033dacf4292cf)) — [details](changelog/2026-10-22-restock-request-emails.md)
+
+### Bug Fixes
+
+* send the restock team email to the admin console, with the book's ISBN, and update the customer's wording ([530e0ef](https://adl.github.com/adl-developer/kinkane-backend/commit/530e0ef7eaa73754881069b8841e3e85d9831f84)) — [details](changelog/2026-10-22-restock-email-links.md)
+
+
 ## 2026-10-19
 
 ### Features

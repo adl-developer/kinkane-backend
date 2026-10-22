@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   requesterLabel,
+  restockConsoleUrl,
   sendRestockRequestAdminEmail,
   sendRestockRequestCustomerEmail,
   type RestockEmailBook,
@@ -31,7 +32,7 @@ beforeEach(() => {
 
 describe('restock request: staff email', () => {
   it('goes to the restock inbox, from the contact address, with no reply-to', async () => {
-    await sendRestockRequestAdminEmail({ reference: 'RR001', name: 'Amara Diallo', email: 'amara@example.com', book: BOOK });
+    await sendRestockRequestAdminEmail({ reference: 'RR001', isbn13: '9780593318256', name: 'Amara Diallo', email: 'amara@example.com', book: BOOK });
     const [msg] = sent;
     expect(msg.to).toBe(config.email.restockInbox);
     expect(msg.from).toContain(`<${config.email.contactFrom}>`);
@@ -39,27 +40,38 @@ describe('restock request: staff email', () => {
     expect(msg.subject).toBe('Restock request: Wandering Stars (Paperback)');
   });
 
-  it('says who asked, shows the book, links it, and asks for the publisher to be contacted', async () => {
-    await sendRestockRequestAdminEmail({ reference: 'RR001', name: 'Amara Diallo', email: 'amara@example.com', book: BOOK });
+  it('says who asked, shows the book, and asks for the publisher to be contacted', async () => {
+    await sendRestockRequestAdminEmail({ reference: 'RR001', isbn13: '9780593318256', name: 'Amara Diallo', email: 'amara@example.com', book: BOOK });
     const { html, text } = sent[0];
     expect(text).toContain('Amara Diallo (amara@example.com) has requested a restocking of this book:');
     expect(html).toContain(BOOK.coverUrl);
     expect(html).toContain('Wandering Stars (Paperback)');
     expect(html).toContain('by Tommy Orange');
-    expect(html).toContain(`href="${BOOK.url}"`);
     expect(text).toContain('Please contact your publisher to request restocking of the book.');
-    expect(text).toContain('Reference: RR001');
+    expect(text).toContain('Reference: RR001\nISBN: 9780593318256');
+    expect(html).toContain('Reference: RR001<br />ISBN: 9780593318256');
+  });
+
+  it('links to the request in the admin console, never to the shop or the server', async () => {
+    await sendRestockRequestAdminEmail({ reference: 'RR001', isbn13: '9780593318256', name: null, email: null, book: BOOK });
+    const { html, text } = sent[0];
+    const consoleUrl = `${config.adminConsoleUrl}/restock-requests?q=9780593318256`;
+    expect(restockConsoleUrl('9780593318256')).toBe(consoleUrl);
+    expect(html).toContain(`href="${consoleUrl}"`);
+    expect(text).toContain(consoleUrl);
+    expect(html).not.toContain(BOOK.url);
+    expect(text).not.toContain(BOOK.url);
   });
 
   it('escapes what the customer typed', async () => {
-    await sendRestockRequestAdminEmail({ reference: 'RR002', name: '<img src=x onerror=alert(1)>', email: null, book: BOOK });
+    await sendRestockRequestAdminEmail({ reference: 'RR002', isbn13: '9780593318256', name: '<img src=x onerror=alert(1)>', email: null, book: BOOK });
     expect(sent[0].html).not.toContain('<img src=x');
     expect(sent[0].html).toContain('&lt;img src=x');
   });
 
   it('copes with a book that has no cover or author', async () => {
     await sendRestockRequestAdminEmail({
-      reference: 'RR003', name: null, email: null,
+      reference: 'RR003', isbn13: '9780593318256', name: null, email: null,
       book: { ...BOOK, coverUrl: null, author: null, format: null },
     });
     expect(sent[0].html).not.toContain('alt="Wandering Stars');
@@ -84,13 +96,14 @@ describe('restock request: customer email', () => {
     expect(sent[0].from).toBe('Kinkané <no-reply@kinkane.app>');
   });
 
-  it('confirms the request without promising to tell them when it is back', async () => {
+  it('confirms the request in the agreed words, linking the shop page', async () => {
     await sendRestockRequestCustomerEmail('amara@example.com', 'Amara', BOOK);
     const { text, html } = sent[0];
     expect(text).toMatch(/^Hi Amara,/);
-    expect(text).toContain('They’ll be in touch if they can get it back in stock.');
-    expect(text).not.toMatch(/we.ll (let you know|notify)/i);
+    expect(text).toContain('We’ve received your request to restock this book. We’ll be in touch when it’s back in stock.');
     expect(html).toContain('Wandering Stars (Paperback)');
+    // The customer is sent to the shop's book page, not the console.
+    expect(html).toContain(`href="${BOOK.url}"`);
   });
 
   it('greets someone who gave no name', async () => {
