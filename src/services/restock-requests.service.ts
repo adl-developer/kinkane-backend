@@ -179,7 +179,7 @@ export const restockRequestsService = {
       coverUrl: book.coverUrl,
       url: `${config.appUrl}/books/${input.bookId}`,
     };
-    await sendRestockEmails(reference, contact, emailBook);
+    await sendRestockEmails(reference, isbn13, contact, emailBook);
 
     return { reference };
   },
@@ -205,13 +205,14 @@ export const CUSTOMER_EMAILS_PER_DAY = 3;
  */
 async function sendRestockEmails(
   reference: string,
+  isbn13: string,
   contact: { name: string | null; email: string | null },
   book: RestockEmailBook,
 ): Promise<void> {
   const customerEmail = contact.email ? await customerEmailAllowed(contact.email) : false;
 
   const [admin, customer] = await Promise.allSettled([
-    sendRestockRequestAdminEmail({ reference, name: contact.name, email: contact.email, book }),
+    sendRestockRequestAdminEmail({ reference, isbn13, name: contact.name, email: contact.email, book }),
     customerEmail ? sendRestockRequestCustomerEmail(contact.email as string, contact.name, book) : Promise.resolve(),
   ]);
 

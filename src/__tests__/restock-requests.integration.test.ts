@@ -400,6 +400,7 @@ describeIfDb('restock requests', () => {
 
       expect(adminEmail).toHaveBeenCalledWith({
         reference,
+        isbn13: ISBN.outOfStockHardback,
         name: 'Yuki Tanaka',
         email: EMAIL_PREFIX + 'yuki@readjapan.jp',
         book: {
