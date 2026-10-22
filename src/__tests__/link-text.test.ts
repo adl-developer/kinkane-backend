@@ -65,7 +65,26 @@ describe('findUrls', () => {
   });
 
   it('does not treat bare words or a scheme mid-word as addresses', () => {
-    expect(typed('example.com and foohttps://a.com')).toEqual([]);
+    expect(typed('example and foohttps://a.com')).toEqual([]);
+  });
+
+  it('finds bare names ending in .com, .net, .org or .co.uk', () => {
+    expect(typed('try google.com, bbc.co.uk/news and Wikipedia.org/wiki/Dune. or x.net?')).toEqual([
+      'google.com',
+      'bbc.co.uk/news',
+      'Wikipedia.org/wiki/Dune',
+      'x.net',
+    ]);
+    expect(findUrls('see goodreads.com/book/1')[0].url).toBe('https://goodreads.com/book/1');
+  });
+
+  it('leaves other bare endings, longer names and email addresses alone', () => {
+    expect(typed('example.io google.com.au x.community ama@gmail.com @ama.com sub-x.com.')).toEqual(['sub-x.com']);
+    expect(typed('archive.org/web and www.archive.org')).toEqual(['archive.org/web', 'www.archive.org']);
+  });
+
+  it('splits a pasted markdown link at its square brackets', () => {
+    expect(typed('[www.google.com](https://www.google.com)')).toEqual(['www.google.com', 'https://www.google.com']);
   });
 
   it('leaves out the curly quotes phone keyboards type around an address', () => {
