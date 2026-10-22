@@ -7,6 +7,10 @@
 
 * email the Kinkané team and the customer about each restock request ([7a3e726](https://adl.github.com/adl-developer/kinkane-backend/commit/7a3e7260dc996b57def15346f17033dacf4292cf)) — [details](changelog/2026-10-22-restock-request-emails.md)
 
+### Bug Fixes
+
+* stop community search returning loosely related people, groups and posts ([51ce619](https://adl.github.com/adl-developer/kinkane-backend/commit/51ce6194a942739f98c38c60dbf142e5c42b6a08)) — [details](changelog/2026-10-22-community-search-closer-matches.md)
+
 
 ## 2026-10-19
 
