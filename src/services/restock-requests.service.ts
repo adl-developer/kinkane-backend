@@ -1,10 +1,14 @@
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, gte, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { books, gardnersMarketRestrictions, gardnersStock, restockRequests, users } from '../db/schema';
 import { isRestricted } from './commerce/availability.service';
 import { gardnersRegionsForCountry } from './commerce/gardners-regions';
 import { adminNotificationsService } from './admin/notifications.service';
 import { getProductFormLabel } from '../lib/product-form';
+import { sendRestockRequestAdminEmail, sendRestockRequestCustomerEmail } from '../emails';
+import type { RestockEmailBook } from '../emails/transactional/restock-request';
+import { logger } from '../lib/logger';
+import { config } from '../config';
 import { UNSUPPLIABLE_REPORT_CODE_SET, isSupplyToOrder } from '../lib/shoppable';
 
 export interface RestockSubmission {
@@ -99,8 +103,9 @@ export const restockRequestsService = {
    * Not de-duplicated, on purpose — see the table.
    *
    * The row and its reference are written in one transaction, so a request
-   * never exists without its RR number. The bell entry follows and never fails
-   * the request. The admin email is a later phase; `admin_emailed_at` stays null.
+   * never exists without its RR number. The bell entry and the two emails
+   * follow, and none of them can fail the request: from the customer's side it
+   * was sent, and it was — the row exists.
    */
   async submit(input: RestockSubmission): Promise<{ reference: string }> {
     // The edition and its stock in one query, its restriction rows alongside.
@@ -111,6 +116,15 @@ export const restockRequestsService = {
           title: books.title,
           isbn13: books.isbn13,
           productForm: books.productForm,
+          coverUrl: books.coverUrl,
+          // The primary author, for the emails. Aliased explicitly: a bare
+          // column here would print as "id" and bind to book_contributors.
+          author: sql<string | null>`(
+            SELECT bc.person_name FROM book_contributors bc
+            WHERE bc.book_id = ${input.bookId}
+            ORDER BY bc.sequence_number NULLS LAST, bc.id
+            LIMIT 1
+          )`,
           isRemoved: books.isRemoved,
           rrpGbp: gardnersStock.rrpGbp,
           stockQty: gardnersStock.stockQty,
@@ -158,9 +172,84 @@ export const restockRequestsService = {
       userId: input.userId ?? undefined,
     });
 
+    const emailBook: RestockEmailBook = {
+      title: book.title,
+      author: book.author,
+      format,
+      coverUrl: book.coverUrl,
+      url: `${config.appUrl}/books/${input.bookId}`,
+    };
+    await sendRestockEmails(reference, contact, emailBook);
+
     return { reference };
   },
 };
+
+/** At most this many confirmation emails a day to one address. See sendRestockEmails. */
+export const CUSTOMER_EMAILS_PER_DAY = 3;
+
+/**
+ * The staff email and, when there is an address to send it to, the customer's.
+ *
+ * Both are attempted together, and a failure is logged rather than thrown. The
+ * staff email stamps `admin_emailed_at` when it actually goes out, so a null
+ * there marks a request somebody has to notice another way — the bell and the
+ * console list still have it.
+ *
+ * **The customer email is capped per address.** The form is public and takes
+ * any address, so without a cap it would let anyone use our sender to mail a
+ * stranger, twenty times an hour per IP. The request is always stored; only the
+ * email is skipped once an address has had CUSTOMER_EMAILS_PER_DAY today. The
+ * count is of requests carrying that address in the last 24 hours, this one
+ * included, so it needs no extra column.
+ */
+async function sendRestockEmails(
+  reference: string,
+  contact: { name: string | null; email: string | null },
+  book: RestockEmailBook,
+): Promise<void> {
+  const customerEmail = contact.email ? await customerEmailAllowed(contact.email) : false;
+
+  const [admin, customer] = await Promise.allSettled([
+    sendRestockRequestAdminEmail({ reference, name: contact.name, email: contact.email, book }),
+    customerEmail ? sendRestockRequestCustomerEmail(contact.email as string, contact.name, book) : Promise.resolve(),
+  ]);
+
+  if (admin.status === 'fulfilled') {
+    await db
+      .update(restockRequests)
+      .set({ adminEmailedAt: new Date() })
+      .where(eq(restockRequests.reference, reference))
+      .catch((err: Error) => logger.error('Restock email sent but not recorded', { reference, error: err.message }));
+  } else {
+    logger.error('Restock request stored but the admin email failed', {
+      reference,
+      error: (admin.reason as Error).message,
+    });
+  }
+
+  if (customer.status === 'rejected') {
+    logger.error('Restock request stored but the customer email failed', {
+      reference,
+      error: (customer.reason as Error).message,
+    });
+  }
+}
+
+async function customerEmailAllowed(email: string): Promise<boolean> {
+  // The window is the database's clock, the same one that stamped created_at,
+  // so a server whose clock differs from the database's cannot widen or close it.
+  const [row] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(restockRequests)
+    .where(
+      and(
+        sql`lower(${restockRequests.email}) = lower(${email})`,
+        gte(restockRequests.createdAt, sql`now() - interval '24 hours'`),
+      ),
+    );
+  return Number(row.n) <= CUSTOMER_EMAILS_PER_DAY;
+}
 
 /**
  * The name and email to file the request under.
