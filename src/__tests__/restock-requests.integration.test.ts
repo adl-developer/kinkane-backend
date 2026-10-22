@@ -48,6 +48,15 @@ if (testUrl) {
 
 // The admin router is mounted for real below; its limiters need Redis and its
 // controllers pull in the mail and push queues.
+// Never send real mail from a test: the restock flow emails staff and customer.
+const { adminEmail, customerEmail } = vi.hoisted(() => ({
+  adminEmail: vi.fn().mockResolvedValue(undefined),
+  customerEmail: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock('../emails', () => ({
+  sendRestockRequestAdminEmail: adminEmail,
+  sendRestockRequestCustomerEmail: customerEmail,
+}));
 vi.mock('../lib/email-queue', () => ({ enqueueEmail: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../lib/push-queue', () => ({ enqueuePush: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../middleware/rate-limit.middleware', () => {
@@ -176,7 +185,8 @@ describeIfDb('restock requests', () => {
       const [row] = await db.execute<{ name: string; email: string; status: string; admin_emailed_at: Date | null }>(sql`
         SELECT name, email, status, admin_emailed_at FROM restock_requests WHERE reference = ${reference}
       `);
-      expect(row).toMatchObject({ name: 'Priya Nair', email: EMAIL_PREFIX + 'priya@books.in', status: 'pending', admin_emailed_at: null });
+      expect(row).toMatchObject({ name: 'Priya Nair', email: EMAIL_PREFIX + 'priya@books.in', status: 'pending' });
+      expect(row.admin_emailed_at).not.toBeNull();
     });
 
     it('rings the admin bell with the title and format', async () => {
@@ -373,6 +383,79 @@ describeIfDb('restock requests', () => {
       `);
       const result = await badges.badges();
       expect(result.restockRequests).toBe(n);
+    });
+  });
+
+  describe('the emails', () => {
+    async function row(reference: string) {
+      const [r] = await db.execute<{ admin_emailed_at: Date | null }>(sql`
+        SELECT admin_emailed_at FROM restock_requests WHERE reference = ${reference}
+      `);
+      return r;
+    }
+
+    it('emails staff with who asked and the book, and records that it went', async () => {
+      adminEmail.mockClear();
+      const { reference } = await submit('outOfStockHardback', { name: 'Yuki Tanaka', email: EMAIL_PREFIX + 'yuki@readjapan.jp' });
+
+      expect(adminEmail).toHaveBeenCalledWith({
+        reference,
+        name: 'Yuki Tanaka',
+        email: EMAIL_PREFIX + 'yuki@readjapan.jp',
+        book: {
+          title: `${TITLE_PREFIX} Wandering Stars`,
+          author: 'Tommy Orange',
+          format: 'Hardcover',
+          coverUrl: null,
+          url: expect.stringMatching(new RegExp(`/books/${bookIds.outOfStockHardback}$`)),
+        },
+      });
+      expect((await row(reference)).admin_emailed_at).not.toBeNull();
+    });
+
+    it('sends the customer a confirmation when there is an address, and not when there is none', async () => {
+      customerEmail.mockClear();
+      await submit('outOfStockHardback', { email: EMAIL_PREFIX + 'once@example.com' });
+      expect(customerEmail).toHaveBeenCalledWith(
+        EMAIL_PREFIX + 'once@example.com',
+        null,
+        expect.objectContaining({ format: 'Hardcover' }),
+      );
+
+      customerEmail.mockClear();
+      await submit('outOfStockHardback');
+      expect(customerEmail).not.toHaveBeenCalled();
+    });
+
+    it('emails a signed-in customer at their account address', async () => {
+      customerEmail.mockClear();
+      await submit('outOfStockHardback', { userId: realUserId });
+      expect(customerEmail).toHaveBeenCalledWith(EMAIL_PREFIX + 'amara@example.com', 'Amara Diallo', expect.anything());
+    });
+
+    it('stops emailing one address after three requests in a day, but keeps storing them', async () => {
+      const address = EMAIL_PREFIX + 'Capped@Example.com';
+      customerEmail.mockClear();
+      for (let i = 0; i < 4; i++) {
+        // Mixed case on the last one: the cap is per address, not per spelling.
+        await submit('outOfStockHardback', { email: i === 3 ? address.toLowerCase() : address });
+      }
+      expect(customerEmail).toHaveBeenCalledTimes(3);
+      const [{ n }] = await db.execute<{ n: number }>(sql`
+        SELECT count(*)::int AS n FROM restock_requests WHERE lower(email) = lower(${address})
+      `);
+      expect(n).toBe(4);
+    });
+
+    it('still files the request when the staff email fails, and leaves it marked unsent', async () => {
+      adminEmail.mockRejectedValueOnce(new Error('Resend is down'));
+      const { reference } = await submit('outOfStockHardback');
+      expect((await row(reference)).admin_emailed_at).toBeNull();
+    });
+
+    it('still files the request when the customer email fails', async () => {
+      customerEmail.mockRejectedValueOnce(new Error('Resend is down'));
+      await expect(submit('outOfStockHardback', { email: EMAIL_PREFIX + 'fails@example.com' })).resolves.toHaveProperty('reference');
     });
   });
 

@@ -201,6 +201,13 @@ const envSchema = z.object({
   // form still works before anyone sets up a dedicated support mailbox — it
   // just means support mail arrives wherever hello@ goes.
   SUPPORT_INBOX: z.string().email().optional(),
+  // Where restock requests are emailed, one email per request. Its own setting
+  // rather than SUPPORT_INBOX, so restock mail can be routed separately later
+  // without moving contact-form mail with it.
+  RESTOCK_INBOX: z.string().email().default('contactus@kinkane.app'),
+  // The sender for emails *to staff* (today, the restock notification). Customer
+  // emails keep EMAIL_FROM. Must be on the domain verified with Resend.
+  EMAIL_CONTACT_FROM: z.string().email().default('contactus@kinkane.app'),
   EMAIL_FROM_NAME: z.string().default('Kinkané'),
 
   // Base client URL, and the single source of truth for every user-facing link
@@ -902,6 +909,8 @@ export const config = {
     from: env.EMAIL_FROM,
     fromName: env.EMAIL_FROM_NAME,
     supportInbox: env.SUPPORT_INBOX ?? env.EMAIL_FROM,
+    restockInbox: env.RESTOCK_INBOX,
+    contactFrom: env.EMAIL_CONTACT_FROM,
   },
   appUrl: env.APP_URL,
   shortLinkUrl: (env.SHORT_LINK_URL ?? `${env.APP_URL}/l`).replace(/\/+$/, ''),

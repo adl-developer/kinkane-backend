@@ -15,6 +15,7 @@ export { sendSubscriptionPaymentFailedEmail } from './transactional/subscription
 export { sendSubscriptionCancelledEmail } from './transactional/subscription-cancelled';
 export { sendReferralInviteEmail } from './transactional/referral-invite';
 export { sendContactMessageEmail } from './transactional/contact-message';
+export { sendRestockRequestAdminEmail, sendRestockRequestCustomerEmail } from './transactional/restock-request';
 export { sendOrderConfirmedEmail } from './transactional/order-confirmed';
 export type { OrderConfirmedPayload, OrderConfirmedItem } from './transactional/order-confirmed';
 

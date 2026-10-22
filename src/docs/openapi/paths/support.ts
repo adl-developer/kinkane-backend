@@ -62,7 +62,9 @@ export const supportPaths = {
         '',
         '`website` is a honeypot, as on the contact form: leave it empty and hide it.',
         '',
-        '**Confirmation copy.** Nobody emails the customer automatically; the admin contacts them by hand. So do not promise a notification. The agreed wording is: *"Request sent. We’ve told the Kinkané team you’re after the Paperback."* (with the edition’s format).',
+        '**Emails.** Every request emails the Kinkané team (from contactus@, to `RESTOCK_INBOX`) with who asked, the cover, title, author and a link to the book. When there is an address — the form’s, or a signed-in account’s — the customer also gets a short confirmation from no-reply@, capped at **3 a day per address** so the form cannot be used to mail a stranger; past the cap the request is still stored. A failed send never fails the request.',
+        '',
+        '**Confirmation copy.** The confirmation email does not promise a notification when the book is back, because nobody sends one: the admin contacts the customer by hand. Match that on screen. The agreed wording is: *"Request sent. We’ve told the Kinkané team you’re after the Paperback."* (with the edition’s format).',
       ].join('\n'),
       parameters: [param('id', 'path', { type: 'integer' }, 'The **edition** the customer is looking at: the selected format’s book id.', { required: true })],
       requestBody: body(object({
