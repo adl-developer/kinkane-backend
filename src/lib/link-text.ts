@@ -73,19 +73,43 @@ const TOKEN_RE = /\{\{l:(\d+)\}\}/g;
 /** For drift checks against SQL that matches the same token (drizzle/0085). */
 export const LINK_TOKEN_RE = TOKEN_RE;
 
-// A typed address: `http://`, `https://` or `www.` at a word boundary, up to
-// whitespace or a character that cannot sit in an address unencoded and
-// usually wraps one: `<`, `>`, `"`, the curly double quotes and guillemets
+// Where a typed address ends: whitespace, or a character that cannot sit in an
+// address unencoded and usually wraps one: `<`, `>`, `"`, square brackets (a
+// pasted `[www.x.com](https://x.com)`), the curly double quotes and guillemets
 // phone keyboards type in place of `"`, an ellipsis, or an emoji. Without
 // those, `“https://x.com/a”` or `https://x.com/a🔥` would store the quote or
 // emoji as part of the address and send readers to a page that doesn't exist.
-// Trailing punctuation is trimmed after.
-const URL_RE = /\b(?:https?:\/\/|www\.)[^\s<>"\u201C\u201D\u201E\u00AB\u00BB\u2039\u203A\u2026\p{Extended_Pictographic}]+/giu;
+const ADDRESS_END = String.raw`\s<>"\[\]“”„«»‹›…\p{Extended_Pictographic}`;
+
+/**
+ * Endings that make a bare name an address without `http://` or `www.` —
+ * `goodreads.com`, `bbc.co.uk/news`. Kept to a short list: every ending added
+ * here turns more ordinary words-with-dots into links.
+ */
+export const BARE_DOMAIN_ENDINGS = ['com', 'net', 'org', 'co.uk'] as const;
+
+const BARE_ENDING = BARE_DOMAIN_ENDINGS.map((e) => e.replace(/\./g, '\\.')).join('|');
+
+// A typed address, either
+//  - `http://`, `https://` or `www.` at a word boundary, or
+//  - a bare dotted name ending in one of BARE_DOMAIN_ENDINGS, optionally with a
+//    path. Not when it follows `@` (an email address or a handle), `.`, `/` or
+//    a letter (part of something longer), nor when more name follows
+//    (`google.com.au`, `x.community`).
+// Either runs up to ADDRESS_END; trailing punctuation is trimmed after.
+const URL_RE = new RegExp(
+  String.raw`\b(?:https?:\/\/|www\.)[^${ADDRESS_END}]+` +
+    String.raw`|(?<![\p{L}\p{N}_@.\/-])(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+(?:${BARE_ENDING})(?![\p{L}\p{N}_-]|\.[\p{L}\p{N}])(?:[\/?#][^${ADDRESS_END}]*)?`,
+  'giu',
+);
+
+/** True when `raw` already starts with a scheme (`https://`, `ftp://`); otherwise https is assumed. */
+const HAS_SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i;
 
 // ASCII sentence punctuation, curly single quotes (typed for `'`), and the
 // full-width punctuation CJK keyboards use.
 const TRAILING_PUNCTUATION = /[.,;:!?'*\u2018\u2019\u3001\u3002\uFF01\uFF0C\uFF1A\uFF1B\uFF1F\uFF09]+$/u;
-const BRACKETS: [string, string][] = [['(', ')'], ['[', ']'], ['{', '}']];
+const BRACKETS: [string, string][] = [['(', ')'], ['{', '}']];
 
 function count(s: string, ch: string): number {
   return s.split(ch).length - 1;
@@ -115,7 +139,7 @@ function trimTrailing(raw: string): string {
  * like `https://bank.com@evil.example` reads as the bank and goes to the other.
  */
 export function normalizeUrl(raw: string): string | null {
-  const withScheme = /^www\./i.test(raw) ? `https://${raw}` : raw;
+  const withScheme = HAS_SCHEME.test(raw) ? raw : `https://${raw}`;
   let parsed: URL;
   try {
     parsed = new URL(withScheme);
@@ -186,7 +210,7 @@ export function shortLinkCode(url: string, ownHosts: readonly string[]): string 
   if (ownHosts.length === 0) return null;
   let parsed: URL;
   try {
-    parsed = new URL(/^www\./i.test(url) ? `https://${url}` : url);
+    parsed = new URL(HAS_SCHEME.test(url) ? url : `https://${url}`);
   } catch {
     return null;
   }
