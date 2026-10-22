@@ -82,7 +82,7 @@ function buildUserSearchCondition(q: string): SQL {
     ${users.name} ILIKE ${prefix}
     OR ${users.name} ILIKE ${wordPrefix}
     OR ${users.username} LIKE ${usernameLikePrefix(q)}
-    OR word_similarity(${q}, ${users.name}) > 0.3
+    OR word_similarity(${q}, ${users.name}) > 0.5
     ${fts}
   )`;
 }
@@ -97,7 +97,7 @@ function buildUserSearchOrderBy(q: string): SQL[] {
     sql`CASE
       WHEN ${users.name} ILIKE ${prefix}     THEN 0
       WHEN ${users.name} ILIKE ${wordPrefix} THEN 1
-      WHEN word_similarity(${q}, ${users.name}) > 0.3 THEN 2
+      WHEN word_similarity(${q}, ${users.name}) > 0.5 THEN 2
       ELSE 3
     END`,
     sql`word_similarity(${q}, ${users.name}) DESC`,
@@ -179,7 +179,7 @@ export function buildPostSearchCondition(q: string): SQL {
       sql`(
         ${titleMatch.title} ILIKE ${prefix}
         OR ${titleMatch.title} ILIKE ${wordPrefix}
-        OR word_similarity(${q}, ${titleMatch.title}) > 0.3
+        OR word_similarity(${q}, ${titleMatch.title}) > 0.5
         ${bookFts}
       )`,
     ));
@@ -211,7 +211,7 @@ function buildPostSearchOrderBy(q: string): SQL[] {
       WHEN ${books.title} ILIKE ${wordPrefix} THEN 1
       WHEN ${postWordingMatch(posts.searchText, q)} THEN 2
       ${bodyWordsTier}
-      WHEN word_similarity(${q}, ${books.title}) > 0.3 THEN 4
+      WHEN word_similarity(${q}, ${books.title}) > 0.5 THEN 4
       ELSE 5
     END`;
   const titleCloseness = sql`word_similarity(${q}, ${books.title})`;

@@ -268,7 +268,7 @@ export function buildGroupSearchCondition(q: string): SQL {
   return sql`(
     ${groups.name} ILIKE ${prefix}
     OR ${groups.name} ILIKE ${wordPrefix}
-    OR word_similarity(${q}, ${groups.name}) > 0.3
+    OR word_similarity(${q}, ${groups.name}) > 0.5
     ${fts}
   )`;
 }
@@ -288,7 +288,7 @@ export function buildGroupSearchOrderBy(q: string): SQL[] {
     sql`CASE
       WHEN ${groups.name} ILIKE ${prefix}     THEN 0
       WHEN ${groups.name} ILIKE ${wordPrefix} THEN 1
-      WHEN word_similarity(${q}, ${groups.name}) > 0.3 THEN 2
+      WHEN word_similarity(${q}, ${groups.name}) > 0.5 THEN 2
       ELSE 3
     END`,
     sql`word_similarity(${q}, ${groups.name}) DESC`,
