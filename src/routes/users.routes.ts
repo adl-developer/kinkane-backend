@@ -19,6 +19,8 @@ router.get('/follow-requests',                      wrap(usersController.listPen
 router.patch('/follow-requests/:requestId/accept',  wrap(usersController.acceptFollowRequest));
 router.patch('/follow-requests/:requestId/decline', wrap(usersController.declineFollowRequest));
 router.get('/by-username/:username',                wrapHttp(usersController.getUserProfileByUsername));
+// The people the caller has blocked — Settings → Blocked users.
+router.get('/blocks',                               wrapHttp(usersController.listBlockedUsers));
 
 router.get('/:userId',           wrap(usersController.getUserProfile));
 router.get('/:userId/books',     wrap(usersController.getUserBooks));
@@ -30,5 +32,8 @@ router.get('/:userId/following', wrap(usersController.listFollowing));
 router.get('/:userId/groups',    wrapHttp(groupsController.listForUser));
 router.post('/:userId/follow', followRequestLimiter, wrapHttp(usersController.sendFollowRequest));
 router.delete('/:userId/follow', wrap(usersController.withdrawFollowRequest));
+// Blocking: see services/blocks.service.ts for what a block does.
+router.post('/:userId/block',   wrapHttp(usersController.blockUser));
+router.delete('/:userId/block', wrapHttp(usersController.unblockUser));
 
 export default router;

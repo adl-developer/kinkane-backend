@@ -617,6 +617,13 @@
       "when": 1792430945257,
       "tag": "0087_restock_requests",
       "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "7",
+      "when": 1792764252089,
+      "tag": "0088_user_blocks",
+      "breakpoints": true
     }
   ]
 }

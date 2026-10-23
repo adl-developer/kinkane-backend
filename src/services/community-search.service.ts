@@ -10,6 +10,7 @@ import { withRenderedMentions } from './mentions.service';
 import { likePrefix, likeWordPrefix } from '../lib/escape-like';
 import { plainTsQuery } from '../lib/tsquery';
 import { toFollowStatus, type FollowStatus } from './users.service';
+import { notBlockedBetween } from './blocks.service';
 import type { MentionRef } from '../lib/mention-text';
 import type { LinkRef } from '../lib/link-text';
 
@@ -240,7 +241,8 @@ async function searchUsers(
   limit: number,
   offset: number,
 ): Promise<{ results: UserResult[]; total: number }> {
-  const where = buildUserSearchCondition(q);
+  // A blocked pair don't find each other, whichever of them placed the block.
+  const where = and(buildUserSearchCondition(q), notBlockedBetween(requesterId, users.id));
   const orderBy = buildUserSearchOrderBy(q);
 
   const [rows, [countRow]] = await Promise.all([
@@ -285,7 +287,7 @@ async function searchPosts(
   limit: number,
   offset: number,
 ): Promise<{ results: PostItem[]; total: number }> {
-  const where = and(eq(posts.isPublic, true), buildPostSearchCondition(q));
+  const where = and(eq(posts.isPublic, true), buildPostSearchCondition(q), notBlockedBetween(requesterId, posts.userId));
   const orderBy = buildPostSearchOrderBy(q);
 
   const [rows, [countRow]] = await Promise.all([

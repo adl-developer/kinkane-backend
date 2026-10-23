@@ -11,6 +11,10 @@
 
 * limit account deletion attempts to 10 an hour per account ([f6b82c7](https://adl.github.com/adl-developer/kinkane-backend/commit/f6b82c7dc5d83a597df8d4cc407e93bd486b6e05)) — [details](changelog/2026-10-23-social-account-deletion.md)
 
+### Bug Fixes
+
+* limit account deletion attempts to 10 an hour per account ([f6b82c7](https://adl.github.com/adl-developer/kinkane-backend/commit/f6b82c7dc5d83a597df8d4cc407e93bd486b6e05)) — [details](changelog/2026-10-23-social-account-deletion.md)
+
 
 ## 2026-10-22
 

@@ -454,6 +454,19 @@ const socialSchemas = {
     },
   },
 
+  BlockedUser: {
+    allOf: [
+      { $ref: '#/components/schemas/UserSummary' },
+      {
+        type: 'object',
+        properties: {
+          reason: { type: 'string', nullable: true, description: 'The reason picked when blocking, if any.', example: 'Harassment' },
+          blockedAt: { type: 'string', format: 'date-time', example: '2026-10-23T14:02:11.000Z' },
+        },
+      },
+    ],
+  },
+
   UserProfile: {
     allOf: [
       { $ref: '#/components/schemas/UserSummary' },
@@ -469,9 +482,9 @@ const socialSchemas = {
           },
           followStatus: {
             type: 'string',
-            enum: ['none', 'pending', 'accepted', 'declined'],
+            enum: ['none', 'pending', 'accepted', 'declined', 'blocked'],
             description:
-              "The caller's follow request to this user, which decides the button to show: `none` Follow, `pending` Requested, `accepted` Following, `declined` Follow again. Your own profile is never returned here; this endpoint answers 400 for it.",
+              "The caller's follow request to this user, which decides the button to show: `none` Follow, `pending` Requested, `accepted` Following, `declined` Follow again, `blocked` Blocked (the caller has blocked them — offer Unblock). Your own profile is never returned here; this endpoint answers 400 for it.",
             example: 'accepted',
           },
           incomingFollowRequest: {
@@ -494,6 +507,18 @@ const socialSchemas = {
             description:
               "Whether the *caller* may read this user's whole shelf, having applied `shelfVisibility` and the follow graph. When false, `GET /users/{userId}/books` returns 404. Single books are looser: accepted followers can always open `GET /community/users/{friendId}/books/{bookId}`, even when this is false.",
             example: true,
+          },
+          isBlocked: {
+            type: 'boolean',
+            description:
+              'The caller has blocked this user. This is the limited profile: name, photo and join date only — no counts, `canViewShelf` false, and their shelf, followers, following and groups all answer 404. `followStatus` is `blocked`.',
+            example: false,
+          },
+          hasBlockedYou: {
+            type: 'boolean',
+            description:
+              'This user has blocked the caller. Also the limited profile, with `followStatus` `none`; following them is refused with 403 `BLOCKED`, so hide the Follow button. Only they can lift it.',
+            example: false,
           },
           followerCount: {
             type: 'integer',

@@ -5,6 +5,7 @@ import { enqueueEmail } from '../lib/email-queue';
 import { enqueuePush } from '../lib/push-queue';
 import { notificationPreferencesService } from './notification-preferences.service';
 import { logger } from '../lib/logger';
+import { blockStateBetween, blockedBetween, blockedError } from './blocks.service';
 
 // ── Friend-request notifications ──────────────────────────────────────────────
 // Each follow request has exactly one `friend_request` notification for its
@@ -50,7 +51,9 @@ async function setFriendRequestNotificationStatus(
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-export type FollowStatus = 'none' | 'pending' | 'accepted' | 'declined';
+// 'blocked' only ever describes a block the viewer placed: the profile's Follow
+// button reads "Blocked". It is never stored on a follow request.
+export type FollowStatus = 'none' | 'pending' | 'accepted' | 'declined' | 'blocked';
 // 'liked' is the Favourites section and 'owned' the Owned one; both are flags
 // on top of the reading status, so a book can turn up under more than one.
 export type ShelfFilter = 'all' | 'want_to_read' | 'reading' | 'read' | 'liked' | 'owned';
@@ -105,6 +108,12 @@ export interface UserProfile {
   // Whether the requester may read this user's whole shelf. Decided here so
   // clients never re-implement the visibility rule; see canViewShelf below.
   canViewShelf: boolean;
+  // A block between the two, by direction. Either one makes this the limited
+  // profile — name, photo and join date only, no counts, no shelf — and rules
+  // out following. Only the blocker can unblock, so the app shows Unblock for
+  // isBlocked and nothing for hasBlockedYou.
+  isBlocked: boolean;
+  hasBlockedYou: boolean;
   // Only present for accepted followers
   followerCount?: number;
   followingCount?: number;
@@ -167,6 +176,8 @@ interface ViewerRelationship {
   /** The requester's own follow request to the target, if any. */
   followStatus: FollowStatus;
   isAcceptedFollower: boolean;
+  /** A block between the two, either way. Hides everything past the limited profile. */
+  blocked: boolean;
 }
 
 /**
@@ -184,6 +195,7 @@ async function loadViewerRelationship(targetId: number, requesterId: number): Pr
       createdAt: users.createdAt,
       shelfVisibility: users.shelfVisibility,
       followStatus: followRequests.status,
+      blocked: blockedBetween(requesterId, users.id).mapWith(Boolean),
     })
     .from(users)
     .leftJoin(
@@ -194,13 +206,14 @@ async function loadViewerRelationship(targetId: number, requesterId: number): Pr
     .limit(1);
   if (!row) return null;
 
-  const { followStatus: rawStatus, ...target } = row;
+  const { followStatus: rawStatus, blocked, ...target } = row;
   const followStatus = toFollowStatus(rawStatus);
   return {
     target,
     isSelf: targetId === requesterId,
     followStatus,
     isAcceptedFollower: followStatus === 'accepted',
+    blocked,
   };
 }
 
@@ -217,7 +230,7 @@ function userNotFound(): Error {
 async function assertCanViewFollowGraph(targetId: number, requesterId: number): Promise<void> {
   if (targetId === requesterId) return;
   const relationship = await loadViewerRelationship(targetId, requesterId);
-  if (!relationship?.isAcceptedFollower) throw userNotFound();
+  if (!relationship?.isAcceptedFollower || relationship.blocked) throw userNotFound();
 }
 
 /**
@@ -260,8 +273,8 @@ export async function assertCanViewShelf(
 ): Promise<void> {
   const relationship = await loadViewerRelationship(targetId, requesterId);
   if (!relationship) throw userNotFound();
-  const { target, isSelf, isAcceptedFollower } = relationship;
-  if (!rule(target.shelfVisibility, isSelf, isAcceptedFollower)) throw userNotFound();
+  const { target, isSelf, isAcceptedFollower, blocked } = relationship;
+  if (blocked || !rule(target.shelfVisibility, isSelf, isAcceptedFollower)) throw userNotFound();
 }
 
 // ── Service ───────────────────────────────────────────────────────────────────
@@ -273,7 +286,7 @@ export const usersService = {
     }
 
     // The target and our request to them, alongside any request they sent us
-    const [relationship, [incomingRow]] = await Promise.all([
+    const [relationship, [incomingRow], blockState] = await Promise.all([
       loadViewerRelationship(targetId, requesterId),
       db
         .select({ requestId: followRequests.id, requestedAt: followRequests.createdAt })
@@ -286,10 +299,30 @@ export const usersService = {
           ),
         )
         .limit(1),
+      blockStateBetween(requesterId, targetId),
     ]);
 
     if (!relationship) throw userNotFound();
     const { target, followStatus, isAcceptedFollower } = relationship;
+
+    // The limited profile. A block clears follow requests both ways, so there
+    // is no follow status or incoming request left to report.
+    if (blockState.blockedByMe || blockState.blockedMe) {
+      return {
+        id: target.id,
+        name: target.name,
+        username: target.username,
+        photoUrl: target.photoUrl ?? null,
+        yearJoined: new Date(target.createdAt).getFullYear(),
+        joinedAt: new Date(target.createdAt),
+        followStatus: blockState.blockedByMe ? 'blocked' : 'none',
+        incomingFollowRequest: null,
+        shelfVisibility: target.shelfVisibility,
+        canViewShelf: false,
+        isBlocked: blockState.blockedByMe,
+        hasBlockedYou: blockState.blockedMe,
+      };
+    }
 
     const base: UserProfile = {
       id: target.id,
@@ -303,6 +336,8 @@ export const usersService = {
       shelfVisibility: target.shelfVisibility,
       // Never self: this endpoint 400s on your own profile above
       canViewShelf: canViewShelf(target.shelfVisibility, false, isAcceptedFollower),
+      isBlocked: false,
+      hasBlockedYou: false,
     };
 
     // Non-followers see only the base profile (name, photo, year joined, follow status)
@@ -468,6 +503,10 @@ export const usersService = {
     if (!sender.emailVerified) {
       throw Object.assign(new Error('Please verify your email before sending follow requests'), { statusCode: 403 });
     }
+
+    const blockState = await blockStateBetween(senderId, receiverId);
+    if (blockState.blockedByMe) throw blockedError('Unblock this user to follow them');
+    if (blockState.blockedMe) throw blockedError('You can’t follow this user');
 
     // The caller's own request to the target; one coming the other way doesn't matter
     const [outgoing] = await db
