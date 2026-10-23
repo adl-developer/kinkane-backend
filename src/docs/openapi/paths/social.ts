@@ -795,7 +795,7 @@ export const socialPaths = {
       summary: 'Report a user or a group',
       description:
         'Files a moderation report. `targetType` selects what is being reported and which other fields apply.\n\n' +
-        '**`targetType: "user"`** (the default when the field is omitted, so clients written before groups were reportable keep working) takes `reportedUserId` and optionally **one** of `postId` (a community post) or `groupCommentId` (a comment in a group book club, from its "…" menu) citing what prompted it. Whichever is given must actually belong to `reportedUserId` — a mismatch is a 400 rather than a silently mis-filed report — and naming both is a 400. A `groupCommentId` in a club the reporter cannot see (a private club they are not a member of) is a 404, exactly as if it did not exist, so the endpoint cannot be used to discover who wrote what in private clubs. Self-reports are rejected.\n\n' +
+        '**`targetType: "user"`** (the default when the field is omitted, so clients written before groups were reportable keep working) takes `reportedUserId` and optionally **one** of `postId` (a community post), `commentId` (a comment under a community post, from its "…" menu) or `groupCommentId` (a comment in a group book club, from its "…" menu) citing what prompted it. Whichever is given must actually belong to `reportedUserId` — a mismatch is a 400 rather than a silently mis-filed report — and naming more than one is a 400. A comment the reporter cannot see — a `groupCommentId` in a private club they are not a member of, or a `commentId` under someone else\'s private post — is a 404, exactly as if it did not exist, so the endpoint cannot be used to discover who wrote what. Self-reports are rejected.\n\n' +
         '**`targetType: "group"`** takes `reportedGroupId` and nothing else. Sending a `reportedUserId` or a `postId` alongside it is a 400: naming both a group and a user is ambiguous, and the server will not guess which one you meant. There is no self-report rule — reporting a group you own is pointless rather than harmful.\n\n' +
         'Both kinds share one `R###` reference series, since the reference is only ever shown next to the report it belongs to.',
       requestBody: body(object({
@@ -808,9 +808,14 @@ export const socialPaths = {
           description: 'User reports only. The post being reported about; must belong to `reportedUserId`.',
           example: 3310,
         },
+        commentId: {
+          type: 'integer', minimum: 1,
+          description: 'User reports only, and not together with `postId` or `groupCommentId`. The comment under a community post being reported; must belong to `reportedUserId`.',
+          example: 9120,
+        },
         groupCommentId: {
           type: 'integer', minimum: 1,
-          description: 'User reports only, and not together with `postId`. The group book-club comment being reported; must belong to `reportedUserId`.',
+          description: 'User reports only, and not together with `postId` or `commentId`. The group book-club comment being reported; must belong to `reportedUserId`.',
           example: 581,
         },
       }, ['reason'])),
@@ -823,12 +828,13 @@ export const socialPaths = {
               reportedUserId: { type: 'integer', nullable: true, example: 4412 },
               reportedGroupId: { type: 'integer', nullable: true, example: null },
               postId: { type: 'integer', nullable: true, example: 3310 },
+              commentId: { type: 'integer', nullable: true, example: null },
               groupCommentId: { type: 'integer', nullable: true, example: null },
               reason: { type: 'string', example: 'Harassment in the comments.' },
               createdAt: { type: 'string', format: 'date-time', example: '2026-08-13T11:00:00.000Z' },
             }),
           })),
-        400: json('Validation failed, a self-report, or the post does not belong to that user.',
+        400: json('Validation failed, a self-report, more than one post/comment named, or the post or comment does not belong to that user.',
           ref('ValidationError')),
         404: json('No such user, group, post or comment.', ref('Error'), { error: 'User not found' }),
         ...authErrors,

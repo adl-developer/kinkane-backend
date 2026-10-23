@@ -1,6 +1,6 @@
 import { aliasedTable, and, desc, eq, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
-import { userReports, users, groups, groupBookComments } from '../../db/schema';
+import { userReports, users, groups, groupBookComments, comments } from '../../db/schema';
 import { adminCustomersService } from './customers.service';
 import { adminNotificationsService } from './notifications.service';
 import { renderTexts } from '../mentions.service';
@@ -46,6 +46,11 @@ export const adminReportsService = {
           // The text itself, so a moderator can judge a comment report without
           // a second lookup. Null once the comment is deleted (SET NULL above).
           groupCommentBody: groupBookComments.body,
+          // Likewise for a comment under a community post, with the post it sits
+          // under so the console can link to the thread.
+          commentId: userReports.commentId,
+          commentPostId: comments.postId,
+          commentBody: comments.body,
           targetType: userReports.targetType,
           filedAt: userReports.createdAt,
           resolvedAt: userReports.resolvedAt,
@@ -70,6 +75,7 @@ export const adminReportsService = {
         .leftJoin(reported, eq(reported.id, userReports.reportedUserId))
         .leftJoin(groups, eq(groups.id, userReports.reportedGroupId))
         .leftJoin(groupBookComments, eq(groupBookComments.id, userReports.groupCommentId))
+        .leftJoin(comments, eq(comments.id, userReports.commentId))
         // leftJoin, though reporter_id is NOT NULL and cascades — so this
         // returns exactly the same rows an innerJoin would. It is a typing
         // accommodation: drizzle cannot infer a select that mixes inner and
@@ -88,7 +94,10 @@ export const adminReportsService = {
 
     const [rows, [total], counts] = await Promise.all([rowsQuery, totalQuery, countsQuery]);
     // Stored comment text carries mention tokens; a moderator reads @usernames.
-    const commentBodies = await renderTexts(rows.map((r) => r.groupCommentBody));
+    const [groupCommentBodies, commentBodies] = await Promise.all([
+      renderTexts(rows.map((r) => r.groupCommentBody)),
+      renderTexts(rows.map((r) => r.commentBody)),
+    ]);
 
     const byStatus: Record<string, number> = { pending: 0, resolved: 0, dismissed: 0 };
     for (const c of counts) byStatus[c.status] = Number(c.n);
@@ -101,7 +110,9 @@ export const adminReportsService = {
         reason: r.reason,
         postId: r.postId,
         groupComment:
-          r.groupCommentId !== null ? { id: r.groupCommentId, body: commentBodies[i].text } : null,
+          r.groupCommentId !== null ? { id: r.groupCommentId, body: groupCommentBodies[i].text } : null,
+        comment:
+          r.commentId !== null ? { id: r.commentId, postId: r.commentPostId, body: commentBodies[i].text } : null,
         targetType: r.targetType,
         // Whichever target this report is about, named. Lets the queue render a
         // row without branching on targetType, and without dereferencing a

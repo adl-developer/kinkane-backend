@@ -1,6 +1,6 @@
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
-import { users, posts, groups, groupBooks, groupBookComments, groupMemberships, userReports } from '../db/schema';
+import { users, posts, comments, groups, groupBooks, groupBookComments, groupMemberships, userReports } from '../db/schema';
 import type { UserReport } from '../db/schema';
 import { adminReportsService } from './admin/reports.service';
 import { groupViewerCapabilities } from './groups.service';
@@ -18,6 +18,8 @@ export type CreateReportInput =
       postId?: number;
       /** A group book-club comment the report is about — the comment's "…" menu. */
       groupCommentId?: number;
+      /** A comment under a community post — the comment's "…" menu. */
+      commentId?: number;
     }
   | { targetType: 'group'; reporterId: number; reportedGroupId: number; reason: string };
 
@@ -57,12 +59,12 @@ export const reportsService = {
       return { ...row, reference };
     }
 
-    const { reportedUserId, postId, groupCommentId } = input;
+    const { reportedUserId, postId, groupCommentId, commentId } = input;
 
     // One piece of content per report. Naming a post and a comment at once is
     // ambiguous about which one the moderator is meant to read.
-    if (postId !== undefined && groupCommentId !== undefined) {
-      throw Object.assign(new Error('A report can name a post or a group comment, not both'), { statusCode: 400 });
+    if ([postId, groupCommentId, commentId].filter((id) => id !== undefined).length > 1) {
+      throw Object.assign(new Error('A report can name one post or comment, not several'), { statusCode: 400 });
     }
 
     if (reporterId === reportedUserId) {
@@ -119,9 +121,26 @@ export const reportsService = {
       }
     }
 
+    if (commentId !== undefined) {
+      // Joined to its post for the same reason as the group comment above: a
+      // comment under a private post is visible only to the post's author, and
+      // to anyone else it must look exactly like one that does not exist.
+      const [comment] = await db
+        .select({ userId: comments.userId, postIsPublic: posts.isPublic, postOwnerId: posts.userId })
+        .from(comments)
+        .innerJoin(posts, eq(posts.id, comments.postId))
+        .where(eq(comments.id, commentId));
+      if (!comment || (!comment.postIsPublic && comment.postOwnerId !== reporterId)) {
+        throw Object.assign(new Error('Comment not found'), { statusCode: 404 });
+      }
+      if (comment.userId !== reportedUserId) {
+        throw Object.assign(new Error('Comment does not belong to the reported user'), { statusCode: 400 });
+      }
+    }
+
     const [row] = await db
       .insert(userReports)
-      .values({ targetType: 'user', reporterId, reportedUserId, postId, groupCommentId, reason })
+      .values({ targetType: 'user', reporterId, reportedUserId, postId, groupCommentId, commentId, reason })
       .returning();
 
     // Stamp the display reference and put it in front of a moderator. Awaited
