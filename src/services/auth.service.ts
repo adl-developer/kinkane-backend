@@ -1021,7 +1021,16 @@ export const authService = {
     }
   },
 
-  async deleteAccount(userId: number, password: string): Promise<void> {
+  /**
+   * Confirmed with the password, or — for Google/Apple accounts, which have
+   * none — a fresh Firebase ID token from a provider linked to this account.
+   * Without the second option a social-only user had no way to delete their
+   * account in-app at all.
+   */
+  async deleteAccount(
+    userId: number,
+    credential: { password?: string; idToken?: string },
+  ): Promise<void> {
     const [user] = await db
       .select({ id: users.id, name: users.name, email: users.email })
       .from(users)
@@ -1032,7 +1041,7 @@ export const authService = {
       throw Object.assign(new Error('User not found'), { statusCode: 404 });
     }
 
-    await this.verifyPassword(userId, password);
+    await this.verifyOwnership(userId, credential);
 
     // Stop billing BEFORE the row goes. Deleting the user cascades away
     // user_subscriptions, and with it the only record of which Stripe

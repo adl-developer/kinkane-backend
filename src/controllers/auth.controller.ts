@@ -80,9 +80,18 @@ const socialSchema = z.object({
   username: optionalUsernameInput,
 });
 
-const deleteAccountSchema = z.object({
-  password: z.string().min(1, 'Password is required'),
-});
+// Same credential rule as Change Plan: the password for password accounts, or
+// a fresh Firebase ID token for Google/Apple accounts that never had one.
+// Exactly one — neither or both is rejected up front.
+const deleteAccountSchema = z
+  .object({
+    password: z.string().min(1).optional(),
+    idToken: z.string().min(1).optional(),
+  })
+  .refine((data) => Boolean(data.password) !== Boolean(data.idToken), {
+    message: 'Provide exactly one of password or idToken',
+    path: ['password'],
+  });
 
 const changePasswordSchema = z.object({
   currentPassword: z.string().min(1),
@@ -316,7 +325,10 @@ export const authController = {
     const { id } = (req as AuthenticatedRequest).user;
 
     try {
-      await authService.deleteAccount(id, parsed.data.password);
+      await authService.deleteAccount(id, {
+        password: parsed.data.password,
+        idToken: parsed.data.idToken,
+      });
       res.status(200).json({ message: 'Account deleted successfully' });
     } catch (err: unknown) {
       const e = err as Error & { statusCode?: number };

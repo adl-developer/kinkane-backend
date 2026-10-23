@@ -146,9 +146,11 @@ router.post(
  * (library, preferences, interactions, subscription). A goodbye email is sent
  * after deletion. The client should discard the access token on receipt of 200.
  *
- * Body: { password }
+ * Body: { password } or { idToken } — exactly one. idToken is a Firebase ID
+ * token from a re-sign-in in the last 5 minutes, for Google/Apple accounts.
  * Returns 200: { message }
- * Errors: 400 missing password | 400 social account | 401 wrong password
+ * Errors: 400 neither/both sent | 400 password sent for a social account |
+ *         401 wrong password, stale token, or token for another account
  */
 router.delete('/account', requireAuth, authController.deleteAccount);
 
