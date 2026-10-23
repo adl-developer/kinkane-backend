@@ -508,16 +508,23 @@ const socialSchemas = {
               "Whether the *caller* may read this user's whole shelf, having applied `shelfVisibility` and the follow graph. When false, `GET /users/{userId}/books` returns 404. Single books are looser: accepted followers can always open `GET /community/users/{friendId}/books/{bookId}`, even when this is false.",
             example: true,
           },
+          readerType: {
+            type: 'string',
+            nullable: true,
+            enum: ['The Open Door', 'The Seeker', 'The Book-ist', 'The Story Circler', 'The Mirror Within', 'The Echo Collector', 'The High Summiter', 'The Cloud Illusionist', null],
+            description: 'Their quiz result, for "<name>\'s Reader Type" on the profile. Null when they have not taken the quiz, and when `hasBlockedYou`.',
+            example: 'The Open Door',
+          },
           isBlocked: {
             type: 'boolean',
             description:
-              'The caller has blocked this user. This is the limited profile: name, photo and join date only — no counts, `canViewShelf` false, and their shelf, followers, following and groups all answer 404. `followStatus` is `blocked`.',
+              'The caller has blocked this user. `followStatus` is `blocked`: show Unblock in place of Follow. Otherwise the caller sees what any non-follower sees: reader type, and the shelf if `canViewShelf` (only a public shelf, since the block ended any follow). Their posts and reviews stay hidden, including on a shelf book, and their followers, following and groups answer 404.',
             example: false,
           },
           hasBlockedYou: {
             type: 'boolean',
             description:
-              'This user has blocked the caller. Also the limited profile, with `followStatus` `none`; following them is refused with 403 `BLOCKED`, so hide the Follow button. Only they can lift it.',
+              'This user has blocked the caller. The limited profile: name, photo and join date only — no counts, `readerType` null, `canViewShelf` false, and their shelf, followers, following and groups all answer 404. `followStatus` is `none`; following them is refused with 403 `BLOCKED`, so hide the Follow button. Only they can lift it.',
             example: false,
           },
           followerCount: {
