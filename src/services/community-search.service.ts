@@ -10,7 +10,7 @@ import { withRenderedMentions } from './mentions.service';
 import { likePrefix, likeWordPrefix } from '../lib/escape-like';
 import { plainTsQuery } from '../lib/tsquery';
 import { toFollowStatus, type FollowStatus } from './users.service';
-import { notBlockedBetween } from './blocks.service';
+import { blockedByViewer, notBlockedBetween, notBlockedViewer } from './blocks.service';
 import type { MentionRef } from '../lib/mention-text';
 import type { LinkRef } from '../lib/link-text';
 
@@ -23,6 +23,7 @@ export interface UserResult {
   photoUrl: string | null;
   // The requester's follow request to this user, as on the profile, plus
   // 'self' for the requester's own row so the app can leave off the button.
+  // 'blocked' when the requester has blocked them, as on the profile.
   followStatus: FollowStatus | 'self';
   // A pending request *they* sent the requester, for Accept/Decline, as on the
   // profile. It doesn't stop the requester following them back.
@@ -241,8 +242,9 @@ async function searchUsers(
   limit: number,
   offset: number,
 ): Promise<{ results: UserResult[]; total: number }> {
-  // A blocked pair don't find each other, whichever of them placed the block.
-  const where = and(buildUserSearchCondition(q), notBlockedBetween(requesterId, users.id));
+  // Someone who blocked you doesn't turn up. Someone you blocked does, marked
+  // `blocked`, so you can find them again to unblock.
+  const where = and(buildUserSearchCondition(q), notBlockedViewer(requesterId, users.id));
   const orderBy = buildUserSearchOrderBy(q);
 
   const [rows, [countRow]] = await Promise.all([
@@ -256,6 +258,7 @@ async function searchUsers(
         outgoingStatus: outgoing.status,
         incomingRequestId: incoming.id,
         incomingRequestedAt: incoming.createdAt,
+        blockedByMe: blockedByViewer(requesterId, users.id).mapWith(Boolean),
       })
       .from(users)
       .leftJoin(outgoing, and(eq(outgoing.senderId, requesterId), eq(outgoing.receiverId, users.id)))
@@ -270,9 +273,11 @@ async function searchUsers(
     db.select({ count: sql<number>`COUNT(*)::int` }).from(users).where(where),
   ]);
 
-  const results = rows.map(({ outgoingStatus, incomingRequestId, incomingRequestedAt, ...user }) => ({
+  const results = rows.map(({ outgoingStatus, incomingRequestId, incomingRequestedAt, blockedByMe, ...user }) => ({
     ...user,
-    followStatus: user.id === requesterId ? ('self' as const) : toFollowStatus(outgoingStatus),
+    // 'blocked' as on the profile: the row's button reads Blocked, not Follow.
+    followStatus:
+      user.id === requesterId ? ('self' as const) : blockedByMe ? ('blocked' as const) : toFollowStatus(outgoingStatus),
     incomingFollowRequest:
       incomingRequestId !== null && incomingRequestedAt !== null
         ? { requestId: incomingRequestId, requestedAt: incomingRequestedAt }

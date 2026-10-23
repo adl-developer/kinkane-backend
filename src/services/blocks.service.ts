@@ -7,18 +7,20 @@ import type { HttpError } from '../lib/route-helpers';
  * Blocking, and the one rule every other service asks about it.
  *
  * A block is recorded one way (the blocker is the only one who can lift it) but
- * works both ways: neither person sees the other in the community feed or in
- * search, neither can tag the other, and neither can engage with the other's
- * posts or comments. The blocked person can still open the blocker's profile,
+ * works both ways: neither person sees the other's posts in the community feed
+ * or in search, neither can tag the other, and neither can engage with the
+ * other's posts or comments. The one exception is finding the person: the
+ * blocker can still find someone they blocked in people search and the
+ * @-mention list, so they can open them and unblock (see notBlockedViewer). The blocked person can still open the blocker's profile,
  * but only the limited version — name, photo and join date, nothing else.
  *
  * In a book club the two share, each still sees what the other writes — the
  * conversation would not make sense with holes in it — but cannot reply to it,
  * like it, or open the other's profile from it.
  *
- * So the question the rest of the code asks is always the symmetric one —
- * "is there a block between these two, either way?" — and only the profile and
- * the blocked list care which way it points.
+ * So the question the rest of the code asks is almost always the symmetric
+ * one — "is there a block between these two, either way?" — and only the
+ * profile, the blocked list and people-finding care which way it points.
  */
 
 // ── The rule ─────────────────────────────────────────────────────────────────
@@ -39,6 +41,27 @@ export function blockedBetween(viewerId: number, other: SQLWrapper): SQL {
 /** The filter for anything a blocked pair should not see of each other. */
 export function notBlockedBetween(viewerId: number, other: SQLWrapper): SQL {
   return sql`NOT ${blockedBetween(viewerId, other)}`;
+}
+
+/** True when `viewerId` has blocked the user in `other` — one direction only. */
+export function blockedByViewer(viewerId: number, other: SQLWrapper): SQL {
+  return sql`EXISTS (
+    SELECT 1 FROM ${userBlocks}
+    WHERE ${userBlocks.blockerId} = ${viewerId} AND ${userBlocks.blockedId} = ${other}
+  )`;
+}
+
+/**
+ * The one-way filter for finding people: hides anyone who has blocked the
+ * viewer, but not the people the viewer has blocked — they have to be findable
+ * to be unblocked. Used by people search and the @-mention list only; posts,
+ * comments and everything else keep notBlockedBetween.
+ */
+export function notBlockedViewer(viewerId: number, other: SQLWrapper): SQL {
+  return sql`NOT EXISTS (
+    SELECT 1 FROM ${userBlocks}
+    WHERE ${userBlocks.blockerId} = ${other} AND ${userBlocks.blockedId} = ${viewerId}
+  )`;
 }
 
 export interface BlockState {

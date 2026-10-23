@@ -3,13 +3,19 @@ import { db } from '../db';
 import { users, groups, groupMemberships, posts, comments, groupBooks, groupBookComments } from '../db/schema';
 import { friendOfCondition } from './groups.service';
 import { likePrefix, likeWordPrefix } from '../lib/escape-like';
-import { notBlockedBetween } from './blocks.service';
+import { blockedByViewer, notBlockedViewer } from './blocks.service';
 
 export interface MentionSuggestion {
   id: number;
   username: string;
   name: string;
   photoUrl: string | null;
+  /**
+   * The viewer has blocked them. They are listed so the viewer can find them,
+   * but picking one doesn't tag them: the handle stays plain text (see
+   * mentionsService.prepare). The app should mark the row and not insert it.
+   */
+  isBlocked: boolean;
 }
 
 /**
@@ -92,7 +98,8 @@ export const mentionSuggestionsService = {
    * friends only. Strangers ranked alphabetically are not a suggestion.
    *
    * Excludes you, guests (they have no username), blacklisted accounts, and
-   * anyone with a block between you — neither side of a block can tag the other.
+   * anyone who has blocked you. People you have blocked are listed, flagged
+   * `isBlocked`, so you can find them — though you still can't tag them.
    */
   async suggest(viewerId: number, rawQuery: string, context?: SuggestionContext): Promise<MentionSuggestion[]> {
     const q = rawQuery.trim().replace(/^@/, '').toLowerCase();
@@ -103,7 +110,7 @@ export const mentionSuggestionsService = {
       isNotNull(users.username),
       ne(users.id, viewerId),
       isNull(users.blacklistedAt),
-      notBlockedBetween(viewerId, users.id),
+      notBlockedViewer(viewerId, users.id),
     );
 
     let match: SQL | undefined;
@@ -121,7 +128,13 @@ export const mentionSuggestionsService = {
     }
 
     const rows = await db
-      .select({ id: users.id, username: users.username, name: users.name, photoUrl: users.photoUrl })
+      .select({
+        id: users.id,
+        username: users.username,
+        name: users.name,
+        photoUrl: users.photoUrl,
+        isBlocked: blockedByViewer(viewerId, users.id).mapWith(Boolean),
+      })
       .from(users)
       .where(and(base, match))
       .orderBy(

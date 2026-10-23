@@ -548,9 +548,9 @@ const socialSchemas = {
         properties: {
           followStatus: {
             type: 'string',
-            enum: ['none', 'pending', 'accepted', 'declined', 'self'],
+            enum: ['none', 'pending', 'accepted', 'declined', 'blocked', 'self'],
             description:
-              "The caller's follow request to this user, exactly as on the profile (`none` Follow, `pending` Requested, `accepted` Following, `declined` Follow again), plus `self` on the caller's own row so the app can leave the button off.",
+              "The caller's follow request to this user, exactly as on the profile (`none` Follow, `pending` Requested, `accepted` Following, `declined` Follow again, `blocked` Blocked — the caller has blocked them, so show Blocked/Unblock), plus `self` on the caller's own row so the app can leave the button off. People who have blocked the caller never appear.",
             example: 'none',
           },
           incomingFollowRequest: {
