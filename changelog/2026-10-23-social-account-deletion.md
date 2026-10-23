@@ -47,6 +47,13 @@ the goodbye email is queued.
   belongs to which user.
 - **Accounts with both a password and a linked provider can use either.**
   Same as Change Plan.
+- **Rate limit: 10 per hour per user.** The endpoint had none, although the
+  OpenAPI docs already listed a 429. The password check is all that stops
+  someone holding a stolen session from deleting the account for good, so
+  this limit is what makes guessing the password impractical. It is counted
+  per user so switching IP addresses gives no extra tries, and 10 leaves room
+  for a few typos plus a stale-token retry. The email-verification code
+  check uses the same limit.
 - **No email-link fallback.** An emailed confirmation link would also work for
   social accounts, but the app already runs the Google/Apple re-sign-in flow
   for plan changes, so reusing it is less work for the client.

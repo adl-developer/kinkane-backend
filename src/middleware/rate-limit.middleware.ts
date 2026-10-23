@@ -277,6 +277,20 @@ export const resendVerificationEmailLimiter = rateLimit({
   store: new RedisStore({ prefix: 'rl:email-verify-resend:', sendCommand }),
 });
 
+// Account deletion: 10 per hour per user. The password check here is the only
+// thing standing between a stolen session and an irreversible delete, so this
+// is the brute-force guard for it. Keyed by user, not IP, so rotating addresses
+// buys no extra guesses. Ten covers a few typos plus a stale-token retry.
+export const deleteAccountLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: json429,
+  keyGenerator: byUser,
+  store: new RedisStore({ prefix: 'rl:delete-account:', sendCommand }),
+});
+
 // Email change: 5 per hour — prevents OTP email bombing to arbitrary addresses
 export const emailChangeLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,

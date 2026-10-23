@@ -375,6 +375,8 @@ export const authPaths = {
         '- **`idToken`** — for Google/Apple accounts, which do not. A Firebase ID token from a provider linked to this account, and **fresh**: `auth_time` within the last 5 minutes, so the client should prompt "Confirm with Google/Apple" rather than reuse a cached token.',
         '',
         'Discard both tokens on receipt of the 200.',
+        '',
+        '**Rate limit:** 10 per hour per user.',
       ].join('\n'),
       requestBody: body(object({
         password: { type: 'string', description: 'For password accounts. Mutually exclusive with `idToken`.', example: 'Correct-Horse9' },

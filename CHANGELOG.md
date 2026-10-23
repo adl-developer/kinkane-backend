@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-10-23
+
+### Features
+
+* let Google and Apple users delete their account by signing in again ([bec4d62](https://adl.github.com/adl-developer/kinkane-backend/commit/bec4d62828125aaf87c7781206e34a0847f3bc03)) — [details](changelog/2026-10-23-social-account-deletion.md)
+
+
 ## 2026-10-22
 
 ### Features

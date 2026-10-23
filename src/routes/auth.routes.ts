@@ -8,6 +8,7 @@ import {
   passwordResetLimiter,
   verifyEmailOtpLimiter,
   resendVerificationEmailLimiter,
+  deleteAccountLimiter,
 } from '../middleware/rate-limit.middleware';
 
 const router = Router();
@@ -150,9 +151,10 @@ router.post(
  * token from a re-sign-in in the last 5 minutes, for Google/Apple accounts.
  * Returns 200: { message }
  * Errors: 400 neither/both sent | 400 password sent for a social account |
- *         401 wrong password, stale token, or token for another account
+ *         401 wrong password, stale token, or token for another account |
+ *         429 more than 10 attempts in an hour
  */
-router.delete('/account', requireAuth, authController.deleteAccount);
+router.delete('/account', requireAuth, deleteAccountLimiter, authController.deleteAccount);
 
 /**
  * POST /api/v1/auth/change-password
