@@ -572,6 +572,11 @@ export const socialPaths = {
       responses: {
         201: successResponse,
         400: json('Invalid id, or an attempt to follow oneself.', ref('ValidationError')),
+        403: json('Email not verified, or a block between the two (`code: BLOCKED`).',
+          object({
+            error: { type: 'string', example: 'You can’t follow this user' },
+            code: { type: 'string', example: 'BLOCKED' },
+          })),
         404: resp('NotFound'),
         409: json('Already following, or a request is already pending.',
           object({
@@ -591,6 +596,75 @@ export const socialPaths = {
         200: successResponse,
         400: resp('ValidationError'),
         404: resp('NotFound'),
+        ...authErrors,
+      },
+    },
+  },
+
+  '/api/v1/users/{userId}/block': {
+    post: {
+      tags: [PEOPLE],
+      summary: 'Block a user',
+      description: [
+        'Blocks them. Safe to repeat — a second call keeps the original block and reason. In effect a block works **both ways**:',
+        '',
+        '- Neither sees the other’s posts in the community feed, on book pages or in search, and neither finds the other in people search or the @-mention typeahead. Opening one of their posts by id is a 404.',
+        '- Their old comments are hidden from each other too, wherever they are, and `commentCount` leaves them out. Old mentions by the other drop out of `GET /user/mentions`.',
+        '- Neither can tag the other: a typed `@handle` stays plain text and nobody is notified.',
+        '- Each sees only the limited profile of the other (see `isBlocked` / `hasBlockedYou` on the profile).',
+        '- In a book club they share, each still sees the other’s comments (flagged `authorBlocked`), but can’t reply to or like them.',
+        '',
+        'Also removes, at once: follows and follow requests between the two in both directions, the notifications each has had about the other, and pending group invitations between them. These do not come back on unblock.',
+        '',
+        '`reason` is one of the app’s options and is optional. Blocking does not file a report.',
+      ].join('\n'),
+      parameters: [userIdParam],
+      requestBody: {
+        required: false,
+        content: {
+          'application/json': {
+            schema: object({ reason: { type: 'string', maxLength: 200, nullable: true, example: 'Harassment' } }),
+          },
+        },
+      },
+      responses: {
+        201: json('Blocked.', object({ block: ref('BlockedUser') })),
+        400: json('Invalid id or reason, or an attempt to block oneself.', ref('ValidationError')),
+        404: resp('NotFound'),
+        ...authErrors,
+      },
+    },
+
+    delete: {
+      tags: [PEOPLE],
+      summary: 'Unblock a user',
+      description:
+        'Lifts the caller’s block. Their posts, comments and profile reappear; follows removed by the block do not. A block they placed on the caller is theirs and stays. 404 when the caller has not blocked them.',
+      parameters: [userIdParam],
+      responses: {
+        200: successResponse,
+        400: resp('ValidationError'),
+        404: resp('NotFound'),
+        ...authErrors,
+      },
+    },
+  },
+
+  '/api/v1/users/blocks': {
+    get: {
+      tags: [PEOPLE],
+      summary: 'List the people you have blocked',
+      description: 'For Settings → Blocked users. Most recent first. Only blocks the caller placed.',
+      parameters: [...followParams],
+      responses: {
+        200: json('A page of blocked users.',
+          object({
+            items: arrayOf(ref('BlockedUser')),
+            total: { type: 'integer', example: 2 },
+            limit: { type: 'integer', example: 20 },
+            offset: { type: 'integer', example: 0 },
+          })),
+        400: resp('ValidationError'),
         ...authErrors,
       },
     },

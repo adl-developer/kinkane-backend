@@ -13,6 +13,7 @@ import {
   userBooks,
   notifications,
   notificationPreferences,
+  userBlocks,
   type GroupPrivacy,
 } from '../db/schema';
 import {
@@ -28,6 +29,7 @@ import {
 import { addressSpans, hasLinkTokens, linkTokenIds, renderLinks, shiftOffsets, type LinkRef } from '../lib/link-text';
 import { shortLinkPrefix, shortLinksService } from './short-links.service';
 import { enqueuePush } from '../lib/push-queue';
+import { notBlockedBetween } from './blocks.service';
 import { logger } from '../lib/logger';
 
 /**
@@ -276,11 +278,14 @@ async function prepare<T extends string | null | undefined>(
   // looking up more than a margin over that is a query sized by whoever wrote
   // the longest list of handles.
   const handles = extractHandles(text, skip).slice(0, MAX_MENTIONS_PER_TEXT * 2);
+  // Someone with a block between them and the author is left as the plain
+  // `@handle` they typed: not linked, not stored, never told. Neither side of
+  // a block can tag the other.
   const rows = handles.length
     ? await db
         .select({ id: users.id, username: users.username })
         .from(users)
-        .where(inArray(users.username, handles))
+        .where(and(inArray(users.username, handles), authorId !== null ? notBlockedBetween(authorId, users.id) : undefined))
     : [];
   const ids = new Map(rows.map((r) => [r.username!, r.id]));
   const result = tokenize(text, ids, skip);
@@ -587,10 +592,23 @@ export const mentionsService = {
    * So is anyone in `alreadyNotifiedIds` (see AfterWriteOptions).
    */
   async dispatch(source: MentionSource, options: Pick<AfterWriteOptions, 'alreadyNotifiedIds'> = {}): Promise<number> {
+    // A mention held back while its text was private can be released after the
+    // two have blocked each other; it is then never sent.
     const pending = await db
       .select({ id: mentions.id, userId: mentions.mentionedUserId, authorId: mentions.authorId })
       .from(mentions)
-      .where(and(eq(SOURCES[source.type].column, source.id), isNull(mentions.notifiedAt), isNull(mentions.removedAt)));
+      .where(
+        and(
+          eq(SOURCES[source.type].column, source.id),
+          isNull(mentions.notifiedAt),
+          isNull(mentions.removedAt),
+          sql`NOT EXISTS (
+            SELECT 1 FROM ${userBlocks}
+            WHERE (${userBlocks.blockerId} = ${mentions.mentionedUserId} AND ${userBlocks.blockedId} = ${mentions.authorId})
+               OR (${userBlocks.blockerId} = ${mentions.authorId} AND ${userBlocks.blockedId} = ${mentions.mentionedUserId})
+          )`,
+        ),
+      );
     if (pending.length === 0) return 0;
 
     const ctx = (await loadContexts([source])).get(sourceKey(source));
@@ -700,8 +718,14 @@ export const mentionsService = {
    * entry stays, so the list and its `total` do not shift under pagination.
    */
   async list(userId: number, limit: number, offset: number): Promise<{ mentions: MentionFeedItem[]; total: number }> {
-    // Removed mentions drop out: the text no longer names you.
-    const where = and(eq(mentions.mentionedUserId, userId), isNotNull(mentions.notifiedAt), isNull(mentions.removedAt));
+    // Removed mentions drop out: the text no longer names you. So do mentions
+    // by anyone with a block between you, old ones included.
+    const where = and(
+      eq(mentions.mentionedUserId, userId),
+      isNotNull(mentions.notifiedAt),
+      isNull(mentions.removedAt),
+      sql`(${mentions.authorId} IS NULL OR ${notBlockedBetween(userId, mentions.authorId)})`,
+    );
     const [rows, [counted]] = await Promise.all([
       db
         .select({ id: mentions.id, authorId: mentions.authorId, createdAt: mentions.createdAt, ...SOURCE_COLUMNS })

@@ -19,6 +19,7 @@ import type { LinkRef } from '../lib/link-text';
 import { TEXT_LIMITS } from '../lib/text-limits';
 import { likePrefix, likeWordPrefix } from '../lib/escape-like';
 import { plainTsQuery } from '../lib/tsquery';
+import { blockedBetween, notBlockedBetween } from './blocks.service';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -631,15 +632,16 @@ export const groupsService = {
 
     if (!isSelf) {
       const [target] = await db
-        .select({ id: users.id })
+        .select({ id: users.id, blocked: blockedBetween(viewerId, users.id).mapWith(Boolean) })
         .from(users)
         .where(eq(users.id, userId))
         .limit(1);
       // 404 rather than an empty page: "this reader has not joined anything"
       // and "there is no such reader" are different answers, and returning the
       // first for the second would have the profile render as a real but empty
-      // one — the same distinction the shelf and follower lists draw.
-      if (!target) throw Object.assign(new Error('User not found'), { statusCode: 404 });
+      // one — the same distinction the shelf and follower lists draw. A block
+      // either way is the limited profile, which has no groups section.
+      if (!target || target.blocked) throw Object.assign(new Error('User not found'), { statusCode: 404 });
     }
 
     const membershipFilter = and(
@@ -924,10 +926,13 @@ export const groupsService = {
     // friends, but an inviter may know someone by other means. The lookup is
     // still needed: an id with no account behind it would otherwise reach the
     // insert and fail the whole batch on the foreign key.
+    //
+    // Someone with a block between them and the inviter reads as not found,
+    // the same as everywhere else the two look for each other.
     const accounts = await db
       .select({ id: users.id })
       .from(users)
-      .where(inArray(users.id, candidates));
+      .where(and(inArray(users.id, candidates), notBlockedBetween(inviterId, users.id)));
     const accountIds = new Set(accounts.map((u) => u.id));
 
     const invitable = candidates.filter((id) => {

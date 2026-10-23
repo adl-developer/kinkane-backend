@@ -7,6 +7,7 @@ import { enqueuePush } from '../lib/push-queue';
 import { logger } from '../lib/logger';
 import { mentionsService, renderTexts } from './mentions.service';
 import { assertCanViewShelf, canViewShelfBook } from './users.service';
+import { isBlockedBetween, notBlockedBetween } from './blocks.service';
 import type { MentionRef } from '../lib/mention-text';
 import type { LinkRef } from '../lib/link-text';
 import { isEdited, withEditState } from '../lib/edit-state';
@@ -111,6 +112,20 @@ function assertOwner(ownerId: number, requesterId: number): void {
 
 function assertPostVisible(post: { isPublic: boolean; userId: number }, requesterId: number): void {
   if (!post.isPublic && post.userId !== requesterId) {
+    throw Object.assign(new Error('Post not found'), { statusCode: 404 });
+  }
+}
+
+/**
+ * assertPostVisible, and no block between the requester and the author. A
+ * blocked pair's posts are gone from each other's feed, so opening one by id
+ * — a stale link, an old notification — is the same 404 as a deleted post.
+ * Taking back your own like is the one thing left open across a block; see
+ * unlikePost.
+ */
+async function assertPostReachable(post: { isPublic: boolean; userId: number }, requesterId: number): Promise<void> {
+  assertPostVisible(post, requesterId);
+  if (post.userId !== requesterId && (await isBlockedBetween(requesterId, post.userId))) {
     throw Object.assign(new Error('Post not found'), { statusCode: 404 });
   }
 }
@@ -241,10 +256,11 @@ export async function enrichPosts(
       .from(postLikes)
       .where(inArray(postLikes.postId, postIds))
       .groupBy(postLikes.postId),
+    // Counted as listComments shows them: without anyone blocked either way.
     db
       .select({ postId: comments.postId, count: sql<number>`COUNT(*)::int` })
       .from(comments)
-      .where(inArray(comments.postId, postIds))
+      .where(and(inArray(comments.postId, postIds), notBlockedBetween(requesterId, comments.userId)))
       .groupBy(comments.postId),
     db
       .select({ postId: postLikes.postId })
@@ -411,7 +427,7 @@ export const communityService = {
       .limit(1);
 
     assertFound(row, 'Post');
-    assertPostVisible(row, requesterId);
+    await assertPostReachable(row, requesterId);
 
     const { bookIsbn13, ...postFields } = row;
 
@@ -423,7 +439,7 @@ export const communityService = {
       db
         .select({ count: sql<number>`COUNT(*)::int` })
         .from(comments)
-        .where(eq(comments.postId, postId)),
+        .where(and(eq(comments.postId, postId), notBlockedBetween(requesterId, comments.userId))),
       db
         .select({ userId: postLikes.userId })
         .from(postLikes)
@@ -541,7 +557,7 @@ export const communityService = {
     limit: number,
     offset: number,
   ): Promise<{ posts: PostItem[]; total: number }> {
-    const where = eq(posts.isPublic, true);
+    const where = and(eq(posts.isPublic, true), notBlockedBetween(requesterId, posts.userId));
     const order = sort === 'date_asc' ? asc(posts.createdAt) : desc(posts.createdAt);
 
     const [rows, [countRow]] = await Promise.all([
@@ -619,7 +635,13 @@ export const communityService = {
     offset: number,
   ): Promise<{ posts: PostItem[]; total: number }> {
     const order = sort === 'date_asc' ? asc(posts.createdAt) : desc(posts.createdAt);
-    return listPostPage(and(eq(posts.bookId, bookId), eq(posts.isPublic, true)), [order], requesterId, limit, offset);
+    return listPostPage(
+      and(eq(posts.bookId, bookId), eq(posts.isPublic, true), notBlockedBetween(requesterId, posts.userId)),
+      [order],
+      requesterId,
+      limit,
+      offset,
+    );
   },
 
   /**
@@ -650,6 +672,7 @@ export const communityService = {
     const where = and(
       eq(posts.bookId, bookId),
       or(eq(posts.isPublic, true), eq(posts.userId, requesterId)),
+      notBlockedBetween(requesterId, posts.userId),
     );
     const byDate = sort === 'date_asc' ? asc(posts.createdAt) : desc(posts.createdAt);
     // The id tiebreak keeps pages stable when two reviews share a timestamp.
@@ -689,7 +712,7 @@ export const communityService = {
     ]);
 
     assertFound(post, 'Post');
-    assertPostVisible(post, userId);
+    await assertPostReachable(post, userId);
 
     const [inserted] = await db
       .insert(postLikes)
@@ -748,7 +771,7 @@ export const communityService = {
     ]);
 
     assertFound(post, 'Post');
-    assertPostVisible(post, userId);
+    await assertPostReachable(post, userId);
 
     const prepared = await mentionsService.prepare(body, userId, TEXT_LIMITS.comment);
     const [row] = await db
@@ -873,9 +896,11 @@ export const communityService = {
       .limit(1);
 
     assertFound(post, 'Post');
-    assertPostVisible(post, requesterId);
+    await assertPostReachable(post, requesterId);
 
-    const where = eq(comments.postId, postId);
+    // A blocked pair's comments are hidden from each other, old ones included —
+    // on either one's post, and on anyone else's.
+    const where = and(eq(comments.postId, postId), notBlockedBetween(requesterId, comments.userId));
 
     const [rows, [countRow]] = await Promise.all([
       db
@@ -937,14 +962,18 @@ export const communityService = {
 
   async likeComment(commentId: number, userId: number): Promise<void> {
     const [row] = await db
-      .select({ isPublic: posts.isPublic, postUserId: posts.userId })
+      .select({ isPublic: posts.isPublic, postUserId: posts.userId, commentUserId: comments.userId })
       .from(comments)
       .innerJoin(posts, eq(posts.id, comments.postId))
       .where(eq(comments.id, commentId))
       .limit(1);
 
     assertFound(row, 'Comment');
-    assertPostVisible({ isPublic: row.isPublic, userId: row.postUserId }, userId);
+    await assertPostReachable({ isPublic: row.isPublic, userId: row.postUserId }, userId);
+    // A comment hidden from you by a block is not there to like.
+    if (row.commentUserId !== userId && (await isBlockedBetween(userId, row.commentUserId))) {
+      throw Object.assign(new Error('Comment not found'), { statusCode: 404 });
+    }
 
     await db
       .insert(commentLikes)

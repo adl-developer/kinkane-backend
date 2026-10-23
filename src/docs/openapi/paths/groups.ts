@@ -101,6 +101,12 @@ const commentSchema = object({
   likeCount: { type: 'integer', example: 1 },
   replyCount: { type: 'integer', description: 'Always 0 on a reply — replies cannot be replied to.', example: 2 },
   likedByMe: { type: 'boolean', example: false },
+  authorBlocked: {
+    type: 'boolean',
+    description:
+      'A block between the caller and the author, either way. The comment is still shown, but hide Reply and Like on it and don’t open the author’s profile from it — replying or liking answers 403 `BLOCKED`.',
+    example: false,
+  },
   createdAt: { type: 'string', format: 'date-time' },
   updatedAt: { type: 'string', format: 'date-time' },
 });

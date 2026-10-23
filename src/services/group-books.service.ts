@@ -20,6 +20,7 @@ import { mentionsService, renderTexts } from './mentions.service';
 import type { MentionRef } from '../lib/mention-text';
 import type { LinkRef } from '../lib/link-text';
 import { TEXT_LIMITS } from '../lib/text-limits';
+import { assertNotBlocked, blockedAmong } from './blocks.service';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -98,6 +99,13 @@ export interface GroupCommentItem {
   /** Top-level comments only; always 0 on a reply, which cannot have replies. */
   replyCount: number;
   likedByMe: boolean;
+  /**
+   * A block between the viewer and the author, either way. The comment is still
+   * shown — a club's discussion would not read with holes in it — but the app
+   * hides Reply and Like on it and does not open the author's profile from it.
+   * The server refuses both regardless.
+   */
+  authorBlocked: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -443,13 +451,13 @@ async function toItems(rows: ShelfRow[]): Promise<GroupShelfItem[]> {
 
 /** Like counts, reply counts and the viewer's likes for a page of comments. */
 async function enrichComments(
-  rows: Omit<GroupCommentItem, 'likeCount' | 'replyCount' | 'likedByMe' | 'mentions' | 'links'>[],
+  rows: Omit<GroupCommentItem, 'likeCount' | 'replyCount' | 'likedByMe' | 'authorBlocked' | 'mentions' | 'links'>[],
   viewerId: number,
 ): Promise<GroupCommentItem[]> {
   if (rows.length === 0) return [];
   const ids = rows.map((r) => r.id);
 
-  const [likeCounts, replyCounts, mine, rendered] = await Promise.all([
+  const [likeCounts, replyCounts, mine, rendered, blocked] = await Promise.all([
     db
       .select({ commentId: groupBookCommentLikes.commentId, count: sql<number>`count(*)::int` })
       .from(groupBookCommentLikes)
@@ -465,6 +473,7 @@ async function enrichComments(
       .from(groupBookCommentLikes)
       .where(and(inArray(groupBookCommentLikes.commentId, ids), eq(groupBookCommentLikes.userId, viewerId))),
     renderTexts(rows.map((r) => r.body)),
+    blockedAmong(viewerId, rows.map((r) => r.userId)),
   ]);
 
   const likeMap = new Map(likeCounts.map((r) => [r.commentId, r.count]));
@@ -479,6 +488,7 @@ async function enrichComments(
     likeCount: likeMap.get(r.id) ?? 0,
     replyCount: replyMap.get(r.id) ?? 0,
     likedByMe: liked.has(r.id),
+    authorBlocked: blocked.has(r.userId),
   }));
 }
 
@@ -820,15 +830,25 @@ export const groupBooksService = {
     const entry = await loadEntry(groupId, groupBookId);
 
     let parent: { groupBookId: number; parentId: number | null } | null | undefined;
+    let parentAuthorId: number | undefined;
     if (parentId !== undefined) {
       const [row] = await db
-        .select({ groupBookId: groupBookComments.groupBookId, parentId: groupBookComments.parentId })
+        .select({
+          groupBookId: groupBookComments.groupBookId,
+          parentId: groupBookComments.parentId,
+          userId: groupBookComments.userId,
+        })
         .from(groupBookComments)
         .where(eq(groupBookComments.id, parentId))
         .limit(1);
-      parent = row ?? null;
+      parent = row ? { groupBookId: row.groupBookId, parentId: row.parentId } : null;
+      parentAuthorId = row?.userId;
     }
     enforce(decideComment(entry.status, groupBookId, parent));
+    // Replying is engaging with the author; a block either way rules it out.
+    if (parentAuthorId !== undefined && parentAuthorId !== viewerId) {
+      await assertNotBlocked(viewerId, parentAuthorId, 'You can’t reply to this comment');
+    }
 
     const prepared = await mentionsService.prepare(body, viewerId, TEXT_LIMITS.groupComment);
     const [row] = await db
@@ -845,7 +865,16 @@ export const groupBooksService = {
       .where(eq(groupBookComments.id, row.id))
       .limit(1);
     const [rendered] = await renderTexts([created.body]);
-    return { ...created, body: rendered.text ?? '', mentions: rendered.mentions, links: rendered.links, likeCount: 0, replyCount: 0, likedByMe: false };
+    return {
+      ...created,
+      body: rendered.text ?? '',
+      mentions: rendered.mentions,
+      links: rendered.links,
+      likeCount: 0,
+      replyCount: 0,
+      likedByMe: false,
+      authorBlocked: false,
+    };
   },
 
   /**
@@ -888,7 +917,10 @@ export const groupBooksService = {
 
   async likeComment(groupId: number, commentId: number, viewerId: number): Promise<void> {
     requireComment(await loadAccess(groupId, viewerId));
-    await loadComment(groupId, commentId);
+    const comment = await loadComment(groupId, commentId);
+    if (comment.userId !== viewerId) {
+      await assertNotBlocked(viewerId, comment.userId, 'You can’t like this comment');
+    }
     await db.insert(groupBookCommentLikes).values({ userId: viewerId, commentId }).onConflictDoNothing();
   },
 

@@ -2,6 +2,7 @@ import { Response } from 'express';
 import { z } from 'zod';
 import { usersService } from '../services/users.service';
 import { usernamesService } from '../services/usernames.service';
+import { blocksService } from '../services/blocks.service';
 import { withMyReviews } from '../services/my-reviews.service';
 import { parseId } from '../lib/route-helpers';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
@@ -21,6 +22,12 @@ const followGraphQuerySchema = z.object({
 const followRequestsQuerySchema = followGraphQuerySchema.extend({
   // 'incoming' is the default so existing clients keep the behaviour they had.
   direction: z.enum(['incoming', 'outgoing']).default('incoming'),
+});
+
+// The reason is one of the app's options. Optional: the screen offers a choice,
+// and blocking must not fail because someone skipped it.
+const blockBodySchema = z.object({
+  reason: z.string().trim().min(1).max(200).nullish(),
 });
 
 const usernameQuerySchema = z.object({
@@ -167,5 +174,38 @@ export const usersController = {
       const e = err as Error & { statusCode?: number };
       res.status(e.statusCode ?? 500).json({ error: e.message });
     }
+  },
+
+  // ── Blocking ── mounted with wrapHttp.
+
+  /** POST /users/:userId/block */
+  async blockUser(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const targetId = parseId(req.params.userId, 'user ID');
+    const parsed = blockBodySchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+    const block = await blocksService.block(req.user.id, targetId, parsed.data.reason ?? null);
+    res.status(201).json({ block });
+  },
+
+  /** DELETE /users/:userId/block */
+  async unblockUser(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const targetId = parseId(req.params.userId, 'user ID');
+    await blocksService.unblock(req.user.id, targetId);
+    res.status(200).json({ success: true });
+  },
+
+  /** GET /users/blocks */
+  async listBlockedUsers(req: AuthenticatedRequest, res: Response): Promise<void> {
+    const parsed = followGraphQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+      return;
+    }
+    const { limit, offset } = parsed.data;
+    const result = await blocksService.list(req.user.id, limit, offset);
+    res.status(200).json({ ...result, limit, offset });
   },
 };

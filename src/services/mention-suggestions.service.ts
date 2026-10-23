@@ -3,6 +3,7 @@ import { db } from '../db';
 import { users, groups, groupMemberships, posts, comments, groupBooks, groupBookComments } from '../db/schema';
 import { friendOfCondition } from './groups.service';
 import { likePrefix, likeWordPrefix } from '../lib/escape-like';
+import { notBlockedBetween } from './blocks.service';
 
 export interface MentionSuggestion {
   id: number;
@@ -90,7 +91,8 @@ export const mentionSuggestionsService = {
    * With nothing typed yet (just `@`) the list is the conversation and your
    * friends only. Strangers ranked alphabetically are not a suggestion.
    *
-   * Excludes you, guests (they have no username) and blacklisted accounts.
+   * Excludes you, guests (they have no username), blacklisted accounts, and
+   * anyone with a block between you — neither side of a block can tag the other.
    */
   async suggest(viewerId: number, rawQuery: string, context?: SuggestionContext): Promise<MentionSuggestion[]> {
     const q = rawQuery.trim().replace(/^@/, '').toLowerCase();
@@ -101,6 +103,7 @@ export const mentionSuggestionsService = {
       isNotNull(users.username),
       ne(users.id, viewerId),
       isNull(users.blacklistedAt),
+      notBlockedBetween(viewerId, users.id),
     );
 
     let match: SQL | undefined;
