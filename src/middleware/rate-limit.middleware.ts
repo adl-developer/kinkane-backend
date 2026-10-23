@@ -291,6 +291,19 @@ export const deleteAccountLimiter = rateLimit({
   store: new RedisStore({ prefix: 'rl:delete-account:', sendCommand }),
 });
 
+// Library reset: 10 per hour per user, for the same reason as account
+// deletion — the password check is the only guard on an irreversible wipe.
+// Its own bucket so failed resets don't use up the user's deletion attempts.
+export const libraryResetLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: json429,
+  keyGenerator: byUser,
+  store: new RedisStore({ prefix: 'rl:library-reset:', sendCommand }),
+});
+
 // Email change: 5 per hour — prevents OTP email bombing to arbitrary addresses
 export const emailChangeLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,

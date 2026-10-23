@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth } from '../middleware/auth.middleware';
 import { requirePlus } from '../middleware/require-plus.middleware';
+import { libraryResetLimiter } from '../middleware/rate-limit.middleware';
 import { userBooksController } from '../controllers/user-books.controller';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 
@@ -76,12 +77,16 @@ router.put('/:bookId', requireAuth, requirePlusUnlessClearing, (req: Request, re
 
 /**
  * POST /user-books/reset
- * Clears the user's entire reading list after verifying their password.
- * Body: { password }
+ * Clears the user's entire reading list after the user re-proves who they are.
+ * Body: { password } or { idToken } — exactly one. idToken is a Firebase ID
+ * token from a re-sign-in in the last 5 minutes, with a provider linked to
+ * this account.
  * Returns 200: { deleted: number } — the count of removed entries.
- * Errors: 400 missing password | 400 social account | 401 wrong password
+ * Errors: 400 neither/both sent | 400 password sent for a social account |
+ *         401 wrong password, stale token, or token for another account |
+ *         429 more than 10 attempts in an hour
  */
-router.post('/reset', requireAuth, (req: Request, res: Response) =>
+router.post('/reset', requireAuth, libraryResetLimiter, (req: Request, res: Response) =>
   userBooksController.resetLibrary(req as AuthenticatedRequest, res),
 );
 

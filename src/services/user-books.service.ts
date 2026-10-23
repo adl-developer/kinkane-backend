@@ -1,6 +1,4 @@
-import bcrypt from 'bcryptjs';
 import { eq, and, asc, desc, ilike, sql, inArray, isNull, type SQL } from 'drizzle-orm';
-import { admin } from '../lib/firebase';
 import { db } from '../db';
 import {
   userBooks,
@@ -26,6 +24,7 @@ import { getProductFormLabel } from '../lib/product-form';
 import { addDisplayGenre } from '../lib/genre-display';
 import { availabilityService } from './commerce/availability.service';
 import { TEXT_LIMITS } from '../lib/text-limits';
+import { authService } from './auth.service';
 
 /**
  * Reading statuses that are also trending signals. Every value the API accepts is
@@ -518,50 +517,17 @@ export const userBooksService = {
   /**
    * Deletes every book from the user's reading list and clears any cached
    * public notes for the affected books.
+   *
+   * Confirmed with the password, or a fresh Firebase ID token from a provider
+   * linked to *this* account. The shared check matters: the old inline version
+   * only tested that a token was fresh, so anyone holding a stolen session
+   * could sign in with their own Google account and wipe someone else's shelf.
    */
   async resetLibrary(
     userId: number,
     credential: { password: string } | { idToken: string },
   ): Promise<{ deleted: number }> {
-    const [user] = await db
-      .select({ passwordHash: users.passwordHash })
-      .from(users)
-      .where(eq(users.id, userId))
-      .limit(1);
-
-    if (!user) {
-      throw Object.assign(new Error('User not found'), { statusCode: 404 });
-    }
-
-    if ('idToken' in credential) {
-      // Social-login path: verify a fresh Firebase ID token and enforce a
-      // 5-minute auth_time window so the user must have just authenticated.
-      let decoded: admin.auth.DecodedIdToken;
-      try {
-        decoded = await admin.auth().verifyIdToken(credential.idToken);
-      } catch {
-        throw Object.assign(new Error('Invalid Firebase ID token'), { statusCode: 401 });
-      }
-      const authAge = Math.floor(Date.now() / 1000) - decoded.auth_time;
-      if (authAge > 5 * 60) {
-        throw Object.assign(
-          new Error('Re-authentication required — please sign in again before resetting your library'),
-          { statusCode: 401 },
-        );
-      }
-    } else {
-      // Password path: standard bcrypt comparison
-      if (!user.passwordHash) {
-        throw Object.assign(
-          new Error('This account uses social login — provide a Firebase ID token instead of a password'),
-          { statusCode: 400 },
-        );
-      }
-      const valid = await bcrypt.compare(credential.password, user.passwordHash);
-      if (!valid) {
-        throw Object.assign(new Error('Incorrect password'), { statusCode: 401 });
-      }
-    }
+    await authService.verifyOwnership(userId, credential);
 
     const deleted = await db
       .delete(userBooks)
