@@ -26,7 +26,7 @@ service.
 
 There was no new verification code to write. `authService.verifyOwnership`
 already does password-or-fresh-token checks for Change Plan
-(`POST /subscriptions/change-plan`) and group delete. `deleteAccount` used to
+(`POST /user/subscription/change`) and group delete. `deleteAccount` used to
 call `verifyPassword` directly; it now calls `verifyOwnership`. The
 controller schema follows the Change Plan one: both fields optional, plus an
 exactly-one refine.
@@ -64,8 +64,11 @@ On the delete-account screen, if `providers` on `GET /auth/me` is non-empty,
 offer "Confirm with Google/Apple". `/me` has no has-password flag, but an
 account with a linked provider can confirm with its token whether or not it
 also has a password, so this is always safe. Then re-run the provider
-sign-in, get `currentUser.getIdToken(true)`, and send `{ idToken }`. If the
-response is a 401, ask the user to sign in again and retry.
+sign-in, `reauthenticateWithCredential` (or `signInWithCredential`) with
+the result, and send `{ idToken }`. A forced `getIdToken(true)` on its own
+doesn't move `auth_time`, so it fails the freshness check. If the response is
+a 401, ask the user to sign in again and retry. Full brief:
+`docs/client-integration-2026-10-23-social-account-deletion.md`.
 
 ## Verification
 
