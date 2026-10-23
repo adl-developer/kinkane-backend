@@ -342,29 +342,40 @@ describeIfDb('blocking a user', () => {
 
   // ── Search and tagging ────────────────────────────────────────────────────
 
-  it('keeps each side out of the other’s search, both people and posts', async () => {
+  it('lets the blocker find who they blocked, but not the other way round', async () => {
     await post(kofi, 'A gripping read');
     await post(ama, 'A gripping read too');
     await block(ama, kofi);
 
+    // Ama finds Kofi, marked blocked, so she can open him and unblock.
     const amaSearch = await searchService.search('Kofi', 'users', ama, 20, 0);
-    expect(amaSearch.users).toHaveLength(0);
+    expect(amaSearch.users).toMatchObject([{ id: kofi, followStatus: 'blocked' }]);
+    expect(amaSearch.total.users).toBe(1);
+    const byHandle = await searchService.search('@bt_kofi', 'users', ama, 20, 0);
+    expect(byHandle.users).toMatchObject([{ id: kofi, followStatus: 'blocked' }]);
+    // Kofi doesn't find Ama.
     const kofiSearch = await searchService.search('@bt_ama', 'users', kofi, 20, 0);
     expect(kofiSearch.users).toHaveLength(0);
-    // Esi still finds Kofi.
-    expect((await searchService.search('Kofi', 'users', esi, 20, 0)).users.map((u) => u.id)).toEqual([kofi]);
+    expect(kofiSearch.total.users).toBe(0);
+    // Esi still finds Kofi, as an ordinary result.
+    expect((await searchService.search('Kofi', 'users', esi, 20, 0)).users).toMatchObject([{ id: kofi, followStatus: 'none' }]);
+
+    // The block still hides posts both ways, Ama's search included.
 
     const posts = await searchService.search('gripping', 'posts', ama, 20, 0);
     expect(posts.posts.map((p) => p.userId)).toEqual([ama]);
     expect(posts.total.posts).toBe(1);
   });
 
-  it('stops each side tagging the other', async () => {
+  it('stops each side tagging the other, though the blocker can still find them', async () => {
     await befriend(ama, kofi);
     await block(kofi, ama);
 
+    // Ama was blocked: Kofi isn't suggested to her.
     expect((await suggestions.suggest(ama, 'bt_k')).map((s) => s.id)).toEqual([]);
-    expect((await suggestions.suggest(kofi, 'bt_a')).map((s) => s.id)).toEqual([]);
+    // Kofi blocked her: she is listed, flagged, so he can find her.
+    expect(await suggestions.suggest(kofi, 'bt_a')).toMatchObject([{ id: ama, isBlocked: true }]);
+    expect(await suggestions.suggest(kofi, 'bt_e')).toMatchObject([{ id: esi, isBlocked: false }]);
 
     const esiPost = await post(esi, 'Esi on Beloved');
     await communityService.addComment(esiPost, ama, 'Agree with @bt_kofi and @bt_esi');
@@ -373,8 +384,14 @@ describeIfDb('blocking a user', () => {
     expect(comments[0].body).toBe('Agree with @bt_kofi and @bt_esi');
     expect(comments[0].mentions.map((m) => m.userId)).toEqual([esi]);
 
+    // Picking her from the list still doesn't tag her.
+    await communityService.addComment(esiPost, kofi, 'Over to @bt_ama');
+    const [kofiComment] = (await communityService.listComments(esiPost, esi, 1, 0)).comments;
+    expect(kofiComment.body).toBe('Over to @bt_ama');
+    expect(kofiComment.mentions).toEqual([]);
+
     const [{ count }] = (await db.execute(sql`
-      SELECT count(*)::int AS count FROM mentions WHERE mentioned_user_id = ${kofi}
+      SELECT count(*)::int AS count FROM mentions WHERE mentioned_user_id IN (${kofi}, ${ama})
     `)) as unknown as { count: number }[];
     expect(count).toBe(0);
   });

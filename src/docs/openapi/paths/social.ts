@@ -497,7 +497,7 @@ export const socialPaths = {
         '',
         'With an empty `q` (just `@` typed) only the conversation and friends are offered.',
         '',
-        'Never includes the caller, guest accounts or blacklisted accounts. Free — not Plus-gated, because group discussions are open to every member.',
+        'Never includes the caller, guest accounts, blacklisted accounts or anyone who has blocked the caller. People the caller has blocked are included, flagged `isBlocked`. Free — not Plus-gated, because group discussions are open to every member.',
       ].join('\n'),
       parameters: [
         param('q', 'query', { type: 'string', maxLength: 64, default: '' }, 'What has been typed after the `@` (a leading `@` is also accepted).', { example: 'am' }),
@@ -506,7 +506,20 @@ export const socialPaths = {
           { example: 'group_book:812' }),
       ],
       responses: {
-        200: json('Suggestions, best first.', object({ users: arrayOf(ref('UserSummary')) })),
+        200: json('Suggestions, best first.', object({
+          users: arrayOf({
+            allOf: [
+              ref('UserSummary'),
+              object({
+                isBlocked: {
+                  type: 'boolean',
+                  description: 'The caller has blocked them. Listed so they can be found, but they can’t be tagged — mark the row and don’t insert the handle; if it is typed anyway it stays plain text.',
+                  example: false,
+                },
+              }),
+            ],
+          }),
+        })),
         400: resp('ValidationError'),
         ...authErrors,
       },
@@ -608,7 +621,8 @@ export const socialPaths = {
       description: [
         'Blocks them. Safe to repeat — a second call keeps the original block and reason. In effect a block works **both ways**:',
         '',
-        '- Neither sees the other’s posts in the community feed, on book pages or in search, and neither finds the other in people search or the @-mention typeahead. Opening one of their posts by id is a 404.',
+        '- Neither sees the other’s posts in the community feed, on book pages or in search. Opening one of their posts by id is a 404.',
+        '- In people search and the @-mention typeahead, the blocker can still find the person they blocked (`followStatus: blocked` / `isBlocked: true`) so they can unblock; the blocked person never finds the blocker.',
         '- Their old comments are hidden from each other too, wherever they are, and `commentCount` leaves them out. Old mentions by the other drop out of `GET /user/mentions`.',
         '- Neither can tag the other: a typed `@handle` stays plain text and nobody is notified.',
         '- Each sees only the limited profile of the other (see `isBlocked` / `hasBlockedYou` on the profile).',
