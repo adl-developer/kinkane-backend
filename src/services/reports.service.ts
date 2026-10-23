@@ -23,6 +23,78 @@ export type CreateReportInput =
     }
   | { targetType: 'group'; reporterId: number; reportedGroupId: number; reason: string };
 
+/** What a report needs to know about the content it cites. */
+type CitedContent = { authorId: number; visibleToReporter: boolean };
+
+/**
+ * The checks every cited post or comment goes through, in this order. Hidden
+ * content is a 404 before any authorship check, so no answer depends on who
+ * wrote something the reporter cannot see. Visible content by someone else is
+ * a 400 rather than a report quietly filed against the wrong person.
+ */
+function assertCited(content: CitedContent | undefined, noun: 'Post' | 'Comment', reportedUserId: number): void {
+  if (!content || !content.visibleToReporter) {
+    throw Object.assign(new Error(`${noun} not found`), { statusCode: 404 });
+  }
+  if (content.authorId !== reportedUserId) {
+    throw Object.assign(new Error(`${noun} does not belong to the reported user`), { statusCode: 400 });
+  }
+}
+
+async function lookUpPost(postId: number): Promise<CitedContent | undefined> {
+  const [post] = await db.select({ userId: posts.userId }).from(posts).where(eq(posts.id, postId));
+  return post && { authorId: post.userId, visibleToReporter: true };
+}
+
+/**
+ * The comment's group and the reporter's standing in it, in one round trip.
+ * Without the visibility half, a stranger to a private club could walk comment
+ * ids and user ids and learn from 404 / 400 / 201 who said what in there —
+ * filing a report on every hit.
+ */
+async function lookUpGroupComment(groupCommentId: number, reporterId: number): Promise<CitedContent | undefined> {
+  const [comment] = await db
+    .select({
+      userId: groupBookComments.userId,
+      ownerId: groups.ownerId,
+      privacy: groups.privacy,
+      reporterStatus: groupMemberships.status,
+    })
+    .from(groupBookComments)
+    .innerJoin(groupBooks, eq(groupBooks.id, groupBookComments.groupBookId))
+    .innerJoin(groups, eq(groups.id, groupBooks.groupId))
+    .leftJoin(
+      groupMemberships,
+      and(eq(groupMemberships.groupId, groups.id), eq(groupMemberships.userId, reporterId)),
+    )
+    .where(eq(groupBookComments.id, groupCommentId));
+  return (
+    comment && {
+      authorId: comment.userId,
+      visibleToReporter: groupViewerCapabilities(comment, comment.reporterStatus ?? null, reporterId).canSeeShelf,
+    }
+  );
+}
+
+/**
+ * Joined to its post for the same reason: a comment under a private post is
+ * visible only to the post's author, and to anyone else it must look exactly
+ * like one that does not exist.
+ */
+async function lookUpPostComment(commentId: number, reporterId: number): Promise<CitedContent | undefined> {
+  const [comment] = await db
+    .select({ userId: comments.userId, postIsPublic: posts.isPublic, postOwnerId: posts.userId })
+    .from(comments)
+    .innerJoin(posts, eq(posts.id, comments.postId))
+    .where(eq(comments.id, commentId));
+  return (
+    comment && {
+      authorId: comment.userId,
+      visibleToReporter: comment.postIsPublic || comment.postOwnerId === reporterId,
+    }
+  );
+}
+
 export const reportsService = {
   async create(input: CreateReportInput): Promise<UserReport> {
     const { reporterId, reason } = input;
@@ -79,63 +151,15 @@ export const reportsService = {
       throw Object.assign(new Error('Reported user not found'), { statusCode: 404 });
     }
 
+    // At most one of these runs; the guard above saw to that.
     if (postId !== undefined) {
-      const [post] = await db
-        .select({ id: posts.id, userId: posts.userId })
-        .from(posts)
-        .where(eq(posts.id, postId));
-      if (!post) {
-        throw Object.assign(new Error('Post not found'), { statusCode: 404 });
-      }
-      if (post.userId !== reportedUserId) {
-        throw Object.assign(new Error('Post does not belong to the reported user'), { statusCode: 400 });
-      }
+      assertCited(await lookUpPost(postId), 'Post', reportedUserId);
     }
-
     if (groupCommentId !== undefined) {
-      // The comment's group and the reporter's standing in it, in one round
-      // trip, so a comment the reporter cannot see is indistinguishable from
-      // one that does not exist. Without this, a stranger to a private club
-      // could walk comment ids and user ids and learn from 404 / 400 / 201
-      // who said what in there — filing a report on every hit.
-      const [comment] = await db
-        .select({
-          userId: groupBookComments.userId,
-          ownerId: groups.ownerId,
-          privacy: groups.privacy,
-          reporterStatus: groupMemberships.status,
-        })
-        .from(groupBookComments)
-        .innerJoin(groupBooks, eq(groupBooks.id, groupBookComments.groupBookId))
-        .innerJoin(groups, eq(groups.id, groupBooks.groupId))
-        .leftJoin(
-          groupMemberships,
-          and(eq(groupMemberships.groupId, groups.id), eq(groupMemberships.userId, reporterId)),
-        )
-        .where(eq(groupBookComments.id, groupCommentId));
-      if (!comment || !groupViewerCapabilities(comment, comment.reporterStatus ?? null, reporterId).canSeeShelf) {
-        throw Object.assign(new Error('Comment not found'), { statusCode: 404 });
-      }
-      if (comment.userId !== reportedUserId) {
-        throw Object.assign(new Error('Comment does not belong to the reported user'), { statusCode: 400 });
-      }
+      assertCited(await lookUpGroupComment(groupCommentId, reporterId), 'Comment', reportedUserId);
     }
-
     if (commentId !== undefined) {
-      // Joined to its post for the same reason as the group comment above: a
-      // comment under a private post is visible only to the post's author, and
-      // to anyone else it must look exactly like one that does not exist.
-      const [comment] = await db
-        .select({ userId: comments.userId, postIsPublic: posts.isPublic, postOwnerId: posts.userId })
-        .from(comments)
-        .innerJoin(posts, eq(posts.id, comments.postId))
-        .where(eq(comments.id, commentId));
-      if (!comment || (!comment.postIsPublic && comment.postOwnerId !== reporterId)) {
-        throw Object.assign(new Error('Comment not found'), { statusCode: 404 });
-      }
-      if (comment.userId !== reportedUserId) {
-        throw Object.assign(new Error('Comment does not belong to the reported user'), { statusCode: 400 });
-      }
+      assertCited(await lookUpPostComment(commentId, reporterId), 'Comment', reportedUserId);
     }
 
     const [row] = await db

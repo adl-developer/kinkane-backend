@@ -928,21 +928,23 @@ const commerceSchemas = {
       reference: { type: 'string', nullable: true, description: 'What the screen displays, e.g. R003.', example: 'R003' },
       status: { type: 'string', enum: ['pending', 'resolved', 'dismissed'], example: 'pending' },
       reason: { type: 'string', example: 'Created multiple accounts to abuse the first-order discount.' },
-      postId: { type: 'integer', nullable: true, description: 'The post complained about, when there was one. Nulled if that post is later deleted — the report survives it.' },
-      comment: {
+      cited: {
         type: 'object',
         nullable: true,
-        description: 'The comment under a community post complained about, when there was one. Null otherwise, and once that comment is deleted.',
+        description: 'The one piece of content that prompted a user report, whatever kind it is: a community post, a comment under one, or a group book-club comment. Null when the report cited nothing, and once the cited content is deleted (the report survives it). Read this rather than `postId` / `groupComment`.',
         properties: {
-          id: { type: 'integer', example: 9120 },
-          postId: { type: 'integer', description: 'The post the comment sits under, for linking to the thread.', example: 3310 },
-          body: { type: 'string', description: 'The comment text, with mentions rendered as @usernames.' },
+          kind: { type: 'string', enum: ['post', 'comment', 'groupComment'], example: 'comment' },
+          id: { type: 'integer', description: 'The post\'s id for `post`, otherwise the comment\'s.', example: 9120 },
+          postId: { type: 'integer', nullable: true, description: 'The community post to link to: the post itself, or the one a `comment` sits under. Null for a `groupComment`.', example: 3310 },
+          body: { type: 'string', nullable: true, description: 'The text, with mentions rendered as @usernames.' },
         },
       },
+      postId: { type: 'integer', nullable: true, deprecated: true, description: 'Superseded by `cited`. The post complained about, when there was one; nulled if that post is later deleted.' },
       groupComment: {
         type: 'object',
         nullable: true,
-        description: 'The group book-club comment complained about, when there was one. Null otherwise, and once that comment is deleted.',
+        deprecated: true,
+        description: 'Superseded by `cited`. The group book-club comment complained about, when there was one.',
         properties: {
           id: { type: 'integer', example: 581 },
           body: { type: 'string', description: 'The comment text, with mentions rendered as @usernames.' },

@@ -94,6 +94,17 @@ describeIfDb('reporting a comment under a community post', () => {
     return rows[0].id;
   }
 
+  /**
+   * This report's row in the moderation queue. The scratch database is shared
+   * and never truncated, so the whole queue is read rather than one page of it:
+   * a fixed page size would lose the row once other suites had filed enough.
+   */
+  async function queueRow(reportId: number) {
+    const { total } = await adminReports.list({ limit: 1, offset: 0 });
+    const { reports: queue } = await adminReports.list({ limit: total, offset: 0 });
+    return queue.find((r) => r.id === reportId);
+  }
+
   beforeAll(async () => {
     ({ sql } = await import('drizzle-orm'));
     ({ db } = await import('../db'));
@@ -128,9 +139,8 @@ describeIfDb('reporting a comment under a community post', () => {
     });
     expect(report.commentId).toBe(commentId);
 
-    const { reports: queue } = await adminReports.list({ limit: 200, offset: 0 });
-    const row = queue.find((r) => r.id === report.id);
-    expect(row?.comment).toEqual({ id: commentId, postId: publicPostId, body: 'Something nasty' });
+    const row = await queueRow(report.id);
+    expect(row?.cited).toEqual({ kind: 'comment', id: commentId, postId: publicPostId, body: 'Something nasty' });
     expect(row?.groupComment).toBeNull();
   });
 
@@ -176,6 +186,22 @@ describeIfDb('reporting a comment under a community post', () => {
     ).rejects.toMatchObject({ statusCode: 400 });
   });
 
+  it('shows a cited post with its text, under the same field', async () => {
+    const report = await reports.create({
+      targetType: 'user',
+      reporterId,
+      reportedUserId: authorId,
+      postId: publicPostId,
+      reason: 'Spoilers',
+    });
+    expect((await queueRow(report.id))?.cited).toEqual({
+      kind: 'post',
+      id: publicPostId,
+      postId: publicPostId,
+      body: 'A post',
+    });
+  });
+
   it('keeps the report when the comment is deleted', async () => {
     const doomed = await comment(publicPostId, commenterId, 'Soon gone');
     const report = await reports.create({
@@ -187,7 +213,6 @@ describeIfDb('reporting a comment under a community post', () => {
     });
     await db.execute(sql`DELETE FROM comments WHERE id = ${doomed}`);
 
-    const { reports: queue } = await adminReports.list({ limit: 200, offset: 0 });
-    expect(queue.find((r) => r.id === report.id)?.comment).toBeNull();
+    expect((await queueRow(report.id))?.cited).toBeNull();
   });
 });
