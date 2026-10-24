@@ -10,7 +10,7 @@ import { buildPostSearchCondition } from '../services/community-search.service';
 // group-search.test.ts, so no database is needed.
 
 const dialect = new PgDialect();
-const compiled = (q: string) => dialect.sqlToQuery(buildPostSearchCondition(q)).sql;
+const compiled = (q: string) => dialect.sqlToQuery(buildPostSearchCondition(q, 1)).sql;
 
 describe('post search condition', () => {
   it('matches post text in a subquery over posts alone', () => {
@@ -26,6 +26,12 @@ describe('post search condition', () => {
     expect(sql).toMatch(/"posts"\."book_id" in \(select "id" from "books" "title_match"/);
     expect(sql).toMatch(/"title_match"\."id" in \(select distinct "book_id" from "posts"\)/);
     expect(sql).not.toMatch(/"books"\."title"/);
+  });
+
+  it('matches comments in a subquery over comments alone, visible ones only', () => {
+    const sql = compiled('gripping');
+    expect(sql).toMatch(/"posts"\."id" in \(select "post_id" from "comments" where/);
+    expect(sql).toMatch(/"comments"\."hidden_at" is null/);
   });
 
   it('cleans the typed text with the same function as the stored column', () => {

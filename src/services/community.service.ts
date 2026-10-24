@@ -104,7 +104,7 @@ export interface CommentItem {
  * blacklisted account. Counts use it too, so `commentCount` always matches the
  * list.
  */
-function commentVisibleTo(requesterId: number): SQL {
+export function commentVisibleTo(requesterId: number): SQL {
   return and(
     notBlockedBetween(requesterId, comments.userId),
     isNull(comments.hiddenAt),

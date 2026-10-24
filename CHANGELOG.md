@@ -17,6 +17,7 @@
 
 ### Bug Fixes
 
+* community search stops matching on book blurbs, ISBNs and group descriptions ([938a2d4](https://adl.github.com/adl-developer/kinkane-backend/commit/938a2d4733b961828783409afbaeca0a2144b1b9)) — [details](changelog/2026-10-24-community-search-comments.md)
 * notify people mentioned in a comment once a moderator unhides it ([8296755](https://adl.github.com/adl-developer/kinkane-backend/commit/8296755513a41903826a126a3635664f69ff257f)) — [details](changelog/2026-10-24-moderation-screen-tabs-hide-blacklist-group.md)
 * let App Store purchases verify before the app is live on the App Store ([fc235a0](https://adl.github.com/adl-developer/kinkane-backend/commit/fc235a0bbb1260663be5192395ac416fd2e14e72)) — [details](changelog/2026-10-24-removed-content-gone-for-author.md)
 

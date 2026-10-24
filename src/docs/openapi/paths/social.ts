@@ -327,7 +327,7 @@ export const socialPaths = {
       tags: [COMMUNITY],
       summary: 'Search people, posts and groups',
       description:
-        'One query across users, posts and groups. `filter` narrows it; with `all`, every array comes back and only the requested slice of each is populated. Results are scoped to what the caller is allowed to see.\n\nPeople match on display name and on username. A query starting with `@` (`@ama`) is a username search: it matches usernames by prefix only.\n\nPosts (public only) match on the title or subtitle of their book **or on what was written in the post**. The book’s description and ISBN are not searched. Words in the post match in any order and in other forms (`reading` finds `read`); a phrase in straight or curly double quotes (`"slow burn"`) must appear as written; three or more characters also match part of a word (`gripp` finds `gripping`). Matches on the book title rank first, then posts containing the exact wording, then posts using the words, newest first among equals. @mentions match only by the words around them, not by the mentioned person\'s handle.\n\n`filter=groups` backs both the Community "Groups" tab and the Explore `Books | Authors | Groups` toggle. Groups match on their name only (not the description) and rank by the same four-tier formula as people and posts, so the same query orders consistently wherever results appear side by side.\n\n**Private groups are included.** They are unjoinable, not secret — hiding them would make the "you need an invite to join" screen unreachable for anyone not already sent a link.',
+        'One query across users, posts and groups. `filter` narrows it; with `all`, every array comes back and only the requested slice of each is populated. Results are scoped to what the caller is allowed to see.\n\nPeople match on display name and on username. A query starting with `@` (`@ama`) is a username search: it matches usernames by prefix only.\n\nPosts (public only) match on the title or subtitle of their book, **on what was written in the post, or on what was written in its comments**. The book’s description and ISBN are not searched. Only comments the caller could see under the post count — not ones a moderator has hidden, across a block, or by a blacklisted account. Words in the post match in any order and in other forms (`reading` finds `read`); a phrase in straight or curly double quotes (`"slow burn"`) must appear as written; three or more characters also match part of a word (`gripp` finds `gripping`). Matches on the book title rank first, then posts containing the exact wording, then posts using the words, then close-but-not-exact title matches, and last posts that matched only on a comment; newest first among equals. A comment-only match carries `matchedComment` — the best-matching comment, so the card can show why the post is there; it is `null` on every other result. @mentions match only by the words around them, not by the mentioned person\'s handle.\n\n`filter=groups` backs both the Community "Groups" tab and the Explore `Books | Authors | Groups` toggle. Groups match on their name only (not the description) and rank by the same four-tier formula as people and posts, so the same query orders consistently wherever results appear side by side.\n\n**Private groups are included.** They are unjoinable, not secret — hiding them would make the "you need an invite to join" screen unreachable for anyone not already sent a link.',
       parameters: [
         param('q', 'query', { type: 'string', minLength: 1, maxLength: 200 },
           'The search text. Trimmed; must be at least 1 character after trimming.',
@@ -341,7 +341,28 @@ export const socialPaths = {
         200: json('Search results.',
           object({
             users: arrayOf(ref('UserSearchResult')),
-            posts: arrayOf(ref('Post')),
+            posts: arrayOf({
+              allOf: [
+                ref('Post'),
+                object({
+                  matchedComment: {
+                    ...object({
+                      id: { type: 'integer', example: 9021 },
+                      userId: { type: 'integer', example: 4412 },
+                      userName: { type: 'string', example: 'Ama Owusu' },
+                      userUsername: { type: 'string', nullable: true, example: 'ama' },
+                      userPhotoUrl: { type: 'string', nullable: true, example: null },
+                      body: { type: 'string', description: 'Rendered as in the comment thread: @handles and short links in place.', example: 'The harbour chapters were the best part.' },
+                      mentions: arrayOf(ref('MentionRef'), 'Linked @handles in `body`.'),
+                      links: arrayOf(ref('LinkRef'), 'Short links in `body`.'),
+                      createdAt: { type: 'string', format: 'date-time' },
+                    }),
+                    nullable: true,
+                    description: 'Set only when the post matched on a comment and nothing in the post itself or its book title did. Otherwise `null`.',
+                  },
+                }),
+              ],
+            }),
             groups: arrayOf(object({
               id: { type: 'integer', example: 12 },
               name: { type: 'string', example: 'The Midnight Book Club' },
