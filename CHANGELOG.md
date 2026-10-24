@@ -5,6 +5,8 @@
 
 ### Features
 
+* email blacklisted accounts why they were blocked, with a one-tap appeal ([794a4b2](https://adl.github.com/adl-developer/kinkane-backend/commit/794a4b2c220be466cc1075a8c57c2a42e008a9ba)) — [details](changelog/2026-10-24-account-blacklisted-email.md)
+* stop a blacklisted customer buying as a guest under their own email ([a41b194](https://adl.github.com/adl-developer/kinkane-backend/commit/a41b1944eb5d67b4622bcd4b8db0410e875e327c)) — [details](changelog/2026-10-24-account-blacklisted-email.md)
 * refuse community features to a blacklisted account for the rest of its sign-in ([2b30ac2](https://adl.github.com/adl-developer/kinkane-backend/commit/2b30ac2b2d06810d51d83c47b879941201d00969)) — [details](changelog/2026-10-24-moderation-emails-designs-appeal.md)
 * make a blacklisted account's profile and activity disappear for everyone else ([c292250](https://adl.github.com/adl-developer/kinkane-backend/commit/c292250740fc3072658c70512038fa0ea0847f48)) — [details](changelog/2026-10-24-moderation-emails-designs-appeal.md)
 * make the content-removed and group-blacklisted emails match the designs, with a one-tap appeal ([52cef6b](https://adl.github.com/adl-developer/kinkane-backend/commit/52cef6b8c7cf4ad0cbed085612e00299d04fada7)) — [details](changelog/2026-10-24-moderation-emails-designs-appeal.md)

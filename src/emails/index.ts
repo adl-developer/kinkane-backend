@@ -21,6 +21,7 @@ export type { OrderConfirmedPayload, OrderConfirmedItem } from './transactional/
 export { sendContentRemovedEmail } from './transactional/content-removed';
 export type { RemovedContentKind } from './transactional/content-removed';
 export { sendGroupBlacklistedEmail } from './transactional/group-blacklisted';
+export { sendAccountBlacklistedEmail } from './transactional/account-blacklisted';
 
 // Notifications
 export { sendTrialEndingEmail } from './notifications/trial-ending';

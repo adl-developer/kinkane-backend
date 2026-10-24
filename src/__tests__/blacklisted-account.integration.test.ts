@@ -161,8 +161,20 @@ describeIfDb('a blacklisted account', () => {
     if (db) await cleanUp();
   });
 
-  it('is refused by every community route for the access token it still holds', async () => {
-    await customers.blacklist(ama, 1, 'test');
+  it('cannot sign in, loses its sessions, is refused by the community, and is emailed', async () => {
+    // A live session from before the blacklist.
+    const before = await authService.login(`${EMAIL_PREFIX}ama@example.com`, PASSWORD);
+
+    const result = await customers.blacklist(ama, 1, 'test');
+    expect(result.sessionsRevoked).toBeGreaterThanOrEqual(1);
+    await customers.notifyBlacklisted(result);
+
+    const signIn = await authService.login(`${EMAIL_PREFIX}ama@example.com`, PASSWORD).catch((e) => e);
+    expect(signIn).toMatchObject({ statusCode: 403, code: 'ACCOUNT_SUSPENDED' });
+    // The session they had cannot be refreshed.
+    expect(await status(authService.refresh(before.tokens.refreshToken))).not.toBe('ok');
+
+    // The access token in hand is refused by every community route.
     for (const path of ['/community/posts', `/users/${kofi}`, '/groups']) {
       const res = await call(ama, 'GET', path);
       expect(res.status, path).toBe(403);
@@ -170,6 +182,13 @@ describeIfDb('a blacklisted account', () => {
     }
     // Kofi, not blacklisted, is unaffected.
     expect((await call(kofi, 'GET', '/community/posts')).status).toBe(200);
+
+    expect(enqueueEmail).toHaveBeenCalledTimes(1);
+    expect(enqueueEmail).toHaveBeenCalledWith('account-blacklisted', { to: `${EMAIL_PREFIX}ama@example.com`, name: 'Ama' });
+
+    // Blacklisting again changes nothing and emails nobody.
+    await customers.notifyBlacklisted(await customers.blacklist(ama, 1, 'again'));
+    expect(enqueueEmail).toHaveBeenCalledTimes(1);
   });
 
   it('disappears for everyone else, and comes back when lifted', async () => {

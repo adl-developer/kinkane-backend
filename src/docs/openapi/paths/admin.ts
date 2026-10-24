@@ -510,6 +510,8 @@ export const adminPaths = {
         '',
         '**Their profile and activity disappear for everyone else:** profile, shelf and follow lists answer 404; their posts, reviews and comments drop out of feeds, book pages, comment threads, counts and search; they are left out of group member lists and book-club threads; and they cannot be tagged or followed.',
         '',
+        'They are emailed the "Your account has been blacklisted" notice.',
+        '',
         '**Non-destructive and reversible.** Nothing is deleted, and lifting the blacklist brings everything back as it was: moderation decisions get revisited, and a blacklist that deletes content cannot be undone.',
         '',
         'Idempotent — blacklisting an already-blacklisted customer returns `changed: false` rather than an error.',

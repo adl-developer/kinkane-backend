@@ -1,11 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { sendContentRemovedEmail } from '../emails/transactional/content-removed';
 import { sendGroupBlacklistedEmail } from '../emails/transactional/group-blacklisted';
+import { sendAccountBlacklistedEmail } from '../emails/transactional/account-blacklisted';
 
 /**
- * The moderation notices against the Email Template designs and the client's
- * answers: the subjects and titles, the appeal button that opens a ready-made
- * email, and names and group names escaped.
+ * The three moderation notices — content removed, group blacklisted, account
+ * blacklisted — against the Email Template designs and the client's answers:
+ * the subjects and titles, the appeal button that opens a ready-made email,
+ * names and group names escaped, and the account notice promising exactly
+ * what a blacklist does (no app, no purchases, profile hidden).
  */
 
 const sent: { to: string; subject: string; html: string; text: string }[] = [];
@@ -78,10 +81,26 @@ describe('group blacklisted notice', () => {
   });
 });
 
+describe('account blacklisted notice', () => {
+  it('promises exactly what a blacklist does', async () => {
+    await sendAccountBlacklistedEmail('lea@example.com', 'Léa');
+    const [email] = sent;
+    expect(email.subject).toBe('Your account has been blacklisted');
+    expect(email.html).toContain('Account notice');
+    expect(email.html).toContain('You will not be able to access the app.');
+    expect(email.html).toContain('You will not be able to purchase books on the Kinkané bookstore.');
+    expect(email.html).toContain('will no longer be visible to other members');
+    // The design's bookstore promise was overruled: no purchases.
+    expect(email.html).not.toContain('can still browse and purchase');
+    expect(appealLink(email.html).subject).toBe('Appeal the decision: Your account has been blacklisted');
+  });
+});
+
 describe('every notice', () => {
   it('names the Community Guidelines without linking them, as there is no page yet', async () => {
     await sendContentRemovedEmail('a@example.com', 'A', 'post', '2026-10-12T09:00:00Z');
     await sendGroupBlacklistedEmail('b@example.com', 'B', 'G');
+    await sendAccountBlacklistedEmail('c@example.com', 'C');
     for (const email of sent) {
       expect(email.html).toContain('Community Guidelines');
       expect(email.html).not.toMatch(/href="[^"]*guidelines/i);
