@@ -90,10 +90,11 @@ describe('first-order discount', () => {
 });
 
 describe('multi-write admin actions', () => {
-  it('blacklisting blocks the account and ends its sessions in one transaction', () => {
+  it('blacklisting writes through the caller\'s transaction when given one', () => {
+    // One write now — a blacklist no longer ends sessions — but it must still
+    // join the report's transaction rather than open its own.
     const body = methodBody(read('services/admin/customers.service.ts'), 'async blacklist(');
-    expect(body).toContain('db.transaction');
-    expect(body).toContain('refreshTokens');
+    expect(body).toContain('const handle = tx ?? db;');
   });
 
   it('blacklisting from a report shares one transaction with resolving it', () => {

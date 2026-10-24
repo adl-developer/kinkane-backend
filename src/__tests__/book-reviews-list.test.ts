@@ -77,9 +77,11 @@ describe('listReviewsForBook', () => {
     await communityService.listReviewsForBook(5, 7, 'date_desc', 20, 0);
 
     const { sql, params } = dialect.sqlToQuery(wheres[1]);
-    expect(sql.startsWith('("posts"."book_id" = $1 and ("posts"."is_public" = $2 or "posts"."user_id" = $3) and NOT EXISTS (')).toBe(true);
-    // Nor anyone with a block between them and the caller, either way.
+    expect(sql.startsWith('("posts"."book_id" = $1 and ("posts"."is_public" = $2 or "posts"."user_id" = $3) and "posts"."hidden_at" is null and NOT EXISTS (')).toBe(true);
+    // Nor anyone with a block between them and the caller, either way, nor a
+    // blacklisted account.
     expect(sql).toContain('"user_blocks"');
+    expect(sql).toContain('blacklisted_account');
     expect(params).toEqual([5, true, 7, 7, 7]);
     // The count uses the same filter, so total matches what pages return.
     expect(dialect.sqlToQuery(wheres[2]).sql).toBe(sql);

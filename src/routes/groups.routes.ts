@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.middleware';
+import { requireCommunityAccess } from '../middleware/community-access.middleware';
 import { requirePlus } from '../middleware/require-plus.middleware';
 import { groupCreateLimiter, groupInviteLimiter, groupCommentLimiter } from '../middleware/rate-limit.middleware';
 import { groupsController } from '../controllers/groups.controller';
@@ -9,6 +10,8 @@ import { wrapHttp } from '../lib/route-helpers';
 const router = Router();
 
 router.use(requireAuth);
+// A blacklisted account is shut out of the community; see requireCommunityAccess.
+router.use(requireCommunityAccess);
 
 // Creating a group is gated; everything else is not. Founding a book club is
 // the "create durable content other people consume" side that post and comment

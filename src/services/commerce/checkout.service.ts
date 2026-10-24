@@ -530,20 +530,14 @@ export const commerceCheckoutService = {
         .select({
           email: users.email,
           phone: users.phone,
-          blacklistedAt: users.blacklistedAt,
           isGuest: users.isGuest,
         })
         .from(users)
         .where(eq(users.id, userId))
         .limit(1);
+      // A blacklisted customer can still buy: a blacklist shuts them out of
+      // the community, not the bookstore.
       if (!user) throw httpError('User not found', 404);
-      // A blacklisted customer cannot buy. Checked here rather than only at
-      // login because a session issued before the blacklist stays valid until
-      // its token expires, and "blocked" that still lets you spend money is not
-      // blocked.
-      if (user.blacklistedAt !== null) {
-        throw httpError('This account has been suspended. Contact support.', 403, 'ACCOUNT_SUSPENDED');
-      }
       // The stored number is a fallback for *any* account, guest included: a
       // guest who gave a number on a previous order should not retype it.
       contactPhone ??= user.phone;

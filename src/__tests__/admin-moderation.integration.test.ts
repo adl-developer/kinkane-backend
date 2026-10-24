@@ -173,7 +173,7 @@ describeIfDb('the moderation screen', () => {
 
   // ── Hiding ─────────────────────────────────────────────────────────────────
 
-  it('hides a review from everyone but its author, closes its reports, and emails the author', async () => {
+  it('removes a review for everyone, its author included, closes its reports, and emails the author', async () => {
     const { id: postId } = await community.createPost(kofi, { bookId, status: 'read', rating: 1, body: 'Awful', isPublic: true });
     const first = await reports.create({ targetType: 'user', reporterId: ama, reportedUserId: kofi, postId, reason: 'x' });
     const second = await reports.create({ targetType: 'user', reporterId: esi, reportedUserId: kofi, postId, reason: 'y' });
@@ -183,14 +183,17 @@ describeIfDb('the moderation screen', () => {
     expect(result.resolvedReportIds.sort()).toEqual([first.id, second.id].sort());
 
     expect(await status(community.getPost(postId, ama))).toBe(404);
-    const forAuthor = await community.getPost(postId, kofi);
-    expect(forAuthor).toMatchObject({ isHidden: true, isPublic: false });
+    // Gone for its author too: by id, in their own list, and to edit or delete.
+    expect(await status(community.getPost(postId, kofi))).toBe(404);
+    expect((await community.listOwnPosts(kofi, 'date_desc', 20, 0)).posts.map((p) => p.id)).not.toContain(postId);
+    expect(await status(community.updatePost(postId, kofi, { body: 'Edited' }))).toBe(404);
+    expect(await status(community.deletePost(postId, kofi))).toBe(404);
     const onBook = await community.listPostsForBook(bookId, esi, 'date_desc', 20, 0);
     expect(onBook.posts.map((p) => p.id)).not.toContain(postId);
 
     expect(enqueueEmail).toHaveBeenCalledTimes(1);
-    expect(enqueueEmail).toHaveBeenCalledWith('content-hidden', expect.objectContaining({
-      to: `${EMAIL_PREFIX}kofi@example.com`, kind: 'review', bookTitle: 'The Midnight Library',
+    expect(enqueueEmail).toHaveBeenCalledWith('content-removed', expect.objectContaining({
+      to: `${EMAIL_PREFIX}kofi@example.com`, kind: 'review', submittedAt: expect.any(String),
     }));
 
     // Again: nothing changes and nobody is emailed twice.
@@ -199,22 +202,21 @@ describeIfDb('the moderation screen', () => {
 
     // Undone: public again, as it was.
     expect(await moderation.unhide(first.id)).toMatchObject({ hidden: false, changed: true });
-    expect(await community.getPost(postId, ama)).toMatchObject({ isHidden: false, isPublic: true });
+    expect(await community.getPost(postId, ama)).toMatchObject({ isPublic: true });
+    expect(await community.getPost(postId, kofi)).toMatchObject({ isPublic: true });
   });
 
-  it('keeps a hidden post private when its author makes it public, and honours that on unhide', async () => {
+  it('brings a private post back private on unhide', async () => {
     const { id: postId } = await community.createPost(kofi, { bookId, status: 'read', rating: 2, body: 'Meh', isPublic: false });
     const report = await reports.create({ targetType: 'user', reporterId: ama, reportedUserId: kofi, postId, reason: 'x' });
     await moderation.hide(report.id, 1);
-
-    await community.updatePost(postId, kofi, { isPublic: true });
-    expect(await status(community.getPost(postId, ama))).toBe(404);
-
     await moderation.unhide(report.id);
-    expect(await community.getPost(postId, ama)).toMatchObject({ isPublic: true });
+
+    expect(await status(community.getPost(postId, ama))).toBe(404);
+    expect(await community.getPost(postId, kofi)).toMatchObject({ isPublic: false });
   });
 
-  it('hides a comment under a post from everyone but its author, and out of the count', async () => {
+  it('removes a comment under a post for everyone, its author included, and from the count', async () => {
     const { id: postId } = await community.createPost(esi, { bookId, status: 'read', rating: 4, body: 'Loved it', isPublic: true });
     const comment = await community.addComment(postId, kofi, 'You have terrible taste');
     const report = await reports.create({ targetType: 'user', reporterId: ama, reportedUserId: kofi, commentId: comment.id, reason: 'x' });
@@ -223,13 +225,12 @@ describeIfDb('the moderation screen', () => {
 
     expect((await community.listComments(postId, ama, 20, 0)).comments).toHaveLength(0);
     expect((await community.getPost(postId, ama)).commentCount).toBe(0);
-    const forAuthor = await community.listComments(postId, kofi, 20, 0);
-    expect(forAuthor.comments).toEqual([expect.objectContaining({ id: comment.id, isHidden: true })]);
+    expect((await community.listComments(postId, kofi, 20, 0)).comments).toHaveLength(0);
     expect(await status(community.likeComment(comment.id, ama))).toBe(404);
-    expect(enqueueEmail).toHaveBeenCalledWith('content-hidden', expect.objectContaining({ kind: 'comment' }));
+    expect(enqueueEmail).toHaveBeenCalledWith('content-removed', expect.objectContaining({ kind: 'comment' }));
   });
 
-  it('hides a book-club comment and its replies from everyone but its author', async () => {
+  it('removes a book-club comment and its replies for everyone, its author included', async () => {
     const group = await groupsService.create(esi, { name: 'Night Readers', privacy: 'public' });
     await db.execute(sql`
       INSERT INTO group_memberships (group_id, user_id, status, joined_at)
@@ -245,8 +246,7 @@ describeIfDb('the moderation screen', () => {
     expect((await groupBooks.listComments(group.id, shelf.id, ama, 20, 0)).comments).toHaveLength(0);
     expect(await status(groupBooks.listReplies(group.id, comment.id, ama, 20, 0))).toBe(404);
     expect(await status(groupBooks.likeComment(group.id, comment.id, ama))).toBe(404);
-    const forAuthor = await groupBooks.listComments(group.id, shelf.id, kofi, 20, 0);
-    expect(forAuthor.comments).toEqual([expect.objectContaining({ id: comment.id, isHidden: true })]);
+    expect((await groupBooks.listComments(group.id, shelf.id, kofi, 20, 0)).comments).toHaveLength(0);
   });
 
   it('refuses to hide when a report cites nothing', async () => {
@@ -256,7 +256,7 @@ describeIfDb('the moderation screen', () => {
 
   // ── Blacklisting a group ───────────────────────────────────────────────────
 
-  it('takes a blacklisted group away from everyone, emails owner and members, and gives it back', async () => {
+  it('takes a blacklisted group away from everyone, emails its owner, and gives it back', async () => {
     const group = await groupsService.create(kofi, { name: 'Night Readers', privacy: 'public' });
     await db.execute(sql`
       INSERT INTO group_memberships (group_id, user_id, status, joined_at) VALUES (${group.id}, ${esi}, 'active', now())
@@ -265,7 +265,7 @@ describeIfDb('the moderation screen', () => {
     const second = await reports.create({ targetType: 'group', reporterId: esi, reportedGroupId: group.id, reason: 'y' });
 
     const result = await moderation.blacklistGroup(first.id, 1);
-    expect(result).toMatchObject({ blacklisted: true, changed: true, emailed: 2 });
+    expect(result).toMatchObject({ blacklisted: true, changed: true, emailed: 1 });
     expect(result.resolvedReportIds.sort()).toEqual([first.id, second.id].sort());
 
     for (const viewer of [kofi, esi, ama]) expect(await status(groupsService.get(group.id, viewer))).toBe(404);
@@ -275,10 +275,8 @@ describeIfDb('the moderation screen', () => {
     expect(await status(groupsService.remove(group.id, kofi))).toBe(404);
 
     const emails = enqueueEmail.mock.calls.filter(([name]) => name === 'group-blacklisted').map(([, data]) => data);
-    expect(emails).toEqual(expect.arrayContaining([
-      expect.objectContaining({ to: `${EMAIL_PREFIX}kofi@example.com`, isOwner: true, groupName: 'Night Readers' }),
-      expect.objectContaining({ to: `${EMAIL_PREFIX}esi@example.com`, isOwner: false }),
-    ]));
+    // The owner only: the notice is written for them.
+    expect(emails).toEqual([{ to: `${EMAIL_PREFIX}kofi@example.com`, name: 'Kofi', groupName: 'Night Readers' }]);
     expect((await queueRow(first.id))?.reportedGroup).toMatchObject({ blacklisted: true });
 
     expect(await moderation.unblacklistGroup(first.id)).toMatchObject({ blacklisted: false, changed: true });

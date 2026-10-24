@@ -608,11 +608,6 @@ const socialSchemas = {
         description: 'False restricts the post to the author’s accepted followers.',
         example: true,
       },
-      isHidden: {
-        type: 'boolean',
-        description: 'A moderator has hidden this post. Only its author ever sees a hidden post, so this is only ever true for them: show it with a note that it was hidden. It stays private (`isPublic` false) until unhidden, even if the author switches it to public — that choice is kept and applied when it is unhidden.',
-        example: false,
-      },
       likeCount: { type: 'integer', example: 24 },
       commentCount: { type: 'integer', example: 3 },
       likedByMe: { type: 'boolean', example: false },
@@ -681,7 +676,6 @@ const socialSchemas = {
       updatedAt: { type: 'string', format: 'date-time', example: '2026-07-30T21:10:00.000Z' },
       isEdited: { type: 'boolean', example: false, description: 'True once the author has changed the comment’s text. Show an "Edited" marker when true. Resending the same text does not count.' },
       editedAt: { type: 'string', format: 'date-time', nullable: true, example: null, description: 'When the text last changed; `null` if never edited.' },
-      isHidden: { type: 'boolean', example: false, description: 'A moderator has hidden this comment. Only its author still sees it, so this is only ever true for them.' },
     },
   },
 

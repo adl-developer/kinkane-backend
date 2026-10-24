@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
 import { db } from '../db';
 import { posts } from '../db/schema';
 import { logger } from '../lib/logger';
@@ -81,7 +81,8 @@ async function queryMyReviews(userId: number, ids: number[]): Promise<Map<number
       editedAt: posts.editedAt,
     })
     .from(posts)
-    .where(and(eq(posts.userId, userId), inArray(posts.bookId, ids)))
+    // Not one a moderator hid: removed content is gone for its author too.
+    .where(and(eq(posts.userId, userId), inArray(posts.bookId, ids), isNull(posts.hiddenAt)))
     .orderBy(posts.bookId, desc(posts.createdAt), desc(posts.id));
 
   const rendered = await withRenderedMentions(rows, 'body');

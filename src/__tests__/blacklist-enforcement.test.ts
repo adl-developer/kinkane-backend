@@ -3,69 +3,47 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
- * A blacklist that blocks one way in and not the others is decoration.
+ * A blacklist shuts an account out of the community and nowhere else: they can
+ * still sign in, browse and buy books. That is what the email promises them,
+ * so it is what the code has to do.
  *
- * The first version guarded the password login only, so a blacklisted customer
- * kept their session alive indefinitely: their client traded its refresh token
- * for a fresh pair on a timer and never needed to log in again. "Continue with
- * Google" walked straight past it too.
- *
- * These assert the guard's *presence* at each entry point by reading the source.
- * Crude, but the alternative is a live database and a Firebase token, and the
- * property worth protecting is "nobody added a fourth way in without gating it"
- * — which is a question about the code, not about one request.
+ * The community half is only as good as its coverage — a router that forgets
+ * the guard is a way back in. These assert the guard's *presence* on every
+ * community router, and its *absence* from sign-in and checkout, by reading the
+ * source. Crude, but the property worth protecting is "nobody added a social
+ * router without gating it, or re-gated the bookstore", which is a question
+ * about the code rather than about one request. The behaviour itself is
+ * covered by blacklisted-account.integration.test.ts.
  */
 
 const read = (p: string) => readFileSync(join(__dirname, '..', p), 'utf8');
 
-/** Body of a named method, up to the next method at the same indentation. */
-function methodBody(source: string, signature: string): string {
-  const start = source.indexOf(signature);
-  expect(start, `could not find "${signature}" — did it get renamed?`).toBeGreaterThan(-1);
-  const rest = source.slice(start);
-  const end = rest.indexOf('\n  },\n');
-  return end === -1 ? rest : rest.slice(0, end);
-}
-
 describe('blacklist enforcement', () => {
-  const auth = read('services/auth.service.ts');
-
-  it('blocks the password login', () => {
-    expect(methodBody(auth, 'async login(')).toContain('assertNotBlacklisted');
+  it('guards every community router, after authentication', () => {
+    for (const router of ['community', 'groups', 'users', 'reports']) {
+      const source = read(`routes/${router}.routes.ts`);
+      const auth = source.indexOf('router.use(requireAuth);');
+      const guard = source.indexOf('router.use(requireCommunityAccess);');
+      expect(guard, `${router}.routes.ts is missing the community guard`).toBeGreaterThan(-1);
+      expect(guard, `${router}.routes.ts guards before authenticating`).toBeGreaterThan(auth);
+    }
+    expect(read('routes/mentions.routes.ts')).toContain('requireAuth, requireCommunityAccess');
   });
 
-  it('blocks refreshing a session', () => {
-    // Without this the block never bites anyone already signed in.
-    expect(methodBody(auth, 'async refresh(')).toContain('assertNotBlacklisted');
+  it('still lets a blacklisted account sign in, by every method', () => {
+    const auth = read('services/auth.service.ts');
+    expect(auth).not.toContain('assertNotBlacklisted');
+    expect(auth).not.toContain('ACCOUNT_SUSPENDED');
   });
 
-  it('blocks social sign-in, on both the returning and the account-linking path', () => {
-    const social = methodBody(auth, 'async socialLogin(');
-    const guards = social.match(/assertNotBlacklisted/g) ?? [];
-    // One for the known-provider path, one for linking a provider to an
-    // existing account by email.
-    expect(guards.length).toBeGreaterThanOrEqual(2);
-  });
-
-  it('blocks checkout, separately from login', () => {
-    // An access token minted before the blacklist stays valid until it expires,
-    // so the money path carries its own check rather than trusting the session.
+  it('still lets a blacklisted account buy books', () => {
     const checkout = read('services/commerce/checkout.service.ts');
-    expect(checkout).toContain('blacklistedAt');
-    expect(checkout).toContain('ACCOUNT_SUSPENDED');
+    expect(checkout).not.toContain('ACCOUNT_SUSPENDED');
   });
 
-  it('revokes live sessions when the blacklist is applied', () => {
-    // Belt and braces with the refresh guard: this ends the session now rather
-    // than at its next refresh.
-    const customers = read('services/admin/customers.service.ts');
-    expect(customers).toContain('refreshTokens');
-    expect(customers).toContain('sessionsRevoked');
-  });
-
-  it('does not leak the blacklist flag back to the client', () => {
-    // socialLogin selects the column to check it, and must strip it before the
-    // user object goes out.
-    expect(auth).toContain('const { blacklistedAt: _blacklistedAt, ...safeUser } = user;');
+  it('does not end their sessions when the blacklist is applied', () => {
+    // They are meant to stay signed in to the bookstore; the community guard
+    // reads the flag on every request, so nothing waits on a session ending.
+    expect(read('services/admin/customers.service.ts')).not.toContain('refreshTokens');
   });
 });
