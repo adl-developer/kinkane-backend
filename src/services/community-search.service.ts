@@ -311,7 +311,6 @@ async function searchPosts(
         status: posts.status,
         body: posts.body,
         isPublic: posts.isPublic,
-        isHidden: sql<boolean>`${posts.hiddenAt} IS NOT NULL`.mapWith(Boolean),
         createdAt: posts.createdAt,
         updatedAt: posts.updatedAt,
         editedAt: posts.editedAt,

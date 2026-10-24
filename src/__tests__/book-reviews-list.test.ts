@@ -77,7 +77,7 @@ describe('listReviewsForBook', () => {
     await communityService.listReviewsForBook(5, 7, 'date_desc', 20, 0);
 
     const { sql, params } = dialect.sqlToQuery(wheres[1]);
-    expect(sql.startsWith('("posts"."book_id" = $1 and ("posts"."is_public" = $2 or "posts"."user_id" = $3) and NOT EXISTS (')).toBe(true);
+    expect(sql.startsWith('("posts"."book_id" = $1 and ("posts"."is_public" = $2 or "posts"."user_id" = $3) and "posts"."hidden_at" is null and NOT EXISTS (')).toBe(true);
     // Nor anyone with a block between them and the caller, either way.
     expect(sql).toContain('"user_blocks"');
     expect(params).toEqual([5, true, 7, 7, 7]);

@@ -100,13 +100,15 @@ async function authorOf(cited: Cited): Promise<{ email: string; name: string; bo
 
 export const adminModerationService = {
   /**
-   * "Hide Review / Post / Comment" — the cited content disappears for everyone
-   * but its author, who is emailed. Idempotent: hiding something already hidden
-   * changes nothing and sends nothing, but still closes the reports about it.
+   * "Hide Review / Post / Comment" — the cited content is removed: gone for
+   * everyone, its author included, who is emailed. Idempotent: hiding something
+   * already hidden changes nothing and sends nothing, but still closes the
+   * reports about it.
    *
-   * A post is hidden by making it private, remembering whether it was public.
-   * Every read path already keeps private posts author-only, so hiding needs no
-   * new rule there; the comment tables have no such flag and are filtered on
+   * A post is hidden by making it private, remembering whether it was public,
+   * which takes it away from everyone else through the rules every read path
+   * already applies to private posts; the author's own paths also check
+   * hidden_at. The comment tables have no such flag and are filtered on
    * hidden_at directly.
    */
   async hide(reportId: number, adminId: number) {

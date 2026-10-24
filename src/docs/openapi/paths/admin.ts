@@ -629,9 +629,9 @@ export const adminPaths = {
       tags: [TAG],
       summary: 'Hide the post, review or comment a report cites',
       description: [
-        '"Hide Review", "Hide Post" and "Hide Comment" on the Posts & Reviews tab. The cited content disappears for everyone but its author, who still sees it (with `isHidden: true`) and is emailed. Nothing is deleted.',
+        '"Hide Review", "Hide Post" and "Hide Comment" on the Posts & Reviews tab. The cited content is removed: it disappears for everyone, **its author included**, who is emailed. Nothing is deleted.',
         '',
-        '**Closes every pending report citing the same content.** A hidden post stays private even if its author tries to make it public; their choice is kept for when it is unhidden.',
+        '**Closes every pending report citing the same content.**',
         '',
         'Idempotent: hiding something already hidden changes nothing (`changed: false`) and sends no second email, but still closes its reports.',
       ].join('\n'),
