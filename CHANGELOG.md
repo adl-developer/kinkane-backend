@@ -6,6 +6,7 @@
 ### Features
 
 * community search finds posts by what people said in the comments ([b4fb99e](https://adl.github.com/adl-developer/kinkane-backend/commit/b4fb99e314d01cfb828835273beff2d08232159a)) — [details](changelog/2026-10-24-community-search-comments.md)
+* email the customer when their blacklist is lifted ([5391bf5](https://adl.github.com/adl-developer/kinkane-backend/commit/5391bf59c12799fc7b4f0e8843fc2ff86c8efefd)) — [details](changelog/2026-10-24-account-blacklisted-email.md)
 * email the team whenever someone reports a user, a post or comment, or a group ([21ff08d](https://adl.github.com/adl-developer/kinkane-backend/commit/21ff08d4bd6e78edc59f9d1c110ed0fcea7466f2)) — [details](changelog/2026-10-24-blacklisted-owner-groups-kinkane-admin.md)
 * hand a blacklisted owner's groups to Kinkané Admin and tell contactus@kinkane.app ([fd75040](https://adl.github.com/adl-developer/kinkane-backend/commit/fd75040d819d33f8194aed397b59e94cb31c3390)) — [details](changelog/2026-10-24-blacklisted-owner-groups-kinkane-admin.md)
 * email blacklisted accounts why they were blocked, with a one-tap appeal ([57aa5d0](https://adl.github.com/adl-developer/kinkane-backend/commit/57aa5d0e68482330e7e88c7dce812d0d8a8b7250)) — [details](changelog/2026-10-24-account-blacklisted-email.md)

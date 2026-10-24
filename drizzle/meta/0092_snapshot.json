@@ -5386,6 +5386,18 @@
           "type": "integer",
           "primaryKey": false,
           "notNull": false
+        },
+        "search_text": {
+          "name": "search_text",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "search_vector": {
+          "name": "search_vector",
+          "type": "tsvector",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
