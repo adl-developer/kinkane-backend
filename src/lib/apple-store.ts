@@ -263,15 +263,28 @@ export const appleStore = {
    * Apple's recommended order — App Review buys with sandbox accounts against
    * the production server.
    *
+   * Also falls back when Production rejects our credentials: Production answers
+   * 401 to a valid key until the app has a version live on the App Store, so
+   * before launch every purchase is a sandbox one. If our key really is wrong,
+   * Sandbox rejects it too and that 401 is the one the caller sees.
+   *
    * Returns null when Apple has no such transaction, or when it belongs to a
    * different app or isn't one of our Plus products.
    */
   async getSubscription(transactionId: string): Promise<AppleSubscriptionSnapshot | null> {
     assertAppleConfigured();
 
-    const response =
-      (await getStatuses(transactionId, 'Production')) ??
-      (config.apple.allowSandbox ? await getStatuses(transactionId, 'Sandbox') : null);
+    let response: StatusResponse | null;
+    try {
+      response = await getStatuses(transactionId, 'Production');
+    } catch (err) {
+      const rejected = (err as { code?: string }).code === 'APPLE_IAP_UNAVAILABLE';
+      if (!rejected || !config.apple.allowSandbox) throw err;
+      response = null;
+    }
+    if (!response && config.apple.allowSandbox) {
+      response = await getStatuses(transactionId, 'Sandbox');
+    }
     if (!response) return null;
 
     if (response.bundleId !== config.apple.bundleId) return null;
