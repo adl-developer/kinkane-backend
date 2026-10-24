@@ -23,6 +23,7 @@ import {
   sendOrderConfirmedEmail,
   sendContentHiddenEmail,
   sendGroupBlacklistedEmail,
+  sendReportFiledEmail,
 } from '../emails';
 import { notificationPreferencesService } from '../services/notification-preferences.service';
 import { logger } from '../lib/logger';
@@ -151,6 +152,11 @@ async function processEmailJob(job: Job): Promise<void> {
     case 'group-blacklisted': {
       const { to, name: memberName, groupName, isOwner } = job.data as EmailJobMap['group-blacklisted'];
       await sendGroupBlacklistedEmail(to, memberName, groupName, isOwner);
+      break;
+    }
+    case 'report-filed': {
+      const { payload } = job.data as EmailJobMap['report-filed'];
+      await sendReportFiledEmail(payload);
       break;
     }
     default: {

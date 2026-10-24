@@ -171,12 +171,47 @@ describeIfDb('the moderation screen', () => {
     expect((await queueRow(r3.id))?.reportedGroup).toMatchObject({ id: group.id, name: 'Night Readers', memberCount: 1, blacklisted: false });
   });
 
+  it('emails staff about each new report, described as it was filed', async () => {
+    const { id: review } = await community.createPost(kofi, { bookId, status: 'read', rating: 1, body: 'Awful', isPublic: true });
+    const { id: post } = await community.createPost(esi, { bookId, status: 'read', rating: 4, body: 'Loved it', isPublic: true });
+    const comment = await community.addComment(post, kofi, 'You have terrible taste');
+    const group = await groupsService.create(kofi, { name: 'Night Readers', privacy: 'public' });
+    enqueueEmail.mockClear();
+
+    const r1 = await reports.create({ targetType: 'user', reporterId: ama, reportedUserId: kofi, reason: 'Keeps messaging me', reasonCategory: 'Harassment' });
+    const r2 = await reports.create({ targetType: 'user', reporterId: ama, reportedUserId: kofi, postId: review, reason: 'Spoilers' });
+    const r3 = await reports.create({ targetType: 'user', reporterId: ama, reportedUserId: kofi, commentId: comment.id, reason: 'Rude' });
+    const r4 = await reports.create({ targetType: 'group', reporterId: ama, reportedGroupId: group.id, reason: 'Spam', reasonCategory: 'Spam' });
+
+    const payloads = enqueueEmail.mock.calls.filter(([name]) => name === 'report-filed').map(([, data]) => (data as { payload: Record<string, unknown> }).payload);
+    expect(payloads).toHaveLength(4);
+    const reporter = { name: 'Ama', username: null };
+    expect(payloads[0]).toMatchObject({
+      reference: r1.reference, category: 'user', reporter, reportedUser: { name: 'Kofi' },
+      reasonCategory: 'Harassment', reason: 'Keeps messaging me',
+    });
+    expect(payloads[1]).toMatchObject({ reference: r2.reference, category: 'content', contentKind: 'review', author: { name: 'Kofi' }, excerpt: 'Awful' });
+    expect(payloads[2]).toMatchObject({ reference: r3.reference, category: 'content', contentKind: 'comment', excerpt: 'You have terrible taste' });
+    expect(payloads[3]).toMatchObject({
+      reference: r4.reference, category: 'group', groupName: 'Night Readers', owner: { name: 'Kofi' }, memberCount: 1,
+    });
+    expect(Date.parse(payloads[0].filedAt as string)).not.toBeNaN();
+  });
+
+  it('still files the report when the staff email cannot be queued', async () => {
+    enqueueEmail.mockRejectedValueOnce(new Error('redis down'));
+    const report = await reports.create({ targetType: 'user', reporterId: ama, reportedUserId: kofi, reason: 'x' });
+    expect(report.reference).toMatch(/^R\d{3,}$/);
+  });
+
   // ── Hiding ─────────────────────────────────────────────────────────────────
 
   it('hides a review from everyone but its author, closes its reports, and emails the author', async () => {
     const { id: postId } = await community.createPost(kofi, { bookId, status: 'read', rating: 1, body: 'Awful', isPublic: true });
     const first = await reports.create({ targetType: 'user', reporterId: ama, reportedUserId: kofi, postId, reason: 'x' });
     const second = await reports.create({ targetType: 'user', reporterId: esi, reportedUserId: kofi, postId, reason: 'y' });
+    // Filing queued the staff emails; only what hiding sends is counted below.
+    enqueueEmail.mockClear();
 
     const result = await moderation.hide(first.id, 1);
     expect(result).toMatchObject({ kind: 'post', hidden: true, changed: true });
