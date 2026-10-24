@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-10-24
+
+### Features
+
+* let moderators hide reported posts and comments and blacklist reported groups ([b61aafb](https://adl.github.com/adl-developer/kinkane-backend/commit/b61aafbad97d4ca53f86dc5b2e429f090b2c04f5)) — [details](changelog/2026-10-24-moderation-screen-tabs-hide-blacklist-group.md)
+
+
 ## 2026-10-23
 
 ### Features
