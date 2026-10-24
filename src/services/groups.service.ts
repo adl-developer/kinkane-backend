@@ -19,7 +19,7 @@ import type { LinkRef } from '../lib/link-text';
 import { TEXT_LIMITS } from '../lib/text-limits';
 import { likePrefix, likeWordPrefix } from '../lib/escape-like';
 import { plainTsQuery } from '../lib/tsquery';
-import { blockedBetween, notBlockedBetween } from './blocks.service';
+import { accountActive, blockedBetween, notBlockedBetween } from './blocks.service';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -538,6 +538,50 @@ async function toSummaries(rows: GroupSummaryRow[]): Promise<GroupSummary[]> {
 
 // ── Service ───────────────────────────────────────────────────────────────────
 
+/** Either the pool or an open transaction, so the handover can join a blacklist's. */
+type DbHandle = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Hands every group `fromUserId` owns to `toUserId`, inside the caller's
+ * transaction — used when an owner is blacklisted, so their clubs carry on
+ * under the house account. The new owner becomes an active member if they were
+ * not one, counted as any join is; the old owner keeps their membership row,
+ * hidden like the rest of a blacklisted account, so nothing is lost if an
+ * admin later hands a group back. Returns the groups handed over.
+ */
+export async function handOverOwnedGroups(
+  handle: DbHandle,
+  fromUserId: number,
+  toUserId: number,
+): Promise<{ id: number; name: string }[]> {
+  const moved = await handle
+    .update(groups)
+    .set({ ownerId: toUserId, updatedAt: new Date() })
+    .where(eq(groups.ownerId, fromUserId))
+    .returning({ id: groups.id, name: groups.name });
+
+  for (const group of moved) {
+    // Inserted, or promoted from invited/requested: either way a new active
+    // member, and the count moves. Already active: nothing returned, no change.
+    const joined = await handle
+      .insert(groupMemberships)
+      .values({ groupId: group.id, userId: toUserId, status: 'active', joinedAt: new Date() })
+      .onConflictDoUpdate({
+        target: [groupMemberships.groupId, groupMemberships.userId],
+        set: { status: 'active', joinedAt: sql`coalesce(${groupMemberships.joinedAt}, now())` },
+        setWhere: sql`${groupMemberships.status} <> 'active'`,
+      })
+      .returning({ id: groupMemberships.id });
+    if (joined.length > 0) {
+      await handle
+        .update(groups)
+        .set({ memberCount: sql`${groups.memberCount} + 1` })
+        .where(eq(groups.id, group.id));
+    }
+  }
+  return moved;
+}
+
 export const groupsService = {
   /**
    * Creates a group and makes the creator its first member, in one transaction.
@@ -642,7 +686,8 @@ export const groupsService = {
       const [target] = await db
         .select({ id: users.id, blocked: blockedBetween(viewerId, users.id).mapWith(Boolean) })
         .from(users)
-        .where(eq(users.id, userId))
+        // A blacklisted account is gone for everyone else, as on its profile.
+        .where(and(eq(users.id, userId), accountActive(users.id)))
         .limit(1);
       // 404 rather than an empty page: "this reader has not joined anything"
       // and "there is no such reader" are different answers, and returning the
@@ -785,6 +830,9 @@ export const groupsService = {
     const activeMembers = and(
       eq(groupMemberships.groupId, groupId),
       eq(groupMemberships.status, 'active'),
+      // A blacklisted member stays a member, ready for if it is lifted, but is
+      // not listed: their activity is gone for everyone else.
+      accountActive(groupMemberships.userId),
     );
 
     const [rows, [counted]] = await Promise.all([
@@ -878,6 +926,7 @@ export const groupsService = {
     const term = q?.trim();
     const where = and(
       friendOfCondition(viewerId),
+      isNull(users.blacklistedAt),
       sql`NOT EXISTS (
         SELECT 1 FROM ${groupMemberships}
         WHERE ${groupMemberships.groupId} = ${groupId}
@@ -942,7 +991,7 @@ export const groupsService = {
     const accounts = await db
       .select({ id: users.id })
       .from(users)
-      .where(and(inArray(users.id, candidates), notBlockedBetween(inviterId, users.id)));
+      .where(and(inArray(users.id, candidates), notBlockedBetween(inviterId, users.id), isNull(users.blacklistedAt)));
     const accountIds = new Set(accounts.map((u) => u.id));
 
     const invitable = candidates.filter((id) => {

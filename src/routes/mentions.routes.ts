@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.middleware';
+import { requireCommunityAccess } from '../middleware/community-access.middleware';
 import { mentionsController } from '../controllers/mentions.controller';
 import { wrapHttp } from '../lib/route-helpers';
 
@@ -17,6 +18,6 @@ const router = Router();
  * Returns 200: { mentions: MentionFeedItem[], total, limit, offset }
  * Errors: 400 invalid query | 401 unauthenticated
  */
-router.get('/', requireAuth, wrapHttp(mentionsController.list));
+router.get('/', requireAuth, requireCommunityAccess, wrapHttp(mentionsController.list));
 
 export default router;

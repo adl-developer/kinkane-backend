@@ -217,10 +217,15 @@ describeIfDb('blocking a user', () => {
 
   // ── Profile and follows ────────────────────────────────────────────────────
 
-  it('shows each side the limited profile, with Blocked on the blocker’s button', async () => {
+  it('shows the blocker the profile and shelf, and the blocked person only the limited profile', async () => {
     await befriend(ama, kofi);
+    await db.execute(sql`UPDATE users SET reader_type = 'The Open Door' WHERE id IN (${ama}, ${kofi})`);
+    await db.execute(sql`INSERT INTO user_books (user_id, book_id, status) VALUES (${kofi}, ${bookId}, 'read'), (${ama}, ${bookId}, 'read')`);
+    await post(kofi, 'Kofi on Beloved');
     await block(ama, kofi);
 
+    // The blocker sees what any non-follower would — reader type and a public
+    // shelf — with Blocked on the button, so they can see who it is and unblock.
     const seenByAma = (await call(ama, 'GET', `/users/${kofi}`)).body;
     expect(seenByAma).toMatchObject({
       id: kofi,
@@ -228,11 +233,21 @@ describeIfDb('blocking a user', () => {
       followStatus: 'blocked',
       isBlocked: true,
       hasBlockedYou: false,
-      canViewShelf: false,
+      canViewShelf: true,
+      readerType: 'The Open Door',
       incomingFollowRequest: null,
     });
     expect(seenByAma).not.toHaveProperty('followerCount');
+    const shelf = await call(ama, 'GET', `/users/${kofi}/books`);
+    expect(shelf.status).toBe(200);
+    expect(shelf.body.total).toBe(1);
 
+    // One of their books opens, but their review of it does not: posts never
+    // cross a block.
+    const book = await communityService.getFriendBookDetail(kofi, bookId, ama);
+    expect(JSON.stringify(book)).not.toContain('Kofi on Beloved');
+
+    // The person blocked gets the limited profile and nothing past it.
     const seenByKofi = (await call(kofi, 'GET', `/users/${ama}`)).body;
     expect(seenByKofi).toMatchObject({
       id: ama,
@@ -240,15 +255,27 @@ describeIfDb('blocking a user', () => {
       isBlocked: false,
       hasBlockedYou: true,
       canViewShelf: false,
+      readerType: null,
     });
     expect(seenByKofi).not.toHaveProperty('followerCount');
+    expect((await call(kofi, 'GET', `/users/${ama}/books`)).status).toBe(404);
+    expect(await status(communityService.getFriendBookDetail(ama, bookId, kofi))).toBe(404);
 
-    // Nothing past the limited profile, from either side.
+    // Follow lists and groups stay closed both ways.
     for (const [viewer, target] of [[ama, kofi], [kofi, ama]]) {
-      expect((await call(viewer, 'GET', `/users/${target}/books`)).status).toBe(404);
       expect((await call(viewer, 'GET', `/users/${target}/followers`)).status).toBe(404);
       expect((await call(viewer, 'GET', `/users/${target}/groups`)).status).toBe(404);
     }
+  });
+
+  it('respects the shelf setting for a blocker, as for any non-follower', async () => {
+    await db.execute(sql`UPDATE users SET shelf_visibility = 'friends' WHERE id = ${kofi}`);
+    await befriend(ama, kofi);
+    await block(ama, kofi);
+
+    // The block ended the follow, so a friends-only shelf is closed to them.
+    expect((await call(ama, 'GET', `/users/${kofi}`)).body.canViewShelf).toBe(false);
+    expect((await call(ama, 'GET', `/users/${kofi}/books`)).status).toBe(404);
   });
 
   it('removes follows both ways and refuses new ones', async () => {

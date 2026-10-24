@@ -5,17 +5,26 @@
 
 ### Features
 
+* hand a blacklisted owner's groups to Kinkané Admin and tell contactus@kinkane.app ([fd75040](https://adl.github.com/adl-developer/kinkane-backend/commit/fd75040d819d33f8194aed397b59e94cb31c3390)) — [details](changelog/2026-10-24-blacklisted-owner-groups-kinkane-admin.md)
+* email blacklisted accounts why they were blocked, with a one-tap appeal ([57aa5d0](https://adl.github.com/adl-developer/kinkane-backend/commit/57aa5d0e68482330e7e88c7dce812d0d8a8b7250)) — [details](changelog/2026-10-24-account-blacklisted-email.md)
+* stop a blacklisted customer buying as a guest under their own email ([a41b194](https://adl.github.com/adl-developer/kinkane-backend/commit/a41b1944eb5d67b4622bcd4b8db0410e875e327c)) — [details](changelog/2026-10-24-blacklisted-owner-groups-kinkane-admin.md)
+* refuse community features to a blacklisted account for the rest of its sign-in ([2b30ac2](https://adl.github.com/adl-developer/kinkane-backend/commit/2b30ac2b2d06810d51d83c47b879941201d00969)) — [details](changelog/2026-10-24-moderation-emails-designs-appeal.md)
+* make a blacklisted account's profile and activity disappear for everyone else ([c292250](https://adl.github.com/adl-developer/kinkane-backend/commit/c292250740fc3072658c70512038fa0ea0847f48)) — [details](changelog/2026-10-24-blacklisted-owner-groups-kinkane-admin.md)
+* make the content-removed and group-blacklisted emails match the designs, with a one-tap appeal ([52cef6b](https://adl.github.com/adl-developer/kinkane-backend/commit/52cef6b8c7cf4ad0cbed085612e00299d04fada7)) — [details](changelog/2026-10-24-blacklisted-owner-groups-kinkane-admin.md)
+* remove reported posts, reviews and comments for their author too ([1a94cb5](https://adl.github.com/adl-developer/kinkane-backend/commit/1a94cb570693bfec7710232d13cbec7cb0ff7f05)) — [details](changelog/2026-10-24-removed-content-gone-for-author.md)
 * let moderators hide reported posts and comments and blacklist reported groups ([b61aafb](https://adl.github.com/adl-developer/kinkane-backend/commit/b61aafbad97d4ca53f86dc5b2e429f090b2c04f5)) — [details](changelog/2026-10-24-moderation-screen-tabs-hide-blacklist-group.md)
 
 ### Bug Fixes
 
-* let App Store purchases verify before the app is live on the App Store ([fc235a0](https://adl.github.com/adl-developer/kinkane-backend/commit/fc235a0bbb1260663be5192395ac416fd2e14e72)) — [details](changelog/2026-10-24-apple-verify-sandbox-fallback.md)
+* notify people mentioned in a comment once a moderator unhides it ([8296755](https://adl.github.com/adl-developer/kinkane-backend/commit/8296755513a41903826a126a3635664f69ff257f)) — [details](changelog/2026-10-24-moderation-screen-tabs-hide-blacklist-group.md)
+* let App Store purchases verify before the app is live on the App Store ([fc235a0](https://adl.github.com/adl-developer/kinkane-backend/commit/fc235a0bbb1260663be5192395ac416fd2e14e72)) — [details](changelog/2026-10-24-removed-content-gone-for-author.md)
 
 
 ## 2026-10-23
 
 ### Features
 
+* show people you've blocked with their reader type and shelf, as the design does ([e55d7ff](https://adl.github.com/adl-developer/kinkane-backend/commit/e55d7ff791833e82c4a747dd7782878634b7851c)) — [details](changelog/2026-10-23-blocked-profile-shelf.md)
 * show moderators what a report is about in one place, with the text of reported posts ([804c7e8](https://adl.github.com/adl-developer/kinkane-backend/commit/804c7e8fc232e85964a3f43c0e97ab8ff22b9c7d)) — [details](changelog/2026-10-23-library-reset-linked-sign-in.md)
 * let people report abusive comments under community posts ([f15f221](https://adl.github.com/adl-developer/kinkane-backend/commit/f15f22199dedd71403cf86782771652b35bbd173)) — [details](changelog/2026-10-23-report-post-comments.md)
 * let you find people you've blocked in search so you can unblock them ([50ab0a5](https://adl.github.com/adl-developer/kinkane-backend/commit/50ab0a5e898e233fa293afa4228f60e8f1e834b6)) — [details](changelog/2026-10-23-find-blocked-users-search.md)

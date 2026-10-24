@@ -308,8 +308,8 @@ export const adminReportsService = {
     // Under postgres-js a nested db.transaction() takes a separate connection,
     // which would make the two writes non-atomic and deadlock the moment both
     // touched the same users row.
-    const result = await db.transaction(async (tx) => {
-      await adminCustomersService.blacklist(
+    const { blacklisted, ...result } = await db.transaction(async (tx) => {
+      const blacklisted = await adminCustomersService.blacklist(
         reportedUserId,
         adminId,
         `Blacklisted from report ${reportId}`,
@@ -331,9 +331,11 @@ export const adminReportsService = {
         )
         .returning({ id: userReports.id });
 
-      return { resolvedReportIds: closed.map((c) => c.id), blacklistedUserId: reportedUserId };
+      return { blacklisted, resolvedReportIds: closed.map((c) => c.id), blacklistedUserId: reportedUserId };
     });
 
+    // After the commit, so nobody is told about a blacklist that rolled back.
+    await adminCustomersService.notifyBlacklisted(blacklisted);
     return result;
   },
 

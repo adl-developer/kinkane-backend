@@ -1,11 +1,11 @@
-import { eq, and, sql, asc, desc } from 'drizzle-orm';
+import { eq, and, isNull, sql, asc, desc } from 'drizzle-orm';
 import { db, type Tx } from '../db';
-import { users, posts, followRequests, userBooks, books, notifications, ShelfVisibility } from '../db/schema';
+import { users, posts, followRequests, userBooks, books, notifications, ShelfVisibility, type ReaderType } from '../db/schema';
 import { enqueueEmail } from '../lib/email-queue';
 import { enqueuePush } from '../lib/push-queue';
 import { notificationPreferencesService } from './notification-preferences.service';
 import { logger } from '../lib/logger';
-import { blockStateBetween, blockedBetween, blockedError } from './blocks.service';
+import { accountActive, blockStateBetween, blockedBetween, blockedError, notBlockedViewer } from './blocks.service';
 
 // ── Friend-request notifications ──────────────────────────────────────────────
 // Each follow request has exactly one `friend_request` notification for its
@@ -108,10 +108,15 @@ export interface UserProfile {
   // Whether the requester may read this user's whole shelf. Decided here so
   // clients never re-implement the visibility rule; see canViewShelf below.
   canViewShelf: boolean;
-  // A block between the two, by direction. Either one makes this the limited
-  // profile — name, photo and join date only, no counts, no shelf — and rules
-  // out following. Only the blocker can unblock, so the app shows Unblock for
-  // isBlocked and nothing for hasBlockedYou.
+  // Their quiz result, shown on the profile as "<name>'s Reader Type". Null
+  // when they have not taken the quiz, and on the limited profile.
+  readerType: ReaderType | null;
+  // A block between the two, by direction. Both rule out following.
+  // hasBlockedYou makes this the limited profile — name, photo and join date
+  // only, no reader type, no counts, no shelf. isBlocked alone does not: the
+  // blocker still sees the profile and shelf as any non-follower would, so
+  // they can see who they blocked and unblock them. Only the blocker can
+  // unblock, so the app shows Unblock for isBlocked and nothing otherwise.
   isBlocked: boolean;
   hasBlockedYou: boolean;
   // Only present for accepted followers
@@ -171,13 +176,16 @@ interface ViewerRelationship {
     photoUrl: string | null;
     createdAt: Date;
     shelfVisibility: ShelfVisibility;
+    readerType: ReaderType | null;
   };
   isSelf: boolean;
   /** The requester's own follow request to the target, if any. */
   followStatus: FollowStatus;
   isAcceptedFollower: boolean;
-  /** A block between the two, either way. Hides everything past the limited profile. */
+  /** A block between the two, either way. */
   blocked: boolean;
+  /** The target has blocked the requester: the limited profile, and nothing past it. */
+  blockedMe: boolean;
 }
 
 /**
@@ -194,19 +202,23 @@ async function loadViewerRelationship(targetId: number, requesterId: number): Pr
       photoUrl: users.photoUrl,
       createdAt: users.createdAt,
       shelfVisibility: users.shelfVisibility,
+      readerType: users.readerType,
       followStatus: followRequests.status,
       blocked: blockedBetween(requesterId, users.id).mapWith(Boolean),
+      blockedMe: sql`NOT ${notBlockedViewer(requesterId, users.id)}`.mapWith(Boolean),
     })
     .from(users)
     .leftJoin(
       followRequests,
       and(eq(followRequests.senderId, requesterId), eq(followRequests.receiverId, users.id)),
     )
-    .where(eq(users.id, targetId))
+    // A blacklisted account is gone for everyone else — profile, shelf, follow
+    // lists — and answers exactly as a missing one does.
+    .where(and(eq(users.id, targetId), targetId === requesterId ? undefined : isNull(users.blacklistedAt)))
     .limit(1);
   if (!row) return null;
 
-  const { followStatus: rawStatus, blocked, ...target } = row;
+  const { followStatus: rawStatus, blocked, blockedMe, ...target } = row;
   const followStatus = toFollowStatus(rawStatus);
   return {
     target,
@@ -214,6 +226,7 @@ async function loadViewerRelationship(targetId: number, requesterId: number): Pr
     followStatus,
     isAcceptedFollower: followStatus === 'accepted',
     blocked,
+    blockedMe,
   };
 }
 
@@ -265,6 +278,10 @@ export function canViewShelfBook(
  * Guards a read off a user's shelf with `rule` — canViewShelf for the whole
  * shelf, canViewShelfBook for one book. 404 (not 403), like the follow graph,
  * so a hidden shelf looks the same as a missing account.
+ *
+ * Only a block placed by the target hides it outright. Someone who blocked the
+ * target still reads it under the ordinary rule — as a non-follower, since the
+ * block ended any follow — which is what their profile screen shows.
  */
 export async function assertCanViewShelf(
   targetId: number,
@@ -273,8 +290,8 @@ export async function assertCanViewShelf(
 ): Promise<void> {
   const relationship = await loadViewerRelationship(targetId, requesterId);
   if (!relationship) throw userNotFound();
-  const { target, isSelf, isAcceptedFollower, blocked } = relationship;
-  if (blocked || !rule(target.shelfVisibility, isSelf, isAcceptedFollower)) throw userNotFound();
+  const { target, isSelf, isAcceptedFollower, blockedMe } = relationship;
+  if (blockedMe || !rule(target.shelfVisibility, isSelf, isAcceptedFollower)) throw userNotFound();
 }
 
 // ── Service ───────────────────────────────────────────────────────────────────
@@ -305,9 +322,10 @@ export const usersService = {
     if (!relationship) throw userNotFound();
     const { target, followStatus, isAcceptedFollower } = relationship;
 
-    // The limited profile. A block clears follow requests both ways, so there
-    // is no follow status or incoming request left to report.
-    if (blockState.blockedByMe || blockState.blockedMe) {
+    // The limited profile, for someone they have blocked. A block clears
+    // follow requests both ways, so there is no follow status or incoming
+    // request left to report.
+    if (blockState.blockedMe) {
       return {
         id: target.id,
         name: target.name,
@@ -319,8 +337,30 @@ export const usersService = {
         incomingFollowRequest: null,
         shelfVisibility: target.shelfVisibility,
         canViewShelf: false,
+        readerType: null,
         isBlocked: blockState.blockedByMe,
-        hasBlockedYou: blockState.blockedMe,
+        hasBlockedYou: true,
+      };
+    }
+
+    // Someone the requester has blocked: the profile a non-follower sees, with
+    // Unblock in place of Follow. The block cleared any follow, so there are
+    // no counts to add and nothing past this point applies.
+    if (blockState.blockedByMe) {
+      return {
+        id: target.id,
+        name: target.name,
+        username: target.username,
+        photoUrl: target.photoUrl ?? null,
+        yearJoined: new Date(target.createdAt).getFullYear(),
+        joinedAt: new Date(target.createdAt),
+        followStatus: 'blocked',
+        incomingFollowRequest: null,
+        shelfVisibility: target.shelfVisibility,
+        canViewShelf: canViewShelf(target.shelfVisibility, false, false),
+        readerType: target.readerType ?? null,
+        isBlocked: true,
+        hasBlockedYou: false,
       };
     }
 
@@ -336,6 +376,7 @@ export const usersService = {
       shelfVisibility: target.shelfVisibility,
       // Never self: this endpoint 400s on your own profile above
       canViewShelf: canViewShelf(target.shelfVisibility, false, isAcceptedFollower),
+      readerType: target.readerType ?? null,
       isBlocked: false,
       hasBlockedYou: false,
     };
@@ -391,7 +432,9 @@ export const usersService = {
     // The caller sits on one side of the row; the user we want to show is the other.
     const mineColumn  = incoming ? followRequests.receiverId : followRequests.senderId;
     const theirColumn = incoming ? followRequests.senderId   : followRequests.receiverId;
-    const where = and(eq(mineColumn, userId), eq(followRequests.status, 'pending'));
+    // A blacklisted account's requests, either way, are gone with the rest of
+    // its activity: not listed, not counted, not there to accept.
+    const where = and(eq(mineColumn, userId), eq(followRequests.status, 'pending'), isNull(users.blacklistedAt));
 
     const [rows, [countRow]] = await Promise.all([
       db
@@ -411,6 +454,7 @@ export const usersService = {
       db
         .select({ count: sql<number>`COUNT(*)::int` })
         .from(followRequests)
+        .innerJoin(users, eq(users.id, theirColumn))
         .where(where),
     ]);
 
@@ -435,14 +479,15 @@ export const usersService = {
         .select({ id: users.id, name: users.name, username: users.username, photoUrl: users.photoUrl })
         .from(followRequests)
         .innerJoin(users, eq(users.id, followRequests.senderId))
-        .where(and(eq(followRequests.receiverId, targetId), eq(followRequests.status, 'accepted')))
+        .where(and(eq(followRequests.receiverId, targetId), eq(followRequests.status, 'accepted'), isNull(users.blacklistedAt)))
         .orderBy(desc(followRequests.updatedAt))
         .limit(limit)
         .offset(offset),
       db
         .select({ count: sql<number>`COUNT(*)::int` })
         .from(followRequests)
-        .where(and(eq(followRequests.receiverId, targetId), eq(followRequests.status, 'accepted'))),
+        .innerJoin(users, eq(users.id, followRequests.senderId))
+        .where(and(eq(followRequests.receiverId, targetId), eq(followRequests.status, 'accepted'), isNull(users.blacklistedAt))),
     ]);
 
     return { items: rows, total: countRow?.count ?? 0 };
@@ -465,14 +510,15 @@ export const usersService = {
         .select({ id: users.id, name: users.name, username: users.username, photoUrl: users.photoUrl })
         .from(followRequests)
         .innerJoin(users, eq(users.id, followRequests.receiverId))
-        .where(and(eq(followRequests.senderId, targetId), eq(followRequests.status, 'accepted')))
+        .where(and(eq(followRequests.senderId, targetId), eq(followRequests.status, 'accepted'), isNull(users.blacklistedAt)))
         .orderBy(desc(followRequests.updatedAt))
         .limit(limit)
         .offset(offset),
       db
         .select({ count: sql<number>`COUNT(*)::int` })
         .from(followRequests)
-        .where(and(eq(followRequests.senderId, targetId), eq(followRequests.status, 'accepted'))),
+        .innerJoin(users, eq(users.id, followRequests.receiverId))
+        .where(and(eq(followRequests.senderId, targetId), eq(followRequests.status, 'accepted'), isNull(users.blacklistedAt))),
     ]);
 
     return { items: rows, total: countRow?.count ?? 0 };
@@ -493,7 +539,8 @@ export const usersService = {
       db
         .select({ id: users.id, name: users.name, email: users.email })
         .from(users)
-        .where(eq(users.id, receiverId))
+        // A blacklisted account cannot be followed: to everyone else it does not exist.
+        .where(and(eq(users.id, receiverId), isNull(users.blacklistedAt)))
         .limit(1),
     ]);
 
@@ -606,6 +653,9 @@ export const usersService = {
             eq(followRequests.id, requestId),
             eq(followRequests.receiverId, receiverId),
             eq(followRequests.status, 'pending'),
+            // Not from a blacklisted account: its requests are not listed, so
+            // they are not there to accept either.
+            accountActive(followRequests.senderId),
           ),
         )
         .returning({ senderId: followRequests.senderId });

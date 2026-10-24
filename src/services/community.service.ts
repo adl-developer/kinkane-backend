@@ -7,7 +7,7 @@ import { enqueuePush } from '../lib/push-queue';
 import { logger } from '../lib/logger';
 import { mentionsService, renderTexts } from './mentions.service';
 import { assertCanViewShelf, canViewShelfBook } from './users.service';
-import { isBlockedBetween, notBlockedBetween } from './blocks.service';
+import { accountActive, isHiddenFrom, notBlockedBetween } from './blocks.service';
 import type { MentionRef } from '../lib/mention-text';
 import type { LinkRef } from '../lib/link-text';
 import { isEdited, withEditState } from '../lib/edit-state';
@@ -44,11 +44,6 @@ export interface PostItem {
   mentions: MentionRef[];
   links: LinkRef[];
   isPublic: boolean;
-  /**
-   * Hidden by a moderator. Only its author ever sees a hidden post, so this is
-   * only ever true for them — the app can say why it went private.
-   */
-  isHidden: boolean;
   likeCount: number;
   commentCount: number;
   likedByMe: boolean;
@@ -99,21 +94,21 @@ export interface CommentItem {
   /** True once the author has changed the body. */
   isEdited: boolean;
   editedAt: Date | null;
-  /** Hidden by a moderator; only ever true for its author, the one person who still sees it. */
-  isHidden: boolean;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /**
  * The comments `requesterId` may see: none across a block either way, old ones
- * included, and none a moderator has hidden — except their own, which they
- * still see. Counts use it too, so `commentCount` always matches the list.
+ * included, none a moderator has hidden (from its author too), and none by a
+ * blacklisted account. Counts use it too, so `commentCount` always matches the
+ * list.
  */
 function commentVisibleTo(requesterId: number): SQL {
   return and(
     notBlockedBetween(requesterId, comments.userId),
-    or(isNull(comments.hiddenAt), eq(comments.userId, requesterId)),
+    isNull(comments.hiddenAt),
+    accountActive(comments.userId),
   )!;
 }
 
@@ -144,7 +139,8 @@ function assertPostVisible(post: { isPublic: boolean; userId: number }, requeste
  */
 async function assertPostReachable(post: { isPublic: boolean; userId: number }, requesterId: number): Promise<void> {
   assertPostVisible(post, requesterId);
-  if (post.userId !== requesterId && (await isBlockedBetween(requesterId, post.userId))) {
+  // A blacklisted author's posts are gone for everyone, like a blocked pair's.
+  if (await isHiddenFrom(requesterId, post.userId)) {
     throw Object.assign(new Error('Post not found'), { statusCode: 404 });
   }
 }
@@ -319,7 +315,6 @@ const POST_SELECT_COLUMNS = {
   status: posts.status,
   body: posts.body,
   isPublic: posts.isPublic,
-  isHidden: sql<boolean>`${posts.hiddenAt} IS NOT NULL`.mapWith(Boolean),
   createdAt: posts.createdAt,
   updatedAt: posts.updatedAt,
   editedAt: posts.editedAt,
@@ -443,7 +438,7 @@ export const communityService = {
       .from(posts)
       .innerJoin(users, eq(users.id, posts.userId))
       .innerJoin(books, eq(books.id, posts.bookId))
-      .where(eq(posts.id, postId))
+      .where(and(eq(posts.id, postId), isNull(posts.hiddenAt)))
       .limit(1);
 
     assertFound(row, 'Post');
@@ -491,7 +486,7 @@ export const communityService = {
     const [current] = await db
       .select({ rating: posts.rating, status: posts.status, body: posts.body })
       .from(posts)
-      .where(and(eq(posts.id, postId), eq(posts.userId, userId)))
+      .where(and(eq(posts.id, postId), eq(posts.userId, userId), isNull(posts.hiddenAt)))
       .limit(1);
     if (!current) throw Object.assign(new Error('Post not found'), { statusCode: 404 });
 
@@ -535,12 +530,7 @@ export const communityService = {
     if (fields.rating !== undefined) updateSet.rating = fields.rating;
     if (fields.status !== undefined) updateSet.status = fields.status;
     if (body !== undefined) updateSet.body = body.text;
-    if (fields.isPublic !== undefined) {
-      // A post a moderator has hidden stays private. The author's choice is
-      // kept for when it is unhidden, so it comes back as they last set it.
-      updateSet.isPublic = sql`CASE WHEN ${posts.hiddenAt} IS NULL THEN ${fields.isPublic} ELSE false END`;
-      updateSet.hiddenWasPublic = sql`CASE WHEN ${posts.hiddenAt} IS NULL THEN ${posts.hiddenWasPublic} ELSE ${fields.isPublic} END`;
-    }
+    if (fields.isPublic !== undefined) updateSet.isPublic = fields.isPublic;
     if (changed.length > 0) {
       updateSet.editedAt = sql`CASE WHEN ${sql.join(changed, sql` OR `)} THEN now() ELSE ${posts.editedAt} END`;
     }
@@ -548,7 +538,7 @@ export const communityService = {
     const result = await db
       .update(posts)
       .set(updateSet)
-      .where(and(eq(posts.id, postId), eq(posts.userId, userId)))
+      .where(and(eq(posts.id, postId), eq(posts.userId, userId), isNull(posts.hiddenAt)))
       .returning({ id: posts.id, isPublic: posts.isPublic });
 
     if (result.length === 0) {
@@ -568,7 +558,7 @@ export const communityService = {
   async deletePost(postId: number, userId: number): Promise<void> {
     const result = await db
       .delete(posts)
-      .where(and(eq(posts.id, postId), eq(posts.userId, userId)))
+      .where(and(eq(posts.id, postId), eq(posts.userId, userId), isNull(posts.hiddenAt)))
       .returning({ id: posts.id });
 
     if (result.length === 0) {
@@ -582,7 +572,7 @@ export const communityService = {
     limit: number,
     offset: number,
   ): Promise<{ posts: PostItem[]; total: number }> {
-    const where = and(eq(posts.isPublic, true), notBlockedBetween(requesterId, posts.userId));
+    const where = and(eq(posts.isPublic, true), notBlockedBetween(requesterId, posts.userId), accountActive(posts.userId));
     const order = sort === 'date_asc' ? asc(posts.createdAt) : desc(posts.createdAt);
 
     const [rows, [countRow]] = await Promise.all([
@@ -620,7 +610,8 @@ export const communityService = {
     limit: number,
     offset: number,
   ): Promise<{ posts: PostItem[]; total: number }> {
-    const where = eq(posts.userId, userId);
+    // Not those a moderator hid: removed content is gone for its author too.
+    const where = and(eq(posts.userId, userId), isNull(posts.hiddenAt));
     const order = sort === 'date_asc' ? asc(posts.createdAt) : desc(posts.createdAt);
 
     const [rows, [countRow]] = await Promise.all([
@@ -661,7 +652,7 @@ export const communityService = {
   ): Promise<{ posts: PostItem[]; total: number }> {
     const order = sort === 'date_asc' ? asc(posts.createdAt) : desc(posts.createdAt);
     return listPostPage(
-      and(eq(posts.bookId, bookId), eq(posts.isPublic, true), notBlockedBetween(requesterId, posts.userId)),
+      and(eq(posts.bookId, bookId), eq(posts.isPublic, true), notBlockedBetween(requesterId, posts.userId), accountActive(posts.userId)),
       [order],
       requesterId,
       limit,
@@ -697,7 +688,11 @@ export const communityService = {
     const where = and(
       eq(posts.bookId, bookId),
       or(eq(posts.isPublic, true), eq(posts.userId, requesterId)),
+      // Hidden by a moderator: gone for its author too, who would otherwise
+      // still find it here as one of their own private posts.
+      isNull(posts.hiddenAt),
       notBlockedBetween(requesterId, posts.userId),
+      accountActive(posts.userId),
     );
     const byDate = sort === 'date_asc' ? asc(posts.createdAt) : desc(posts.createdAt);
     // The id tiebreak keeps pages stable when two reviews share a timestamp.
@@ -731,7 +726,7 @@ export const communityService = {
         })
         .from(posts)
         .innerJoin(books, eq(books.id, posts.bookId))
-        .where(eq(posts.id, postId))
+        .where(and(eq(posts.id, postId), isNull(posts.hiddenAt)))
         .limit(1),
       db.select({ name: users.name, photoUrl: users.photoUrl }).from(users).where(eq(users.id, userId)).limit(1),
     ]);
@@ -765,7 +760,7 @@ export const communityService = {
     const [post] = await db
       .select({ isPublic: posts.isPublic, userId: posts.userId })
       .from(posts)
-      .where(eq(posts.id, postId))
+      .where(and(eq(posts.id, postId), isNull(posts.hiddenAt)))
       .limit(1);
 
     assertFound(post, 'Post');
@@ -790,7 +785,7 @@ export const communityService = {
         })
         .from(posts)
         .innerJoin(books, eq(books.id, posts.bookId))
-        .where(eq(posts.id, postId))
+        .where(and(eq(posts.id, postId), isNull(posts.hiddenAt)))
         .limit(1),
       db.select({ name: users.name, photoUrl: users.photoUrl }).from(users).where(eq(users.id, userId)).limit(1),
     ]);
@@ -846,7 +841,7 @@ export const communityService = {
     const [current] = await db
       .select({ body: comments.body, updatedAt: comments.updatedAt, editedAt: comments.editedAt })
       .from(comments)
-      .where(and(eq(comments.id, commentId), eq(comments.userId, userId)))
+      .where(and(eq(comments.id, commentId), eq(comments.userId, userId), isNull(comments.hiddenAt)))
       .limit(1);
     if (!current) throw Object.assign(new Error('Comment not found'), { statusCode: 404 });
 
@@ -877,7 +872,7 @@ export const communityService = {
         updatedAt: sql`now()`,
         editedAt: sql`CASE WHEN ${comments.body} IS DISTINCT FROM ${prepared.text} THEN now() ELSE ${comments.editedAt} END`,
       })
-      .where(and(eq(comments.id, commentId), eq(comments.userId, userId)))
+      .where(and(eq(comments.id, commentId), eq(comments.userId, userId), isNull(comments.hiddenAt)))
       .returning({ id: comments.id, body: comments.body, updatedAt: comments.updatedAt, editedAt: comments.editedAt });
 
     if (!row) {
@@ -900,7 +895,7 @@ export const communityService = {
   async deleteComment(commentId: number, userId: number): Promise<void> {
     const result = await db
       .delete(comments)
-      .where(and(eq(comments.id, commentId), eq(comments.userId, userId)))
+      .where(and(eq(comments.id, commentId), eq(comments.userId, userId), isNull(comments.hiddenAt)))
       .returning({ id: comments.id });
 
     if (result.length === 0) {
@@ -917,7 +912,7 @@ export const communityService = {
     const [post] = await db
       .select({ isPublic: posts.isPublic, userId: posts.userId })
       .from(posts)
-      .where(eq(posts.id, postId))
+      .where(and(eq(posts.id, postId), isNull(posts.hiddenAt)))
       .limit(1);
 
     assertFound(post, 'Post');
@@ -941,7 +936,6 @@ export const communityService = {
           createdAt: comments.createdAt,
           updatedAt: comments.updatedAt,
           editedAt: comments.editedAt,
-          isHidden: sql<boolean>`${comments.hiddenAt} IS NOT NULL`.mapWith(Boolean),
         })
         .from(comments)
         .innerJoin(users, eq(users.id, comments.userId))
@@ -989,24 +983,16 @@ export const communityService = {
 
   async likeComment(commentId: number, userId: number): Promise<void> {
     const [row] = await db
-      .select({
-        isPublic: posts.isPublic,
-        postUserId: posts.userId,
-        commentUserId: comments.userId,
-        hiddenAt: comments.hiddenAt,
-      })
+      .select({ isPublic: posts.isPublic, postUserId: posts.userId, commentUserId: comments.userId })
       .from(comments)
       .innerJoin(posts, eq(posts.id, comments.postId))
-      .where(eq(comments.id, commentId))
+      .where(and(eq(comments.id, commentId), isNull(comments.hiddenAt), isNull(posts.hiddenAt)))
       .limit(1);
 
     assertFound(row, 'Comment');
     await assertPostReachable({ isPublic: row.isPublic, userId: row.postUserId }, userId);
-    // A comment hidden from you, by a block or by a moderator, is not there to like.
-    if (row.commentUserId !== userId && row.hiddenAt !== null) {
-      throw Object.assign(new Error('Comment not found'), { statusCode: 404 });
-    }
-    if (row.commentUserId !== userId && (await isBlockedBetween(userId, row.commentUserId))) {
+    // A comment hidden from you by a block, or by its author's blacklist, is not there to like.
+    if (await isHiddenFrom(userId, row.commentUserId)) {
       throw Object.assign(new Error('Comment not found'), { statusCode: 404 });
     }
 
@@ -1021,7 +1007,7 @@ export const communityService = {
       .select({ isPublic: posts.isPublic, postUserId: posts.userId })
       .from(comments)
       .innerJoin(posts, eq(posts.id, comments.postId))
-      .where(eq(comments.id, commentId))
+      .where(and(eq(comments.id, commentId), isNull(comments.hiddenAt), isNull(posts.hiddenAt)))
       .limit(1);
 
     assertFound(row, 'Comment');
@@ -1068,6 +1054,10 @@ export const communityService = {
             // A private review is author-only everywhere (see assertPostVisible),
             // and a public shelf must not become a way round that
             or(eq(posts.isPublic, true), eq(posts.userId, requesterId)),
+            isNull(posts.hiddenAt),
+            // Nor a block: someone who blocked them can still open their shelf,
+            // but posts never cross a block, so the book shows with no review.
+            notBlockedBetween(requesterId, posts.userId),
           ),
         )
         // They may have posted about this book more than once (while reading,

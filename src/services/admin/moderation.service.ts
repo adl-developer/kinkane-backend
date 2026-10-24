@@ -4,12 +4,9 @@ import {
   userReports,
   users,
   groups,
-  groupMemberships,
-  groupBooks,
   groupBookComments,
   comments,
   posts,
-  books,
 } from '../../db/schema';
 import { enqueueEmail } from '../../lib/email-queue';
 import { logger } from '../../lib/logger';
@@ -67,46 +64,43 @@ async function resolveReportsCiting(tx: Tx, cited: Cited, adminId: number): Prom
   return closed.map((c) => c.id);
 }
 
-/** Who wrote a piece of content, and which book it is about, for the email. */
-async function authorOf(cited: Cited): Promise<{ email: string; name: string; bookTitle: string | null; isReview: boolean } | undefined> {
+/** Who wrote a piece of content, and when, for the removal email. */
+async function authorOf(cited: Cited): Promise<{ email: string; name: string; createdAt: Date; isReview: boolean } | undefined> {
   if (cited.kind === 'post') {
     const [row] = await db
-      .select({ email: users.email, name: users.name, bookTitle: books.title, rating: posts.rating })
+      .select({ email: users.email, name: users.name, createdAt: posts.createdAt, rating: posts.rating })
       .from(posts)
       .innerJoin(users, eq(users.id, posts.userId))
-      .innerJoin(books, eq(books.id, posts.bookId))
       .where(eq(posts.id, cited.id));
-    return row && { email: row.email, name: row.name, bookTitle: row.bookTitle, isReview: row.rating !== null };
+    return row && { email: row.email, name: row.name, createdAt: row.createdAt, isReview: row.rating !== null };
   }
   if (cited.kind === 'comment') {
     const [row] = await db
-      .select({ email: users.email, name: users.name, bookTitle: books.title })
+      .select({ email: users.email, name: users.name, createdAt: comments.createdAt })
       .from(comments)
       .innerJoin(users, eq(users.id, comments.userId))
-      .innerJoin(posts, eq(posts.id, comments.postId))
-      .innerJoin(books, eq(books.id, posts.bookId))
       .where(eq(comments.id, cited.id));
     return row && { ...row, isReview: false };
   }
   const [row] = await db
-    .select({ email: users.email, name: users.name, bookTitle: books.title })
+    .select({ email: users.email, name: users.name, createdAt: groupBookComments.createdAt })
     .from(groupBookComments)
     .innerJoin(users, eq(users.id, groupBookComments.userId))
-    .innerJoin(groupBooks, eq(groupBooks.id, groupBookComments.groupBookId))
-    .innerJoin(books, eq(books.id, groupBooks.bookId))
     .where(eq(groupBookComments.id, cited.id));
   return row && { ...row, isReview: false };
 }
 
 export const adminModerationService = {
   /**
-   * "Hide Review / Post / Comment" — the cited content disappears for everyone
-   * but its author, who is emailed. Idempotent: hiding something already hidden
-   * changes nothing and sends nothing, but still closes the reports about it.
+   * "Hide Review / Post / Comment" — the cited content is removed: gone for
+   * everyone, its author included, who is emailed. Idempotent: hiding something
+   * already hidden changes nothing and sends nothing, but still closes the
+   * reports about it.
    *
-   * A post is hidden by making it private, remembering whether it was public.
-   * Every read path already keeps private posts author-only, so hiding needs no
-   * new rule there; the comment tables have no such flag and are filtered on
+   * A post is hidden by making it private, remembering whether it was public,
+   * which takes it away from everyone else through the rules every read path
+   * already applies to private posts; the author's own paths also check
+   * hidden_at. The comment tables have no such flag and are filtered on
    * hidden_at directly.
    */
   async hide(reportId: number, adminId: number) {
@@ -155,15 +149,15 @@ export const adminModerationService = {
       try {
         const author = await authorOf(cited);
         if (author) {
-          await enqueueEmail('content-hidden', {
+          await enqueueEmail('content-removed', {
             to: author.email,
             name: author.name,
             kind: cited.kind === 'post' ? (author.isReview ? 'review' : 'post') : 'comment',
-            bookTitle: author.bookTitle,
+            submittedAt: author.createdAt.toISOString(),
           });
         }
       } catch (err) {
-        logger.error('Failed to enqueue content-hidden email', { reportId, error: (err as Error).message });
+        logger.error('Failed to enqueue content-removed email', { reportId, error: (err as Error).message });
       }
     }
 
@@ -211,16 +205,25 @@ export const adminModerationService = {
       changed = updated.length > 0;
     }
 
-    // A post back in public sends the mention notifications held while it was
-    // private, exactly as when its author makes it public.
-    if (changed && nowPublic) await mentionsService.releaseUnderPost(cited.id);
+    // Back in view: send the mention notifications held while it was hidden.
+    // A post that comes back public releases its own and its comments', as when
+    // its author makes it public; a comment releases its own. Only mentions not
+    // yet delivered are sent, and the usual visibility rules still decide.
+    if (changed) {
+      if (cited.kind === 'post') {
+        if (nowPublic) await mentionsService.releaseUnderPost(cited.id);
+      } else {
+        mentionsService.dispatchInBackground([{ type: cited.kind === 'comment' ? 'comment' : 'group_comment', id: cited.id }]);
+      }
+    }
 
     return { kind: cited.kind, id: cited.id, hidden: false, changed };
   },
 
   /**
    * "Blacklist Group" — the group disappears for everyone, owner and members
-   * included, and each of them is emailed. Nothing is deleted. Closes every
+   * included. Only the owner is emailed: the notice is written for them, and
+   * members simply find the group gone. Nothing is deleted. Closes every
    * pending report about the group.
    */
   async blacklistGroup(reportId: number, adminId: number) {
@@ -256,7 +259,7 @@ export const adminModerationService = {
     let emailed = 0;
     if (result.group) {
       try {
-        emailed = await emailGroup(groupId, result.group.name, result.group.ownerId);
+        emailed = await emailOwner(result.group.name, result.group.ownerId);
       } catch (err) {
         logger.error('Failed to enqueue group-blacklisted emails', { groupId, error: (err as Error).message });
       }
@@ -298,25 +301,10 @@ async function reportedGroupOf(reportId: number): Promise<number> {
   return report.reportedGroupId;
 }
 
-/** Emails the owner and every active member. Returns how many were sent. */
-async function emailGroup(groupId: number, groupName: string, ownerId: number): Promise<number> {
-  const members = await db
-    .selectDistinct({ id: users.id, email: users.email, name: users.name })
-    .from(users)
-    .leftJoin(
-      groupMemberships,
-      and(eq(groupMemberships.userId, users.id), eq(groupMemberships.groupId, groupId)),
-    )
-    .where(sql`${users.id} = ${ownerId} OR ${groupMemberships.status} = 'active'`);
-
-  // In batches, so a large group does not open thousands of Redis writes at once.
-  const BATCH = 100;
-  for (let i = 0; i < members.length; i += BATCH) {
-    await Promise.all(
-      members.slice(i, i + BATCH).map((m) =>
-        enqueueEmail('group-blacklisted', { to: m.email, name: m.name, groupName, isOwner: m.id === ownerId }),
-      ),
-    );
-  }
-  return members.length;
+/** Emails the owner, the one person the notice is written for. Returns how many were sent. */
+async function emailOwner(groupName: string, ownerId: number): Promise<number> {
+  const [owner] = await db.select({ email: users.email, name: users.name }).from(users).where(eq(users.id, ownerId)).limit(1);
+  if (!owner) return 0;
+  await enqueueEmail('group-blacklisted', { to: owner.email, name: owner.name, groupName });
+  return 1;
 }

@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { optionalAuth, requireAuth } from '../middleware/auth.middleware';
+import { requireCommunityAccess } from '../middleware/community-access.middleware';
 import { followRequestLimiter, usernameCheckLimiter } from '../middleware/rate-limit.middleware';
 import { usersController } from '../controllers/users.controller';
 import { groupsController } from '../controllers/groups.controller';
@@ -13,6 +14,8 @@ const router = Router();
 router.get('/username-available', optionalAuth, usernameCheckLimiter, wrapHttp(usersController.usernameAvailable));
 
 router.use(requireAuth);
+// A blacklisted account is shut out of the community; see requireCommunityAccess.
+router.use(requireCommunityAccess);
 
 // Specific sub-paths must be registered before the /:userId wildcard
 router.get('/follow-requests',                      wrap(usersController.listPendingFollowRequests));
