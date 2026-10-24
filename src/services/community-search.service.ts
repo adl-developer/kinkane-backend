@@ -2,7 +2,7 @@ import { eq, and, inArray, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { db } from '../db';
 import { alias } from 'drizzle-orm/pg-core';
 import { users, posts, books, postLikes, comments, groups, followRequests } from '../db/schema';
-import { buildGroupSearchCondition, buildGroupSearchOrderBy } from './groups.service';
+import { buildGroupSearchCondition, buildGroupSearchOrderBy, groupNotBlacklisted } from './groups.service';
 import { enrichPosts } from './community.service';
 import type { PostItem } from './community.service';
 import { getExcerptsByIsbns, pickExcerpt } from './book-excerpts.service';
@@ -311,6 +311,7 @@ async function searchPosts(
         status: posts.status,
         body: posts.body,
         isPublic: posts.isPublic,
+        isHidden: sql<boolean>`${posts.hiddenAt} IS NOT NULL`.mapWith(Boolean),
         createdAt: posts.createdAt,
         updatedAt: posts.updatedAt,
         editedAt: posts.editedAt,
@@ -362,7 +363,7 @@ async function searchGroups(
   limit: number,
   offset: number,
 ): Promise<{ results: GroupResult[]; total: number }> {
-  const where = buildGroupSearchCondition(q);
+  const where = and(groupNotBlacklisted, buildGroupSearchCondition(q));
 
   const [results, [counted]] = await Promise.all([
     db

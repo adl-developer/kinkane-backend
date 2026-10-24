@@ -368,16 +368,21 @@ async function loadContexts(sources: MentionSource[]): Promise<Map<string, Sourc
           .select({
             id: comments.id, body: comments.body, postId: posts.id, isPublic: posts.isPublic,
             ownerId: posts.userId, bookId: posts.bookId, bookTitle: books.title,
+            authorId: comments.userId, hiddenAt: comments.hiddenAt,
           })
           .from(comments)
           .innerJoin(posts, eq(posts.id, comments.postId))
           .innerJoin(books, eq(books.id, posts.bookId))
           .where(inArray(comments.id, ids));
         for (const r of rows) {
-          // A comment is exactly as visible as the post it sits under.
+          // A comment is exactly as visible as the post it sits under — unless
+          // a moderator hid it, when only its author still reads it.
           put(type, r.id, {
             text: r.body,
-            audience: r.isPublic ? { kind: 'everyone' } : { kind: 'owner', ownerId: r.ownerId },
+            audience:
+              r.hiddenAt !== null
+                ? { kind: 'owner', ownerId: r.authorId }
+                : r.isPublic ? { kind: 'everyone' } : { kind: 'owner', ownerId: r.ownerId },
             target: { postId: r.postId, commentId: r.id, bookId: r.bookId, bookTitle: r.bookTitle },
           });
         }
@@ -385,12 +390,17 @@ async function loadContexts(sources: MentionSource[]): Promise<Map<string, Sourc
       }
       case 'group': {
         const rows = await db
-          .select({ id: groups.id, description: groups.description, name: groups.name })
+          .select({
+            id: groups.id, description: groups.description, name: groups.name,
+            ownerId: groups.ownerId, blacklistedAt: groups.blacklistedAt,
+          })
           .from(groups)
           .where(inArray(groups.id, ids));
         for (const r of rows) {
-          // A group's description is shown to everyone, private groups included.
-          put(type, r.id, { text: r.description, audience: { kind: 'everyone' }, target: { groupId: r.id, groupName: r.name } });
+          // A group's description is shown to everyone, private groups included
+          // — but nobody reads a blacklisted group, so only its owner keeps it.
+          const audience: Audience = r.blacklistedAt !== null ? { kind: 'owner', ownerId: r.ownerId } : { kind: 'everyone' };
+          put(type, r.id, { text: r.description, audience, target: { groupId: r.id, groupName: r.name } });
         }
         break;
       }
@@ -399,6 +409,7 @@ async function loadContexts(sources: MentionSource[]): Promise<Map<string, Sourc
           .select({
             id: groupBooks.id, description: groupBooks.description, groupId: groups.id, groupName: groups.name,
             privacy: groups.privacy, bookId: groupBooks.bookId, bookTitle: books.title,
+            ownerId: groups.ownerId, blacklistedAt: groups.blacklistedAt,
           })
           .from(groupBooks)
           .innerJoin(groups, eq(groups.id, groupBooks.groupId))
@@ -407,7 +418,10 @@ async function loadContexts(sources: MentionSource[]): Promise<Map<string, Sourc
         for (const r of rows) {
           put(type, r.id, {
             text: r.description,
-            audience: { kind: 'group', groupId: r.groupId, privacy: r.privacy },
+            audience:
+              r.blacklistedAt !== null
+                ? { kind: 'owner', ownerId: r.ownerId }
+                : { kind: 'group', groupId: r.groupId, privacy: r.privacy },
             target: { groupId: r.groupId, groupName: r.groupName, groupBookId: r.id, bookId: r.bookId, bookTitle: r.bookTitle },
           });
         }
@@ -419,6 +433,7 @@ async function loadContexts(sources: MentionSource[]): Promise<Map<string, Sourc
             id: groupBookComments.id, body: groupBookComments.body, parentId: groupBookComments.parentId,
             groupBookId: groupBooks.id, groupId: groups.id, groupName: groups.name, privacy: groups.privacy,
             bookId: groupBooks.bookId, bookTitle: books.title,
+            authorId: groupBookComments.userId, hiddenAt: groupBookComments.hiddenAt, blacklistedAt: groups.blacklistedAt,
           })
           .from(groupBookComments)
           .innerJoin(groupBooks, eq(groupBooks.id, groupBookComments.groupBookId))
@@ -428,7 +443,12 @@ async function loadContexts(sources: MentionSource[]): Promise<Map<string, Sourc
         for (const r of rows) {
           put(type, r.id, {
             text: r.body,
-            audience: { kind: 'group', groupId: r.groupId, privacy: r.privacy },
+            // A hidden comment, or any comment in a blacklisted group, is read
+            // by its author alone.
+            audience:
+              r.hiddenAt !== null || r.blacklistedAt !== null
+                ? { kind: 'owner', ownerId: r.authorId }
+                : { kind: 'group', groupId: r.groupId, privacy: r.privacy },
             target: {
               groupId: r.groupId, groupName: r.groupName, groupBookId: r.groupBookId,
               groupCommentId: r.id, parentCommentId: r.parentId, bookId: r.bookId, bookTitle: r.bookTitle,

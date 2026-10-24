@@ -4,6 +4,8 @@ import { reportsService } from '../services/reports.service';
 import type { AuthenticatedRequest } from '../middleware/auth.middleware';
 
 const reasonSchema = z.string().trim().min(1).max(2000);
+// The reason the reporter picked, as the app labels it. The app owns the list.
+const reasonCategorySchema = z.string().trim().min(1).max(100).optional();
 
 /**
  * A discriminated union, so a group report cannot carry a `reportedUserId` and
@@ -19,6 +21,7 @@ const submitSchema = z.preprocess(
       targetType: z.literal('user'),
       reportedUserId: z.number().int().positive(),
       reason: reasonSchema,
+      reasonCategory: reasonCategorySchema,
       postId: z.number().int().positive().optional(),
       groupCommentId: z.number().int().positive().optional(),
       commentId: z.number().int().positive().optional(),
@@ -31,6 +34,7 @@ const submitSchema = z.preprocess(
       targetType: z.literal('group'),
       reportedGroupId: z.number().int().positive(),
       reason: reasonSchema,
+      reasonCategory: reasonCategorySchema,
     }).strict(),
   ]),
 );

@@ -1,4 +1,4 @@
-import { eq, and, or, asc, desc, sql, inArray, type SQL } from 'drizzle-orm';
+import { eq, and, or, asc, desc, sql, inArray, isNull, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { posts, postLikes, comments, commentLikes, users, books, userBooks, bookContributors, notifications } from '../db/schema';
 import { getExcerptsByIsbns, pickExcerpt, type BookExcerptInfo } from './book-excerpts.service';
@@ -44,6 +44,11 @@ export interface PostItem {
   mentions: MentionRef[];
   links: LinkRef[];
   isPublic: boolean;
+  /**
+   * Hidden by a moderator. Only its author ever sees a hidden post, so this is
+   * only ever true for them — the app can say why it went private.
+   */
+  isHidden: boolean;
   likeCount: number;
   commentCount: number;
   likedByMe: boolean;
@@ -94,9 +99,23 @@ export interface CommentItem {
   /** True once the author has changed the body. */
   isEdited: boolean;
   editedAt: Date | null;
+  /** Hidden by a moderator; only ever true for its author, the one person who still sees it. */
+  isHidden: boolean;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/**
+ * The comments `requesterId` may see: none across a block either way, old ones
+ * included, and none a moderator has hidden — except their own, which they
+ * still see. Counts use it too, so `commentCount` always matches the list.
+ */
+function commentVisibleTo(requesterId: number): SQL {
+  return and(
+    notBlockedBetween(requesterId, comments.userId),
+    or(isNull(comments.hiddenAt), eq(comments.userId, requesterId)),
+  )!;
+}
 
 function assertFound<T>(row: T | undefined, label: string): T {
   if (!row) throw Object.assign(new Error(`${label} not found`), { statusCode: 404 });
@@ -260,7 +279,7 @@ export async function enrichPosts(
     db
       .select({ postId: comments.postId, count: sql<number>`COUNT(*)::int` })
       .from(comments)
-      .where(and(inArray(comments.postId, postIds), notBlockedBetween(requesterId, comments.userId)))
+      .where(and(inArray(comments.postId, postIds), commentVisibleTo(requesterId)))
       .groupBy(comments.postId),
     db
       .select({ postId: postLikes.postId })
@@ -300,6 +319,7 @@ const POST_SELECT_COLUMNS = {
   status: posts.status,
   body: posts.body,
   isPublic: posts.isPublic,
+  isHidden: sql<boolean>`${posts.hiddenAt} IS NOT NULL`.mapWith(Boolean),
   createdAt: posts.createdAt,
   updatedAt: posts.updatedAt,
   editedAt: posts.editedAt,
@@ -439,7 +459,7 @@ export const communityService = {
       db
         .select({ count: sql<number>`COUNT(*)::int` })
         .from(comments)
-        .where(and(eq(comments.postId, postId), notBlockedBetween(requesterId, comments.userId))),
+        .where(and(eq(comments.postId, postId), commentVisibleTo(requesterId))),
       db
         .select({ userId: postLikes.userId })
         .from(postLikes)
@@ -515,7 +535,12 @@ export const communityService = {
     if (fields.rating !== undefined) updateSet.rating = fields.rating;
     if (fields.status !== undefined) updateSet.status = fields.status;
     if (body !== undefined) updateSet.body = body.text;
-    if (fields.isPublic !== undefined) updateSet.isPublic = fields.isPublic;
+    if (fields.isPublic !== undefined) {
+      // A post a moderator has hidden stays private. The author's choice is
+      // kept for when it is unhidden, so it comes back as they last set it.
+      updateSet.isPublic = sql`CASE WHEN ${posts.hiddenAt} IS NULL THEN ${fields.isPublic} ELSE false END`;
+      updateSet.hiddenWasPublic = sql`CASE WHEN ${posts.hiddenAt} IS NULL THEN ${posts.hiddenWasPublic} ELSE ${fields.isPublic} END`;
+    }
     if (changed.length > 0) {
       updateSet.editedAt = sql`CASE WHEN ${sql.join(changed, sql` OR `)} THEN now() ELSE ${posts.editedAt} END`;
     }
@@ -899,8 +924,9 @@ export const communityService = {
     await assertPostReachable(post, requesterId);
 
     // A blocked pair's comments are hidden from each other, old ones included —
-    // on either one's post, and on anyone else's.
-    const where = and(eq(comments.postId, postId), notBlockedBetween(requesterId, comments.userId));
+    // on either one's post, and on anyone else's. So is a comment a moderator
+    // has hidden, from everyone but its author.
+    const where = and(eq(comments.postId, postId), commentVisibleTo(requesterId));
 
     const [rows, [countRow]] = await Promise.all([
       db
@@ -915,6 +941,7 @@ export const communityService = {
           createdAt: comments.createdAt,
           updatedAt: comments.updatedAt,
           editedAt: comments.editedAt,
+          isHidden: sql<boolean>`${comments.hiddenAt} IS NOT NULL`.mapWith(Boolean),
         })
         .from(comments)
         .innerJoin(users, eq(users.id, comments.userId))
@@ -962,7 +989,12 @@ export const communityService = {
 
   async likeComment(commentId: number, userId: number): Promise<void> {
     const [row] = await db
-      .select({ isPublic: posts.isPublic, postUserId: posts.userId, commentUserId: comments.userId })
+      .select({
+        isPublic: posts.isPublic,
+        postUserId: posts.userId,
+        commentUserId: comments.userId,
+        hiddenAt: comments.hiddenAt,
+      })
       .from(comments)
       .innerJoin(posts, eq(posts.id, comments.postId))
       .where(eq(comments.id, commentId))
@@ -970,7 +1002,10 @@ export const communityService = {
 
     assertFound(row, 'Comment');
     await assertPostReachable({ isPublic: row.isPublic, userId: row.postUserId }, userId);
-    // A comment hidden from you by a block is not there to like.
+    // A comment hidden from you, by a block or by a moderator, is not there to like.
+    if (row.commentUserId !== userId && row.hiddenAt !== null) {
+      throw Object.assign(new Error('Comment not found'), { statusCode: 404 });
+    }
     if (row.commentUserId !== userId && (await isBlockedBetween(userId, row.commentUserId))) {
       throw Object.assign(new Error('Comment not found'), { statusCode: 404 });
     }

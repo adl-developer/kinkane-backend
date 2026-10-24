@@ -18,6 +18,9 @@ export { sendContactMessageEmail } from './transactional/contact-message';
 export { sendRestockRequestAdminEmail, sendRestockRequestCustomerEmail } from './transactional/restock-request';
 export { sendOrderConfirmedEmail } from './transactional/order-confirmed';
 export type { OrderConfirmedPayload, OrderConfirmedItem } from './transactional/order-confirmed';
+export { sendContentHiddenEmail } from './transactional/content-hidden';
+export type { HiddenContentKind } from './transactional/content-hidden';
+export { sendGroupBlacklistedEmail } from './transactional/group-blacklisted';
 
 // Notifications
 export { sendTrialEndingEmail } from './notifications/trial-ending';

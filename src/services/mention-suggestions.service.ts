@@ -1,7 +1,7 @@
 import { and, asc, eq, isNotNull, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { users, groups, groupMemberships, posts, comments, groupBooks, groupBookComments } from '../db/schema';
-import { friendOfCondition } from './groups.service';
+import { friendOfCondition, groupNotBlacklisted } from './groups.service';
 import { likePrefix, likeWordPrefix } from '../lib/escape-like';
 import { blockedByViewer, notBlockedViewer } from './blocks.service';
 
@@ -71,7 +71,7 @@ async function participantCondition(viewerId: number, context: SuggestionContext
     .select({ privacy: groups.privacy, status: groupMemberships.status })
     .from(groups)
     .leftJoin(groupMemberships, and(eq(groupMemberships.groupId, groups.id), eq(groupMemberships.userId, viewerId)))
-    .where(eq(groups.id, groupId))
+    .where(and(eq(groups.id, groupId), groupNotBlacklisted))
     .limit(1);
   if (!standing || (standing.privacy !== 'public' && standing.status !== 'active')) return null;
 

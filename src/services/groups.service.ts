@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   groups,
@@ -325,6 +325,14 @@ export function buildGroupSearchOrderBy(q: string): SQL[] {
  *
  * Exported so the compiled SQL can be asserted on without a database.
  */
+/**
+ * A group a moderator has not blacklisted. A blacklisted group is gone for
+ * everyone — owner and members too — so every lookup that finds a group by id,
+ * lists groups or searches them carries this, and a blacklisted one answers
+ * exactly as a missing one would.
+ */
+export const groupNotBlacklisted: SQL = isNull(groups.blacklistedAt);
+
 export function visibleGroupCondition(viewerId: number): SQL {
   return sql`(
     ${groups.privacy} = 'public'
@@ -472,7 +480,7 @@ async function loadStanding(
       groupMemberships,
       and(eq(groupMemberships.groupId, groups.id), eq(groupMemberships.userId, viewerId)),
     )
-    .where(eq(groups.id, groupId))
+    .where(and(eq(groups.id, groupId), groupNotBlacklisted))
     .limit(1);
 
   if (!row) throw notFound();
@@ -595,7 +603,7 @@ export const groupsService = {
         groupMemberships,
         and(eq(groupMemberships.groupId, groups.id), eq(groupMemberships.userId, viewerId)),
       )
-      .where(eq(groups.id, groupId))
+      .where(and(eq(groups.id, groupId), groupNotBlacklisted))
       .limit(1);
 
     if (!row) throw notFound();
@@ -647,6 +655,8 @@ export const groupsService = {
     const membershipFilter = and(
       eq(groupMemberships.userId, userId),
       eq(groupMemberships.status, 'active'),
+      // Your own list included: a blacklisted group is gone for its members too.
+      groupNotBlacklisted,
       // Skipped entirely for your own list: every group you are in satisfies it
       // by definition, so it could only cost a subquery and never change a row.
       ...(isSelf ? [] : [visibleGroupCondition(viewerId)]),
@@ -692,7 +702,7 @@ export const groupsService = {
     // A query of only whitespace is a browse, not a search — matching every
     // group against '%' would rank arbitrarily and read as broken.
     const term = q?.trim();
-    const where = term ? buildGroupSearchCondition(term) : undefined;
+    const where = and(groupNotBlacklisted, term ? buildGroupSearchCondition(term) : undefined);
     const orderBy = term ? buildGroupSearchOrderBy(term) : [desc(groups.createdAt)];
 
     const [rows, [counted]] = await Promise.all([
@@ -726,7 +736,7 @@ export const groupsService = {
       const [owned] = await db
         .select({ id: groups.id })
         .from(groups)
-        .where(and(eq(groups.id, groupId), eq(groups.ownerId, ownerId)))
+        .where(and(eq(groups.id, groupId), eq(groups.ownerId, ownerId), groupNotBlacklisted))
         .limit(1);
       if (!owned) throw notFound();
       description = await mentionsService.prepare(input.description, ownerId, TEXT_LIMITS.groupDescription);
@@ -740,7 +750,7 @@ export const groupsService = {
         ...(input.privacy !== undefined && { privacy: input.privacy }),
         updatedAt: new Date(),
       })
-      .where(and(eq(groups.id, groupId), eq(groups.ownerId, ownerId)))
+      .where(and(eq(groups.id, groupId), eq(groups.ownerId, ownerId), groupNotBlacklisted))
       .returning(groupSummaryColumns);
 
     if (!updated) throw notFound();
@@ -1087,7 +1097,7 @@ export const groupsService = {
     const [group] = await db
       .select({ id: groups.id })
       .from(groups)
-      .where(and(eq(groups.id, groupId), eq(groups.ownerId, ownerId)))
+      .where(and(eq(groups.id, groupId), eq(groups.ownerId, ownerId), groupNotBlacklisted))
       .limit(1);
 
     // Ownership folded into the lookup, so a non-owner cannot tell a group they
@@ -1164,9 +1174,11 @@ export const groupsService = {
    * write, so a wrong credential never touches the group.
    */
   async remove(groupId: number, ownerId: number): Promise<void> {
+    // Not while blacklisted: the group is gone for its owner like everyone
+    // else, and deleting it would wipe what a moderator may still revisit.
     const deleted = await db
       .delete(groups)
-      .where(and(eq(groups.id, groupId), eq(groups.ownerId, ownerId)))
+      .where(and(eq(groups.id, groupId), eq(groups.ownerId, ownerId), groupNotBlacklisted))
       .returning({ id: groups.id });
 
     if (deleted.length === 0) throw notFound();

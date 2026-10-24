@@ -72,6 +72,12 @@ export const groups = pgTable(
     // membership write updates this in the same transaction, funnelled through
     // two helpers in groups.service.ts so there is one place to get it wrong.
     memberCount: integer('member_count').notNull().default(0),
+    // Blacklisted by a moderator: gone for everyone, owner and members included,
+    // until lifted. Nothing is deleted, so lifting it restores the group as it
+    // was. No FK on blacklisted_by, as with users.blacklistedBy.
+    blacklistedAt: timestamp('blacklisted_at', { withTimezone: true }),
+    blacklistedBy: integer('blacklisted_by'),
+    blacklistReason: text('blacklist_reason'),
     searchVector: tsvector('search_vector'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),

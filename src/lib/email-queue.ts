@@ -2,7 +2,7 @@ import IORedis from 'ioredis';
 import { Queue } from 'bullmq';
 import { config } from '../config';
 import type {
-  RecommendedBook, NewsletterPayload, WeeklyDigestPayload, OrderConfirmedPayload,
+  RecommendedBook, NewsletterPayload, WeeklyDigestPayload, OrderConfirmedPayload, HiddenContentKind,
 } from '../emails';
 
 // BullMQ requires maxRetriesPerRequest: null — a separate connection from the
@@ -39,6 +39,9 @@ export interface EmailJobMap {
   // force is decided at send time rather than baked into the job.
   'referral-invite':            { to: string; referrerName: string; link: string };
   'order-confirmed':            { to: string; name: string | null; payload: OrderConfirmedPayload };
+  // Moderation outcomes, to the people they affect.
+  'content-hidden':             { to: string; name: string; kind: HiddenContentKind; bookTitle: string | null };
+  'group-blacklisted':          { to: string; name: string; groupName: string; isOwner: boolean };
 }
 
 export type EmailJobName = keyof EmailJobMap;
@@ -75,6 +78,10 @@ export const EMAIL_PRIORITY: Record<EmailJobName, number> = {
   // friend's inbox, which puts it above digests but below anything a user is
   // actually blocked on.
   'referral-invite':            5,
+  // Someone has lost access to something they wrote or belong to; they should
+  // hear why before they go looking, but nobody is blocked waiting on it.
+  'content-hidden':             3,
+  'group-blacklisted':          3,
 };
 
 // ── Queue ─────────────────────────────────────────────────────────────────────

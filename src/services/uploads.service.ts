@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { db } from '../db';
 import { groups } from '../db/schema';
 import { config } from '../config';
@@ -57,7 +57,7 @@ export const uploadsService = {
       const [owned] = await db
         .select({ id: groups.id })
         .from(groups)
-        .where(and(eq(groups.id, target.groupId), eq(groups.ownerId, userId)))
+        .where(and(eq(groups.id, target.groupId), eq(groups.ownerId, userId), isNull(groups.blacklistedAt)))
         .limit(1);
       // 404 rather than 403, as PATCH /groups/:id does: a non-owner learns
       // nothing about whether the group exists.

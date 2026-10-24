@@ -107,6 +107,9 @@ export const groupBookComments = pgTable(
     body: text('body').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+    // Hidden by a moderator: shown to its author only, with its replies.
+    hiddenAt: timestamp('hidden_at', { withTimezone: true }),
+    hiddenBy: integer('hidden_by'),
   },
   (t) => ({
     // Top-level page (parent_id IS NULL) and the comment count read off this.

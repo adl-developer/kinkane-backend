@@ -1,32 +1,76 @@
 import { aliasedTable, and, desc, eq, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
-import { userReports, users, groups, groupBookComments, comments, posts } from '../../db/schema';
+import { userReports, users, groups, groupBookComments, groupBooks, comments, posts, books } from '../../db/schema';
 import { adminCustomersService } from './customers.service';
 import { adminNotificationsService } from './notifications.service';
 import { renderTexts } from '../mentions.service';
 
 const reporter = aliasedTable(users, 'reporter');
 const reported = aliasedTable(users, 'reported');
+// The post a cited comment sits under, for its book. Aliased because `posts`
+// is already joined as the cited post itself.
+const commentPost = aliasedTable(posts, 'comment_post');
+
+type ReportCategory = 'user' | 'group' | 'content';
+
+const REFERENCE_SERIES: Record<ReportCategory, { prefix: string; sequence: string }> = {
+  user: { prefix: 'R', sequence: 'report_reference_user_seq' },
+  group: { prefix: 'GR', sequence: 'report_reference_group_seq' },
+  content: { prefix: 'CR', sequence: 'report_reference_content_seq' },
+};
 
 function httpError(message: string, statusCode: number, code?: string): Error {
   return Object.assign(new Error(message), { statusCode, code });
 }
 
-type CitedKind = 'post' | 'comment' | 'groupComment';
+/**
+ * A review is a post with a rating — every finished-book post has one — and the
+ * console labels the two differently, so they are told apart here.
+ */
+type CitedKind = 'review' | 'post' | 'comment' | 'groupComment';
 
-/** The one piece of content a report cites, if any, before its text is rendered. */
-function citedContent(r: {
+interface CitedRow {
   postId: number | null;
   postBody: string | null;
+  postRating: number | null;
+  postHiddenAt: Date | null;
   groupCommentId: number | null;
   groupCommentBody: string | null;
+  groupCommentHiddenAt: Date | null;
   commentId: number | null;
   commentPostId: number | null;
   commentBody: string | null;
-}): { kind: CitedKind; id: number; postId: number | null; body: string | null } | null {
-  if (r.postId !== null) return { kind: 'post', id: r.postId, postId: r.postId, body: r.postBody };
-  if (r.commentId !== null) return { kind: 'comment', id: r.commentId, postId: r.commentPostId, body: r.commentBody };
-  if (r.groupCommentId !== null) return { kind: 'groupComment', id: r.groupCommentId, postId: null, body: r.groupCommentBody };
+  commentHiddenAt: Date | null;
+  bookId: number | null;
+  bookTitle: string | null;
+}
+
+/** The one piece of content a report cites, if any, before its text is rendered. */
+function citedContent(r: CitedRow): {
+  kind: CitedKind;
+  id: number;
+  postId: number | null;
+  body: string | null;
+  hidden: boolean;
+  book: { id: number; title: string | null } | null;
+} | null {
+  const book = r.bookId !== null ? { id: r.bookId, title: r.bookTitle } : null;
+  if (r.postId !== null) {
+    return {
+      kind: r.postRating !== null ? 'review' : 'post',
+      id: r.postId,
+      postId: r.postId,
+      body: r.postBody,
+      hidden: r.postHiddenAt !== null,
+      book,
+    };
+  }
+  if (r.commentId !== null) {
+    return { kind: 'comment', id: r.commentId, postId: r.commentPostId, body: r.commentBody, hidden: r.commentHiddenAt !== null, book };
+  }
+  if (r.groupCommentId !== null) {
+    return { kind: 'groupComment', id: r.groupCommentId, postId: null, body: r.groupCommentBody, hidden: r.groupCommentHiddenAt !== null, book };
+  }
   return null;
 }
 
@@ -41,12 +85,15 @@ export const adminReportsService = {
   async list(query: {
     status?: 'pending' | 'resolved' | 'dismissed';
     targetType?: 'user' | 'group';
+    /** The screen's tab: people, groups, or posts & reviews. */
+    category?: ReportCategory;
     limit: number;
     offset: number;
   }) {
     const filters = [
       query.status ? eq(userReports.status, query.status) : undefined,
       query.targetType ? eq(userReports.targetType, query.targetType) : undefined,
+      query.category ? eq(userReports.category, query.category) : undefined,
     ].filter(Boolean) as SQL[];
     const where: SQL | undefined = filters.length ? and(...filters) : undefined;
 
@@ -58,18 +105,27 @@ export const adminReportsService = {
           id: userReports.id,
           reference: userReports.reference,
           status: userReports.status,
+          category: userReports.category,
           reason: userReports.reason,
+          reasonCategory: userReports.reasonCategory,
           // What prompted the report — at most one of the three, which the
           // filing service enforces — with its text, so a moderator can judge
           // it without a second lookup. Each id is nulled when its content is
           // deleted (SET NULL), and the report survives it.
           postId: userReports.postId,
           postBody: posts.body,
+          postRating: posts.rating,
+          postHiddenAt: posts.hiddenAt,
           groupCommentId: userReports.groupCommentId,
           groupCommentBody: groupBookComments.body,
+          groupCommentHiddenAt: groupBookComments.hiddenAt,
           commentId: userReports.commentId,
           commentPostId: comments.postId,
           commentBody: comments.body,
+          commentHiddenAt: comments.hiddenAt,
+          // The book it is about ("on The Midnight Library"), whichever kind.
+          bookId: books.id,
+          bookTitle: books.title,
           targetType: userReports.targetType,
           filedAt: userReports.createdAt,
           resolvedAt: userReports.resolvedAt,
@@ -83,6 +139,8 @@ export const adminReportsService = {
           reportedUserBlacklistedAt: reported.blacklistedAt,
           reportedGroupId: groups.id,
           reportedGroupName: groups.name,
+          reportedGroupMemberCount: groups.memberCount,
+          reportedGroupBlacklistedAt: groups.blacklistedAt,
           reportedById: reporter.id,
           reportedByName: reporter.name,
           reportedByEmail: reporter.email,
@@ -96,6 +154,9 @@ export const adminReportsService = {
         .leftJoin(groupBookComments, eq(groupBookComments.id, userReports.groupCommentId))
         .leftJoin(comments, eq(comments.id, userReports.commentId))
         .leftJoin(posts, eq(posts.id, userReports.postId))
+        .leftJoin(commentPost, eq(commentPost.id, comments.postId))
+        .leftJoin(groupBooks, eq(groupBooks.id, groupBookComments.groupBookId))
+        .leftJoin(books, eq(books.id, sql`coalesce(${posts.bookId}, ${commentPost.bookId}, ${groupBooks.bookId})`))
         // leftJoin, though reporter_id is NOT NULL and cascades — so this
         // returns exactly the same rows an innerJoin would. It is a typing
         // accommodation: drizzle cannot infer a select that mixes inner and
@@ -112,7 +173,15 @@ export const adminReportsService = {
       .from(userReports)
       .groupBy(userReports.status);
 
-    const [rows, [total], counts] = await Promise.all([rowsQuery, totalQuery, countsQuery]);
+    // Pending per tab, for the badges. Unfiltered, like `counts`: the badges
+    // stay put whichever tab is open.
+    const pendingQuery = db
+      .select({ category: userReports.category, n: sql<number>`count(*)` })
+      .from(userReports)
+      .where(eq(userReports.status, 'pending'))
+      .groupBy(userReports.category);
+
+    const [rows, [total], counts, pending] = await Promise.all([rowsQuery, totalQuery, countsQuery, pendingQuery]);
     const cited = rows.map(citedContent);
     // Stored text carries mention tokens; a moderator reads @usernames. One
     // pass over every row's cited text, so usernames are looked up once.
@@ -120,13 +189,17 @@ export const adminReportsService = {
 
     const byStatus: Record<string, number> = { pending: 0, resolved: 0, dismissed: 0 };
     for (const c of counts) byStatus[c.status] = Number(c.n);
+    const pendingByCategory: Record<ReportCategory, number> = { user: 0, group: 0, content: 0 };
+    for (const c of pending) pendingByCategory[c.category] = Number(c.n);
 
     return {
       reports: rows.map((r, i) => ({
         id: r.id,
         reference: r.reference,
         status: r.status,
+        category: r.category,
         reason: r.reason,
+        reasonCategory: r.reasonCategory,
         // One shape for every kind of cited content, so a new kind is a new
         // `kind` value rather than another nullable key for the console to check.
         cited: cited[i] && { ...cited[i], body: bodies[i].text },
@@ -155,7 +228,15 @@ export const adminReportsService = {
               }
             : null,
         reportedGroup:
-          r.reportedGroupId !== null ? { id: r.reportedGroupId, name: r.reportedGroupName } : null,
+          r.reportedGroupId !== null
+            ? {
+                id: r.reportedGroupId,
+                name: r.reportedGroupName,
+                memberCount: r.reportedGroupMemberCount,
+                blacklistedAt: r.reportedGroupBlacklistedAt,
+                blacklisted: r.reportedGroupBlacklistedAt !== null,
+              }
+            : null,
         // Non-null in the payload. reporter_id is NOT NULL and the account
         // cascades, so a reporter always exists; only the left join above (a
         // typing accommodation, not a semantic change) makes it look optional.
@@ -169,6 +250,7 @@ export const adminReportsService = {
       })),
       total: Number(total.n),
       counts: byStatus,
+      pendingByCategory,
     };
   },
 
@@ -268,17 +350,24 @@ export const adminReportsService = {
     reportId: number,
     targetName: string,
     reporterName: string,
-    targetType: 'user' | 'group' = 'user',
+    category: ReportCategory,
   ) {
-    const reference = `R${String(reportId).padStart(3, '0')}`;
+    // Each tab numbers its own reports: R001, GR001, CR001. From a sequence
+    // rather than the row id, so one tab's numbers have no gaps left by the
+    // others.
+    const { prefix, sequence } = REFERENCE_SERIES[category];
+    const [{ n }] = await db.execute<{ n: string }>(sql`SELECT nextval(${sequence}) AS n`);
+    const reference = `${prefix}${String(n).padStart(3, '0')}`;
     await db.update(userReports).set({ reference }).where(eq(userReports.id, reportId));
     await adminNotificationsService.emit({
       type: 'report_filed',
       title: 'New report filed',
       body:
-        targetType === 'group'
+        category === 'group'
           ? `${reporterName} reported the group ${targetName}.`
-          : `${reporterName} reported ${targetName}.`,
+          : category === 'content'
+            ? `${reporterName} reported something ${targetName} wrote.`
+            : `${reporterName} reported ${targetName}.`,
       reportId,
     });
     return reference;

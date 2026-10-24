@@ -34,6 +34,13 @@ export const posts = pgTable(
     status: postStatusEnum('status').notNull(),
     body: text('body'),
     isPublic: boolean('is_public').notNull().default(true),
+    // Hidden by a moderator. Hiding makes the post private — so every rule that
+    // already keeps private posts author-only applies, with nothing new to
+    // enforce — and remembers what it was, so unhiding puts it back. No FK on
+    // hidden_by, as with users.blacklistedBy.
+    hiddenAt: timestamp('hidden_at', { withTimezone: true }),
+    hiddenBy: integer('hidden_by'),
+    hiddenWasPublic: boolean('hidden_was_public'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     // Bumped by any change, visibility included — not a signal of an edit.
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -90,6 +97,9 @@ export const comments = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
     // Set only when the body actually changes — see posts.editedAt.
     editedAt: timestamp('edited_at', { withTimezone: true }),
+    // Hidden by a moderator: shown to its author only.
+    hiddenAt: timestamp('hidden_at', { withTimezone: true }),
+    hiddenBy: integer('hidden_by'),
   },
   (t) => ({
     postIdIdx: index('idx_comments_post_id').on(t.postId),

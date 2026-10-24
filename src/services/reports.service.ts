@@ -15,13 +15,15 @@ export type CreateReportInput =
       reporterId: number;
       reportedUserId: number;
       reason: string;
+      /** The reason as the app labels it, e.g. "Harassment". */
+      reasonCategory?: string;
       postId?: number;
       /** A group book-club comment the report is about — the comment's "…" menu. */
       groupCommentId?: number;
       /** A comment under a community post — the comment's "…" menu. */
       commentId?: number;
     }
-  | { targetType: 'group'; reporterId: number; reportedGroupId: number; reason: string };
+  | { targetType: 'group'; reporterId: number; reportedGroupId: number; reason: string; reasonCategory?: string };
 
 /** What a report needs to know about the content it cites. */
 type CitedContent = { authorId: number; visibleToReporter: boolean };
@@ -98,6 +100,7 @@ async function lookUpPostComment(commentId: number, reporterId: number): Promise
 export const reportsService = {
   async create(input: CreateReportInput): Promise<UserReport> {
     const { reporterId, reason } = input;
+    const reasonCategory = input.reasonCategory ?? null;
 
     const [reporterRow] = await db
       .select({ name: users.name })
@@ -121,9 +124,11 @@ export const reportsService = {
         .insert(userReports)
         .values({
           targetType: 'group',
+          category: 'group',
           reporterId,
           reportedGroupId: input.reportedGroupId,
           reason,
+          reasonCategory,
         })
         .returning();
 
@@ -164,7 +169,19 @@ export const reportsService = {
 
     const [row] = await db
       .insert(userReports)
-      .values({ targetType: 'user', reporterId, reportedUserId, postId, groupCommentId, commentId, reason })
+      .values({
+        targetType: 'user',
+        // Citing content makes this a content report: the moderator's decision
+        // is about the post or comment, so it belongs on that tab.
+        category: postId ?? groupCommentId ?? commentId ? 'content' : 'user',
+        reporterId,
+        reportedUserId,
+        postId,
+        groupCommentId,
+        commentId,
+        reason,
+        reasonCategory,
+      })
       .returning();
 
     // Stamp the display reference and put it in front of a moderator. Awaited
@@ -175,7 +192,7 @@ export const reportsService = {
       row.id,
       reportedUser.name,
       reporterName,
-      'user',
+      row.category,
     );
 
     return { ...row, reference };
