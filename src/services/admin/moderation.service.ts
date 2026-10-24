@@ -213,9 +213,17 @@ export const adminModerationService = {
       changed = updated.length > 0;
     }
 
-    // A post back in public sends the mention notifications held while it was
-    // private, exactly as when its author makes it public.
-    if (changed && nowPublic) await mentionsService.releaseUnderPost(cited.id);
+    // Back in view: send the mention notifications held while it was hidden.
+    // A post that comes back public releases its own and its comments', as when
+    // its author makes it public; a comment releases its own. Only mentions not
+    // yet delivered are sent, and the usual visibility rules still decide.
+    if (changed) {
+      if (cited.kind === 'post') {
+        if (nowPublic) await mentionsService.releaseUnderPost(cited.id);
+      } else {
+        mentionsService.dispatchInBackground([{ type: cited.kind === 'comment' ? 'comment' : 'group_comment', id: cited.id }]);
+      }
+    }
 
     return { kind: cited.kind, id: cited.id, hidden: false, changed };
   },

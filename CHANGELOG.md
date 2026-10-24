@@ -5,6 +5,7 @@
 
 ### Features
 
+* remove reported posts, reviews and comments for their author too ([1a94cb5](https://adl.github.com/adl-developer/kinkane-backend/commit/1a94cb570693bfec7710232d13cbec7cb0ff7f05)) — [details](changelog/2026-10-24-removed-content-gone-for-author.md)
 * let moderators hide reported posts and comments and blacklist reported groups ([b61aafb](https://adl.github.com/adl-developer/kinkane-backend/commit/b61aafbad97d4ca53f86dc5b2e429f090b2c04f5)) — [details](changelog/2026-10-24-moderation-screen-tabs-hide-blacklist-group.md)
 
 ### Bug Fixes

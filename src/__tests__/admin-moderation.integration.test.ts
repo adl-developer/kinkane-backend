@@ -59,6 +59,7 @@ let moderation: typeof import('../services/admin/moderation.service').adminModer
 let community: typeof import('../services/community.service').communityService;
 let groupsService: typeof import('../services/groups.service').groupsService;
 let groupBooks: typeof import('../services/group-books.service').groupBooksService;
+let mentionsService: typeof import('../services/mentions.service').mentionsService;
 
 const describeIfDb = testUrl ? describe : describe.skip;
 const EMAIL_PREFIX = 'admin-moderation-test-';
@@ -110,6 +111,7 @@ describeIfDb('the moderation screen', () => {
     ({ communityService: community } = await import('../services/community.service'));
     ({ groupsService } = await import('../services/groups.service'));
     ({ groupBooksService: groupBooks } = await import('../services/group-books.service'));
+    ({ mentionsService } = await import('../services/mentions.service'));
   });
 
   beforeEach(async () => {
@@ -247,6 +249,21 @@ describeIfDb('the moderation screen', () => {
     expect(await status(groupBooks.listReplies(group.id, comment.id, ama, 20, 0))).toBe(404);
     expect(await status(groupBooks.likeComment(group.id, comment.id, ama))).toBe(404);
     expect((await groupBooks.listComments(group.id, shelf.id, kofi, 20, 0)).comments).toHaveLength(0);
+  });
+
+  it('releases a comment\'s held mentions when it is unhidden', async () => {
+    const { id: postId } = await community.createPost(esi, { bookId, status: 'read', rating: 4, body: 'Loved it', isPublic: true });
+    const comment = await community.addComment(postId, kofi, 'Rude reply');
+    const report = await reports.create({ targetType: 'user', reporterId: ama, reportedUserId: kofi, commentId: comment.id, reason: 'x' });
+    await moderation.hide(report.id, 1);
+
+    const dispatch = vi.spyOn(mentionsService, 'dispatchInBackground').mockImplementation(() => {});
+    try {
+      await moderation.unhide(report.id);
+      expect(dispatch).toHaveBeenCalledWith([{ type: 'comment', id: comment.id }]);
+    } finally {
+      dispatch.mockRestore();
+    }
   });
 
   it('refuses to hide when a report cites nothing', async () => {
