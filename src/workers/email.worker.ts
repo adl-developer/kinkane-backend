@@ -21,7 +21,7 @@ import {
   sendSubscriptionCancelledEmail,
   sendReferralInviteEmail,
   sendOrderConfirmedEmail,
-  sendContentHiddenEmail,
+  sendContentRemovedEmail,
   sendGroupBlacklistedEmail,
 } from '../emails';
 import { notificationPreferencesService } from '../services/notification-preferences.service';
@@ -143,14 +143,14 @@ async function processEmailJob(job: Job): Promise<void> {
       await sendOrderConfirmedEmail(to, buyerName, payload);
       break;
     }
-    case 'content-hidden': {
-      const { to, name: authorName, kind, bookTitle } = job.data as EmailJobMap['content-hidden'];
-      await sendContentHiddenEmail(to, authorName, kind, bookTitle);
+    case 'content-removed': {
+      const { to, name: authorName, kind, submittedAt } = job.data as EmailJobMap['content-removed'];
+      await sendContentRemovedEmail(to, authorName, kind, submittedAt);
       break;
     }
     case 'group-blacklisted': {
-      const { to, name: memberName, groupName, isOwner } = job.data as EmailJobMap['group-blacklisted'];
-      await sendGroupBlacklistedEmail(to, memberName, groupName, isOwner);
+      const { to, name: ownerName, groupName } = job.data as EmailJobMap['group-blacklisted'];
+      await sendGroupBlacklistedEmail(to, ownerName, groupName);
       break;
     }
     default: {

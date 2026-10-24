@@ -629,7 +629,7 @@ export const adminPaths = {
       tags: [TAG],
       summary: 'Hide the post, review or comment a report cites',
       description: [
-        '"Hide Review", "Hide Post" and "Hide Comment" on the Posts & Reviews tab. The cited content is removed: it disappears for everyone, **its author included**, who is emailed. Nothing is deleted.',
+        '"Hide Review", "Hide Post" and "Hide Comment" on the Posts & Reviews tab. The cited content is removed: it disappears for everyone, **its author included**, who is emailed the "Your [post / comment / review] has been removed" notice. Nothing is deleted.',
         '',
         '**Closes every pending report citing the same content.**',
         '',
@@ -678,7 +678,7 @@ export const adminPaths = {
       description: [
         '"Blacklist Group" on the Group Reports tab. The group disappears for everyone, owner and members included: opening it, listing it, searching for it, joining it, editing it and deleting it all answer 404. Nothing in it is deleted.',
         '',
-        'The owner and every active member are emailed (`emailed` is how many). **Closes every pending report about the group.**',
+        'The owner is emailed the "Your group has been blacklisted" notice; members are not (`emailed` is 1, or 0 if there was nothing to do). **Closes every pending report about the group.**',
         '',
         'Idempotent: a group already blacklisted is left as it is (`changed: false`) and nobody is emailed again.',
       ].join('\n'),
@@ -689,7 +689,7 @@ export const adminPaths = {
           blacklisted: { type: 'boolean', example: true },
           changed: { type: 'boolean', example: true },
           resolvedReportIds: arrayOf({ type: 'integer' }, 'Every pending report closed by this action.'),
-          emailed: { type: 'integer', example: 142 },
+          emailed: { type: 'integer', example: 1 },
         })),
         400: json('Invalid report id, or `NOT_A_GROUP_REPORT`.', ref('Error')),
         404: json('No such report, or the reported group has since been deleted.', ref('Error')),

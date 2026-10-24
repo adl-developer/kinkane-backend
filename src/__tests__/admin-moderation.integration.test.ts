@@ -194,8 +194,8 @@ describeIfDb('the moderation screen', () => {
     expect(onBook.posts.map((p) => p.id)).not.toContain(postId);
 
     expect(enqueueEmail).toHaveBeenCalledTimes(1);
-    expect(enqueueEmail).toHaveBeenCalledWith('content-hidden', expect.objectContaining({
-      to: `${EMAIL_PREFIX}kofi@example.com`, kind: 'review', bookTitle: 'The Midnight Library',
+    expect(enqueueEmail).toHaveBeenCalledWith('content-removed', expect.objectContaining({
+      to: `${EMAIL_PREFIX}kofi@example.com`, kind: 'review', submittedAt: expect.any(String),
     }));
 
     // Again: nothing changes and nobody is emailed twice.
@@ -229,7 +229,7 @@ describeIfDb('the moderation screen', () => {
     expect((await community.getPost(postId, ama)).commentCount).toBe(0);
     expect((await community.listComments(postId, kofi, 20, 0)).comments).toHaveLength(0);
     expect(await status(community.likeComment(comment.id, ama))).toBe(404);
-    expect(enqueueEmail).toHaveBeenCalledWith('content-hidden', expect.objectContaining({ kind: 'comment' }));
+    expect(enqueueEmail).toHaveBeenCalledWith('content-removed', expect.objectContaining({ kind: 'comment' }));
   });
 
   it('removes a book-club comment and its replies for everyone, its author included', async () => {
@@ -273,7 +273,7 @@ describeIfDb('the moderation screen', () => {
 
   // ── Blacklisting a group ───────────────────────────────────────────────────
 
-  it('takes a blacklisted group away from everyone, emails owner and members, and gives it back', async () => {
+  it('takes a blacklisted group away from everyone, emails its owner, and gives it back', async () => {
     const group = await groupsService.create(kofi, { name: 'Night Readers', privacy: 'public' });
     await db.execute(sql`
       INSERT INTO group_memberships (group_id, user_id, status, joined_at) VALUES (${group.id}, ${esi}, 'active', now())
@@ -282,7 +282,7 @@ describeIfDb('the moderation screen', () => {
     const second = await reports.create({ targetType: 'group', reporterId: esi, reportedGroupId: group.id, reason: 'y' });
 
     const result = await moderation.blacklistGroup(first.id, 1);
-    expect(result).toMatchObject({ blacklisted: true, changed: true, emailed: 2 });
+    expect(result).toMatchObject({ blacklisted: true, changed: true, emailed: 1 });
     expect(result.resolvedReportIds.sort()).toEqual([first.id, second.id].sort());
 
     for (const viewer of [kofi, esi, ama]) expect(await status(groupsService.get(group.id, viewer))).toBe(404);
@@ -292,10 +292,8 @@ describeIfDb('the moderation screen', () => {
     expect(await status(groupsService.remove(group.id, kofi))).toBe(404);
 
     const emails = enqueueEmail.mock.calls.filter(([name]) => name === 'group-blacklisted').map(([, data]) => data);
-    expect(emails).toEqual(expect.arrayContaining([
-      expect.objectContaining({ to: `${EMAIL_PREFIX}kofi@example.com`, isOwner: true, groupName: 'Night Readers' }),
-      expect.objectContaining({ to: `${EMAIL_PREFIX}esi@example.com`, isOwner: false }),
-    ]));
+    // The owner only: the notice is written for them.
+    expect(emails).toEqual([{ to: `${EMAIL_PREFIX}kofi@example.com`, name: 'Kofi', groupName: 'Night Readers' }]);
     expect((await queueRow(first.id))?.reportedGroup).toMatchObject({ blacklisted: true });
 
     expect(await moderation.unblacklistGroup(first.id)).toMatchObject({ blacklisted: false, changed: true });
