@@ -80,6 +80,7 @@ let search: typeof import('../services/community-search.service').communitySearc
 let groupsService: typeof import('../services/groups.service').groupsService;
 let groupBooks: typeof import('../services/group-books.service').groupBooksService;
 let usersService: typeof import('../services/users.service').usersService;
+let assertEmailNotBlacklisted: typeof import('../services/commerce/checkout.service').assertEmailNotBlacklisted;
 let server: Server;
 let base: string;
 
@@ -132,6 +133,7 @@ describeIfDb('a blacklisted account', () => {
     ({ groupsService } = await import('../services/groups.service'));
     ({ groupBooksService: groupBooks } = await import('../services/group-books.service'));
     ({ usersService } = await import('../services/users.service'));
+    ({ assertEmailNotBlacklisted } = await import('../services/commerce/checkout.service'));
 
     const { default: communityRoutes } = await import('../routes/community.routes');
     const { default: usersRoutes } = await import('../routes/users.routes');
@@ -223,5 +225,30 @@ describeIfDb('a blacklisted account', () => {
     expect(await status(community.getPost(review, kofi))).toBe('ok');
     expect((await community.listComments(kofiPost, kofi, 20, 0)).comments).toHaveLength(1);
     expect((await groupBooks.listComments(group.id, shelf.id, kofi, 20, 0)).comments).toHaveLength(1);
+  });
+
+  it('cannot buy as a guest under its own address, in any letter case', async () => {
+    const address = `${EMAIL_PREFIX}ama@example.com`;
+    expect(await status(assertEmailNotBlacklisted(address))).toBe('ok');
+
+    await customers.blacklist(ama, 1, 'test');
+    for (const typed of [address, address.toUpperCase()]) {
+      const refused = await assertEmailNotBlacklisted(typed).catch((e) => e);
+      expect(refused).toMatchObject({ statusCode: 403, code: 'ACCOUNT_SUSPENDED' });
+    }
+    // Anyone else's address is unaffected.
+    expect(await status(assertEmailNotBlacklisted(`${EMAIL_PREFIX}kofi@example.com`))).toBe('ok');
+
+    await customers.unblacklist(ama);
+    expect(await status(assertEmailNotBlacklisted(address))).toBe('ok');
+  });
+
+  it('is gone even for someone who had blocked them, who would otherwise see their profile', async () => {
+    await db.execute(sql`INSERT INTO user_blocks (blocker_id, blocked_id) VALUES (${kofi}, ${ama})`);
+    expect(await usersService.getUserProfile(ama, kofi)).toMatchObject({ isBlocked: true });
+
+    await customers.blacklist(ama, 1, 'test');
+    expect(await status(usersService.getUserProfile(ama, kofi))).toBe(404);
+    expect(await status(usersService.getUserBooks(ama, kofi, 'all', 'date_desc' as never, 20, 0))).toBe(404);
   });
 });

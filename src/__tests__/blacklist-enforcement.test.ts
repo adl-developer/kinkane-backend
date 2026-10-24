@@ -49,6 +49,8 @@ describe('blacklist enforcement', () => {
     const checkout = read('services/commerce/checkout.service.ts');
     expect(checkout).toContain('if (user.blacklistedAt !== null)');
     expect(checkout).toContain('lower(${users.email}) = lower(${contactEmail})');
+    // …and start() actually calls it, after settling the contact address.
+    expect(methodBody(checkout, 'async start(')).toContain('await assertEmailNotBlacklisted(contactEmail);');
   });
 
   it('revokes live sessions when the blacklist is applied', () => {

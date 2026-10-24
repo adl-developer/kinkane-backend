@@ -193,6 +193,24 @@ export function resolveBuyerContact(input: {
   return { contactEmail: input.contactEmail, isGuestBuyer: true };
 }
 
+/**
+ * Refuses a checkout whose contact address belongs to a blacklisted account,
+ * so a blacklisted customer cannot buy as a guest under their own address: a
+ * blacklist anyone could step round by signing out is not a blacklist.
+ * Matched on the address as typed, case aside — a deliberately different
+ * address gets through, as it would for anyone.
+ */
+export async function assertEmailNotBlacklisted(contactEmail: string): Promise<void> {
+  const [blacklistedOwner] = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(and(sql`lower(${users.email}) = lower(${contactEmail})`, isNotNull(users.blacklistedAt)))
+    .limit(1);
+  if (blacklistedOwner) {
+    throw httpError('This account has been suspended. Contact support.', 403, 'ACCOUNT_SUSPENDED');
+  }
+}
+
 /** Either the pool or a transaction — so money checks can run inside one. */
 type DbHandle = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -555,18 +573,7 @@ export const commerceCheckoutService = {
       contactEmail: options.contactEmail,
     });
 
-    // Nor can they buy as a guest under the same address: a blacklist that
-    // anyone could step round by signing out is not a blacklist. Matched on the
-    // address as typed, case aside — a deliberately different address gets
-    // through, as it would for anyone.
-    const [blacklistedOwner] = await db
-      .select({ id: users.id })
-      .from(users)
-      .where(and(sql`lower(${users.email}) = lower(${contactEmail})`, isNotNull(users.blacklistedAt)))
-      .limit(1);
-    if (blacklistedOwner) {
-      throw httpError('This account has been suspended. Contact support.', 403, 'ACCOUNT_SUSPENDED');
-    }
+    await assertEmailNotBlacklisted(contactEmail);
 
     const normalizedEmail = normalizeEmailForPromotions(contactEmail);
     const firstOrderPercent = config.commerce.discount.firstOrderPercent;
