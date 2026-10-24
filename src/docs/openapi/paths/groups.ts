@@ -165,13 +165,13 @@ export const groupPaths = {
       tags: [GROUPS],
       summary: 'Browse or search groups',
       description:
-        'Without `q`, a discovery list newest first. With `q`, groups matching by name or description, best match first.\n\n' +
-        'Matching widens in four tiers — name prefix, word prefix within the name, trigram similarity, then full text across name and description. Full text only joins in from three characters onward. This is deliberately the same formula user and post search use, so results rank consistently wherever they appear side by side.\n\n' +
+        'Without `q`, a discovery list newest first. With `q`, groups matching by name, best match first. The description is not searched.\n\n' +
+        'Matching widens in four tiers — name prefix, word prefix within the name, trigram similarity, then full text across the words of the name, in any order. Full text only joins in from three characters onward. This is deliberately the same formula user and post search use, so results rank consistently wherever they appear side by side.\n\n' +
         'A `q` of only whitespace is treated as a browse rather than matching everything.\n\n' +
         `${PRIVACY_NOTE}`,
       parameters: [
         param('q', 'query', { type: 'string', minLength: 1, maxLength: 200 },
-          'Optional search term, matched against name and description.', { example: 'midnight' }),
+          'Optional search term, matched against the group name.', { example: 'midnight' }),
         ...pagination(50),
       ],
       responses: {

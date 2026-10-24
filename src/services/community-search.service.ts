@@ -150,6 +150,16 @@ const textMatch = alias(posts, 'text_match');
 const titleMatch = alias(books, 'title_match');
 
 /**
+ * A book's title and subtitle as a tsvector. Not books.search_vector: that also
+ * holds the ISBN and the long description, so a post matched whenever its
+ * book's blurb mentioned the word. Built per row rather than indexed, which is
+ * fine here — the title subquery only visits books that have posts.
+ */
+function bookTitleWords(book: { title: SQLWrapper; subtitle: SQLWrapper }): SQL {
+  return sql`to_tsvector('english', coalesce(${book.title}, '') || ' ' || coalesce(${book.subtitle}, ''))`;
+}
+
+/**
  * Posts whose book title matches `q` — as before — or whose own text does:
  * as words and quoted phrases (postWordsQuery), or as the exact wording
  * (postWordingMatch). Both text tests read the stored columns, where @mention
@@ -169,7 +179,7 @@ export function buildPostSearchCondition(q: string): SQL {
   const wordPrefix = likeWordPrefix(q);
   const words = postWordsQuery(q);
   const bookFts = q.length >= 3
-    ? sql` OR ${titleMatch.searchVector} @@ ${plainTsQuery('english', q)}`
+    ? sql` OR ${bookTitleWords(titleMatch)} @@ ${plainTsQuery('english', q)}`
     : sql``;
   const textWords = words !== null ? sql` OR ${textMatch.searchVector} @@ ${words}` : sql``;
 
@@ -224,7 +234,7 @@ function buildPostSearchOrderBy(q: string): SQL[] {
   return [
     tier,
     sql`${withinTier} DESC`,
-    sql`ts_rank(${books.searchVector}, ${plainTsQuery('english', q)}) DESC`,
+    sql`ts_rank(${bookTitleWords(books)}, ${plainTsQuery('english', q)}) DESC`,
     sql`${posts.createdAt} DESC`,
     sql`${posts.id} DESC`,
   ];

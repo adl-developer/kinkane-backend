@@ -238,7 +238,9 @@ export function groupViewerCapabilities(
 }
 
 /**
- * Matches a group by name or description, in four widening tiers.
+ * Matches a group by name only, in four widening tiers. The description is
+ * left out: a word anywhere in a blurb turned up groups that had no visible
+ * connection to the query (drizzle/0091).
  *
  * Deliberately the same shape as `buildUserSearchCondition` in
  * community-search.service.ts, down to the 0.3 threshold and the three-character
@@ -249,7 +251,8 @@ export function groupViewerCapabilities(
  *
  * Tiers, in order: exact prefix, word prefix, trigram similarity, full text.
  * `word_similarity` is backed by the gin_trgm_ops index on `name`, and the full
- * text arm by the GIN index on the generated `search_vector` — without those two
+ * text arm by the GIN index on the generated `search_vector` (the name's words,
+ * so multi-word queries match in any order) — without those two
  * this degrades to a sequential scan over every group.
  *
  * Full text is skipped below three characters because `plainto_tsquery` on one
