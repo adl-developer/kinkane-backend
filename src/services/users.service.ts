@@ -1,11 +1,11 @@
-import { eq, and, sql, asc, desc } from 'drizzle-orm';
+import { eq, and, isNull, sql, asc, desc } from 'drizzle-orm';
 import { db, type Tx } from '../db';
 import { users, posts, followRequests, userBooks, books, notifications, ShelfVisibility, type ReaderType } from '../db/schema';
 import { enqueueEmail } from '../lib/email-queue';
 import { enqueuePush } from '../lib/push-queue';
 import { notificationPreferencesService } from './notification-preferences.service';
 import { logger } from '../lib/logger';
-import { blockStateBetween, blockedBetween, blockedError, notBlockedViewer } from './blocks.service';
+import { accountActive, blockStateBetween, blockedBetween, blockedError, notBlockedViewer } from './blocks.service';
 
 // ── Friend-request notifications ──────────────────────────────────────────────
 // Each follow request has exactly one `friend_request` notification for its
@@ -212,7 +212,9 @@ async function loadViewerRelationship(targetId: number, requesterId: number): Pr
       followRequests,
       and(eq(followRequests.senderId, requesterId), eq(followRequests.receiverId, users.id)),
     )
-    .where(eq(users.id, targetId))
+    // A blacklisted account is gone for everyone else — profile, shelf, follow
+    // lists — and answers exactly as a missing one does.
+    .where(and(eq(users.id, targetId), targetId === requesterId ? undefined : isNull(users.blacklistedAt)))
     .limit(1);
   if (!row) return null;
 
@@ -430,7 +432,9 @@ export const usersService = {
     // The caller sits on one side of the row; the user we want to show is the other.
     const mineColumn  = incoming ? followRequests.receiverId : followRequests.senderId;
     const theirColumn = incoming ? followRequests.senderId   : followRequests.receiverId;
-    const where = and(eq(mineColumn, userId), eq(followRequests.status, 'pending'));
+    // A blacklisted account's requests, either way, are gone with the rest of
+    // its activity: not listed, not counted, not there to accept.
+    const where = and(eq(mineColumn, userId), eq(followRequests.status, 'pending'), isNull(users.blacklistedAt));
 
     const [rows, [countRow]] = await Promise.all([
       db
@@ -450,6 +454,7 @@ export const usersService = {
       db
         .select({ count: sql<number>`COUNT(*)::int` })
         .from(followRequests)
+        .innerJoin(users, eq(users.id, theirColumn))
         .where(where),
     ]);
 
@@ -474,14 +479,15 @@ export const usersService = {
         .select({ id: users.id, name: users.name, username: users.username, photoUrl: users.photoUrl })
         .from(followRequests)
         .innerJoin(users, eq(users.id, followRequests.senderId))
-        .where(and(eq(followRequests.receiverId, targetId), eq(followRequests.status, 'accepted')))
+        .where(and(eq(followRequests.receiverId, targetId), eq(followRequests.status, 'accepted'), isNull(users.blacklistedAt)))
         .orderBy(desc(followRequests.updatedAt))
         .limit(limit)
         .offset(offset),
       db
         .select({ count: sql<number>`COUNT(*)::int` })
         .from(followRequests)
-        .where(and(eq(followRequests.receiverId, targetId), eq(followRequests.status, 'accepted'))),
+        .innerJoin(users, eq(users.id, followRequests.senderId))
+        .where(and(eq(followRequests.receiverId, targetId), eq(followRequests.status, 'accepted'), isNull(users.blacklistedAt))),
     ]);
 
     return { items: rows, total: countRow?.count ?? 0 };
@@ -504,14 +510,15 @@ export const usersService = {
         .select({ id: users.id, name: users.name, username: users.username, photoUrl: users.photoUrl })
         .from(followRequests)
         .innerJoin(users, eq(users.id, followRequests.receiverId))
-        .where(and(eq(followRequests.senderId, targetId), eq(followRequests.status, 'accepted')))
+        .where(and(eq(followRequests.senderId, targetId), eq(followRequests.status, 'accepted'), isNull(users.blacklistedAt)))
         .orderBy(desc(followRequests.updatedAt))
         .limit(limit)
         .offset(offset),
       db
         .select({ count: sql<number>`COUNT(*)::int` })
         .from(followRequests)
-        .where(and(eq(followRequests.senderId, targetId), eq(followRequests.status, 'accepted'))),
+        .innerJoin(users, eq(users.id, followRequests.receiverId))
+        .where(and(eq(followRequests.senderId, targetId), eq(followRequests.status, 'accepted'), isNull(users.blacklistedAt))),
     ]);
 
     return { items: rows, total: countRow?.count ?? 0 };
@@ -532,7 +539,8 @@ export const usersService = {
       db
         .select({ id: users.id, name: users.name, email: users.email })
         .from(users)
-        .where(eq(users.id, receiverId))
+        // A blacklisted account cannot be followed: to everyone else it does not exist.
+        .where(and(eq(users.id, receiverId), isNull(users.blacklistedAt)))
         .limit(1),
     ]);
 
@@ -645,6 +653,9 @@ export const usersService = {
             eq(followRequests.id, requestId),
             eq(followRequests.receiverId, receiverId),
             eq(followRequests.status, 'pending'),
+            // Not from a blacklisted account: its requests are not listed, so
+            // they are not there to accept either.
+            accountActive(followRequests.senderId),
           ),
         )
         .returning({ senderId: followRequests.senderId });

@@ -20,7 +20,7 @@ import { mentionsService, renderTexts } from './mentions.service';
 import type { MentionRef } from '../lib/mention-text';
 import type { LinkRef } from '../lib/link-text';
 import { TEXT_LIMITS } from '../lib/text-limits';
-import { assertNotBlocked, blockedAmong } from './blocks.service';
+import { accountActive, assertNotBlocked, blockedAmong } from './blocks.service';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -112,12 +112,13 @@ export interface GroupCommentItem {
 
 /**
  * The club comments anyone may see: all but those a moderator has hidden —
- * from their author too. Unlike a block, that leaves a hole in the
- * conversation; that is the point of it. A hidden comment's replies stay, but
- * are reached only through it, so they go with it in practice.
+ * from their author too — and those by a blacklisted account. Unlike a block,
+ * both leave a hole in the conversation; that is the point of them. A hidden
+ * comment's replies stay, but are reached only through it, so they go with it
+ * in practice.
  */
 function groupCommentVisible() {
-  return isNull(groupBookComments.hiddenAt);
+  return and(isNull(groupBookComments.hiddenAt), accountActive(groupBookComments.userId))!;
 }
 
 /** Allowed, or the response to fail with. */

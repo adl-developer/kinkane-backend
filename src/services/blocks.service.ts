@@ -43,6 +43,45 @@ export function notBlockedBetween(viewerId: number, other: SQLWrapper): SQL {
   return sql`NOT ${blockedBetween(viewerId, other)}`;
 }
 
+// ── Blacklisted accounts ─────────────────────────────────────────────────────
+
+/**
+ * True unless the user in `user` (a column, as for blockedBetween) has been
+ * blacklisted. A blacklisted account disappears for everyone — its profile,
+ * posts, reviews, comments, group comments and mentions — so every filter that
+ * hides a blocked person also carries this, beside it rather than inside it:
+ * a block leaves a limited profile and a visible place in book clubs, and a
+ * blacklist leaves nothing. One primary-key lookup.
+ */
+export function accountActive(user: SQLWrapper): SQL {
+  return sql`NOT EXISTS (
+    SELECT 1 FROM ${users} AS blacklisted_account
+    WHERE blacklisted_account.id = ${user} AND blacklisted_account.blacklisted_at IS NOT NULL
+  )`;
+}
+
+/** Whether one account is blacklisted, for checks made in code rather than SQL. */
+export async function isBlacklisted(userId: number): Promise<boolean> {
+  const [row] = await db.select({ blacklistedAt: users.blacklistedAt }).from(users).where(eq(users.id, userId)).limit(1);
+  return row?.blacklistedAt != null;
+}
+
+/**
+ * Whether `otherId` is hidden from `viewerId` — a block either way, or their
+ * account blacklisted — in one round trip, for the per-item checks that need
+ * both answers (opening a post, liking a comment).
+ */
+export async function isHiddenFrom(viewerId: number, otherId: number): Promise<boolean> {
+  if (viewerId === otherId) return false;
+  const [row] = await db
+    .select({ hidden: sql<boolean>`${blockedBetween(viewerId, users.id)} OR ${users.blacklistedAt} IS NOT NULL` })
+    .from(users)
+    .where(eq(users.id, otherId))
+    .limit(1);
+  // A missing account is as hidden as any.
+  return row?.hidden ?? true;
+}
+
 /** True when `viewerId` has blocked the user in `other` — one direction only. */
 export function blockedByViewer(viewerId: number, other: SQLWrapper): SQL {
   return sql`EXISTS (

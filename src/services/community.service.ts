@@ -7,7 +7,7 @@ import { enqueuePush } from '../lib/push-queue';
 import { logger } from '../lib/logger';
 import { mentionsService, renderTexts } from './mentions.service';
 import { assertCanViewShelf, canViewShelfBook } from './users.service';
-import { isBlockedBetween, notBlockedBetween } from './blocks.service';
+import { accountActive, isHiddenFrom, notBlockedBetween } from './blocks.service';
 import type { MentionRef } from '../lib/mention-text';
 import type { LinkRef } from '../lib/link-text';
 import { isEdited, withEditState } from '../lib/edit-state';
@@ -100,13 +100,15 @@ export interface CommentItem {
 
 /**
  * The comments `requesterId` may see: none across a block either way, old ones
- * included, and none a moderator has hidden (from its author too). Counts use
- * it too, so `commentCount` always matches the list.
+ * included, none a moderator has hidden (from its author too), and none by a
+ * blacklisted account. Counts use it too, so `commentCount` always matches the
+ * list.
  */
 function commentVisibleTo(requesterId: number): SQL {
   return and(
     notBlockedBetween(requesterId, comments.userId),
     isNull(comments.hiddenAt),
+    accountActive(comments.userId),
   )!;
 }
 
@@ -137,7 +139,8 @@ function assertPostVisible(post: { isPublic: boolean; userId: number }, requeste
  */
 async function assertPostReachable(post: { isPublic: boolean; userId: number }, requesterId: number): Promise<void> {
   assertPostVisible(post, requesterId);
-  if (post.userId !== requesterId && (await isBlockedBetween(requesterId, post.userId))) {
+  // A blacklisted author's posts are gone for everyone, like a blocked pair's.
+  if (await isHiddenFrom(requesterId, post.userId)) {
     throw Object.assign(new Error('Post not found'), { statusCode: 404 });
   }
 }
@@ -569,7 +572,7 @@ export const communityService = {
     limit: number,
     offset: number,
   ): Promise<{ posts: PostItem[]; total: number }> {
-    const where = and(eq(posts.isPublic, true), notBlockedBetween(requesterId, posts.userId));
+    const where = and(eq(posts.isPublic, true), notBlockedBetween(requesterId, posts.userId), accountActive(posts.userId));
     const order = sort === 'date_asc' ? asc(posts.createdAt) : desc(posts.createdAt);
 
     const [rows, [countRow]] = await Promise.all([
@@ -649,7 +652,7 @@ export const communityService = {
   ): Promise<{ posts: PostItem[]; total: number }> {
     const order = sort === 'date_asc' ? asc(posts.createdAt) : desc(posts.createdAt);
     return listPostPage(
-      and(eq(posts.bookId, bookId), eq(posts.isPublic, true), notBlockedBetween(requesterId, posts.userId)),
+      and(eq(posts.bookId, bookId), eq(posts.isPublic, true), notBlockedBetween(requesterId, posts.userId), accountActive(posts.userId)),
       [order],
       requesterId,
       limit,
@@ -689,6 +692,7 @@ export const communityService = {
       // still find it here as one of their own private posts.
       isNull(posts.hiddenAt),
       notBlockedBetween(requesterId, posts.userId),
+      accountActive(posts.userId),
     );
     const byDate = sort === 'date_asc' ? asc(posts.createdAt) : desc(posts.createdAt);
     // The id tiebreak keeps pages stable when two reviews share a timestamp.
@@ -987,8 +991,8 @@ export const communityService = {
 
     assertFound(row, 'Comment');
     await assertPostReachable({ isPublic: row.isPublic, userId: row.postUserId }, userId);
-    // A comment hidden from you by a block is not there to like.
-    if (row.commentUserId !== userId && (await isBlockedBetween(userId, row.commentUserId))) {
+    // A comment hidden from you by a block, or by its author's blacklist, is not there to like.
+    if (await isHiddenFrom(userId, row.commentUserId)) {
       throw Object.assign(new Error('Comment not found'), { statusCode: 404 });
     }
 

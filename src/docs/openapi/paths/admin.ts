@@ -508,7 +508,9 @@ export const adminPaths = {
       description: [
         'Blocks the account from **signing in** and from **checking out**. Checkout is guarded separately from login because a session issued before the blacklist stays valid until its token expires, and "blocked" that still lets someone spend money is not blocked.',
         '',
-        '**Non-destructive and reversible.** Posts, reviews, shelf and order history are untouched: moderation decisions get revisited, and a blacklist that deletes content cannot be undone.',
+        '**Their profile and activity disappear for everyone else:** profile, shelf and follow lists answer 404; their posts, reviews and comments drop out of feeds, book pages, comment threads, counts and search; they are left out of group member lists and book-club threads; and they cannot be tagged or followed.',
+        '',
+        '**Non-destructive and reversible.** Nothing is deleted, and lifting the blacklist brings everything back as it was: moderation decisions get revisited, and a blacklist that deletes content cannot be undone.',
         '',
         '**Every way back in is closed**, not just the password form: password login, refresh, and social sign-in all reject a blacklisted account, and their existing sessions are revoked on the spot — `sessionsRevoked` says how many. Guarding only the login would have meant the block never bit anyone already signed in, since a client refreshes on a timer and never logs in again. The one gap left by design is their current access token, valid until it expires (15 min by default), which is why checkout carries its own check.',
         '',

@@ -29,7 +29,7 @@ import {
 import { addressSpans, hasLinkTokens, linkTokenIds, renderLinks, shiftOffsets, type LinkRef } from '../lib/link-text';
 import { shortLinkPrefix, shortLinksService } from './short-links.service';
 import { enqueuePush } from '../lib/push-queue';
-import { notBlockedBetween } from './blocks.service';
+import { accountActive, notBlockedBetween } from './blocks.service';
 import { logger } from '../lib/logger';
 
 /**
@@ -287,7 +287,12 @@ async function prepare<T extends string | null | undefined>(
     ? await db
         .select({ id: users.id, username: users.username })
         .from(users)
-        .where(and(inArray(users.username, handles), authorId !== null ? notBlockedBetween(authorId, users.id) : undefined))
+        // Nor can anyone tag a blacklisted account, which has left the community.
+        .where(and(
+          inArray(users.username, handles),
+          isNull(users.blacklistedAt),
+          authorId !== null ? notBlockedBetween(authorId, users.id) : undefined,
+        ))
     : [];
   const ids = new Map(rows.map((r) => [r.username!, r.id]));
   const result = tokenize(text, ids, skip);
@@ -755,6 +760,8 @@ export const mentionsService = {
       isNotNull(mentions.notifiedAt),
       isNull(mentions.removedAt),
       sql`(${mentions.authorId} IS NULL OR ${notBlockedBetween(userId, mentions.authorId)})`,
+      // Nor do mentions by a blacklisted account, whose activity is gone for everyone.
+      sql`(${mentions.authorId} IS NULL OR ${accountActive(mentions.authorId)})`,
     );
     const [rows, [counted]] = await Promise.all([
       db

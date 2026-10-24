@@ -1,4 +1,4 @@
-import { eq, and, inArray, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
+import { eq, and, inArray, isNull, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { db } from '../db';
 import { alias } from 'drizzle-orm/pg-core';
 import { users, posts, books, postLikes, comments, groups, followRequests } from '../db/schema';
@@ -10,7 +10,7 @@ import { withRenderedMentions } from './mentions.service';
 import { likePrefix, likeWordPrefix } from '../lib/escape-like';
 import { plainTsQuery } from '../lib/tsquery';
 import { toFollowStatus, type FollowStatus } from './users.service';
-import { blockedByViewer, notBlockedBetween, notBlockedViewer } from './blocks.service';
+import { accountActive, blockedByViewer, notBlockedBetween, notBlockedViewer } from './blocks.service';
 import type { MentionRef } from '../lib/mention-text';
 import type { LinkRef } from '../lib/link-text';
 
@@ -244,7 +244,7 @@ async function searchUsers(
 ): Promise<{ results: UserResult[]; total: number }> {
   // Someone who blocked you doesn't turn up. Someone you blocked does, marked
   // `blocked`, so you can find them again to unblock.
-  const where = and(buildUserSearchCondition(q), notBlockedViewer(requesterId, users.id));
+  const where = and(buildUserSearchCondition(q), notBlockedViewer(requesterId, users.id), isNull(users.blacklistedAt));
   const orderBy = buildUserSearchOrderBy(q);
 
   const [rows, [countRow]] = await Promise.all([
@@ -292,7 +292,7 @@ async function searchPosts(
   limit: number,
   offset: number,
 ): Promise<{ results: PostItem[]; total: number }> {
-  const where = and(eq(posts.isPublic, true), buildPostSearchCondition(q), notBlockedBetween(requesterId, posts.userId));
+  const where = and(eq(posts.isPublic, true), buildPostSearchCondition(q), notBlockedBetween(requesterId, posts.userId), accountActive(posts.userId));
   const orderBy = buildPostSearchOrderBy(q);
 
   const [rows, [countRow]] = await Promise.all([
