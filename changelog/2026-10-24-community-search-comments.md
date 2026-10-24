@@ -29,7 +29,14 @@ explains why it matched.
 ## Ranking
 
 Comment-only matches rank last: book title → exact wording in the post →
-words in the post → fuzzy title → comments. Something another person said
+words in the post → fuzzy title → title/subtitle words in any order →
+comments. A post whose title matched in any way never gets `matchedComment`,
+even if a comment matched too.
+
+The matching comments are found once per search, as a derived table the post
+query LEFT JOINs; both the filter and the ranking read whether a post has a
+hit from that join, so the comments table is scanned once rather than once
+per mention in the query. Something another person said
 under a post is weaker evidence that the post is about the query than the post
 itself. Within the comment tier, newest post first. The comment chosen for
 `matchedComment` is the closest by word rank, then the newest.

@@ -90,10 +90,16 @@ describeIfDb('community search: comments', () => {
       INSERT INTO books (record_reference, title) VALUES (${BOOK_REF_PREFIX + 'book'}, 'Harbour Lights') RETURNING id
     `)) as unknown as { id: number }[];
 
-    async function post(key: string, body: string, isPublic = true) {
+    // Only its subtitle says "Quillon", so only the title-words tier finds it
+    const [subtitled] = (await db.execute(sql`
+      INSERT INTO books (record_reference, title, subtitle)
+      VALUES (${BOOK_REF_PREFIX + 'subtitled'}, 'The Long Winter', 'Tales of Quillon') RETURNING id
+    `)) as unknown as { id: number }[];
+
+    async function post(key: string, body: string, isPublic = true, bookId = book.id) {
       const [row] = (await db.execute(sql`
         INSERT INTO posts (user_id, book_id, status, rating, body, is_public)
-        VALUES (${ids.author}, ${book.id}, 'read', 4, ${body}, ${isPublic})
+        VALUES (${ids.author}, ${bookId}, 'read', 4, ${body}, ${isPublic})
         RETURNING id
       `)) as unknown as { id: number }[];
       ids[key] = row.id;
@@ -115,6 +121,9 @@ describeIfDb('community search: comments', () => {
     await post('bannedOnly', 'Good.');
     await post('private', 'Mine.', false);
     await post('blockerOnly', 'Hm.');
+    await post('subtitleQuillon', 'Bleak.', true, subtitled.id);
+    await post('subtitleQuillonCommented', 'Cold.', true, subtitled.id);
+    await post('commentQuillon', 'Nice.');
 
     await comment('inBody', 'commenter', 'Zorvegian indeed.');
     ids.firstComment = await comment('inComment', 'commenter', 'The Zorvegian chapters were slow.');
@@ -124,6 +133,8 @@ describeIfDb('community search: comments', () => {
     await comment('bannedOnly', 'banned', 'Zorvegian from a blacklisted account.');
     await comment('private', 'commenter', 'Zorvegian under a private post.');
     await comment('blockerOnly', 'me', 'Zorvegian from the person who did the blocking.');
+    await comment('subtitleQuillonCommented', 'commenter', 'Quillon at its best.');
+    await comment('commentQuillon', 'commenter', 'Reminded me of Quillon.');
   });
 
   afterAll(async () => {
@@ -135,6 +146,18 @@ describeIfDb('community search: comments', () => {
     const found = (await search('zorvegian')).map((p) => p.id);
     expect(found[0]).toBe(ids.inBody);
     expect(found.slice(1).sort()).toEqual([ids.inComment, ids.blockerOnly].sort());
+  });
+
+  it('ranks a match on the book subtitle above a comment-only match', async () => {
+    const found = (await search('quillon')).map((p) => p.id);
+    expect(found.slice(0, 2).sort()).toEqual([ids.subtitleQuillon, ids.subtitleQuillonCommented].sort());
+    expect(found[2]).toBe(ids.commentQuillon);
+  });
+
+  it('leaves matchedComment null when the book title matched, even with a matching comment', async () => {
+    const found = await search('quillon');
+    expect(found.find((p) => p.id === ids.subtitleQuillonCommented)!.matchedComment).toBeNull();
+    expect(found.find((p) => p.id === ids.commentQuillon)!.matchedComment).not.toBeNull();
   });
 
   it('returns the comment that matched, only when the post itself did not', async () => {
