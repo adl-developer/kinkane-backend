@@ -5,6 +5,7 @@
 
 ### Features
 
+* hand a blacklisted owner's groups to Kinkané Admin and tell contactus@kinkane.app ([fd75040](https://adl.github.com/adl-developer/kinkane-backend/commit/fd75040d819d33f8194aed397b59e94cb31c3390)) — [details](changelog/2026-10-24-blacklisted-owner-groups-kinkane-admin.md)
 * email blacklisted accounts why they were blocked, with a one-tap appeal ([57aa5d0](https://adl.github.com/adl-developer/kinkane-backend/commit/57aa5d0e68482330e7e88c7dce812d0d8a8b7250)) — [details](changelog/2026-10-24-account-blacklisted-email.md)
 * stop a blacklisted customer buying as a guest under their own email ([a41b194](https://adl.github.com/adl-developer/kinkane-backend/commit/a41b1944eb5d67b4622bcd4b8db0410e875e327c)) — [details](changelog/2026-10-24-blacklisted-owner-groups-kinkane-admin.md)
 * refuse community features to a blacklisted account for the rest of its sign-in ([2b30ac2](https://adl.github.com/adl-developer/kinkane-backend/commit/2b30ac2b2d06810d51d83c47b879941201d00969)) — [details](changelog/2026-10-24-moderation-emails-designs-appeal.md)

@@ -23,6 +23,8 @@ export type { RemovedContentKind } from './transactional/content-removed';
 export { sendGroupBlacklistedEmail } from './transactional/group-blacklisted';
 export { sendAccountBlacklistedEmail } from './transactional/account-blacklisted';
 export { sendGroupsHandedOverEmail } from './transactional/groups-handed-over';
+export { sendReportFiledEmail } from './transactional/report-filed';
+export type { ReportFiledPayload, ReportedContentKind } from './transactional/report-filed';
 
 // Notifications
 export { sendTrialEndingEmail } from './notifications/trial-ending';

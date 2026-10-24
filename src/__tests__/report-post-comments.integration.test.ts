@@ -1,6 +1,6 @@
 import { readFileSync } from 'fs';
 import * as dotenv from 'dotenv';
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 
 /**
  * Reporting a comment under a community post, filed and then read back from
@@ -45,6 +45,9 @@ if (testUrl) {
   }
   process.env.DATABASE_URL = testUrl;
 }
+
+// Filing a report queues a staff email. Never onto the real queue from a test.
+vi.mock('../lib/email-queue', () => ({ enqueueEmail: vi.fn().mockResolvedValue(undefined), bullConnection: {} }));
 
 let db: typeof import('../db').db;
 let sql: typeof import('drizzle-orm').sql;

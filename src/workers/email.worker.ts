@@ -25,6 +25,7 @@ import {
   sendGroupBlacklistedEmail,
   sendAccountBlacklistedEmail,
   sendGroupsHandedOverEmail,
+  sendReportFiledEmail,
 } from '../emails';
 import { notificationPreferencesService } from '../services/notification-preferences.service';
 import { logger } from '../lib/logger';
@@ -163,6 +164,11 @@ async function processEmailJob(job: Job): Promise<void> {
     case 'groups-handed-over': {
       const { to, formerOwnerName, formerOwnerEmail, groups } = job.data as EmailJobMap['groups-handed-over'];
       await sendGroupsHandedOverEmail(to, formerOwnerName, formerOwnerEmail, groups);
+      break;
+    }
+    case 'report-filed': {
+      const { payload } = job.data as EmailJobMap['report-filed'];
+      await sendReportFiledEmail(payload);
       break;
     }
     default: {

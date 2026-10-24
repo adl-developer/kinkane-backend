@@ -2,7 +2,7 @@ import IORedis from 'ioredis';
 import { Queue } from 'bullmq';
 import { config } from '../config';
 import type {
-  RecommendedBook, NewsletterPayload, WeeklyDigestPayload, OrderConfirmedPayload, RemovedContentKind,
+  RecommendedBook, NewsletterPayload, WeeklyDigestPayload, OrderConfirmedPayload, RemovedContentKind, ReportFiledPayload,
 } from '../emails';
 
 // BullMQ requires maxRetriesPerRequest: null — a separate connection from the
@@ -44,6 +44,8 @@ export interface EmailJobMap {
   'group-blacklisted':          { to: string; name: string; groupName: string };
   'account-blacklisted':        { to: string; name: string };
   'groups-handed-over':         { to: string; formerOwnerName: string; formerOwnerEmail: string; groups: { id: number; name: string }[] };
+  // To staff: a new report is waiting. Goes to REPORTS_INBOX, so no `to`.
+  'report-filed':               { payload: ReportFiledPayload };
 }
 
 export type EmailJobName = keyof EmailJobMap;
@@ -86,6 +88,9 @@ export const EMAIL_PRIORITY: Record<EmailJobName, number> = {
   'group-blacklisted':          3,
   'account-blacklisted':        3,
   'groups-handed-over':         5,
+  // Nobody is blocked on it, and the console's bell already has the report;
+  // ahead of digests so a moderator hears soon enough to act.
+  'report-filed':               5,
 };
 
 // ── Queue ─────────────────────────────────────────────────────────────────────

@@ -4,12 +4,18 @@ import { userReports, users, groups, groupBookComments, groupBooks, comments, po
 import { adminCustomersService } from './customers.service';
 import { adminNotificationsService } from './notifications.service';
 import { renderTexts } from '../mentions.service';
+import { enqueueEmail } from '../../lib/email-queue';
+import { logger } from '../../lib/logger';
+import type { ReportFiledPayload, ReportedContentKind } from '../../emails';
 
 const reporter = aliasedTable(users, 'reporter');
 const reported = aliasedTable(users, 'reported');
 // The post a cited comment sits under, for its book. Aliased because `posts`
 // is already joined as the cited post itself.
 const commentPost = aliasedTable(posts, 'comment_post');
+// The person who wrote the cited content, whichever kind it is, and a reported
+// group's owner — for the staff email.
+const groupOwner = aliasedTable(users, 'group_owner');
 
 type ReportCategory = 'user' | 'group' | 'content';
 
@@ -346,7 +352,7 @@ export const adminReportsService = {
 
   /**
    * Called when a customer files a report. Stamps the reference and tells the
-   * console, so a complaint cannot sit unseen.
+   * console and the reports inbox, so a complaint cannot sit unseen.
    */
   async onReportFiled(
     reportId: number,
@@ -372,6 +378,108 @@ export const adminReportsService = {
             : `${reporterName} reported ${targetName}.`,
       reportId,
     });
+    await queueReportFiledEmail(reportId, reference);
     return reference;
   },
 };
+
+/** The console labels a book-club comment and a post comment alike. */
+const CONTENT_KIND: Record<CitedKind, ReportedContentKind> = {
+  review: 'review',
+  post: 'post',
+  comment: 'comment',
+  groupComment: 'comment',
+};
+
+/**
+ * Queues the staff email for one new report, described as it was filed.
+ *
+ * **Never throws.** The report is stored and on the bell whether or not this
+ * works, and the reporter must not see an error for a complaint we did take.
+ * Through the queue rather than sent inline, so the reporter does not wait on
+ * the mail provider and a provider hiccup is retried.
+ */
+async function queueReportFiledEmail(reportId: number, reference: string): Promise<void> {
+  try {
+    const payload = await reportFiledPayload(reportId, reference);
+    if (payload) await enqueueEmail('report-filed', { payload });
+  } catch (err) {
+    logger.error('Report filed but the staff email was not queued', { reportId, error: (err as Error).message });
+  }
+}
+
+async function reportFiledPayload(reportId: number, reference: string): Promise<ReportFiledPayload | null> {
+  const [r] = await db
+    .select({
+      category: userReports.category,
+      reason: userReports.reason,
+      reasonCategory: userReports.reasonCategory,
+      filedAt: userReports.createdAt,
+      postId: userReports.postId,
+      postBody: posts.body,
+      postRating: posts.rating,
+      postHiddenAt: posts.hiddenAt,
+      groupCommentId: userReports.groupCommentId,
+      groupCommentBody: groupBookComments.body,
+      groupCommentHiddenAt: groupBookComments.hiddenAt,
+      commentId: userReports.commentId,
+      commentPostId: comments.postId,
+      commentBody: comments.body,
+      commentHiddenAt: comments.hiddenAt,
+      // No book in the email; null keeps citedContent's input whole.
+      bookId: sql<number | null>`null`,
+      bookTitle: sql<string | null>`null`,
+      reportedName: reported.name,
+      reportedUsername: reported.username,
+      groupName: groups.name,
+      groupMemberCount: groups.memberCount,
+      ownerName: groupOwner.name,
+      ownerUsername: groupOwner.username,
+      reporterName: reporter.name,
+      reporterUsername: reporter.username,
+    })
+    .from(userReports)
+    .leftJoin(reported, eq(reported.id, userReports.reportedUserId))
+    .leftJoin(groups, eq(groups.id, userReports.reportedGroupId))
+    .leftJoin(groupOwner, eq(groupOwner.id, groups.ownerId))
+    .leftJoin(groupBookComments, eq(groupBookComments.id, userReports.groupCommentId))
+    .leftJoin(comments, eq(comments.id, userReports.commentId))
+    .leftJoin(posts, eq(posts.id, userReports.postId))
+    .leftJoin(reporter, eq(reporter.id, userReports.reporterId))
+    .where(eq(userReports.id, reportId));
+  if (!r) return null;
+
+  const base = {
+    reference,
+    reporter: { name: r.reporterName ?? 'Someone', username: r.reporterUsername },
+    reasonCategory: r.reasonCategory,
+    reason: r.reason,
+    filedAt: r.filedAt.toISOString(),
+  };
+  const reportedUser = { name: r.reportedName ?? 'Unknown', username: r.reportedUsername };
+
+  if (r.category === 'group') {
+    return {
+      ...base,
+      category: 'group',
+      groupName: r.groupName ?? 'Unknown group',
+      owner: r.ownerName !== null ? { name: r.ownerName, username: r.ownerUsername } : null,
+      memberCount: r.groupMemberCount ?? 0,
+    };
+  }
+
+  const cited = citedContent(r);
+  if (r.category === 'content' && cited) {
+    // Stored text carries mention tokens; the email shows @usernames.
+    const [rendered] = await renderTexts([cited.body]);
+    return {
+      ...base,
+      category: 'content',
+      author: reportedUser,
+      contentKind: CONTENT_KIND[cited.kind],
+      excerpt: rendered.text,
+    };
+  }
+
+  return { ...base, category: 'user', reportedUser };
+}
