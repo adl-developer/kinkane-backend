@@ -205,6 +205,9 @@ const envSchema = z.object({
   // rather than SUPPORT_INBOX, so restock mail can be routed separately later
   // without moving contact-form mail with it.
   RESTOCK_INBOX: z.string().email().default('contactus@kinkane.app'),
+  // Where a new report (a user, a post or comment, a group) is emailed, one
+  // email per report. Its own setting for the same reason as RESTOCK_INBOX.
+  REPORTS_INBOX: z.string().email().default('contactus@kinkane.app'),
   // The sender for emails *to staff* (today, the restock notification). Customer
   // emails keep EMAIL_FROM. Must be on the domain verified with Resend.
   EMAIL_CONTACT_FROM: z.string().email().default('contactus@kinkane.app'),
@@ -910,6 +913,7 @@ export const config = {
     fromName: env.EMAIL_FROM_NAME,
     supportInbox: env.SUPPORT_INBOX ?? env.EMAIL_FROM,
     restockInbox: env.RESTOCK_INBOX,
+    reportsInbox: env.REPORTS_INBOX,
     contactFrom: env.EMAIL_CONTACT_FROM,
   },
   appUrl: env.APP_URL,

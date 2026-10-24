@@ -21,6 +21,8 @@ export type { OrderConfirmedPayload, OrderConfirmedItem } from './transactional/
 export { sendContentHiddenEmail } from './transactional/content-hidden';
 export type { HiddenContentKind } from './transactional/content-hidden';
 export { sendGroupBlacklistedEmail } from './transactional/group-blacklisted';
+export { sendReportFiledEmail } from './transactional/report-filed';
+export type { ReportFiledPayload, ReportedContentKind } from './transactional/report-filed';
 
 // Notifications
 export { sendTrialEndingEmail } from './notifications/trial-ending';
