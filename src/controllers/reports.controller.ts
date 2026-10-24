@@ -21,6 +21,7 @@ const submitSchema = z.preprocess(
       reason: reasonSchema,
       postId: z.number().int().positive().optional(),
       groupCommentId: z.number().int().positive().optional(),
+      commentId: z.number().int().positive().optional(),
     }),
     // .strict() on this branch only. Zod otherwise strips unknown keys, so a
     // request naming BOTH a group and a user would quietly be filed as a group

@@ -1,6 +1,6 @@
 import { aliasedTable, and, desc, eq, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
-import { userReports, users, groups, groupBookComments } from '../../db/schema';
+import { userReports, users, groups, groupBookComments, comments, posts } from '../../db/schema';
 import { adminCustomersService } from './customers.service';
 import { adminNotificationsService } from './notifications.service';
 import { renderTexts } from '../mentions.service';
@@ -10,6 +10,24 @@ const reported = aliasedTable(users, 'reported');
 
 function httpError(message: string, statusCode: number, code?: string): Error {
   return Object.assign(new Error(message), { statusCode, code });
+}
+
+type CitedKind = 'post' | 'comment' | 'groupComment';
+
+/** The one piece of content a report cites, if any, before its text is rendered. */
+function citedContent(r: {
+  postId: number | null;
+  postBody: string | null;
+  groupCommentId: number | null;
+  groupCommentBody: string | null;
+  commentId: number | null;
+  commentPostId: number | null;
+  commentBody: string | null;
+}): { kind: CitedKind; id: number; postId: number | null; body: string | null } | null {
+  if (r.postId !== null) return { kind: 'post', id: r.postId, postId: r.postId, body: r.postBody };
+  if (r.commentId !== null) return { kind: 'comment', id: r.commentId, postId: r.commentPostId, body: r.commentBody };
+  if (r.groupCommentId !== null) return { kind: 'groupComment', id: r.groupCommentId, postId: null, body: r.groupCommentBody };
+  return null;
 }
 
 export const adminReportsService = {
@@ -41,11 +59,17 @@ export const adminReportsService = {
           reference: userReports.reference,
           status: userReports.status,
           reason: userReports.reason,
+          // What prompted the report — at most one of the three, which the
+          // filing service enforces — with its text, so a moderator can judge
+          // it without a second lookup. Each id is nulled when its content is
+          // deleted (SET NULL), and the report survives it.
           postId: userReports.postId,
+          postBody: posts.body,
           groupCommentId: userReports.groupCommentId,
-          // The text itself, so a moderator can judge a comment report without
-          // a second lookup. Null once the comment is deleted (SET NULL above).
           groupCommentBody: groupBookComments.body,
+          commentId: userReports.commentId,
+          commentPostId: comments.postId,
+          commentBody: comments.body,
           targetType: userReports.targetType,
           filedAt: userReports.createdAt,
           resolvedAt: userReports.resolvedAt,
@@ -70,6 +94,8 @@ export const adminReportsService = {
         .leftJoin(reported, eq(reported.id, userReports.reportedUserId))
         .leftJoin(groups, eq(groups.id, userReports.reportedGroupId))
         .leftJoin(groupBookComments, eq(groupBookComments.id, userReports.groupCommentId))
+        .leftJoin(comments, eq(comments.id, userReports.commentId))
+        .leftJoin(posts, eq(posts.id, userReports.postId))
         // leftJoin, though reporter_id is NOT NULL and cascades — so this
         // returns exactly the same rows an innerJoin would. It is a typing
         // accommodation: drizzle cannot infer a select that mixes inner and
@@ -87,8 +113,10 @@ export const adminReportsService = {
       .groupBy(userReports.status);
 
     const [rows, [total], counts] = await Promise.all([rowsQuery, totalQuery, countsQuery]);
-    // Stored comment text carries mention tokens; a moderator reads @usernames.
-    const commentBodies = await renderTexts(rows.map((r) => r.groupCommentBody));
+    const cited = rows.map(citedContent);
+    // Stored text carries mention tokens; a moderator reads @usernames. One
+    // pass over every row's cited text, so usernames are looked up once.
+    const bodies = await renderTexts(cited.map((c) => c?.body));
 
     const byStatus: Record<string, number> = { pending: 0, resolved: 0, dismissed: 0 };
     for (const c of counts) byStatus[c.status] = Number(c.n);
@@ -99,9 +127,13 @@ export const adminReportsService = {
         reference: r.reference,
         status: r.status,
         reason: r.reason,
+        // One shape for every kind of cited content, so a new kind is a new
+        // `kind` value rather than another nullable key for the console to check.
+        cited: cited[i] && { ...cited[i], body: bodies[i].text },
+        // Kept for the console as it stands; `cited` carries the same and more.
         postId: r.postId,
         groupComment:
-          r.groupCommentId !== null ? { id: r.groupCommentId, body: commentBodies[i].text } : null,
+          r.groupCommentId !== null ? { id: r.groupCommentId, body: bodies[i].text } : null,
         targetType: r.targetType,
         // Whichever target this report is about, named. Lets the queue render a
         // row without branching on targetType, and without dereferencing a

@@ -23,6 +23,8 @@ const submitSchema = z.preprocess(
       reportedUserId: z.number().int().positive(),
       reason: reasonSchema,
       postId: z.number().int().positive().optional(),
+      groupCommentId: z.number().int().positive().optional(),
+      commentId: z.number().int().positive().optional(),
     }),
     // .strict() on this branch only. Zod otherwise strips unknown keys, so a
     // request naming BOTH a group and a user would quietly be filed as a group
@@ -75,6 +77,20 @@ describe('what a report may be filed against', () => {
       postId: 5,
     });
     expect(r.success && 'postId' in r.data).toBeFalsy();
+  });
+
+  it('does not accept a citing comment of either kind on a group report', () => {
+    // The group branch is strict, so these are refused outright rather than
+    // stripped — a group report citing someone's comment is ambiguous.
+    for (const cited of [{ commentId: 9 }, { groupCommentId: 9 }]) {
+      const r = submitSchema.safeParse({ targetType: 'group', reportedGroupId: 12, reason: 'spam', ...cited });
+      expect(r.success).toBe(false);
+    }
+  });
+
+  it('accepts a citing comment of either kind on a user report', () => {
+    expect(submitSchema.safeParse({ reportedUserId: 42, reason: 'spam', commentId: 9 }).success).toBe(true);
+    expect(submitSchema.safeParse({ reportedUserId: 42, reason: 'spam', groupCommentId: 9 }).success).toBe(true);
   });
 
   it('still requires a reason for either kind', () => {

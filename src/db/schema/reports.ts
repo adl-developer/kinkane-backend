@@ -12,7 +12,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { users } from './users';
-import { posts } from './community';
+import { posts, comments } from './community';
 import { groups } from './groups';
 import { groupBookComments } from './group-books';
 
@@ -59,6 +59,9 @@ export const userReports = pgTable(
     groupCommentId: integer('group_comment_id').references(() => groupBookComments.id, {
       onDelete: 'set null',
     }),
+    // The community-post equivalent: a comment under someone's post. Same SET
+    // NULL, for the same reason.
+    commentId: integer('comment_id').references(() => comments.id, { onDelete: 'set null' }),
     reason: text('reason').notNull(),
     // Customer-facing-ish identity for the moderation queue: the console shows
     // "R003", not a database id. Generated from the id at read time would break
@@ -78,6 +81,7 @@ export const userReports = pgTable(
     reporterIdIdx: index('idx_user_reports_reporter_id').on(t.reporterId),
     postIdIdx: index('idx_user_reports_post_id').on(t.postId),
     groupCommentIdIdx: index('idx_user_reports_group_comment_id').on(t.groupCommentId),
+    commentIdIdx: index('idx_user_reports_comment_id').on(t.commentId),
     reportedGroupIdIdx: index('idx_user_reports_reported_group_id').on(t.reportedGroupId),
     targetTypeIdx: index('idx_user_reports_target_type').on(t.targetType),
     // A user report must name a user and no group; a group report must name no
