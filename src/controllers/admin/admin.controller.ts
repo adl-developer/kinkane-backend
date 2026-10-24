@@ -348,7 +348,7 @@ export const adminController = {
     const admin = (req as AdminRequest).admin;
     const result = await adminCustomersService.blacklist(id, admin.id, parsed.data.reason ?? null);
     await adminCustomersService.notifyBlacklisted(result);
-    res.status(200).json({ id: result.id, blacklisted: result.blacklisted, changed: result.changed });
+    res.status(200).json({ id: result.id, blacklisted: result.blacklisted, changed: result.changed, sessionsRevoked: result.sessionsRevoked });
   },
 
   /** DELETE /admin/customers/:id/blacklist */

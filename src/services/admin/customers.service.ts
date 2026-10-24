@@ -1,6 +1,6 @@
 import { and, desc, eq, gte, ilike, isNotNull, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
-import { users, orders } from '../../db/schema';
+import { users, orders, refreshTokens } from '../../db/schema';
 import { likeContains } from '../../lib/escape-like';
 import { enqueueEmail } from '../../lib/email-queue';
 import { logger } from '../../lib/logger';
@@ -122,13 +122,18 @@ export const adminCustomersService = {
   },
 
   /**
-   * Blacklists an account: shuts it out of the community, not the bookstore.
+   * Blacklists an account: it can no longer sign in or buy, and its profile
+   * and community activity disappear for everyone else.
    *
-   * They can still sign in, browse and buy books. Every community route —
-   * posts, comments, reviews, groups, profiles, follows, reports, mentions —
-   * refuses them (see requireCommunityAccess), and their profile and activity
-   * disappear for everyone else (see accountActive). Nothing is deleted, so
-   * lifting it brings everything back: moderation decisions get revisited, and
+   * Every way in is closed — password, social sign-in and refresh (see the
+   * guards in auth.service) — and live sessions are ended here. Checkout
+   * refuses them too, as a guest with the same email included (see
+   * commerce/checkout.service), and the community routes refuse whatever is
+   * left of their current access token (see requireCommunityAccess). Their
+   * activity is hidden through accountActive.
+   *
+   * Deliberately reversible and non-destructive: nothing is deleted, so
+   * lifting it brings everything back. Moderation decisions get revisited, and
    * a blacklist that destroyed content could not be undone.
    *
    * They are emailed when it lands, by the caller once the change is committed.
@@ -140,28 +145,53 @@ export const adminCustomersService = {
    *   subscriptions/state.service.
    */
   async blacklist(userId: number, adminId: number, reason: string | null, tx?: DbHandle) {
-    // The `isNull` in the WHERE is what makes this idempotent under
+    // Blocking the account and ending its sessions are one decision, so they
+    // are one transaction. Split, a crash between them leaves a customer marked
+    // blacklisted while their existing sessions keep working.
+    //
+    // The `isNull` in the WHERE is also what makes this idempotent under
     // concurrency: two admins clicking at once, and only one update lands.
-    const handle = tx ?? db;
-    const [updated] = await handle
-      .update(users)
-      .set({
-        blacklistedAt: new Date(),
-        blacklistedBy: adminId,
-        blacklistReason: reason,
-        updatedAt: new Date(),
-      })
-      .where(and(eq(users.id, userId), isNull(users.blacklistedAt)))
-      .returning({ id: users.id, email: users.email, name: users.name });
+    const run = async (handle: DbHandle) => {
+      const [updated] = await handle
+        .update(users)
+        .set({
+          blacklistedAt: new Date(),
+          blacklistedBy: adminId,
+          blacklistReason: reason,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(users.id, userId), isNull(users.blacklistedAt)))
+        .returning({ id: users.id, email: users.email, name: users.name });
 
-    if (!updated) {
-      // Either no such user or already blacklisted. Both are "nothing to do",
-      // and the console should not care which.
-      const [exists] = await handle.select({ id: users.id }).from(users).where(eq(users.id, userId)).limit(1);
-      if (!exists) throw httpError('Customer not found', 404);
-      return { id: userId, blacklisted: true, changed: false };
-    }
-    return { id: updated.id, blacklisted: true, changed: true, email: updated.email, name: updated.name };
+      if (!updated) {
+        // Either no such user or already blacklisted. Both are "nothing to do",
+        // and the console should not care which.
+        const [exists] = await handle.select({ id: users.id }).from(users).where(eq(users.id, userId)).limit(1);
+        if (!exists) throw httpError('Customer not found', 404);
+        return { id: userId, blacklisted: true, changed: false, sessionsRevoked: 0 };
+      }
+
+      // Kill every live session rather than waiting for one to lapse. With
+      // refreshing refused, deleting the refresh tokens ends each session at
+      // its next refresh; the access token in hand stays valid until it
+      // expires (15 minutes by default), which is why checkout and the
+      // community routes carry their own checks.
+      const revoked = await handle
+        .delete(refreshTokens)
+        .where(eq(refreshTokens.userId, userId))
+        .returning({ id: refreshTokens.id });
+
+      return {
+        id: updated.id,
+        blacklisted: true,
+        changed: true,
+        sessionsRevoked: revoked.length,
+        email: updated.email,
+        name: updated.name,
+      };
+    };
+
+    return tx ? run(tx) : db.transaction(run);
   },
 
   /** Emails a newly blacklisted account. Never throws: the blacklist stands either way. */

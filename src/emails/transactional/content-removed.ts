@@ -50,7 +50,7 @@ export async function sendContentRemovedEmail(
     ),
     p(escapeHtml(lines.notSuspension)),
     p(escapeHtml(lines.appeal)),
-    appealButton('Contact us to appeal', contact),
+    appealButton(contact, subject),
     p(escapeHtml(lines.guidelines), true),
     signOff(),
   ].join('\n');
@@ -66,7 +66,7 @@ export async function sendContentRemovedEmail(
       lines.why,
       `CONTENT REMOVED\nType: ${LABEL[kind]}\nSubmitted on: ${submittedOn}\nReason for removal: Violation of Community Guidelines`,
       lines.notSuspension,
-      `${lines.appeal}\nContact us to appeal: ${contact}`,
+      `${lines.appeal}\nEmail ${contact} with the subject "Appeal the decision: ${subject}".`,
       lines.guidelines,
       'The Kinkané Team',
     ].join('\n\n'),

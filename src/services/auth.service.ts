@@ -83,6 +83,26 @@ function generateRefreshToken(): string {
 }
 
 /**
+ * Stops a blacklisted account signing in.
+ *
+ * Checked **after** the password, deliberately. Checking first would turn the
+ * login form into an oracle for which addresses are blocked, and someone who
+ * types the wrong password should get the same answer either way.
+ *
+ * The message says the account is blocked rather than pretending the password
+ * is wrong: a blocked customer who keeps resetting a password that works is a
+ * support ticket nobody can resolve.
+ */
+function assertNotBlacklisted(blacklistedAt: Date | null): void {
+  if (blacklistedAt !== null) {
+    throw Object.assign(new Error('This account has been suspended. Contact support.'), {
+      statusCode: 403,
+      code: 'ACCOUNT_SUSPENDED',
+    });
+  }
+}
+
+/**
  * The domain the web shop signs browsers up under when it needs a token for the
  * cart before anyone has chosen to make an account. See createGuestAccount in
  * the web frontend — the convention is theirs; this is where we read it.
@@ -647,6 +667,8 @@ export const authService = {
       throw Object.assign(new Error('Invalid email or password'), { statusCode: 401 });
     }
 
+    assertNotBlacklisted(user.blacklistedAt);
+
     const tokens = await issueTokenPair(user.id, user.email);
 
     return {
@@ -683,7 +705,7 @@ export const authService = {
     }
 
     const [user] = await db
-      .select({ id: users.id, email: users.email })
+      .select({ id: users.id, email: users.email, blacklistedAt: users.blacklistedAt })
       .from(users)
       .where(eq(users.id, consumed.userId))
       .limit(1);
@@ -691,6 +713,14 @@ export const authService = {
     if (!user) {
       throw Object.assign(new Error('User not found'), { statusCode: 401 });
     }
+
+    // Refreshing is signing in again, and has to be gated the same way.
+    // Without this a blacklisted user simply never logs in again: their client
+    // keeps trading a refresh token for a fresh pair, indefinitely, and the
+    // block only ever bites someone who happened to be signed out when it
+    // landed. The consumed token is already deleted above, so a rejected
+    // refresh also ends that session rather than leaving it retryable.
+    assertNotBlacklisted(user.blacklistedAt);
 
     return issueTokenPair(user.id, user.email);
   },
@@ -1153,11 +1183,15 @@ export const authService = {
       const [user] = await db
         .select({
           id: users.id, name: users.name, username: users.username, email: users.email,
-          emailVerified: users.emailVerified,
+          emailVerified: users.emailVerified, blacklistedAt: users.blacklistedAt,
         })
         .from(users)
         .where(eq(users.id, existingProvider.userId))
         .limit(1);
+
+      // Same gate as the password login. A block that stops one sign-in method
+      // and waves through "Continue with Google" is not a block.
+      assertNotBlacklisted(user.blacklistedAt);
 
       // Normally a no-op: anyone reaching this branch was verified when the
       // provider was first linked. It catches the accounts linked *before* that
@@ -1166,7 +1200,8 @@ export const authService = {
       await markVerifiedAndCreditReferral(user.id, user.emailVerified);
 
       const tokens = await issueTokenPair(user.id, user.email);
-      return { user: { ...user, emailVerified: true }, tokens, isNewUser: false };
+      const { blacklistedAt: _blacklistedAt, ...safeUser } = user;
+      return { user: { ...safeUser, emailVerified: true }, tokens, isNewUser: false };
     }
 
     // 2. Check if a user with the same email already exists (account linking)
@@ -1177,6 +1212,10 @@ export const authService = {
       .limit(1);
 
     if (existingUser) {
+      // Checked before the provider is linked, not after: a blacklisted account
+      // must not quietly gain a new sign-in method on the way to being refused.
+      assertNotBlacklisted(existingUser.blacklistedAt);
+
       await db.insert(userProviders).values({ userId: existingUser.id, provider, providerUid });
 
       // Backfill photo if missing. Best effort: a photo that won't save must not

@@ -9,9 +9,10 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vites
 /**
  * A blacklisted account, end to end against a real Postgres: what the "Your
  * account has been blacklisted" email promises, checked one line at a time.
- * They can still sign in; the community refuses them; their profile, posts,
- * comments and group membership are gone for everyone else; they are emailed;
- * and lifting the blacklist brings it all back.
+ * They cannot sign in, and their sessions end; the community refuses the
+ * access token they still hold; their profile, posts, comments and group
+ * membership are gone for everyone else; they are emailed; and lifting the
+ * blacklist brings it all back.
  *
  * WHERE IT RUNS. TEST_DATABASE_URL, never DATABASE_URL — this suite deletes
  * users. Skips itself when unset; refuses to run when it names the same
@@ -161,13 +162,20 @@ describeIfDb('a blacklisted account', () => {
     if (db) await cleanUp();
   });
 
-  it('can still sign in, is shut out of the community, and is emailed', async () => {
+  it('cannot sign in, loses its sessions, is refused by the community, and is emailed', async () => {
+    // A live session from before the blacklist.
+    const before = await authService.login(`${EMAIL_PREFIX}ama@example.com`, PASSWORD);
+
     const result = await customers.blacklist(ama, 1, 'test');
+    expect(result.sessionsRevoked).toBeGreaterThanOrEqual(1);
     await customers.notifyBlacklisted(result);
 
-    const signedIn = await authService.login(`${EMAIL_PREFIX}ama@example.com`, PASSWORD);
-    expect(signedIn.user.id).toBe(ama);
+    const signIn = await authService.login(`${EMAIL_PREFIX}ama@example.com`, PASSWORD).catch((e) => e);
+    expect(signIn).toMatchObject({ statusCode: 403, code: 'ACCOUNT_SUSPENDED' });
+    // The session they had cannot be refreshed.
+    expect(await status(authService.refresh(before.tokens.refreshToken))).not.toBe('ok');
 
+    // The access token in hand is refused by every community route.
     for (const path of ['/community/posts', `/users/${kofi}`, '/groups']) {
       const res = await call(ama, 'GET', path);
       expect(res.status, path).toBe(403);

@@ -30,7 +30,7 @@ export async function sendGroupBlacklistedEmail(to: string, name: string, groupN
     p(escapeHtml(lines.why)),
     noticePanel('What this means', noticeBullets(lines.means)),
     p(escapeHtml(lines.appeal)),
-    appealButton('Appeal this decision', contact),
+    appealButton(contact, subject),
     p(escapeHtml(lines.guidelines), true),
     signOff(),
   ].join('\n');
@@ -45,7 +45,7 @@ export async function sendGroupBlacklistedEmail(to: string, name: string, groupN
       `We're reaching out to let you know that your group, ${groupName}, has been blacklisted on Kinkané following a review by our team.`,
       lines.why,
       `WHAT THIS MEANS\n${lines.means.map((m) => `• ${m}`).join('\n')}`,
-      `${lines.appeal}\nAppeal this decision: ${contact}`,
+      `${lines.appeal}\nEmail ${contact} with the subject "Appeal the decision: ${subject}".`,
       lines.guidelines,
       'The Kinkané Team',
     ].join('\n\n'),

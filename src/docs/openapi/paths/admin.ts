@@ -506,7 +506,7 @@ export const adminPaths = {
       tags: [TAG],
       summary: 'Blacklist a customer',
       description: [
-        '**Shuts the account out of the community, not the bookstore.** They can still sign in, browse and buy books. Every community route — posts, comments, reviews, groups, profiles, follows, reports and mentions — answers them **403 `ACCOUNT_RESTRICTED`**, from their very next request.',
+        '**Closes every way in.** Password login, refresh and social sign-in all answer **403 `ACCOUNT_SUSPENDED`**, and their live sessions are revoked on the spot — `sessionsRevoked` says how many. The access token already in hand stays valid until it expires (15 min by default), so checkout and every community route carry their own checks for that window: checkout answers `ACCOUNT_SUSPENDED` — **guest checkout under the same email address included** — and community routes answer `403 ACCOUNT_RESTRICTED`.',
         '',
         '**Their profile and activity disappear for everyone else:** profile, shelf and follow lists answer 404; their posts, reviews and comments drop out of feeds, book pages, comment threads, counts and search; they are left out of group member lists and book-club threads; and they cannot be tagged or followed.',
         '',
@@ -525,6 +525,7 @@ export const adminPaths = {
           id: { type: 'integer', example: 4412 },
           blacklisted: { type: 'boolean', example: true },
           changed: { type: 'boolean', description: 'False when they were already blacklisted.', example: true },
+          sessionsRevoked: { type: 'integer', description: 'Live sessions ended by this call.', example: 2 },
         })),
         400: json('Invalid customer id.', ref('ValidationError')),
         404: resp('NotFound'),

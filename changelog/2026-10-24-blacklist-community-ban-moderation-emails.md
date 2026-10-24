@@ -2,6 +2,10 @@
 
 **Date:** 2026-10-24
 
+> **Superseded in part the same day.** Blacklisted accounts can no longer sign in or buy after all.
+> See `2026-10-24-blacklist-blocks-sign-in-appeal-email.md`. The rest stands: hiding content from its
+> author, the community guard and hidden activity, and the email designs.
+
 ## What changed
 
 **Blacklisting an account.**

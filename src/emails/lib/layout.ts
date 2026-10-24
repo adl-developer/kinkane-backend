@@ -193,15 +193,20 @@ export function noticeBullets(items: string[]): string {
 }
 
 /**
- * The appeal button: a centred dark pill that opens a reply to `email`, with
- * the address written beneath it for anyone whose client will not follow a
- * mailto link.
+ * The appeal button: a centred dark pill, "Email to <address>" — not
+ * uppercased like ctaButton, which would shout the address — that opens a
+ * new email to `email` with the subject "Appeal the decision: <subject>" — so
+ * the appeal arrives already saying which notice it answers. The address is
+ * written beneath it too, for anyone whose client will not follow a mailto
+ * link.
  */
-export function appealButton(text: string, email: string): string {
+export function appealButton(email: string, noticeSubject: string): string {
+  const subject = encodeURIComponent(`Appeal the decision: ${noticeSubject}`);
+  const text = `Email to ${escapeHtml(email)}`;
   return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:8px auto 4px;">
     <tr>
       <td style="background-color:#262626;border-radius:999px;text-align:center;">
-        <a href="mailto:${email}" style="display:inline-block;padding:14px 36px;font-family:${SANS};font-size:12px;font-weight:600;letter-spacing:1.5px;color:#FFFFFF;text-decoration:none;text-transform:uppercase;">${text}</a>
+        <a href="mailto:${email}?subject=${subject}" style="display:inline-block;padding:14px 36px;font-family:${SANS};font-size:13px;font-weight:600;letter-spacing:0.2px;color:#FFFFFF;text-decoration:none;">${text}</a>
       </td>
     </tr>
   </table>
