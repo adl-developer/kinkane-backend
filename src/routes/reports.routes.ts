@@ -1,11 +1,14 @@
 import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.middleware';
+import { requireCommunityAccess } from '../middleware/community-access.middleware';
 import { reportsController } from '../controllers/reports.controller';
 import { wrap } from '../lib/route-helpers';
 
 const router = Router();
 
 router.use(requireAuth);
+// A blacklisted account is shut out of the community; see requireCommunityAccess.
+router.use(requireCommunityAccess);
 
 /**
  * POST /api/v1/reports

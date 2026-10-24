@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.middleware';
+import { requireCommunityAccess } from '../middleware/community-access.middleware';
 import { requirePlus } from '../middleware/require-plus.middleware';
 import { communityController } from '../controllers/community.controller';
 import { mentionsController } from '../controllers/mentions.controller';
@@ -8,6 +9,8 @@ import { wrap, wrapHttp } from '../lib/route-helpers';
 const router = Router();
 
 router.use(requireAuth);
+// A blacklisted account is shut out of the community; see requireCommunityAccess.
+router.use(requireCommunityAccess);
 
 // Reading the community is free; taking part in it is Plus. Note the asymmetry
 // on every pair below: creating and editing are gated, deleting and unliking

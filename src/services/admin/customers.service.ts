@@ -1,6 +1,7 @@
 import { and, desc, eq, gte, ilike, isNotNull, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { users, orders, refreshTokens } from '../../db/schema';
+import { forgetStanding } from '../blocks.service';
 import { likeContains } from '../../lib/escape-like';
 
 /** Either the pool or an open transaction, so callers can share one. */
@@ -192,7 +193,10 @@ export const adminCustomersService = {
       };
     };
 
-    return tx ? run(tx) : db.transaction(run);
+    const result = await (tx ? run(tx) : db.transaction(run));
+    // This instance's community guard answers at once; others within a minute.
+    forgetStanding(userId);
+    return result;
   },
 
   async unblacklist(userId: number) {
@@ -203,6 +207,7 @@ export const adminCustomersService = {
       .returning({ id: users.id });
 
     if (!updated) throw httpError('Customer not found', 404);
+    forgetStanding(userId);
     return { id: updated.id, blacklisted: false, changed: true };
   },
 };

@@ -5,6 +5,7 @@
 
 ### Features
 
+* make a blacklisted account's profile and activity disappear for everyone else ([c292250](https://adl.github.com/adl-developer/kinkane-backend/commit/c292250740fc3072658c70512038fa0ea0847f48)) — [details](changelog/2026-10-24-moderation-emails-designs-appeal.md)
 * make the content-removed and group-blacklisted emails match the designs, with a one-tap appeal ([52cef6b](https://adl.github.com/adl-developer/kinkane-backend/commit/52cef6b8c7cf4ad0cbed085612e00299d04fada7)) — [details](changelog/2026-10-24-moderation-emails-designs-appeal.md)
 * remove reported posts, reviews and comments for their author too ([1a94cb5](https://adl.github.com/adl-developer/kinkane-backend/commit/1a94cb570693bfec7710232d13cbec7cb0ff7f05)) — [details](changelog/2026-10-24-removed-content-gone-for-author.md)
 * let moderators hide reported posts and comments and blacklist reported groups ([b61aafb](https://adl.github.com/adl-developer/kinkane-backend/commit/b61aafbad97d4ca53f86dc5b2e429f090b2c04f5)) — [details](changelog/2026-10-24-moderation-screen-tabs-hide-blacklist-group.md)

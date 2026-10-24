@@ -512,7 +512,7 @@ export const adminPaths = {
         '',
         '**Non-destructive and reversible.** Nothing is deleted, and lifting the blacklist brings everything back as it was: moderation decisions get revisited, and a blacklist that deletes content cannot be undone.',
         '',
-        '**Every way back in is closed**, not just the password form: password login, refresh, and social sign-in all reject a blacklisted account, and their existing sessions are revoked on the spot — `sessionsRevoked` says how many. Guarding only the login would have meant the block never bit anyone already signed in, since a client refreshes on a timer and never logs in again. The one gap left by design is their current access token, valid until it expires (15 min by default), which is why checkout carries its own check.',
+        '**Every way back in is closed**, not just the password form: password login, refresh, and social sign-in all reject a blacklisted account, and their existing sessions are revoked on the spot — `sessionsRevoked` says how many. Guarding only the login would have meant the block never bit anyone already signed in, since a client refreshes on a timer and never logs in again. The one gap left by design is their current access token, valid until it expires (15 min by default), which is why checkout carries its own check, and every community route answers `403 ACCOUNT_RESTRICTED` to it.',
         '',
         'Idempotent — blacklisting an already-blacklisted customer returns `changed: false` rather than an error.',
       ].join('\n'),

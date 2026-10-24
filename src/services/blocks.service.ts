@@ -294,3 +294,35 @@ export const blocksService = {
     return { items, total: counted?.count ?? 0 };
   },
 };
+
+// ── Standing cache ───────────────────────────────────────────────────────────
+
+/**
+ * How long one instance trusts its answer to "is this account blacklisted?"
+ * for the community guard. The guard only matters for the minutes an access
+ * token issued before a blacklist stays valid — sign-in and refresh are
+ * refused outright — so a minute of staleness costs little, and saves a query
+ * on every community request.
+ */
+const STANDING_TTL_MS = 60 * 1000;
+const MAX_STANDINGS = 10_000;
+const standings = new Map<number, { blacklisted: boolean; at: number }>();
+
+/** isBlacklisted, answered from a short per-instance cache. */
+export async function isBlacklistedCached(userId: number): Promise<boolean> {
+  const now = Date.now();
+  const cached = standings.get(userId);
+  if (cached && now - cached.at < STANDING_TTL_MS) return cached.blacklisted;
+  const blacklisted = await isBlacklisted(userId);
+  if (standings.size >= MAX_STANDINGS) {
+    for (const [id, entry] of standings) if (now - entry.at >= STANDING_TTL_MS) standings.delete(id);
+    if (standings.size >= MAX_STANDINGS) standings.clear();
+  }
+  standings.set(userId, { blacklisted, at: now });
+  return blacklisted;
+}
+
+/** Drops one account's cached standing, when this instance blacklists or reinstates it. */
+export function forgetStanding(userId: number): void {
+  standings.delete(userId);
+}

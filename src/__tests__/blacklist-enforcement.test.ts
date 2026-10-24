@@ -63,6 +63,17 @@ describe('blacklist enforcement', () => {
     expect(customers).toContain('sessionsRevoked');
   });
 
+  it('guards every community router, after authentication', () => {
+    // Covers the access token still in hand when the blacklist lands.
+    for (const router of ['community', 'groups', 'users', 'reports']) {
+      const source = read(`routes/${router}.routes.ts`);
+      const authAt = source.indexOf('router.use(requireAuth);');
+      const guardAt = source.indexOf('router.use(requireCommunityAccess);');
+      expect(guardAt, `${router}.routes.ts is missing the community guard`).toBeGreaterThan(authAt);
+    }
+    expect(read('routes/mentions.routes.ts')).toContain('requireAuth, requireCommunityAccess');
+  });
+
   it('does not leak the blacklist flag back to the client', () => {
     // socialLogin selects the column to check it, and must strip it before the
     // user object goes out.

@@ -159,6 +159,17 @@ describeIfDb('a blacklisted account', () => {
     if (db) await cleanUp();
   });
 
+  it('is refused by every community route for the access token it still holds', async () => {
+    await customers.blacklist(ama, 1, 'test');
+    for (const path of ['/community/posts', `/users/${kofi}`, '/groups']) {
+      const res = await call(ama, 'GET', path);
+      expect(res.status, path).toBe(403);
+      expect(res.body.code).toBe('ACCOUNT_RESTRICTED');
+    }
+    // Kofi, not blacklisted, is unaffected.
+    expect((await call(kofi, 'GET', '/community/posts')).status).toBe(200);
+  });
+
   it('disappears for everyone else, and comes back when lifted', async () => {
     const { id: review } = await community.createPost(ama, { bookId, status: 'read', rating: 5, body: 'Loved it', isPublic: true });
     const { id: kofiPost } = await community.createPost(kofi, { bookId, status: 'read', rating: 4, body: 'Good', isPublic: true });
