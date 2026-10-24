@@ -5,6 +5,8 @@
 
 ### Features
 
+* stop blacklisted accounts signing in or buying, and let every moderation email open a ready-made appeal ([4ad8328](https://adl.github.com/adl-developer/kinkane-backend/commit/4ad8328bfa6fde2485b882e3d32a532a29f54766)) — [details](changelog/2026-10-24-blacklist-blocks-sign-in-appeal-email.md)
+* blacklisting shuts people out of the community but not the bookstore, and moderation emails match the designs ([8b428dc](https://adl.github.com/adl-developer/kinkane-backend/commit/8b428dc6847c7f6c3ad1eec29fecf08790c517b6)) — [details](changelog/2026-10-24-blacklist-blocks-sign-in-appeal-email.md)
 * let moderators hide reported posts and comments and blacklist reported groups ([b61aafb](https://adl.github.com/adl-developer/kinkane-backend/commit/b61aafbad97d4ca53f86dc5b2e429f090b2c04f5)) — [details](changelog/2026-10-24-moderation-screen-tabs-hide-blacklist-group.md)
 
 ### Bug Fixes

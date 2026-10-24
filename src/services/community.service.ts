@@ -1056,6 +1056,9 @@ export const communityService = {
             // and a public shelf must not become a way round that
             or(eq(posts.isPublic, true), eq(posts.userId, requesterId)),
             isNull(posts.hiddenAt),
+            // Nor a block: someone who blocked them can still open their shelf,
+            // but posts never cross a block, so the book shows with no review.
+            notBlockedBetween(requesterId, posts.userId),
           ),
         )
         // They may have posted about this book more than once (while reading,
