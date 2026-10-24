@@ -538,6 +538,50 @@ async function toSummaries(rows: GroupSummaryRow[]): Promise<GroupSummary[]> {
 
 // ── Service ───────────────────────────────────────────────────────────────────
 
+/** Either the pool or an open transaction, so the handover can join a blacklist's. */
+type DbHandle = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Hands every group `fromUserId` owns to `toUserId`, inside the caller's
+ * transaction — used when an owner is blacklisted, so their clubs carry on
+ * under the house account. The new owner becomes an active member if they were
+ * not one, counted as any join is; the old owner keeps their membership row,
+ * hidden like the rest of a blacklisted account, so nothing is lost if an
+ * admin later hands a group back. Returns the groups handed over.
+ */
+export async function handOverOwnedGroups(
+  handle: DbHandle,
+  fromUserId: number,
+  toUserId: number,
+): Promise<{ id: number; name: string }[]> {
+  const moved = await handle
+    .update(groups)
+    .set({ ownerId: toUserId, updatedAt: new Date() })
+    .where(eq(groups.ownerId, fromUserId))
+    .returning({ id: groups.id, name: groups.name });
+
+  for (const group of moved) {
+    // Inserted, or promoted from invited/requested: either way a new active
+    // member, and the count moves. Already active: nothing returned, no change.
+    const joined = await handle
+      .insert(groupMemberships)
+      .values({ groupId: group.id, userId: toUserId, status: 'active', joinedAt: new Date() })
+      .onConflictDoUpdate({
+        target: [groupMemberships.groupId, groupMemberships.userId],
+        set: { status: 'active', joinedAt: sql`coalesce(${groupMemberships.joinedAt}, now())` },
+        setWhere: sql`${groupMemberships.status} <> 'active'`,
+      })
+      .returning({ id: groupMemberships.id });
+    if (joined.length > 0) {
+      await handle
+        .update(groups)
+        .set({ memberCount: sql`${groups.memberCount} + 1` })
+        .where(eq(groups.id, group.id));
+    }
+  }
+  return moved;
+}
+
 export const groupsService = {
   /**
    * Creates a group and makes the creator its first member, in one transaction.

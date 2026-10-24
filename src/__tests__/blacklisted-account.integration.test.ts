@@ -7,9 +7,12 @@ import bcrypt from 'bcryptjs';
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 
 /**
- * A blacklisted account, end to end against a real Postgres: their profile,
- * posts, comments, group membership and follow requests are gone for everyone
- * else, and lifting the blacklist brings it all back.
+ * A blacklisted account, end to end against a real Postgres: what the "Your
+ * account has been blacklisted" email promises, checked one line at a time.
+ * They cannot sign in, and their sessions end; the community refuses the
+ * access token they still hold; their profile, posts, comments and group
+ * membership are gone for everyone else; they are emailed; and lifting the
+ * blacklist brings it all back.
  *
  * WHERE IT RUNS. TEST_DATABASE_URL, never DATABASE_URL — this suite deletes
  * users. Skips itself when unset; refuses to run when it names the same
@@ -247,6 +250,43 @@ describeIfDb('a blacklisted account', () => {
     await customers.blacklist(ama, 1, 'test');
     expect(await status(usersService.getUserProfile(ama, kofi))).toBe(404);
     expect(await status(usersService.getUserBooks(ama, kofi, 'all', 'date_desc' as never, 20, 0))).toBe(404);
+  });
+
+  it('hands its groups to Kinkané Admin, tells the house inbox, and leaves them there when lifted', async () => {
+    const group = await groupsService.create(ama, { name: 'Handover Readers', privacy: 'public' });
+    await db.execute(sql`
+      INSERT INTO group_memberships (group_id, user_id, status, joined_at) VALUES (${group.id}, ${kofi}, 'active', now())
+    `);
+    await db.execute(sql`UPDATE groups SET member_count = 2 WHERE id = ${group.id}`);
+
+    const result = await customers.blacklist(ama, 1, 'test');
+    await customers.notifyBlacklisted(result);
+
+    const [admin] = await db.execute<{ id: number; name: string }>(sql`
+      SELECT id, name FROM users WHERE email = 'contactus@kinkane.app'
+    `);
+    expect(admin).toBeDefined();
+    const { group: seen } = await groupsService.get(group.id, kofi);
+    expect(seen).toMatchObject({ memberCount: 3 });
+    expect(seen.owner).toMatchObject({ id: admin.id });
+
+    const memberships = await db.execute<{ user_id: number; status: string }>(sql`
+      SELECT user_id, status FROM group_memberships WHERE group_id = ${group.id} ORDER BY user_id
+    `);
+    // The old owner keeps their row, hidden; the house account is now active.
+    expect(memberships.map((m) => m.user_id)).toEqual(expect.arrayContaining([ama, kofi, admin.id]));
+    expect((await groupsService.listMembers(group.id, kofi, 50, 0)).members.map((m) => m.id)).not.toContain(ama);
+
+    expect(enqueueEmail).toHaveBeenCalledWith('groups-handed-over', {
+      to: 'contactus@kinkane.app',
+      formerOwnerName: 'Ama',
+      formerOwnerEmail: `${EMAIL_PREFIX}ama@example.com`,
+      groups: [{ id: group.id, name: 'Handover Readers' }],
+    });
+
+    // Lifted: the group stays with Kinkané Admin until someone hands it back.
+    await customers.unblacklist(ama);
+    expect((await groupsService.get(group.id, kofi)).group.owner).toMatchObject({ id: admin.id });
   });
 
   it('drops its follow requests, and they cannot be accepted', async () => {

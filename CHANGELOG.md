@@ -5,11 +5,11 @@
 
 ### Features
 
-* email blacklisted accounts why they were blocked, with a one-tap appeal ([794a4b2](https://adl.github.com/adl-developer/kinkane-backend/commit/794a4b2c220be466cc1075a8c57c2a42e008a9ba)) — [details](changelog/2026-10-24-account-blacklisted-email.md)
-* stop a blacklisted customer buying as a guest under their own email ([a41b194](https://adl.github.com/adl-developer/kinkane-backend/commit/a41b1944eb5d67b4622bcd4b8db0410e875e327c)) — [details](changelog/2026-10-24-account-blacklisted-email.md)
+* email blacklisted accounts why they were blocked, with a one-tap appeal ([57aa5d0](https://adl.github.com/adl-developer/kinkane-backend/commit/57aa5d0e68482330e7e88c7dce812d0d8a8b7250)) — [details](changelog/2026-10-24-account-blacklisted-email.md)
+* stop a blacklisted customer buying as a guest under their own email ([a41b194](https://adl.github.com/adl-developer/kinkane-backend/commit/a41b1944eb5d67b4622bcd4b8db0410e875e327c)) — [details](changelog/2026-10-24-blacklisted-owner-groups-kinkane-admin.md)
 * refuse community features to a blacklisted account for the rest of its sign-in ([2b30ac2](https://adl.github.com/adl-developer/kinkane-backend/commit/2b30ac2b2d06810d51d83c47b879941201d00969)) — [details](changelog/2026-10-24-moderation-emails-designs-appeal.md)
-* make a blacklisted account's profile and activity disappear for everyone else ([c292250](https://adl.github.com/adl-developer/kinkane-backend/commit/c292250740fc3072658c70512038fa0ea0847f48)) — [details](changelog/2026-10-24-moderation-emails-designs-appeal.md)
-* make the content-removed and group-blacklisted emails match the designs, with a one-tap appeal ([52cef6b](https://adl.github.com/adl-developer/kinkane-backend/commit/52cef6b8c7cf4ad0cbed085612e00299d04fada7)) — [details](changelog/2026-10-24-moderation-emails-designs-appeal.md)
+* make a blacklisted account's profile and activity disappear for everyone else ([c292250](https://adl.github.com/adl-developer/kinkane-backend/commit/c292250740fc3072658c70512038fa0ea0847f48)) — [details](changelog/2026-10-24-blacklisted-owner-groups-kinkane-admin.md)
+* make the content-removed and group-blacklisted emails match the designs, with a one-tap appeal ([52cef6b](https://adl.github.com/adl-developer/kinkane-backend/commit/52cef6b8c7cf4ad0cbed085612e00299d04fada7)) — [details](changelog/2026-10-24-blacklisted-owner-groups-kinkane-admin.md)
 * remove reported posts, reviews and comments for their author too ([1a94cb5](https://adl.github.com/adl-developer/kinkane-backend/commit/1a94cb570693bfec7710232d13cbec7cb0ff7f05)) — [details](changelog/2026-10-24-removed-content-gone-for-author.md)
 * let moderators hide reported posts and comments and blacklist reported groups ([b61aafb](https://adl.github.com/adl-developer/kinkane-backend/commit/b61aafbad97d4ca53f86dc5b2e429f090b2c04f5)) — [details](changelog/2026-10-24-moderation-screen-tabs-hide-blacklist-group.md)
 

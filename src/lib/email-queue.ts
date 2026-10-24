@@ -43,6 +43,7 @@ export interface EmailJobMap {
   'content-removed':            { to: string; name: string; kind: RemovedContentKind; submittedAt: string };
   'group-blacklisted':          { to: string; name: string; groupName: string };
   'account-blacklisted':        { to: string; name: string };
+  'groups-handed-over':         { to: string; formerOwnerName: string; formerOwnerEmail: string; groups: { id: number; name: string }[] };
 }
 
 export type EmailJobName = keyof EmailJobMap;
@@ -82,8 +83,9 @@ export const EMAIL_PRIORITY: Record<EmailJobName, number> = {
   // Someone has lost access to something they wrote or belong to; they should
   // hear why before they go looking, but nobody is blocked waiting on it.
   'content-removed':            3,
-  'account-blacklisted':        3,
   'group-blacklisted':          3,
+  'account-blacklisted':        3,
+  'groups-handed-over':         5,
 };
 
 // ── Queue ─────────────────────────────────────────────────────────────────────

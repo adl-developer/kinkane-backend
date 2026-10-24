@@ -512,6 +512,8 @@ export const adminPaths = {
         '',
         'They are emailed the "Your account has been blacklisted" notice.',
         '',
+        '**Groups they own pass to the Kinkané Admin account** (contactus@kinkane.app, created the first time it is needed), which joins each as an active member; the former owner stays a hidden member. contactus@kinkane.app is emailed the list. Ownership stays with Kinkané Admin if the blacklist is lifted.',
+        '',
         '**Non-destructive and reversible.** Nothing is deleted, and lifting the blacklist brings everything back as it was: moderation decisions get revisited, and a blacklist that deletes content cannot be undone.',
         '',
         'Idempotent — blacklisting an already-blacklisted customer returns `changed: false` rather than an error.',

@@ -3,6 +3,8 @@ import { db } from '../../db';
 import { users, orders, refreshTokens } from '../../db/schema';
 import { likeContains } from '../../lib/escape-like';
 import { enqueueEmail } from '../../lib/email-queue';
+import { ensureKinkaneAdmin, KINKANE_ADMIN_EMAIL } from '../kinkane-admin';
+import { handOverOwnedGroups } from '../groups.service';
 import { forgetStanding } from '../blocks.service';
 import { logger } from '../../lib/logger';
 
@@ -131,7 +133,9 @@ export const adminCustomersService = {
    * refuses them too, as a guest with the same email included (see
    * commerce/checkout.service), and the community routes refuse whatever is
    * left of their current access token (see requireCommunityAccess). Their
-   * activity is hidden through accountActive.
+   * activity is hidden through accountActive. Groups they own pass to the
+   * Kinkané Admin house account (see handOverOwnedGroups), and stay there if
+   * the blacklist is lifted: an admin hands them back by hand if they want to.
    *
    * Deliberately reversible and non-destructive: nothing is deleted, so
    * lifting it brings everything back. Moderation decisions get revisited, and
@@ -172,6 +176,12 @@ export const adminCustomersService = {
         return { id: userId, blacklisted: true, changed: false, sessionsRevoked: 0 };
       }
 
+      // Their clubs carry on under the house account, in the same transaction:
+      // a blacklist that landed without the handover would leave groups owned
+      // by someone who has vanished. Never the house account handing to itself.
+      const adminUserId = await ensureKinkaneAdmin(handle);
+      const handedOverGroups = adminUserId === userId ? [] : await handOverOwnedGroups(handle, userId, adminUserId);
+
       // Kill every live session rather than waiting for one to lapse. With
       // refreshing refused, deleting the refresh tokens ends each session at
       // its next refresh; the access token in hand stays valid until it
@@ -189,6 +199,7 @@ export const adminCustomersService = {
         sessionsRevoked: revoked.length,
         email: updated.email,
         name: updated.name,
+        handedOverGroups,
       };
     };
 
@@ -198,11 +209,28 @@ export const adminCustomersService = {
     return result;
   },
 
-  /** Emails a newly blacklisted account. Never throws: the blacklist stands either way. */
-  async notifyBlacklisted(result: { changed: boolean; email?: string; name?: string }) {
+  /**
+   * Emails a newly blacklisted account, and tells the house inbox about any
+   * groups that passed to Kinkané Admin. Never throws: the blacklist stands
+   * either way.
+   */
+  async notifyBlacklisted(result: {
+    changed: boolean;
+    email?: string;
+    name?: string;
+    handedOverGroups?: { id: number; name: string }[];
+  }) {
     if (!result.changed || !result.email) return;
     try {
       await enqueueEmail('account-blacklisted', { to: result.email, name: result.name ?? '' });
+      if (result.handedOverGroups?.length) {
+        await enqueueEmail('groups-handed-over', {
+          to: KINKANE_ADMIN_EMAIL,
+          formerOwnerName: result.name ?? '',
+          formerOwnerEmail: result.email,
+          groups: result.handedOverGroups,
+        });
+      }
     } catch (err) {
       logger.error('Failed to enqueue blacklist emails', { error: (err as Error).message });
     }

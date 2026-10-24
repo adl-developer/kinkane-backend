@@ -22,6 +22,7 @@ export { sendContentRemovedEmail } from './transactional/content-removed';
 export type { RemovedContentKind } from './transactional/content-removed';
 export { sendGroupBlacklistedEmail } from './transactional/group-blacklisted';
 export { sendAccountBlacklistedEmail } from './transactional/account-blacklisted';
+export { sendGroupsHandedOverEmail } from './transactional/groups-handed-over';
 
 // Notifications
 export { sendTrialEndingEmail } from './notifications/trial-ending';

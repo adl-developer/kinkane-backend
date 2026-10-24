@@ -22,8 +22,9 @@ import {
   sendReferralInviteEmail,
   sendOrderConfirmedEmail,
   sendContentRemovedEmail,
-  sendAccountBlacklistedEmail,
   sendGroupBlacklistedEmail,
+  sendAccountBlacklistedEmail,
+  sendGroupsHandedOverEmail,
 } from '../emails';
 import { notificationPreferencesService } from '../services/notification-preferences.service';
 import { logger } from '../lib/logger';
@@ -157,6 +158,11 @@ async function processEmailJob(job: Job): Promise<void> {
     case 'account-blacklisted': {
       const { to, name: userName } = job.data as EmailJobMap['account-blacklisted'];
       await sendAccountBlacklistedEmail(to, userName);
+      break;
+    }
+    case 'groups-handed-over': {
+      const { to, formerOwnerName, formerOwnerEmail, groups } = job.data as EmailJobMap['groups-handed-over'];
+      await sendGroupsHandedOverEmail(to, formerOwnerName, formerOwnerEmail, groups);
       break;
     }
     default: {
