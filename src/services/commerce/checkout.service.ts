@@ -555,6 +555,19 @@ export const commerceCheckoutService = {
       contactEmail: options.contactEmail,
     });
 
+    // Nor can they buy as a guest under the same address: a blacklist that
+    // anyone could step round by signing out is not a blacklist. Matched on the
+    // address as typed, case aside — a deliberately different address gets
+    // through, as it would for anyone.
+    const [blacklistedOwner] = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(and(sql`lower(${users.email}) = lower(${contactEmail})`, isNotNull(users.blacklistedAt)))
+      .limit(1);
+    if (blacklistedOwner) {
+      throw httpError('This account has been suspended. Contact support.', 403, 'ACCOUNT_SUSPENDED');
+    }
+
     const normalizedEmail = normalizeEmailForPromotions(contactEmail);
     const firstOrderPercent = config.commerce.discount.firstOrderPercent;
 

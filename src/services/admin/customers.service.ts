@@ -2,6 +2,8 @@ import { and, desc, eq, gte, ilike, isNotNull, isNull, or, sql, type SQL } from 
 import { db } from '../../db';
 import { users, orders, refreshTokens } from '../../db/schema';
 import { likeContains } from '../../lib/escape-like';
+import { enqueueEmail } from '../../lib/email-queue';
+import { logger } from '../../lib/logger';
 
 /** Either the pool or an open transaction, so callers can share one. */
 type DbHandle = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -120,16 +122,22 @@ export const adminCustomersService = {
   },
 
   /**
-   * Blocks an account.
+   * Blacklists an account: it can no longer sign in or buy, and its profile
+   * and community activity disappear for everyone else.
    *
-   * Deliberately reversible and deliberately non-destructive: it does not touch
-   * their posts, reviews, shelf or order history. Moderation decisions get
-   * revisited, and a blacklist that deletes content cannot be undone.
+   * Every way in is closed — password, social sign-in and refresh (see the
+   * guards in auth.service) — and live sessions are ended here. Checkout
+   * refuses them too, as a guest with the same email included (see
+   * commerce/checkout.service), and the community routes refuse whatever is
+   * left of their current access token (see requireCommunityAccess). Their
+   * activity is hidden through accountActive.
    *
-   * What it does block is signing in and checking out — see the guards in
-   * auth.service and commerce/checkout.service.
-   */
-  /**
+   * Deliberately reversible and non-destructive: nothing is deleted, so
+   * lifting it brings everything back. Moderation decisions get revisited, and
+   * a blacklist that destroyed content could not be undone.
+   *
+   * They are emailed when it lands, by the caller once the change is committed.
+   *
    * @param tx Reuse the caller's transaction when there is one. Opening our own
    *   from inside another would take a *separate* connection under postgres-js,
    *   not a savepoint — so the two writes would not be atomic, and both trying
@@ -139,8 +147,7 @@ export const adminCustomersService = {
   async blacklist(userId: number, adminId: number, reason: string | null, tx?: DbHandle) {
     // Blocking the account and ending its sessions are one decision, so they
     // are one transaction. Split, a crash between them leaves a customer marked
-    // blacklisted while their existing sessions keep working — the exact state
-    // the blacklist exists to prevent, and one nothing would ever re-check.
+    // blacklisted while their existing sessions keep working.
     //
     // The `isNull` in the WHERE is also what makes this idempotent under
     // concurrency: two admins clicking at once, and only one update lands.
@@ -154,31 +161,21 @@ export const adminCustomersService = {
           updatedAt: new Date(),
         })
         .where(and(eq(users.id, userId), isNull(users.blacklistedAt)))
-        .returning({ id: users.id, blacklistedAt: users.blacklistedAt });
+        .returning({ id: users.id, email: users.email, name: users.name });
 
       if (!updated) {
         // Either no such user or already blacklisted. Both are "nothing to do",
         // and the console should not care which.
-        const [exists] = await handle
-          .select({ id: users.id })
-          .from(users)
-          .where(eq(users.id, userId))
-          .limit(1);
+        const [exists] = await handle.select({ id: users.id }).from(users).where(eq(users.id, userId)).limit(1);
         if (!exists) throw httpError('Customer not found', 404);
         return { id: userId, blacklisted: true, changed: false, sessionsRevoked: 0 };
       }
 
-      // Kill every live session rather than waiting for one to lapse.
-      //
-    // The sign-in guards alone would leave a blacklisted user signed in until
-    // their refresh token was next used — and since refreshing is itself
-    // blocked, the practical effect without this is that they keep whatever
-      // access token they were holding until it expires. Deleting the refresh
-      // tokens means the next refresh has nothing to consume and the session ends
-      // for good.
-      //
-    // Their current access token stays valid until it expires (15 minutes by
-      // default). That window is why checkout carries its own blacklist check.
+      // Kill every live session rather than waiting for one to lapse. With
+      // refreshing refused, deleting the refresh tokens ends each session at
+      // its next refresh; the access token in hand stays valid until it
+      // expires (15 minutes by default), which is why checkout and the
+      // community routes carry their own checks.
       const revoked = await handle
         .delete(refreshTokens)
         .where(eq(refreshTokens.userId, userId))
@@ -189,10 +186,22 @@ export const adminCustomersService = {
         blacklisted: true,
         changed: true,
         sessionsRevoked: revoked.length,
+        email: updated.email,
+        name: updated.name,
       };
     };
 
     return tx ? run(tx) : db.transaction(run);
+  },
+
+  /** Emails a newly blacklisted account. Never throws: the blacklist stands either way. */
+  async notifyBlacklisted(result: { changed: boolean; email?: string; name?: string }) {
+    if (!result.changed || !result.email) return;
+    try {
+      await enqueueEmail('account-blacklisted', { to: result.email, name: result.name ?? '' });
+    } catch (err) {
+      logger.error('Failed to enqueue account-blacklisted email', { error: (err as Error).message });
+    }
   },
 
   async unblacklist(userId: number) {

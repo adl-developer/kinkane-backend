@@ -19,7 +19,7 @@ import type { LinkRef } from '../lib/link-text';
 import { TEXT_LIMITS } from '../lib/text-limits';
 import { likePrefix, likeWordPrefix } from '../lib/escape-like';
 import { plainTsQuery } from '../lib/tsquery';
-import { blockedBetween, notBlockedBetween } from './blocks.service';
+import { accountActive, blockedBetween, notBlockedBetween } from './blocks.service';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -642,7 +642,8 @@ export const groupsService = {
       const [target] = await db
         .select({ id: users.id, blocked: blockedBetween(viewerId, users.id).mapWith(Boolean) })
         .from(users)
-        .where(eq(users.id, userId))
+        // A blacklisted account is gone for everyone else, as on its profile.
+        .where(and(eq(users.id, userId), accountActive(users.id)))
         .limit(1);
       // 404 rather than an empty page: "this reader has not joined anything"
       // and "there is no such reader" are different answers, and returning the
@@ -785,6 +786,9 @@ export const groupsService = {
     const activeMembers = and(
       eq(groupMemberships.groupId, groupId),
       eq(groupMemberships.status, 'active'),
+      // A blacklisted member stays a member, ready for if it is lifted, but is
+      // not listed: their activity is gone for everyone else.
+      accountActive(groupMemberships.userId),
     );
 
     const [rows, [counted]] = await Promise.all([
@@ -878,6 +882,7 @@ export const groupsService = {
     const term = q?.trim();
     const where = and(
       friendOfCondition(viewerId),
+      isNull(users.blacklistedAt),
       sql`NOT EXISTS (
         SELECT 1 FROM ${groupMemberships}
         WHERE ${groupMemberships.groupId} = ${groupId}
@@ -942,7 +947,7 @@ export const groupsService = {
     const accounts = await db
       .select({ id: users.id })
       .from(users)
-      .where(and(inArray(users.id, candidates), notBlockedBetween(inviterId, users.id)));
+      .where(and(inArray(users.id, candidates), notBlockedBetween(inviterId, users.id), isNull(users.blacklistedAt)));
     const accountIds = new Set(accounts.map((u) => u.id));
 
     const invitable = candidates.filter((id) => {

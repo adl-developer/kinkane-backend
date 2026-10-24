@@ -29,7 +29,7 @@ import {
 import { addressSpans, hasLinkTokens, linkTokenIds, renderLinks, shiftOffsets, type LinkRef } from '../lib/link-text';
 import { shortLinkPrefix, shortLinksService } from './short-links.service';
 import { enqueuePush } from '../lib/push-queue';
-import { notBlockedBetween } from './blocks.service';
+import { accountActive, notBlockedBetween } from './blocks.service';
 import { logger } from '../lib/logger';
 
 /**
@@ -113,7 +113,9 @@ type Audience =
   | { kind: 'everyone' }
   /** Visible only to `ownerId` — a private post, a comment under one, a private note. */
   | { kind: 'owner'; ownerId: number }
-  | { kind: 'group'; groupId: number; privacy: GroupPrivacy };
+  | { kind: 'group'; groupId: number; privacy: GroupPrivacy }
+  /** Visible to no one, its author included: removed by a moderator. Held like a private post's mentions. */
+  | { kind: 'nobody' };
 
 interface SourceContext {
   /** The stored text, tokens and all. */
@@ -285,7 +287,12 @@ async function prepare<T extends string | null | undefined>(
     ? await db
         .select({ id: users.id, username: users.username })
         .from(users)
-        .where(and(inArray(users.username, handles), authorId !== null ? notBlockedBetween(authorId, users.id) : undefined))
+        // Nor can anyone tag a blacklisted account, which has left the community.
+        .where(and(
+          inArray(users.username, handles),
+          isNull(users.blacklistedAt),
+          authorId !== null ? notBlockedBetween(authorId, users.id) : undefined,
+        ))
     : [];
   const ids = new Map(rows.map((r) => [r.username!, r.id]));
   const result = tokenize(text, ids, skip);
@@ -350,14 +357,20 @@ async function loadContexts(sources: MentionSource[]): Promise<Map<string, Sourc
     switch (type) {
       case 'post': {
         const rows = await db
-          .select({ id: posts.id, body: posts.body, isPublic: posts.isPublic, ownerId: posts.userId, bookId: posts.bookId, bookTitle: books.title })
+          .select({
+            id: posts.id, body: posts.body, isPublic: posts.isPublic, ownerId: posts.userId, bookId: posts.bookId,
+            bookTitle: books.title, hiddenAt: posts.hiddenAt,
+          })
           .from(posts)
           .innerJoin(books, eq(books.id, posts.bookId))
           .where(inArray(posts.id, ids));
         for (const r of rows) {
           put(type, r.id, {
             text: r.body,
-            audience: r.isPublic ? { kind: 'everyone' } : { kind: 'owner', ownerId: r.ownerId },
+            audience:
+              r.hiddenAt !== null
+                ? { kind: 'nobody' }
+                : r.isPublic ? { kind: 'everyone' } : { kind: 'owner', ownerId: r.ownerId },
             target: { postId: r.id, bookId: r.bookId, bookTitle: r.bookTitle },
           });
         }
@@ -368,7 +381,7 @@ async function loadContexts(sources: MentionSource[]): Promise<Map<string, Sourc
           .select({
             id: comments.id, body: comments.body, postId: posts.id, isPublic: posts.isPublic,
             ownerId: posts.userId, bookId: posts.bookId, bookTitle: books.title,
-            authorId: comments.userId, hiddenAt: comments.hiddenAt,
+            hiddenAt: comments.hiddenAt,
           })
           .from(comments)
           .innerJoin(posts, eq(posts.id, comments.postId))
@@ -376,12 +389,12 @@ async function loadContexts(sources: MentionSource[]): Promise<Map<string, Sourc
           .where(inArray(comments.id, ids));
         for (const r of rows) {
           // A comment is exactly as visible as the post it sits under — unless
-          // a moderator hid it, when only its author still reads it.
+          // a moderator hid it, when nobody reads it.
           put(type, r.id, {
             text: r.body,
             audience:
               r.hiddenAt !== null
-                ? { kind: 'owner', ownerId: r.authorId }
+                ? { kind: 'nobody' }
                 : r.isPublic ? { kind: 'everyone' } : { kind: 'owner', ownerId: r.ownerId },
             target: { postId: r.postId, commentId: r.id, bookId: r.bookId, bookTitle: r.bookTitle },
           });
@@ -433,7 +446,7 @@ async function loadContexts(sources: MentionSource[]): Promise<Map<string, Sourc
             id: groupBookComments.id, body: groupBookComments.body, parentId: groupBookComments.parentId,
             groupBookId: groupBooks.id, groupId: groups.id, groupName: groups.name, privacy: groups.privacy,
             bookId: groupBooks.bookId, bookTitle: books.title,
-            authorId: groupBookComments.userId, hiddenAt: groupBookComments.hiddenAt, blacklistedAt: groups.blacklistedAt,
+            hiddenAt: groupBookComments.hiddenAt, blacklistedAt: groups.blacklistedAt,
           })
           .from(groupBookComments)
           .innerJoin(groupBooks, eq(groupBooks.id, groupBookComments.groupBookId))
@@ -444,10 +457,10 @@ async function loadContexts(sources: MentionSource[]): Promise<Map<string, Sourc
           put(type, r.id, {
             text: r.body,
             // A hidden comment, or any comment in a blacklisted group, is read
-            // by its author alone.
+            // by nobody.
             audience:
               r.hiddenAt !== null || r.blacklistedAt !== null
-                ? { kind: 'owner', ownerId: r.authorId }
+                ? { kind: 'nobody' }
                 : { kind: 'group', groupId: r.groupId, privacy: r.privacy },
             target: {
               groupId: r.groupId, groupName: r.groupName, groupBookId: r.groupBookId,
@@ -503,6 +516,8 @@ function decide(audience: Audience, recipientId: number, members: Set<string>): 
       return 'full';
     case 'owner':
       return audience.ownerId === recipientId ? 'full' : 'deferred';
+    case 'nobody':
+      return 'deferred';
     case 'group':
       return audience.privacy === 'public' || members.has(`${audience.groupId}:${recipientId}`) ? 'full' : 'restricted';
   }
@@ -745,6 +760,8 @@ export const mentionsService = {
       isNotNull(mentions.notifiedAt),
       isNull(mentions.removedAt),
       sql`(${mentions.authorId} IS NULL OR ${notBlockedBetween(userId, mentions.authorId)})`,
+      // Nor do mentions by a blacklisted account, whose activity is gone for everyone.
+      sql`(${mentions.authorId} IS NULL OR ${accountActive(mentions.authorId)})`,
     );
     const [rows, [counted]] = await Promise.all([
       db
