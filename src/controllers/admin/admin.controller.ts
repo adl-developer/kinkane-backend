@@ -6,6 +6,7 @@ import { adminDashboardService } from '../../services/admin/dashboard.service';
 import { adminOrdersService } from '../../services/admin/orders.service';
 import { adminCustomersService } from '../../services/admin/customers.service';
 import { adminReportsService } from '../../services/admin/reports.service';
+import { adminModerationService } from '../../services/admin/moderation.service';
 import { adminSettingsService, BANNER_SLOTS } from '../../services/admin/settings.service';
 import { adminNotificationsService } from '../../services/admin/notifications.service';
 import { adminShippingMarginService } from '../../services/admin/shipping-margin.service';
@@ -67,6 +68,16 @@ const travellersQuerySchema = pageSchema.extend({
   sort: z.enum(['points', 'signups', 'recent']).default('points'),
 });
 
+/** The `:id` of a report route, or undefined after answering 400. */
+function reportIdParam(req: Request, res: Response): number | undefined {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) {
+    res.status(400).json({ error: 'Invalid report id' });
+    return undefined;
+  }
+  return id;
+}
+
 const reportsQuerySchema = pageSchema.extend({
   status: z.enum(['pending', 'resolved', 'dismissed']).optional(),
   // Narrows the queue to one kind of target. Also the escape hatch for a console
@@ -74,6 +85,8 @@ const reportsQuerySchema = pageSchema.extend({
   // the rows, and exactly the shape, it saw before — every row with a
   // `reportedUser` attached.
   targetType: z.enum(['user', 'group']).optional(),
+  // The screen's tabs: User Reports, Group Reports, Posts & Reviews.
+  category: z.enum(['user', 'group', 'content']).optional(),
 });
 
 const restockQuerySchema = pageSchema.extend({
@@ -373,6 +386,34 @@ export const adminController = {
     }
     const admin = (req as AdminRequest).admin;
     res.status(200).json(await adminReportsService.blacklistAndResolve(id, admin.id));
+  },
+
+  /** POST /admin/reports/:id/hide — hides the post, review or comment the report cites. */
+  async hideFromReport(req: Request, res: Response): Promise<void> {
+    const id = reportIdParam(req, res);
+    if (id === undefined) return;
+    res.status(200).json(await adminModerationService.hide(id, (req as AdminRequest).admin.id));
+  },
+
+  /** POST /admin/reports/:id/unhide */
+  async unhideFromReport(req: Request, res: Response): Promise<void> {
+    const id = reportIdParam(req, res);
+    if (id === undefined) return;
+    res.status(200).json(await adminModerationService.unhide(id));
+  },
+
+  /** POST /admin/reports/:id/blacklist-group */
+  async blacklistGroupFromReport(req: Request, res: Response): Promise<void> {
+    const id = reportIdParam(req, res);
+    if (id === undefined) return;
+    res.status(200).json(await adminModerationService.blacklistGroup(id, (req as AdminRequest).admin.id));
+  },
+
+  /** POST /admin/reports/:id/unblacklist-group */
+  async unblacklistGroupFromReport(req: Request, res: Response): Promise<void> {
+    const id = reportIdParam(req, res);
+    if (id === undefined) return;
+    res.status(200).json(await adminModerationService.unblacklistGroup(id));
   },
 
   /** GET /admin/console/restock-requests */

@@ -13,7 +13,7 @@ import {
   users,
   type GroupBookStatus,
 } from '../db/schema';
-import { groupViewerCapabilities, type ViewerCapabilities } from './groups.service';
+import { groupNotBlacklisted, groupViewerCapabilities, type ViewerCapabilities } from './groups.service';
 import { addDisplayGenre, type GenreRef } from '../lib/genre-display';
 import type { HttpError } from '../lib/route-helpers';
 import { mentionsService, renderTexts } from './mentions.service';
@@ -106,8 +106,20 @@ export interface GroupCommentItem {
    * The server refuses both regardless.
    */
   authorBlocked: boolean;
+  /** Hidden by a moderator; only ever true for its author, the one person who still sees it. */
+  isHidden: boolean;
   createdAt: Date;
   updatedAt: Date;
+}
+
+/**
+ * The club comments `viewerId` may see: all but those a moderator has hidden,
+ * which only their author still sees. Unlike a block, hiding does leave a hole
+ * in the conversation — that is the point of it. A hidden comment's replies
+ * stay, but are reached only through it, so they go with it in practice.
+ */
+function groupCommentVisibleTo(viewerId: number) {
+  return or(isNull(groupBookComments.hiddenAt), eq(groupBookComments.userId, viewerId))!;
 }
 
 /** Allowed, or the response to fail with. */
@@ -279,7 +291,7 @@ async function loadAccess(groupId: number, viewerId: number): Promise<ViewerCapa
       groupMemberships,
       and(eq(groupMemberships.groupId, groups.id), eq(groupMemberships.userId, viewerId)),
     )
-    .where(eq(groups.id, groupId))
+    .where(and(eq(groups.id, groupId), groupNotBlacklisted))
     .limit(1);
 
   if (!row) throw fail(404, 'Group not found');
@@ -332,10 +344,14 @@ async function loadEntry(groupId: number, groupBookId: number): Promise<ShelfRow
   return row;
 }
 
-/** Loads a comment, scoped through its book to the group in the URL. */
+/**
+ * Loads a comment, scoped through its book to the group in the URL. Given a
+ * viewer, a comment a moderator hid from them is a 404, as if it were gone.
+ */
 async function loadComment(
   groupId: number,
   commentId: number,
+  viewerId?: number,
 ): Promise<{ id: number; groupBookId: number; parentId: number | null; userId: number; status: GroupBookStatus }> {
   const [row] = await db
     .select({
@@ -344,12 +360,14 @@ async function loadComment(
       parentId: groupBookComments.parentId,
       userId: groupBookComments.userId,
       status: groupBooks.status,
+      hiddenAt: groupBookComments.hiddenAt,
     })
     .from(groupBookComments)
     .innerJoin(groupBooks, eq(groupBooks.id, groupBookComments.groupBookId))
     .where(and(eq(groupBookComments.id, commentId), eq(groupBooks.groupId, groupId)))
     .limit(1);
   if (!row) throw fail(404, 'Comment not found');
+  if (viewerId !== undefined && row.hiddenAt !== null && row.userId !== viewerId) throw fail(404, 'Comment not found');
   return row;
 }
 
@@ -412,13 +430,13 @@ async function loadBookCards(bookIds: number[]): Promise<Map<number, GroupBookCa
   return cards;
 }
 
-/** Total comments (replies included) per shelf entry. */
+/** Total comments (replies included) per shelf entry, leaving out hidden ones. */
 async function countComments(groupBookIds: number[]): Promise<Map<number, number>> {
   if (groupBookIds.length === 0) return new Map();
   const rows = await db
     .select({ groupBookId: groupBookComments.groupBookId, count: sql<number>`count(*)::int` })
     .from(groupBookComments)
-    .where(inArray(groupBookComments.groupBookId, groupBookIds))
+    .where(and(inArray(groupBookComments.groupBookId, groupBookIds), isNull(groupBookComments.hiddenAt)))
     .groupBy(groupBookComments.groupBookId);
   return new Map(rows.map((r) => [r.groupBookId, r.count]));
 }
@@ -466,7 +484,7 @@ async function enrichComments(
     db
       .select({ parentId: groupBookComments.parentId, count: sql<number>`count(*)::int` })
       .from(groupBookComments)
-      .where(inArray(groupBookComments.parentId, ids))
+      .where(and(inArray(groupBookComments.parentId, ids), groupCommentVisibleTo(viewerId)))
       .groupBy(groupBookComments.parentId),
     db
       .select({ commentId: groupBookCommentLikes.commentId })
@@ -503,6 +521,7 @@ const commentColumns = {
   body: groupBookComments.body,
   createdAt: groupBookComments.createdAt,
   updatedAt: groupBookComments.updatedAt,
+  isHidden: sql<boolean>`${groupBookComments.hiddenAt} IS NOT NULL`.mapWith(Boolean),
 } as const;
 
 // ── Service ───────────────────────────────────────────────────────────────────
@@ -775,7 +794,11 @@ export const groupBooksService = {
     requireSee(await loadAccess(groupId, viewerId));
     await loadEntry(groupId, groupBookId);
 
-    const where = and(eq(groupBookComments.groupBookId, groupBookId), isNull(groupBookComments.parentId));
+    const where = and(
+      eq(groupBookComments.groupBookId, groupBookId),
+      isNull(groupBookComments.parentId),
+      groupCommentVisibleTo(viewerId),
+    );
     const [rows, [counted]] = await Promise.all([
       db
         .select(commentColumns)
@@ -800,10 +823,10 @@ export const groupBooksService = {
     offset: number,
   ): Promise<{ comments: GroupCommentItem[]; total: number }> {
     requireSee(await loadAccess(groupId, viewerId));
-    const parent = await loadComment(groupId, commentId);
+    const parent = await loadComment(groupId, commentId, viewerId);
     if (parent.parentId !== null) throw fail(400, 'Replies have no replies of their own');
 
-    const where = eq(groupBookComments.parentId, commentId);
+    const where = and(eq(groupBookComments.parentId, commentId), groupCommentVisibleTo(viewerId));
     const [rows, [counted]] = await Promise.all([
       db
         .select(commentColumns)
@@ -837,11 +860,14 @@ export const groupBooksService = {
           groupBookId: groupBookComments.groupBookId,
           parentId: groupBookComments.parentId,
           userId: groupBookComments.userId,
+          hiddenAt: groupBookComments.hiddenAt,
         })
         .from(groupBookComments)
         .where(eq(groupBookComments.id, parentId))
         .limit(1);
-      parent = row ? { groupBookId: row.groupBookId, parentId: row.parentId } : null;
+      // A comment hidden from the viewer is not there to reply to.
+      const visible = row && (row.hiddenAt === null || row.userId === viewerId);
+      parent = visible ? { groupBookId: row.groupBookId, parentId: row.parentId } : null;
       parentAuthorId = row?.userId;
     }
     enforce(decideComment(entry.status, groupBookId, parent));
@@ -917,7 +943,7 @@ export const groupBooksService = {
 
   async likeComment(groupId: number, commentId: number, viewerId: number): Promise<void> {
     requireComment(await loadAccess(groupId, viewerId));
-    const comment = await loadComment(groupId, commentId);
+    const comment = await loadComment(groupId, commentId, viewerId);
     if (comment.userId !== viewerId) {
       await assertNotBlocked(viewerId, comment.userId, 'You can’t like this comment');
     }

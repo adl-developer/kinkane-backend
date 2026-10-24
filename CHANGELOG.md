@@ -5,6 +5,7 @@
 
 ### Features
 
+* show moderators what a report is about in one place, with the text of reported posts ([804c7e8](https://adl.github.com/adl-developer/kinkane-backend/commit/804c7e8fc232e85964a3f43c0e97ab8ff22b9c7d)) — [details](changelog/2026-10-23-library-reset-linked-sign-in.md)
 * let people report abusive comments under community posts ([f15f221](https://adl.github.com/adl-developer/kinkane-backend/commit/f15f22199dedd71403cf86782771652b35bbd173)) — [details](changelog/2026-10-23-report-post-comments.md)
 * let you find people you've blocked in search so you can unblock them ([50ab0a5](https://adl.github.com/adl-developer/kinkane-backend/commit/50ab0a5e898e233fa293afa4228f60e8f1e834b6)) — [details](changelog/2026-10-23-find-blocked-users-search.md)
 * let people block other users ([71f217b](https://adl.github.com/adl-developer/kinkane-backend/commit/71f217b7937b579021ea6f86b5d7e8d1c4063344)) — [details](changelog/2026-10-23-block-users.md)

@@ -140,7 +140,14 @@ describeIfDb('reporting a comment under a community post', () => {
     expect(report.commentId).toBe(commentId);
 
     const row = await queueRow(report.id);
-    expect(row?.cited).toEqual({ kind: 'comment', id: commentId, postId: publicPostId, body: 'Something nasty' });
+    expect(row?.cited).toEqual({
+      kind: 'comment',
+      id: commentId,
+      postId: publicPostId,
+      body: 'Something nasty',
+      hidden: false,
+      book: { id: bookId, title: 'A book' },
+    });
     expect(row?.groupComment).toBeNull();
   });
 
@@ -199,6 +206,8 @@ describeIfDb('reporting a comment under a community post', () => {
       id: publicPostId,
       postId: publicPostId,
       body: 'A post',
+      hidden: false,
+      book: { id: bookId, title: 'A book' },
     });
   });
 

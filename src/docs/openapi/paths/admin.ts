@@ -555,10 +555,12 @@ export const adminPaths = {
         'Ordered pending-first, then newest-first: the screen is a worklist, so anything still needing a decision belongs at the top regardless of age. `counts` covers all three statuses whatever filter is applied.\n\n' +
         'A report is filed against **either a user or a group** — `targetType` says which, and exactly one of `reportedUser` / `reportedGroup` is populated. **`reportedUser` is null on a group report**, so read `targetName` if all you need is a label; it carries whichever target the report is about.\n\n' +
         '`reportedGroup` is also null once a reported group has been deleted: the complaint outlives its target.\n\n' +
-        '`?targetType=user` restricts the queue to reports about people, which is the pre-groups behaviour of this endpoint — useful as a stopgap for a console that is not yet ready to render group reports.',
+        '`?targetType=user` restricts the queue to reports about people, which is the pre-groups behaviour of this endpoint — useful as a stopgap for a console that is not yet ready to render group reports.\n\n' +
+        '**Tabs.** `?category=` selects the screen\'s tab: `user` (User Reports), `group` (Group Reports) or `content` (Posts & Reviews). A report about a person that cites a post, review or comment is a `content` report. `pendingByCategory` gives each tab\'s badge, unaffected by the filter.',
       parameters: [
         param('status', 'query', { type: 'string', enum: ['pending', 'resolved', 'dismissed'] }, 'Filter by status. Omit for all.'),
         param('targetType', 'query', { type: 'string', enum: ['user', 'group'] }, 'Filter by what the report is against. Omit for all.'),
+        param('category', 'query', { type: 'string', enum: ['user', 'group', 'content'] }, 'The tab. Omit for all.'),
         ...pagingParams,
       ],
       responses: {
@@ -569,6 +571,11 @@ export const adminPaths = {
             pending: { type: 'integer', example: 3 },
             resolved: { type: 'integer', example: 1 },
             dismissed: { type: 'integer', example: 0 },
+          }),
+          pendingByCategory: object({
+            user: { type: 'integer', example: 3 },
+            group: { type: 'integer', example: 2 },
+            content: { type: 'integer', example: 3 },
           }),
         })),
         400: json('Validation failed.', ref('ValidationError')),
@@ -612,6 +619,99 @@ export const adminPaths = {
         })),
         400: json('Invalid report id.', ref('ValidationError')),
         404: resp('NotFound'),
+        ...adminErrors,
+      },
+    },
+  },
+
+  '/admin/console/reports/{id}/hide': {
+    post: {
+      tags: [TAG],
+      summary: 'Hide the post, review or comment a report cites',
+      description: [
+        '"Hide Review", "Hide Post" and "Hide Comment" on the Posts & Reviews tab. The cited content disappears for everyone but its author, who still sees it (with `isHidden: true`) and is emailed. Nothing is deleted.',
+        '',
+        '**Closes every pending report citing the same content.** A hidden post stays private even if its author tries to make it public; their choice is kept for when it is unhidden.',
+        '',
+        'Idempotent: hiding something already hidden changes nothing (`changed: false`) and sends no second email, but still closes its reports.',
+      ].join('\n'),
+      parameters: [param('id', 'path', { type: 'integer' }, 'Report id.', { required: true })],
+      responses: {
+        200: json('Hidden.', object({
+          kind: { type: 'string', enum: ['post', 'comment', 'groupComment'], example: 'post' },
+          id: { type: 'integer', example: 3310 },
+          hidden: { type: 'boolean', example: true },
+          changed: { type: 'boolean', example: true },
+          resolvedReportIds: arrayOf({ type: 'integer' }, 'Every pending report closed by this action.'),
+        })),
+        400: json('Invalid report id, or `NOTHING_TO_HIDE`: the report cites nothing, or what it cited was deleted.', ref('Error')),
+        404: resp('NotFound'),
+        ...adminErrors,
+      },
+    },
+  },
+
+  '/admin/console/reports/{id}/unhide': {
+    post: {
+      tags: [TAG],
+      summary: 'Unhide what a report cites',
+      description: 'Undoes hide. A post goes back to the visibility its author last chose. Its reports stay resolved, and no email is sent.',
+      parameters: [param('id', 'path', { type: 'integer' }, 'Report id.', { required: true })],
+      responses: {
+        200: json('Visible again.', object({
+          kind: { type: 'string', enum: ['post', 'comment', 'groupComment'], example: 'post' },
+          id: { type: 'integer', example: 3310 },
+          hidden: { type: 'boolean', example: false },
+          changed: { type: 'boolean', example: true },
+        })),
+        400: json('Invalid report id, or `NOTHING_TO_HIDE`.', ref('Error')),
+        404: resp('NotFound'),
+        ...adminErrors,
+      },
+    },
+  },
+
+  '/admin/console/reports/{id}/blacklist-group': {
+    post: {
+      tags: [TAG],
+      summary: 'Blacklist the reported group and close its reports',
+      description: [
+        '"Blacklist Group" on the Group Reports tab. The group disappears for everyone, owner and members included: opening it, listing it, searching for it, joining it, editing it and deleting it all answer 404. Nothing in it is deleted.',
+        '',
+        'The owner and every active member are emailed (`emailed` is how many). **Closes every pending report about the group.**',
+        '',
+        'Idempotent: a group already blacklisted is left as it is (`changed: false`) and nobody is emailed again.',
+      ].join('\n'),
+      parameters: [param('id', 'path', { type: 'integer' }, 'Report id.', { required: true })],
+      responses: {
+        200: json('Blacklisted.', object({
+          groupId: { type: 'integer', example: 12 },
+          blacklisted: { type: 'boolean', example: true },
+          changed: { type: 'boolean', example: true },
+          resolvedReportIds: arrayOf({ type: 'integer' }, 'Every pending report closed by this action.'),
+          emailed: { type: 'integer', example: 142 },
+        })),
+        400: json('Invalid report id, or `NOT_A_GROUP_REPORT`.', ref('Error')),
+        404: json('No such report, or the reported group has since been deleted.', ref('Error')),
+        ...adminErrors,
+      },
+    },
+  },
+
+  '/admin/console/reports/{id}/unblacklist-group': {
+    post: {
+      tags: [TAG],
+      summary: 'Lift a group blacklist',
+      description: 'The group comes back exactly as it was. No email is sent.',
+      parameters: [param('id', 'path', { type: 'integer' }, 'Report id.', { required: true })],
+      responses: {
+        200: json('Restored.', object({
+          groupId: { type: 'integer', example: 12 },
+          blacklisted: { type: 'boolean', example: false },
+          changed: { type: 'boolean', example: true },
+        })),
+        400: json('Invalid report id, or `NOT_A_GROUP_REPORT`.', ref('Error')),
+        404: json('No such report, or the reported group has since been deleted.', ref('Error')),
         ...adminErrors,
       },
     },

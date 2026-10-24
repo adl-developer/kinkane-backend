@@ -608,6 +608,11 @@ const socialSchemas = {
         description: 'False restricts the post to the author’s accepted followers.',
         example: true,
       },
+      isHidden: {
+        type: 'boolean',
+        description: 'A moderator has hidden this post. Only its author ever sees a hidden post, so this is only ever true for them: show it with a note that it was hidden. It stays private (`isPublic` false) until unhidden, even if the author switches it to public — that choice is kept and applied when it is unhidden.',
+        example: false,
+      },
       likeCount: { type: 'integer', example: 24 },
       commentCount: { type: 'integer', example: 3 },
       likedByMe: { type: 'boolean', example: false },
@@ -676,6 +681,7 @@ const socialSchemas = {
       updatedAt: { type: 'string', format: 'date-time', example: '2026-07-30T21:10:00.000Z' },
       isEdited: { type: 'boolean', example: false, description: 'True once the author has changed the comment’s text. Show an "Edited" marker when true. Resending the same text does not count.' },
       editedAt: { type: 'string', format: 'date-time', nullable: true, example: null, description: 'When the text last changed; `null` if never edited.' },
+      isHidden: { type: 'boolean', example: false, description: 'A moderator has hidden this comment. Only its author still sees it, so this is only ever true for them.' },
     },
   },
 
@@ -925,18 +931,30 @@ const commerceSchemas = {
     type: 'object',
     properties: {
       id: { type: 'integer', example: 3 },
-      reference: { type: 'string', nullable: true, description: 'What the screen displays, e.g. R003.', example: 'R003' },
+      reference: { type: 'string', nullable: true, description: 'What the screen displays. Each tab has its own series: R003 for people, GR003 for groups, CR003 for posts and comments. References issued before the series were split keep their R prefix.', example: 'R003' },
       status: { type: 'string', enum: ['pending', 'resolved', 'dismissed'], example: 'pending' },
+      category: { type: 'string', enum: ['user', 'group', 'content'], description: 'The tab this report belongs on. A report about a person that cites a post, review or comment is `content`.', example: 'user' },
       reason: { type: 'string', example: 'Created multiple accounts to abuse the first-order discount.' },
+      reasonCategory: { type: 'string', nullable: true, description: 'The reason chip ("Harassment", "Spam / Unsolicited promotion"), exactly as the app sent it. Null when the app sent none.', example: 'Harassment' },
       cited: {
         type: 'object',
         nullable: true,
-        description: 'The one piece of content that prompted a user report, whatever kind it is: a community post, a comment under one, or a group book-club comment. Null when the report cited nothing, and once the cited content is deleted (the report survives it). Read this rather than `postId` / `groupComment`.',
+        description: 'The one piece of content that prompted a user report, whatever kind it is: a review, a post, a comment under one, or a group book-club comment. Null when the report cited nothing, and once the cited content is deleted (the report survives it). Read this rather than `postId` / `groupComment`.',
         properties: {
-          kind: { type: 'string', enum: ['post', 'comment', 'groupComment'], example: 'comment' },
-          id: { type: 'integer', description: 'The post\'s id for `post`, otherwise the comment\'s.', example: 9120 },
+          kind: { type: 'string', enum: ['review', 'post', 'comment', 'groupComment'], description: 'A `review` is a post with a rating; a `post` has none.', example: 'review' },
+          id: { type: 'integer', description: 'The post\'s id for `review` and `post`, otherwise the comment\'s.', example: 9120 },
           postId: { type: 'integer', nullable: true, description: 'The community post to link to: the post itself, or the one a `comment` sits under. Null for a `groupComment`.', example: 3310 },
           body: { type: 'string', nullable: true, description: 'The text, with mentions rendered as @usernames.' },
+          hidden: { type: 'boolean', description: 'A moderator has hidden it. Show Unhide in place of Hide.', example: false },
+          book: {
+            type: 'object',
+            nullable: true,
+            description: 'The book it is about, for "on The Midnight Library".',
+            properties: {
+              id: { type: 'integer', example: 812 },
+              title: { type: 'string', nullable: true, example: 'The Midnight Library' },
+            },
+          },
         },
       },
       postId: { type: 'integer', nullable: true, deprecated: true, description: 'Superseded by `cited`. The post complained about, when there was one; nulled if that post is later deleted.' },
@@ -972,6 +990,9 @@ const commerceSchemas = {
         properties: {
           id: { type: 'integer' },
           name: { type: 'string' },
+          memberCount: { type: 'integer', example: 142 },
+          blacklistedAt: { type: 'string', format: 'date-time', nullable: true },
+          blacklisted: { type: 'boolean', description: 'Show Unblacklist in place of Blacklist Group.', example: false },
         },
       },
       reportedBy: {

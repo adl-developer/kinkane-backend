@@ -77,6 +77,14 @@ router.get('/reports', wrapHttp(adminController.reports));
 router.post('/reports/:id/dismiss', wrapHttp(adminController.dismissReport));
 // Blocks the reported account and closes every pending report against them.
 router.post('/reports/:id/blacklist', wrapHttp(adminController.blacklistFromReport));
+// Hides the post, review or comment a report cites, for everyone but its
+// author, who is emailed. Closes every pending report citing it. Reversible.
+router.post('/reports/:id/hide', wrapHttp(adminController.hideFromReport));
+router.post('/reports/:id/unhide', wrapHttp(adminController.unhideFromReport));
+// Takes a reported group away from everyone, owner and members included, who
+// are emailed. Closes every pending report about it. Reversible.
+router.post('/reports/:id/blacklist-group', wrapHttp(adminController.blacklistGroupFromReport));
+router.post('/reports/:id/unblacklist-group', wrapHttp(adminController.unblacklistGroupFromReport));
 
 // ── Referrals ─────────────────────────────────────────────────────────────────
 // Read-only. Corrections (voiding a referral, fixing a country) stay on the

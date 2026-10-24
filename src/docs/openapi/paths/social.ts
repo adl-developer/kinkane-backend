@@ -803,6 +803,11 @@ export const socialPaths = {
         reportedUserId: { type: 'integer', minimum: 1, description: 'Required for a user report.', example: 4412 },
         reportedGroupId: { type: 'integer', minimum: 1, description: 'Required for a group report.', example: 12 },
         reason: { type: 'string', minLength: 1, maxLength: 2000, example: 'Harassment in the comments.' },
+        reasonCategory: {
+          type: 'string', minLength: 1, maxLength: 100,
+          description: 'Optional, either kind of report. The reason the reporter picked, as the app labels it ("Harassment", "Spam / Unsolicited promotion"); moderators see it as a chip. The app owns the list, so any label is accepted.',
+          example: 'Harassment',
+        },
         postId: {
           type: 'integer', minimum: 1,
           description: 'User reports only. The post being reported about; must belong to `reportedUserId`.',
@@ -831,6 +836,9 @@ export const socialPaths = {
               commentId: { type: 'integer', nullable: true, example: null },
               groupCommentId: { type: 'integer', nullable: true, example: null },
               reason: { type: 'string', example: 'Harassment in the comments.' },
+              reasonCategory: { type: 'string', nullable: true, example: 'Harassment' },
+              category: { type: 'string', enum: ['user', 'group', 'content'], description: 'Which moderation tab it lands on: `content` when a user report cites a post or comment.', example: 'content' },
+              reference: { type: 'string', example: 'CR014', description: 'R### for people, GR### for groups, CR### for posts and comments.' },
               createdAt: { type: 'string', format: 'date-time', example: '2026-08-13T11:00:00.000Z' },
             }),
           })),

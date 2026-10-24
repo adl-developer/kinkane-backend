@@ -34,6 +34,14 @@ export const reportStatusEnum = pgEnum('report_status', ['pending', 'resolved', 
  */
 export const reportTargetTypeEnum = pgEnum('report_target_type', ['user', 'group']);
 
+/**
+ * Which tab of the moderation screen a report belongs on, and which reference
+ * series it draws from (R, GR, CR). A user report that cites a post, review or
+ * comment is a `content` report — the thing to act on is the content — though
+ * its target is still the author. Fixed when the report is filed.
+ */
+export const reportCategoryEnum = pgEnum('report_category', ['user', 'group', 'content']);
+
 // A report is kept even if the post it was filed against is later deleted —
 // postId is nulled out rather than cascading the report away.
 export const userReports = pgTable(
@@ -46,6 +54,7 @@ export const userReports = pgTable(
     // Defaulted so rows written before groups were reportable — and any caller
     // that still omits it — remain correct without a backfill.
     targetType: reportTargetTypeEnum('target_type').notNull().default('user'),
+    category: reportCategoryEnum('category').notNull().default('user'),
     // Nullable since a group report has no individual to attach. The shape
     // CHECK is what keeps it present for every user report.
     reportedUserId: integer('reported_user_id').references(() => users.id, { onDelete: 'cascade' }),
@@ -63,6 +72,10 @@ export const userReports = pgTable(
     // NULL, for the same reason.
     commentId: integer('comment_id').references(() => comments.id, { onDelete: 'set null' }),
     reason: text('reason').notNull(),
+    // The reason the reporter picked, as the app labels it ("Harassment",
+    // "Spam / Unsolicited promotion"). Free text rather than an enum: the app
+    // owns the list, and `reason` carries their own words.
+    reasonCategory: varchar('reason_category', { length: 100 }),
     // Customer-facing-ish identity for the moderation queue: the console shows
     // "R003", not a database id. Generated from the id at read time would break
     // the moment rows are deleted, so it is stored.
@@ -84,6 +97,7 @@ export const userReports = pgTable(
     commentIdIdx: index('idx_user_reports_comment_id').on(t.commentId),
     reportedGroupIdIdx: index('idx_user_reports_reported_group_id').on(t.reportedGroupId),
     targetTypeIdx: index('idx_user_reports_target_type').on(t.targetType),
+    categoryIdx: index('idx_user_reports_category').on(t.category, t.status),
     // A user report must name a user and no group; a group report must name no
     // user. It deliberately does NOT require reported_group_id to be present:
     // ON DELETE SET NULL nulls that column when a reported group is deleted,
