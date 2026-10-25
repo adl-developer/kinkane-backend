@@ -1,12 +1,12 @@
-import { eq, and, inArray, isNull, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
+import { eq, and, desc, inArray, isNull, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { db } from '../db';
 import { alias } from 'drizzle-orm/pg-core';
 import { users, posts, books, postLikes, comments, groups, followRequests } from '../db/schema';
 import { buildGroupSearchCondition, buildGroupSearchOrderBy, groupNotBlacklisted } from './groups.service';
-import { enrichPosts } from './community.service';
+import { commentVisibleTo, enrichPosts } from './community.service';
 import type { PostItem } from './community.service';
 import { getExcerptsByIsbns, pickExcerpt } from './book-excerpts.service';
-import { withRenderedMentions } from './mentions.service';
+import { renderTexts, withRenderedMentions } from './mentions.service';
 import { likePrefix, likeWordPrefix } from '../lib/escape-like';
 import { plainTsQuery } from '../lib/tsquery';
 import { toFollowStatus, type FollowStatus } from './users.service';
@@ -45,9 +45,30 @@ export interface GroupResult {
   memberCount: number;
 }
 
+/** The comment that put a post in the results, when nothing in the post itself did. */
+export interface MatchedComment {
+  id: number;
+  userId: number;
+  userName: string;
+  userUsername: string | null;
+  userPhotoUrl: string | null;
+  body: string;
+  mentions: MentionRef[];
+  links: LinkRef[];
+  createdAt: Date;
+}
+
+export interface PostSearchResult extends PostItem {
+  /**
+   * Set only when the post matched on a comment alone, so the app can show why
+   * it is there; null when its book title or its own text matched.
+   */
+  matchedComment: MatchedComment | null;
+}
+
 export interface SearchResult {
   users: UserResult[];
-  posts: PostItem[];
+  posts: PostSearchResult[];
   groups: GroupResult[];
   total: { users: number; posts: number; groups: number };
 }
@@ -160,6 +181,46 @@ function bookTitleWords(book: { title: SQLWrapper; subtitle: SQLWrapper }): SQL 
 }
 
 /**
+ * Whether stored text says `q`, as the exact wording (postWordingMatch) or as
+ * words and quoted phrases (postWordsQuery). Posts and comments both keep the
+ * two columns this reads (drizzle/0084, 0092), so one test serves both and the
+ * two can never match the same query differently.
+ */
+function textSays(column: { searchText: SQLWrapper; searchVector: SQLWrapper }, q: string): SQL {
+  const words = postWordsQuery(q);
+  const byWords = words !== null ? sql` OR ${column.searchVector} @@ ${words}` : sql``;
+  return sql`(${postWordingMatch(column.searchText, q)} ${byWords})`;
+}
+
+// The post a comment is under, for the comment subquery below
+const commentPost = alias(posts, 'comment_post');
+
+/**
+ * Posts with a comment `requesterId` can see that matches `q`, one row each,
+ * as a derived table for searchPosts to LEFT JOIN. Only the comments the
+ * post's thread would show them count: none hidden by a moderator, none across
+ * a block, none by a blacklisted account — otherwise a post would turn up for
+ * a reason the searcher cannot find on it. Comments on private posts are
+ * skipped before the per-comment block checks run, since those posts never
+ * reach the results anyway.
+ *
+ * A join rather than `IN (subquery)`: the filter and the tier both need to know
+ * whether a post has a hit, and an IN repeated in each is planned as a separate
+ * scan of every matching comment per mention.
+ */
+export function postsWithMatchingComment(q: string, requesterId: number) {
+  return db
+    .selectDistinct({ postId: comments.postId })
+    .from(comments)
+    .innerJoin(commentPost, and(eq(commentPost.id, comments.postId), eq(commentPost.isPublic, true)))
+    .where(and(textSays(comments, q), commentVisibleTo(requesterId)))
+    .as('comment_hits');
+}
+
+/** True for a post the `postsWithMatchingComment` join found a comment for. */
+type CommentHit = SQL;
+
+/**
  * Posts whose book title matches `q` — as before — or whose own text does:
  * as words and quoted phrases (postWordsQuery), or as the exact wording
  * (postWordingMatch). Both text tests read the stored columns, where @mention
@@ -172,16 +233,16 @@ function bookTitleWords(book: { title: SQLWrapper; subtitle: SQLWrapper }): SQL 
  *  - text: a subquery over posts alone ORs the two GIN indexes (a BitmapOr);
  *  - title: tested once per book that has posts, not once per post — a book
  *    with forty posts was having its title compared forty times.
- * The outer query then only checks membership in the two id sets.
+ *  - comments: `postsWithMatchingComment`, joined in by the caller, which
+ *    passes whether this row has a hit as `commentHit`.
+ * The outer query then only checks membership in the two id sets, or the hit.
  */
-export function buildPostSearchCondition(q: string): SQL {
+export function buildPostSearchCondition(q: string, commentHit: CommentHit): SQL {
   const prefix = likePrefix(q);
   const wordPrefix = likeWordPrefix(q);
-  const words = postWordsQuery(q);
   const bookFts = q.length >= 3
     ? sql` OR ${bookTitleWords(titleMatch)} @@ ${plainTsQuery('english', q)}`
     : sql``;
-  const textWords = words !== null ? sql` OR ${textMatch.searchVector} @@ ${words}` : sql``;
 
   const titleMatches = db
     .select({ id: titleMatch.id })
@@ -198,42 +259,65 @@ export function buildPostSearchCondition(q: string): SQL {
   const textMatches = db
     .select({ id: textMatch.id })
     .from(textMatch)
-    .where(sql`${postWordingMatch(textMatch.searchText, q)} ${textWords}`);
+    .where(textSays(textMatch, q));
 
-  return sql`(${inArray(posts.bookId, titleMatches)} OR ${inArray(posts.id, textMatches)})`;
+  return sql`(
+    ${inArray(posts.bookId, titleMatches)}
+    OR ${inArray(posts.id, textMatches)}
+    OR ${commentHit}
+  )`;
 }
 
+/** Tiers 0–5 are the post and its book; a post in COMMENT_TIER matched on a comment alone. */
+const COMMENT_TIER = 6;
+
 /**
- * Ranks the matches from `buildPostSearchCondition`: the book's title first,
- * as before, then posts that say exactly what was typed, then posts that use
- * the words, then fuzzy title matches.
- *
- * Within a tier, the tie-break fits what put the post there: closeness of the
- * post text for the two text tiers, title similarity for the title tiers —
- * the order title matches always had, which group and people search share.
- * Then the newest post, with the id last so offset pages never overlap.
+ * Which rung of the ranking ladder put a post in the results. One WHEN per arm
+ * of `buildPostSearchCondition`, title arms before comments, so a post that
+ * matched on anything of its own never lands in COMMENT_TIER.
  */
-function buildPostSearchOrderBy(q: string): SQL[] {
+function buildPostSearchTier(q: string, commentHit: CommentHit): SQL {
   const prefix = likePrefix(q);
   const wordPrefix = likeWordPrefix(q);
   const words = postWordsQuery(q);
   const bodyWordsTier = words !== null ? sql`WHEN ${posts.searchVector} @@ ${words} THEN 3` : sql``;
-  const tier = sql`CASE
+  const titleWordsTier = q.length >= 3
+    ? sql`WHEN ${bookTitleWords(books)} @@ ${plainTsQuery('english', q)} THEN 5`
+    : sql``;
+  return sql`CASE
       WHEN ${books.title} ILIKE ${prefix}     THEN 0
       WHEN ${books.title} ILIKE ${wordPrefix} THEN 1
       WHEN ${postWordingMatch(posts.searchText, q)} THEN 2
       ${bodyWordsTier}
       WHEN word_similarity(${q}, ${books.title}) > 0.5 THEN 4
-      ELSE 5
+      ${titleWordsTier}
+      WHEN ${commentHit} THEN ${sql.raw(String(COMMENT_TIER))}
+      ELSE 7
     END`;
-  const titleCloseness = sql`word_similarity(${q}, ${books.title})`;
-  const withinTier = words !== null
-    ? sql`CASE WHEN ${tier} IN (2, 3) THEN ts_rank_cd(${posts.searchVector}, ${words}) ELSE ${titleCloseness} END`
-    : titleCloseness;
+}
 
+/**
+ * Ranks the matches from `buildPostSearchCondition`: the book's title first,
+ * as before, then posts that say exactly what was typed, then posts that use
+ * the words, then fuzzy title matches, then the title's words in any order,
+ * and last posts that matched only on a comment — what someone else said under
+ * a post is weaker evidence that the post is about `q` than anything in the
+ * post itself.
+ *
+ * Within a tier, the tie-break fits what put the post there: closeness of the
+ * post text for the two text tiers, title similarity for the title tiers —
+ * the order title matches always had, which group and people search share.
+ * Comment-only matches have no closeness of their own and fall to the newest
+ * post. Then the newest post, with the id last so offset pages never overlap.
+ */
+function buildPostSearchOrderBy(q: string, tier: SQL): SQL[] {
+  const words = postWordsQuery(q);
+  const textRank = words !== null ? sql`ts_rank_cd(${posts.searchVector}, ${words})` : sql`0`;
   return [
     tier,
-    sql`${withinTier} DESC`,
+    sql`CASE WHEN ${tier} IN (2, 3) THEN ${textRank}
+             WHEN ${tier} = ${sql.raw(String(COMMENT_TIER))} THEN 0
+             ELSE word_similarity(${q}, ${books.title}) END DESC`,
     sql`ts_rank(${bookTitleWords(books)}, ${plainTsQuery('english', q)}) DESC`,
     sql`${posts.createdAt} DESC`,
     sql`${posts.id} DESC`,
@@ -301,9 +385,11 @@ async function searchPosts(
   requesterId: number,
   limit: number,
   offset: number,
-): Promise<{ results: PostItem[]; total: number }> {
-  const where = and(eq(posts.isPublic, true), buildPostSearchCondition(q), notBlockedBetween(requesterId, posts.userId), accountActive(posts.userId));
-  const orderBy = buildPostSearchOrderBy(q);
+): Promise<{ results: PostSearchResult[]; total: number }> {
+  const commentHits = postsWithMatchingComment(q, requesterId);
+  const commentHit = sql`${commentHits.postId} IS NOT NULL`;
+  const where = and(eq(posts.isPublic, true), buildPostSearchCondition(q, commentHit), notBlockedBetween(requesterId, posts.userId), accountActive(posts.userId));
+  const tier = buildPostSearchTier(q, commentHit);
 
   const [rows, [countRow]] = await Promise.all([
     db
@@ -324,12 +410,14 @@ async function searchPosts(
         createdAt: posts.createdAt,
         updatedAt: posts.updatedAt,
         editedAt: posts.editedAt,
+        tier: sql<number>`${tier}`.mapWith(Number),
       })
       .from(posts)
       .innerJoin(users, eq(users.id, posts.userId))
       .innerJoin(books, eq(books.id, posts.bookId))
+      .leftJoin(commentHits, eq(commentHits.postId, posts.id))
       .where(where)
-      .orderBy(...orderBy)
+      .orderBy(...buildPostSearchOrderBy(q, tier))
       .limit(limit)
       .offset(offset),
     db
@@ -337,13 +425,18 @@ async function searchPosts(
       .from(posts)
       .innerJoin(users, eq(users.id, posts.userId))
       .innerJoin(books, eq(books.id, posts.bookId))
+      .leftJoin(commentHits, eq(commentHits.postId, posts.id))
       .where(where),
   ]);
 
-  const excerptMap = await getExcerptsByIsbns(rows.map((r) => r.bookIsbn13));
+  const commentOnly = rows.filter((r) => r.tier === COMMENT_TIER).map((r) => r.id);
+  const [excerptMap, matched] = await Promise.all([
+    getExcerptsByIsbns(rows.map((r) => r.bookIsbn13)),
+    matchingComments(q, requesterId, commentOnly),
+  ]);
 
   const enriched = await enrichPosts(
-    rows.map(({ bookIsbn13, ...r }) => ({
+    rows.map(({ bookIsbn13, tier: _tier, ...r }) => ({
       ...r,
       bookExcerpt: pickExcerpt(bookIsbn13, excerptMap),
       likeCount: 0,
@@ -353,7 +446,48 @@ async function searchPosts(
     requesterId,
   );
 
-  return { results: enriched, total: countRow?.count ?? 0 };
+  return {
+    results: enriched.map((p) => ({ ...p, matchedComment: matched.get(p.id) ?? null })),
+    total: countRow?.count ?? 0,
+  };
+}
+
+/**
+ * For each of `postIds`, the visible comment that best matches `q`: the
+ * closest by word rank, then the newest. One query for the page, not one per
+ * post. Bodies are rendered (handles, short links) the way the comment thread
+ * shows them.
+ */
+async function matchingComments(
+  q: string,
+  requesterId: number,
+  postIds: number[],
+): Promise<Map<number, MatchedComment>> {
+  if (postIds.length === 0) return new Map();
+  const words = postWordsQuery(q);
+  const closeness = words !== null ? sql`ts_rank_cd(${comments.searchVector}, ${words})` : sql`0`;
+
+  const rows = await db
+    .selectDistinctOn([comments.postId], {
+      postId: comments.postId,
+      id: comments.id,
+      userId: comments.userId,
+      userName: users.name,
+      userUsername: users.username,
+      userPhotoUrl: users.photoUrl,
+      body: comments.body,
+      createdAt: comments.createdAt,
+    })
+    .from(comments)
+    .innerJoin(users, eq(users.id, comments.userId))
+    .where(and(inArray(comments.postId, postIds), commentVisibleTo(requesterId), textSays(comments, q)))
+    .orderBy(comments.postId, sql`${closeness} DESC`, desc(comments.createdAt), desc(comments.id));
+
+  const rendered = await renderTexts(rows.map((r) => r.body));
+  return new Map(rows.map(({ postId, ...r }, i) => [
+    postId,
+    { ...r, body: rendered[i].text ?? '', mentions: rendered[i].mentions, links: rendered[i].links },
+  ]));
 }
 
 /**

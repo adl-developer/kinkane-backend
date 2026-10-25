@@ -645,6 +645,13 @@
       "when": 1792879919989,
       "tag": "0091_group_search_name_only",
       "breakpoints": true
+    },
+    {
+      "idx": 92,
+      "version": "7",
+      "when": 1792966319989,
+      "tag": "0092_comments_text_search",
+      "breakpoints": true
     }
   ]
 }

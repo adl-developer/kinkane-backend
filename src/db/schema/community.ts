@@ -100,6 +100,9 @@ export const comments = pgTable(
     // Hidden by a moderator: shown to its author only.
     hiddenAt: timestamp('hidden_at', { withTimezone: true }),
     hiddenBy: integer('hidden_by'),
+    // Generated from `body` by drizzle/0092, as on posts: never written by the app.
+    searchText: text('search_text'),
+    searchVector: tsvector('search_vector'),
   },
   (t) => ({
     postIdIdx: index('idx_comments_post_id').on(t.postId),

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { buildPostSearchCondition } from '../services/community-search.service';
+import { sql } from 'drizzle-orm';
+import { buildPostSearchCondition, postsWithMatchingComment } from '../services/community-search.service';
 
 // Post search has to stay on its indexes. An OR that mixes the joined books
 // row with posts columns can use neither table's indexes, which made every
@@ -10,7 +11,7 @@ import { buildPostSearchCondition } from '../services/community-search.service';
 // group-search.test.ts, so no database is needed.
 
 const dialect = new PgDialect();
-const compiled = (q: string) => dialect.sqlToQuery(buildPostSearchCondition(q)).sql;
+const compiled = (q: string) => dialect.sqlToQuery(buildPostSearchCondition(q, sql`comment_hit`)).sql;
 
 describe('post search condition', () => {
   it('matches post text in a subquery over posts alone', () => {
@@ -26,6 +27,16 @@ describe('post search condition', () => {
     expect(sql).toMatch(/"posts"\."book_id" in \(select "id" from "books" "title_match"/);
     expect(sql).toMatch(/"title_match"\."id" in \(select distinct "book_id" from "posts"\)/);
     expect(sql).not.toMatch(/"books"\."title"/);
+  });
+
+  it('matches comments once, as a derived table of visible comments on public posts', () => {
+    const hits = dialect.sqlToQuery(sql`${postsWithMatchingComment('gripping', 1)}`).sql;
+    expect(hits).toMatch(/^\(select distinct "comments"\."post_id" from "comments" inner join "posts" "comment_post"/);
+    expect(hits).toMatch(/"comment_post"\."is_public" = \$\d/);
+    expect(hits).toMatch(/"comments"\."hidden_at" is null/);
+    // The condition only reads the caller's hit flag; no comment subquery of its own
+    expect(compiled('gripping')).toContain('comment_hit');
+    expect(compiled('gripping')).not.toMatch(/"comments"/);
   });
 
   it('cleans the typed text with the same function as the stored column', () => {
