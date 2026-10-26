@@ -11,6 +11,7 @@ import postgres from 'postgres';
 import { resolveSslMode } from './ssl';
 import { COUNTRY_SEED } from './seeds/countries';
 import { seedShippingRates } from './seeds/shipping-rates-rows';
+import { seedAdmin, SEEDED_ADMIN_EMAIL } from './seeds/admins';
 import { NORMALISED_PERSON_NAME } from '../lib/contributor-name';
 
 const sql = postgres(process.env.DATABASE_URL!, {
@@ -161,6 +162,15 @@ async function main() {
   // without a migration, because Gardners reissue the price sheets a couple of
   // times a year and a wrong figure is money rather than cosmetics.
   console.log(`Seeded ${await seedShippingRates(sql)} shipping rates.`);
+
+  // ── Admin console account ─────────────────────────────────────────────────
+  // Insert-only, and skipped without DEVELOPER_ADMIN_SEED_PASSWORD — see seeds/admins.ts.
+  const admin = await seedAdmin(sql);
+  console.log(
+    admin === 'skipped'
+      ? `Admin ${SEEDED_ADMIN_EMAIL}: skipped (DEVELOPER_ADMIN_SEED_PASSWORD not set).`
+      : `Admin ${SEEDED_ADMIN_EMAIL}: ${admin === 'created' ? 'created' : 'already exists, left unchanged'}.`,
+  );
 
   console.log('Setup complete.');
   await sql.end();
