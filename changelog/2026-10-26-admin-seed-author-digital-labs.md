@@ -6,7 +6,7 @@
 
 Every database setup run (`npm run db:init`, which Render runs before each deploy) now creates the
 admin console account **admin@authordigitallabs.com** ("Author Digital Labs"). It only does this if
-that email isn't already in the admins table. The password comes from a new `ADMIN_SEED_PASSWORD`
+that email isn't already in the admins table. The password comes from a new `DEVELOPER_ADMIN_SEED_PASSWORD`
 environment variable. `npm run seed:admin` runs the same seed by itself, for a local database.
 
 ## Why
@@ -19,7 +19,7 @@ up on prod with the deploy, with no one needing a shell on the server.
 ## Data / API shape
 
 - **No migration and no API change.** The seed writes one row to `admins`.
-- **New env var `ADMIN_SEED_PASSWORD`** (optional, at least 12 characters). It's documented in
+- **New env var `DEVELOPER_ADMIN_SEED_PASSWORD`** (optional, at least 12 characters). It's documented in
   `.env.example` and is set per environment, in the Render dashboard for prod.
 
 ## Non-obvious decisions

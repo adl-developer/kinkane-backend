@@ -164,11 +164,11 @@ async function main() {
   console.log(`Seeded ${await seedShippingRates(sql)} shipping rates.`);
 
   // ── Admin console account ─────────────────────────────────────────────────
-  // Insert-only, and skipped without ADMIN_SEED_PASSWORD — see seeds/admins.ts.
+  // Insert-only, and skipped without DEVELOPER_ADMIN_SEED_PASSWORD — see seeds/admins.ts.
   const admin = await seedAdmin(sql);
   console.log(
     admin === 'skipped'
-      ? `Admin ${SEEDED_ADMIN_EMAIL}: skipped (ADMIN_SEED_PASSWORD not set).`
+      ? `Admin ${SEEDED_ADMIN_EMAIL}: skipped (DEVELOPER_ADMIN_SEED_PASSWORD not set).`
       : `Admin ${SEEDED_ADMIN_EMAIL}: ${admin === 'created' ? 'created' : 'already exists, left unchanged'}.`,
   );
 

@@ -10,7 +10,7 @@ import type { Sql } from 'postgres';
  *
  * The email and name live here; the password does not. A password committed to
  * the repo is a published one (see the ADMIN_BOOTSTRAP_* note in .env.example),
- * so it comes from ADMIN_SEED_PASSWORD, set per environment. Without it the seed
+ * so it comes from DEVELOPER_ADMIN_SEED_PASSWORD, set per environment. Without it the seed
  * is skipped rather than failing the deploy.
  */
 const ADMIN = { email: 'admin@authordigitallabs.com', name: 'Author Digital Labs' };
@@ -30,10 +30,10 @@ const MIN_PASSWORD_LENGTH = 12;
  * config and its drizzle pool.
  */
 export async function seedAdmin(sql: Sql): Promise<'created' | 'exists' | 'skipped'> {
-  const password = process.env.ADMIN_SEED_PASSWORD;
+  const password = process.env.DEVELOPER_ADMIN_SEED_PASSWORD;
   if (!password) return 'skipped';
   if (password.length < MIN_PASSWORD_LENGTH) {
-    throw new Error(`ADMIN_SEED_PASSWORD is shorter than ${MIN_PASSWORD_LENGTH} characters.`);
+    throw new Error(`DEVELOPER_ADMIN_SEED_PASSWORD is shorter than ${MIN_PASSWORD_LENGTH} characters.`);
   }
 
   const passwordHash = await bcrypt.hash(password, 10);
