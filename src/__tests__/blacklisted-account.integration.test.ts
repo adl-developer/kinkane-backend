@@ -219,8 +219,13 @@ describeIfDb('a blacklisted account', () => {
     expect((await groupBooks.listComments(group.id, shelf.id, kofi, 20, 0)).comments).toHaveLength(0);
     expect(await status(usersService.sendFollowRequest(kofi, ama))).toBe(404);
 
-    // Lifted: everything is back, as it was.
-    await customers.unblacklist(ama);
+    // Lifted: everything is back, as it was, and they are told.
+    enqueueEmail.mockClear();
+    expect(await customers.unblacklist(ama)).toMatchObject({ changed: true });
+    expect(enqueueEmail).toHaveBeenCalledWith('account-restored', { to: `${EMAIL_PREFIX}ama@example.com`, name: 'Ama' });
+    // Lifting again changes nothing and emails nobody.
+    expect(await customers.unblacklist(ama)).toMatchObject({ changed: false });
+    expect(enqueueEmail).toHaveBeenCalledTimes(1);
     expect(await status(usersService.getUserProfile(ama, kofi))).toBe('ok');
     expect(await status(community.getPost(review, kofi))).toBe('ok');
     expect((await community.listComments(kofiPost, kofi, 20, 0)).comments).toHaveLength(1);

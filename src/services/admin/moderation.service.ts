@@ -167,8 +167,8 @@ export const adminModerationService = {
   /**
    * Undoes hide. A post goes back to whatever visibility it had; its reports
    * stay resolved, since the decision was made and has now been reversed, not
-   * left open. No email: the author was told it was hidden, and finding it
-   * visible again needs no explanation.
+   * left open. The author is emailed that it is back, as they were told it
+   * was removed; a post that goes back to private is not called visible.
    */
   async unhide(reportId: number) {
     const cited = await loadCited(reportId);
@@ -214,6 +214,24 @@ export const adminModerationService = {
         if (nowPublic) await mentionsService.releaseUnderPost(cited.id);
       } else {
         mentionsService.dispatchInBackground([{ type: cited.kind === 'comment' ? 'comment' : 'group_comment', id: cited.id }]);
+      }
+    }
+
+    // Never fatal, as with hide: the content is back whether or not the email goes out.
+    if (changed) {
+      try {
+        const author = await authorOf(cited);
+        if (author) {
+          await enqueueEmail('content-restored', {
+            to: author.email,
+            name: author.name,
+            kind: cited.kind === 'post' ? (author.isReview ? 'review' : 'post') : 'comment',
+            submittedAt: author.createdAt.toISOString(),
+            visible: cited.kind !== 'post' || nowPublic,
+          });
+        }
+      } catch (err) {
+        logger.error('Failed to enqueue content-restored email', { reportId, error: (err as Error).message });
       }
     }
 
@@ -274,15 +292,24 @@ export const adminModerationService = {
     };
   },
 
-  /** Lifts a group blacklist. The group comes back exactly as it was. */
+  /** Lifts a group blacklist. The group comes back exactly as it was, and its owner is told. */
   async unblacklistGroup(reportId: number) {
     const groupId = await reportedGroupOf(reportId);
-    const updated = await db
+    const [updated] = await db
       .update(groups)
       .set({ blacklistedAt: null, blacklistedBy: null, blacklistReason: null, updatedAt: new Date() })
       .where(and(eq(groups.id, groupId), isNotNull(groups.blacklistedAt)))
-      .returning({ id: groups.id });
-    return { groupId, blacklisted: false, changed: updated.length > 0 };
+      .returning({ name: groups.name, ownerId: groups.ownerId });
+
+    let emailed = 0;
+    if (updated) {
+      try {
+        emailed = await emailOwner(updated.name, updated.ownerId, 'group-restored');
+      } catch (err) {
+        logger.error('Failed to enqueue group-restored email', { groupId, error: (err as Error).message });
+      }
+    }
+    return { groupId, blacklisted: false, changed: updated !== undefined, emailed };
   },
 };
 
@@ -302,9 +329,13 @@ async function reportedGroupOf(reportId: number): Promise<number> {
 }
 
 /** Emails the owner, the one person the notice is written for. Returns how many were sent. */
-async function emailOwner(groupName: string, ownerId: number): Promise<number> {
+async function emailOwner(
+  groupName: string,
+  ownerId: number,
+  job: 'group-blacklisted' | 'group-restored' = 'group-blacklisted',
+): Promise<number> {
   const [owner] = await db.select({ email: users.email, name: users.name }).from(users).where(eq(users.id, ownerId)).limit(1);
   if (!owner) return 0;
-  await enqueueEmail('group-blacklisted', { to: owner.email, name: owner.name, groupName });
+  await enqueueEmail(job, { to: owner.email, name: owner.name, groupName });
   return 1;
 }

@@ -43,6 +43,10 @@ export interface EmailJobMap {
   'content-removed':            { to: string; name: string; kind: RemovedContentKind; submittedAt: string };
   'group-blacklisted':          { to: string; name: string; groupName: string };
   'account-blacklisted':        { to: string; name: string };
+  // And their undoing. `visible` is false for a post that goes back to private.
+  'content-restored':           { to: string; name: string; kind: RemovedContentKind; submittedAt: string; visible: boolean };
+  'group-restored':             { to: string; name: string; groupName: string };
+  'account-restored':           { to: string; name: string };
   'groups-handed-over':         { to: string; formerOwnerName: string; formerOwnerEmail: string; groups: { id: number; name: string }[] };
   // To staff: a new report is waiting. Goes to REPORTS_INBOX, so no `to`.
   'report-filed':               { payload: ReportFiledPayload };
@@ -87,6 +91,9 @@ export const EMAIL_PRIORITY: Record<EmailJobName, number> = {
   'content-removed':            3,
   'group-blacklisted':          3,
   'account-blacklisted':        3,
+  'content-restored':           5,
+  'group-restored':             5,
+  'account-restored':           3,
   'groups-handed-over':         5,
   // Nobody is blocked on it, and the console's bell already has the report;
   // ahead of digests so a moderator hears soon enough to act.
