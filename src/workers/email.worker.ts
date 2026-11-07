@@ -24,6 +24,9 @@ import {
   sendContentRemovedEmail,
   sendGroupBlacklistedEmail,
   sendAccountBlacklistedEmail,
+  sendContentRestoredEmail,
+  sendGroupRestoredEmail,
+  sendAccountRestoredEmail,
   sendGroupsHandedOverEmail,
   sendReportFiledEmail,
 } from '../emails';
@@ -159,6 +162,21 @@ async function processEmailJob(job: Job): Promise<void> {
     case 'account-blacklisted': {
       const { to, name: userName } = job.data as EmailJobMap['account-blacklisted'];
       await sendAccountBlacklistedEmail(to, userName);
+      break;
+    }
+    case 'content-restored': {
+      const { to, name: authorName, kind, submittedAt, visible } = job.data as EmailJobMap['content-restored'];
+      await sendContentRestoredEmail(to, authorName, kind, submittedAt, visible);
+      break;
+    }
+    case 'group-restored': {
+      const { to, name: ownerName, groupName } = job.data as EmailJobMap['group-restored'];
+      await sendGroupRestoredEmail(to, ownerName, groupName);
+      break;
+    }
+    case 'account-restored': {
+      const { to, name: userName } = job.data as EmailJobMap['account-restored'];
+      await sendAccountRestoredEmail(to, userName);
       break;
     }
     case 'groups-handed-over': {

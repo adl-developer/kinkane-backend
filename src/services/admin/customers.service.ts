@@ -236,15 +236,30 @@ export const adminCustomersService = {
     }
   },
 
+  /**
+   * Lifts a blacklist and emails the customer. Only an account that is actually
+   * blacklisted changes, so lifting twice emails once. Groups handed to
+   * Kinkané Admin stay there.
+   */
   async unblacklist(userId: number) {
     const [updated] = await db
       .update(users)
       .set({ blacklistedAt: null, blacklistedBy: null, blacklistReason: null, updatedAt: new Date() })
-      .where(eq(users.id, userId))
-      .returning({ id: users.id });
+      .where(and(eq(users.id, userId), isNotNull(users.blacklistedAt)))
+      .returning({ id: users.id, email: users.email, name: users.name });
 
-    if (!updated) throw httpError('Customer not found', 404);
+    if (!updated) {
+      const [exists] = await db.select({ id: users.id }).from(users).where(eq(users.id, userId)).limit(1);
+      if (!exists) throw httpError('Customer not found', 404);
+      return { id: userId, blacklisted: false, changed: false };
+    }
     forgetStanding(userId);
+    // Never fatal: the account is back whether or not the email goes out.
+    try {
+      await enqueueEmail('account-restored', { to: updated.email, name: updated.name ?? '' });
+    } catch (err) {
+      logger.error('Failed to enqueue account-restored email', { userId, error: (err as Error).message });
+    }
     return { id: updated.id, blacklisted: false, changed: true };
   },
 };

@@ -537,13 +537,13 @@ export const adminPaths = {
     delete: {
       tags: [TAG],
       summary: 'Lift a blacklist',
-      description: 'Restores the account. Clears the reason and the admin who set it.',
+      description: 'Restores the account and emails the customer "Your account has been restored". Clears the reason and the admin who set it. Groups handed to Kinkané Admin at blacklisting stay there. Idempotent: an account that is not blacklisted is left alone (`changed: false`) and not emailed.',
       parameters: [param('id', 'path', { type: 'integer' }, 'Customer id.', { required: true })],
       responses: {
         200: json('Restored.', object({
           id: { type: 'integer', example: 4412 },
           blacklisted: { type: 'boolean', example: false },
-          changed: { type: 'boolean', example: true },
+          changed: { type: 'boolean', description: 'False when they were not blacklisted.', example: true },
         })),
         404: resp('NotFound'),
         ...adminErrors,
@@ -659,7 +659,7 @@ export const adminPaths = {
     post: {
       tags: [TAG],
       summary: 'Unhide what a report cites',
-      description: 'Undoes hide. A post goes back to the visibility its author last chose. Its reports stay resolved, and no email is sent.',
+      description: 'Undoes hide. A post goes back to the visibility its author last chose. Its reports stay resolved. The author is emailed "Your post / comment / review has been restored"; for a post that goes back to private, the email does not say it is visible to the community. Nothing is emailed when nothing was hidden (`changed: false`).',
       parameters: [param('id', 'path', { type: 'integer' }, 'Report id.', { required: true })],
       responses: {
         200: json('Visible again.', object({
@@ -706,13 +706,14 @@ export const adminPaths = {
     post: {
       tags: [TAG],
       summary: 'Lift a group blacklist',
-      description: 'The group comes back exactly as it was. No email is sent.',
+      description: 'The group comes back exactly as it was. Its owner is emailed "Your group has been restored" (`emailed` is 1, or 0 if there was nothing to do); members are not.',
       parameters: [param('id', 'path', { type: 'integer' }, 'Report id.', { required: true })],
       responses: {
         200: json('Restored.', object({
           groupId: { type: 'integer', example: 12 },
           blacklisted: { type: 'boolean', example: false },
           changed: { type: 'boolean', example: true },
+          emailed: { type: 'integer', example: 1 },
         })),
         400: json('Invalid report id, or `NOT_A_GROUP_REPORT`.', ref('Error')),
         404: json('No such report, or the reported group has since been deleted.', ref('Error')),

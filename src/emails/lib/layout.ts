@@ -4,11 +4,13 @@ const CURRENT_YEAR = new Date().getFullYear();
 const BASE_URL = config.appUrl;
 const LOGO_URL = 'https://res.cloudinary.com/dy0cthb0l/image/upload/v1785093900/Kinkane_Logo_jodvx0.svg';
 const SANS = "Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif";
-// Moderation notices: sand band, gold accents, cream panel — from the Email Template page.
-const NOTICE_BAND = '#F3E6C4';
-const NOTICE_BORDER = '#EAD08A';
-const NOTICE_ACCENT = '#9A7424';
-const NOTICE_PANEL = '#FDF6E8';
+// Moderation notices, from the Email Template page: sand and gold when something
+// is taken away, pale green when it is given back.
+const NOTICE_TONES = {
+  removed: { band: '#F3E6C4', border: '#EAD08A', accent: '#9A7424', panel: '#FDF6E8' },
+  restored: { band: '#E8F0E4', border: '#B8D4B0', accent: '#3A6B30', panel: '#F2F8F0' },
+};
+export type NoticeTone = keyof typeof NOTICE_TONES;
 
 /**
  * Wraps email body HTML in the branded Kinkané shell:
@@ -24,9 +26,11 @@ const NOTICE_PANEL = '#FDF6E8';
  *
  * Pass `notice` for moderation notices: the hero band turns from yellow to the
  * muted sand of the design and carries a small eyebrow ("COMMUNITY NOTICE")
- * above the title, so a notice never reads like good news.
+ * above the title, so a notice never reads like good news. `tone: 'restored'`
+ * turns it pale green instead, for the notices that undo one.
  */
-export function emailLayout(title: string, body: string, unsubscribeUrl?: string, notice?: { eyebrow: string }): string {
+export function emailLayout(title: string, body: string, unsubscribeUrl?: string, notice?: { eyebrow: string; tone?: NoticeTone }): string {
+  const tone = NOTICE_TONES[notice?.tone ?? 'removed'];
   const footerLinks = unsubscribeUrl
     ? `<a href="${BASE_URL}/privacy" style="font-family:${SANS};font-size:12px;color:#52514E;text-decoration:underline;">Privacy Notice</a>
                 <span style="color:#C5C5C4;margin:0 8px;">&middot;</span>
@@ -60,8 +64,8 @@ export function emailLayout(title: string, body: string, unsubscribeUrl?: string
 
           <!-- Hero band -->
           <tr>
-            <td style="background-color:${notice ? NOTICE_BAND : '#FFF18A'};padding:24px 40px;text-align:center;${notice ? `border-bottom:1px solid ${NOTICE_BORDER};` : ''}">
-              ${notice ? `<p style="margin:0 0 8px;font-family:${SANS};font-size:11px;font-weight:500;letter-spacing:2.4px;text-transform:uppercase;color:${NOTICE_ACCENT};line-height:16px;">${notice.eyebrow}</p>` : ''}<h1 style="margin:0;font-family:Georgia,'Times New Roman',serif;font-size:24px;font-weight:400;color:#262626;line-height:32px;">${title}</h1>
+            <td style="background-color:${notice ? tone.band : '#FFF18A'};padding:24px 40px;text-align:center;${notice ? `border-bottom:1px solid ${tone.border};` : ''}">
+              ${notice ? `<p style="margin:0 0 8px;font-family:${SANS};font-size:11px;font-weight:500;letter-spacing:2.4px;text-transform:uppercase;color:${tone.accent};line-height:16px;">${notice.eyebrow}</p>` : ''}<h1 style="margin:0;font-family:Georgia,'Times New Roman',serif;font-size:24px;font-weight:400;color:#262626;line-height:32px;">${title}</h1>
             </td>
           </tr>
 
@@ -102,14 +106,14 @@ export function greeting(name: string): string {
  * Divider + sign-off section — always ends with "The Kinkané Team".
  * `disclaimer` renders in small muted text (disclaimers, security notes, closings like "Happy reading,").
  */
-export function signOff(disclaimer?: string): string {
+export function signOff(disclaimer?: string, team = 'The Kinkané Team'): string {
   const disclaimerHtml = disclaimer
     ? `<p style="margin:0 0 12px;font-family:${SANS};font-size:12px;font-weight:400;line-height:19.5px;color:rgba(82,81,78,0.70);">${disclaimer}</p>`
     : '';
   return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width:100%;margin-top:20px;border-top:1px solid #E8E8E7;">
     <tr>
       <td style="padding-top:32px;">
-        ${disclaimerHtml}<p style="margin:0;font-family:${SANS};font-size:14px;font-weight:400;line-height:20px;color:#52514E;">The Kinkané Team</p>
+        ${disclaimerHtml}<p style="margin:0;font-family:${SANS};font-size:14px;font-weight:400;line-height:20px;color:#52514E;">${team}</p>
       </td>
     </tr>
   </table>`;
@@ -157,34 +161,39 @@ export function quoteBlock(text: string): string {
  * REMOVED", "WHAT THIS MEANS") over `inner`, which is noticeDetails or
  * noticeBullets.
  */
-export function noticePanel(label: string, inner: string): string {
-  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width:100%;margin:4px 0 24px;background-color:${NOTICE_PANEL};border:1px solid ${NOTICE_BORDER};border-radius:6px;">
+export function noticePanel(label: string, inner: string, toneName: NoticeTone = 'removed'): string {
+  const tone = NOTICE_TONES[toneName];
+  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width:100%;margin:4px 0 24px;background-color:${tone.panel};border:1px solid ${tone.border};border-radius:6px;">
     <tr>
       <td style="padding:20px 24px;">
-        <p style="margin:0 0 14px;font-family:${SANS};font-size:11px;font-weight:500;letter-spacing:2.4px;text-transform:uppercase;color:${NOTICE_ACCENT};line-height:16px;">${label}</p>
+        <p style="margin:0 0 14px;font-family:${SANS};font-size:11px;font-weight:500;letter-spacing:2.4px;text-transform:uppercase;color:${tone.accent};line-height:16px;">${label}</p>
         ${inner}
       </td>
     </tr>
   </table>`;
 }
 
-/** Label-over-value rows for noticePanel ("Type", "Submitted on"). Values are escaped. */
-export function noticeDetails(rows: { label: string; value: string }[]): string {
+/**
+ * Label-over-value rows for noticePanel ("Type", "Submitted on"). Values are
+ * escaped; `accent` colours a value in the tone's accent ("Restored").
+ */
+export function noticeDetails(rows: { label: string; value: string; accent?: NoticeTone }[]): string {
   return rows
     .map(
       (r, i) => `<p style="margin:0;font-family:${SANS};font-size:11px;color:rgba(82,81,78,0.70);line-height:16px;">${escapeHtml(r.label)}</p>
-        <p style="margin:2px 0 ${i === rows.length - 1 ? 0 : 12}px;font-family:${SANS};font-size:14px;color:#262626;line-height:20px;">${escapeHtml(r.value)}</p>`,
+        <p style="margin:2px 0 ${i === rows.length - 1 ? 0 : 12}px;font-family:${SANS};font-size:14px;color:${r.accent ? NOTICE_TONES[r.accent].accent : '#262626'};line-height:20px;">${escapeHtml(r.value)}</p>`,
     )
     .join('\n');
 }
 
 /** Gold-dotted bullet list for noticePanel. Items are escaped. */
-export function noticeBullets(items: string[]): string {
+export function noticeBullets(items: string[], toneName: NoticeTone = 'removed'): string {
+  const tone = NOTICE_TONES[toneName];
   return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width:100%;">
     ${items
       .map(
         (item) => `<tr>
-      <td style="width:18px;vertical-align:top;padding:0 0 10px;font-family:${SANS};font-size:14px;line-height:22px;color:${NOTICE_ACCENT};">&bull;</td>
+      <td style="width:18px;vertical-align:top;padding:0 0 10px;font-family:${SANS};font-size:14px;line-height:22px;color:${tone.accent};">&bull;</td>
       <td style="vertical-align:top;padding:0 0 10px;font-family:${SANS};font-size:14px;line-height:22px;color:#262626;">${escapeHtml(item)}</td>
     </tr>`,
       )
@@ -269,4 +278,9 @@ export function bookCard(
       </td>
     </tr>
   </table>`;
+}
+
+/** An inline, underlined mailto link to `email`, for "reach us at …". */
+export function contactLink(email: string): string {
+  return `<a href="mailto:${escapeHtml(email)}" style="color:#262626;text-decoration:underline;">${escapeHtml(email)}</a>`;
 }

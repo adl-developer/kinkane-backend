@@ -241,6 +241,14 @@ describeIfDb('the moderation screen', () => {
     expect(await moderation.unhide(first.id)).toMatchObject({ hidden: false, changed: true });
     expect(await community.getPost(postId, ama)).toMatchObject({ isPublic: true });
     expect(await community.getPost(postId, kofi)).toMatchObject({ isPublic: true });
+    expect(enqueueEmail).toHaveBeenCalledWith('content-restored', expect.objectContaining({
+      to: `${EMAIL_PREFIX}kofi@example.com`, kind: 'review', visible: true,
+    }));
+
+    // Unhiding again emails nobody.
+    enqueueEmail.mockClear();
+    expect(await moderation.unhide(first.id)).toMatchObject({ changed: false });
+    expect(enqueueEmail).not.toHaveBeenCalled();
   });
 
   it('brings a private post back private on unhide', async () => {
@@ -251,6 +259,8 @@ describeIfDb('the moderation screen', () => {
 
     expect(await status(community.getPost(postId, ama))).toBe(404);
     expect(await community.getPost(postId, kofi)).toMatchObject({ isPublic: false });
+    // Back, but private: the email must not promise the community can see it.
+    expect(enqueueEmail).toHaveBeenCalledWith('content-restored', expect.objectContaining({ kind: 'review', visible: false }));
   });
 
   it('removes a comment under a post for everyone, its author included, and from the count', async () => {
@@ -296,6 +306,7 @@ describeIfDb('the moderation screen', () => {
     try {
       await moderation.unhide(report.id);
       expect(dispatch).toHaveBeenCalledWith([{ type: 'comment', id: comment.id }]);
+      expect(enqueueEmail).toHaveBeenCalledWith('content-restored', expect.objectContaining({ kind: 'comment', visible: true }));
     } finally {
       dispatch.mockRestore();
     }
@@ -331,8 +342,11 @@ describeIfDb('the moderation screen', () => {
     expect(emails).toEqual([{ to: `${EMAIL_PREFIX}kofi@example.com`, name: 'Kofi', groupName: 'Night Readers' }]);
     expect((await queueRow(first.id))?.reportedGroup).toMatchObject({ blacklisted: true });
 
-    expect(await moderation.unblacklistGroup(first.id)).toMatchObject({ blacklisted: false, changed: true });
+    expect(await moderation.unblacklistGroup(first.id)).toMatchObject({ blacklisted: false, changed: true, emailed: 1 });
     expect(await status(groupsService.get(group.id, esi))).toBe('ok');
+    expect(enqueueEmail).toHaveBeenCalledWith('group-restored', { to: `${EMAIL_PREFIX}kofi@example.com`, name: 'Kofi', groupName: 'Night Readers' });
+    // Lifting again changes nothing and emails nobody.
+    expect(await moderation.unblacklistGroup(first.id)).toMatchObject({ changed: false, emailed: 0 });
   });
 
   it('refuses to blacklist a group from a report about a person', async () => {
