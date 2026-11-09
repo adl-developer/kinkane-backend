@@ -140,12 +140,11 @@ export const checkoutService = {
    * (see resolvePrice) so a crafted request can't subscribe at a price of its
    * own choosing.
    *
-   * During the launch window the session is created against the Founding
-   * Member price. The rollover to standard pricing after the first term is set
-   * up separately, in the checkout.session.completed handler — a Stripe
-   * subscription schedule can only be attached to a subscription that already
-   * exists, and at this point it doesn't. See attachFoundingSchedule in
-   * webhooks.service.ts.
+   * Inside the buyer's founding window (sign-up + FOUNDING_PERIOD_MONTHS) the
+   * session is created against the Founding Member price, and the window's end
+   * is stamped on the subscription's metadata. The rollover to standard is
+   * attached later, from invoice.paid, once a renewal would land after that
+   * date — see scheduleFoundingRollover.
    */
   async createCheckoutSession(
     userId: number,
@@ -172,7 +171,8 @@ export const checkoutService = {
     }
 
     const customerId = await this.ensureStripeCustomer(userId);
-    const { priceId, standardPriceId, isFounding } = resolvePrice(plan);
+    const foundingEndsAt = await subscriptionStateService.foundingEndsAt(userId);
+    const { priceId, standardPriceId, isFounding } = resolvePrice(plan, foundingEndsAt);
 
     const session = await stripe().checkout.sessions.create({
       mode: 'subscription',
@@ -184,7 +184,12 @@ export const checkoutService = {
       client_reference_id: String(userId),
       metadata: { userId: String(userId), plan },
       subscription_data: {
-        metadata: { userId: String(userId), plan, isFounding: String(isFounding) },
+        metadata: {
+          userId: String(userId),
+          plan,
+          isFounding: String(isFounding),
+          ...(isFounding && foundingEndsAt && { foundingEndsAt: foundingEndsAt.toISOString() }),
+        },
       },
       success_url: successUrl ?? config.stripe.checkoutSuccessUrl,
       cancel_url: cancelUrl ?? config.stripe.checkoutCancelUrl,
@@ -238,7 +243,7 @@ export const checkoutService = {
    * anything hardcoded here — the amounts live in exactly one place, and a
    * price change in the dashboard doesn't need a deploy.
    */
-  async listPlans(): Promise<{
+  async listPlans(userId: number): Promise<{
     foundingOfferActive: boolean;
     foundingOfferEndsAt: Date | null;
     plans: Array<{
@@ -253,10 +258,11 @@ export const checkoutService = {
   }> {
     assertStripeConfigured();
 
-    const founding = isFoundingWindowOpen();
+    const foundingEndsAt = await subscriptionStateService.foundingEndsAt(userId);
+    const founding = isFoundingWindowOpen(foundingEndsAt);
     const plans = await Promise.all(
       (['monthly', 'annual'] as const).map(async (plan) => {
-        const { priceId, standardPriceId, isFounding } = resolvePrice(plan);
+        const { priceId, standardPriceId, isFounding } = resolvePrice(plan, foundingEndsAt);
         const price = await stripe().prices.retrieve(priceId);
         // Only worth a second API call when the two differ.
         const standard =
@@ -276,7 +282,7 @@ export const checkoutService = {
 
     return {
       foundingOfferActive: founding,
-      foundingOfferEndsAt: config.stripe.foundingOfferEndsAt ?? null,
+      foundingOfferEndsAt: founding ? foundingEndsAt : null,
       plans,
     };
   },
@@ -472,7 +478,7 @@ export const checkoutService = {
    *
    * The request that always follows cancellation. Without it the only way back
    * is a fresh checkout, which for a user who cancelled by accident means a new
-   * subscription, a new billing date, and — during the launch window — the loss
+   * subscription, a new billing date, and — once their founding window has closed — the loss
    * of their Founding Member price.
    */
   async reactivate(userId: number): Promise<CancellationResult> {
@@ -507,19 +513,12 @@ export const checkoutService = {
     });
 
     // A founding member who cancelled had their schedule released to make the
-    // cancellation possible. If they reactivate, we may need to reattach the
-    // rollover — but only if the founding window has already closed. While the
-    // window is still open, founding pricing continues indefinitely without any
-    // schedule, and the rollover gets attached later by the invoice.paid
-    // webhook when the window has actually shut. Attaching too early would
-    // schedule a rollover that shouldn't happen yet.
-    if (sub.isFoundingMember && !isFoundingWindowOpen()) {
-      // Pass the just-updated subscription rather than its id, so
-      // scheduleFoundingRollover uses the version with `cancel_at_period_end`
-      // already cleared — a schedule created from a subscription inherits the
-      // cancellation behaviour of whatever version Stripe reads.
-      await schedulesService.scheduleFoundingRollover(updated, userId);
-    }
+    // cancellation possible, so reattach the rollover. scheduleFoundingRollover
+    // only acts when the next renewal falls after their founding window, so
+    // this is a no-op for anyone else. Pass the just-updated subscription
+    // rather than its id: a schedule created from a subscription inherits the
+    // cancellation behaviour of whatever version Stripe reads.
+    await schedulesService.scheduleFoundingRollover(updated, userId);
 
     const state = await subscriptionStateService.applyState(
       userId,
@@ -611,14 +610,11 @@ export const checkoutService = {
 
       // Picking their current plan again undoes an earlier pending switch.
       // releaseFrom detaches the entire schedule — including any
-      // founding-to-standard rollover that was part of it — so if the user
-      // is a founding member past the offer window, reattach the rollover
-      // immediately or they'd keep the founding price with no rollover at
-      // all, indefinitely.
+      // founding-to-standard rollover that was part of it — so reattach the
+      // rollover (a no-op unless it's due) or a founding member would keep the
+      // founding price indefinitely.
       await schedulesService.releaseFrom(sub.stripeSubscriptionId, userId);
-      if (sub.isFoundingMember && !isFoundingWindowOpen()) {
-        await schedulesService.scheduleFoundingRollover(sub.stripeSubscriptionId, userId);
-      }
+      await schedulesService.scheduleFoundingRollover(sub.stripeSubscriptionId, userId);
 
       const state = await subscriptionStateService.applyState(
         userId,
@@ -648,12 +644,7 @@ export const checkoutService = {
       };
     }
 
-    await schedulesService.schedulePlanChange(
-      sub.stripeSubscriptionId,
-      userId,
-      plan,
-      sub.isFoundingMember,
-    );
+    await schedulesService.schedulePlanChange(sub.stripeSubscriptionId, userId, plan);
 
     const state = await subscriptionStateService.applyState(
       userId,

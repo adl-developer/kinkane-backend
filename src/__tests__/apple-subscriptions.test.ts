@@ -97,6 +97,8 @@ function snapshot(overrides: {
   appAccountToken?: string;
   revocationDate?: number;
   purchaseDate?: number;
+  offerType?: number;
+  offerIdentifier?: string;
 } = {}): AppleSubscriptionSnapshot {
   return {
     environment: 'Production',
@@ -112,6 +114,8 @@ function snapshot(overrides: {
       currency: 'USD',
       appAccountToken: overrides.appAccountToken,
       revocationDate: overrides.revocationDate,
+      offerType: overrides.offerType,
+      offerIdentifier: overrides.offerIdentifier,
     },
     renewal: {
       originalTransactionId: OTID,
@@ -288,13 +292,31 @@ describe('verifyPurchase', () => {
     expect(written()).toMatchObject({ tier: 'plus', plan: 'annual', priceId: ANNUAL_FOUNDING, isFoundingMember: true });
   });
 
-  it('keeps the founding flag when the same purchase renews onto the standard product', async () => {
+  // Founding Member means "paying a founding price right now".
+  it('drops the founding flag when the same purchase renews onto the standard product', async () => {
     getSubscription.mockResolvedValue(snapshot({ productId: MONTHLY }));
     get.mockResolvedValue({ ...TRIALING, status: 'active', plan: 'monthly', billingProvider: 'apple', appleOriginalTransactionId: OTID, isFoundingMember: true });
     const { service } = await load();
 
     await service.verifyPurchase(7, OTID);
-    expect(written()).toMatchObject({ plan: 'monthly', isFoundingMember: true });
+    expect(written()).toMatchObject({ plan: 'monthly', isFoundingMember: false });
+  });
+
+  it('marks a purchase under a founding promotional offer as a founding member', async () => {
+    getSubscription.mockResolvedValue(snapshot({ productId: MONTHLY, offerType: 2, offerIdentifier: 'founding_monthly_2m' }));
+    const { service } = await load();
+
+    await service.verifyPurchase(7, '2000000999999999');
+    expect(written()).toMatchObject({ plan: 'monthly', priceId: MONTHLY, isFoundingMember: true });
+  });
+
+  it('drops the flag on the first renewal after the founding offer ends', async () => {
+    getSubscription.mockResolvedValue(snapshot({ productId: MONTHLY }));
+    get.mockResolvedValue({ ...TRIALING, status: 'active', plan: 'monthly', billingProvider: 'apple', appleOriginalTransactionId: OTID, isFoundingMember: true, priceId: MONTHLY });
+    const { service } = await load();
+
+    await service.verifyPurchase(7, OTID);
+    expect(written()).toMatchObject({ isFoundingMember: false });
   });
 
   it('does not mark a standard App Store purchase as a founding member', async () => {
@@ -361,7 +383,7 @@ describe('verifyPurchase', () => {
     await service.verifyPurchase(7, OTID);
     expect(events()).toEqual(['plan_changed']);
     expect(eventsInserted[0]).toMatchObject({ reason: expect.stringContaining(`from ${MONTHLY_FOUNDING} to ${MONTHLY}`) });
-    expect(written()).toMatchObject({ priceId: MONTHLY, isFoundingMember: true });
+    expect(written()).toMatchObject({ priceId: MONTHLY, isFoundingMember: false });
   });
 
   it('records no product change when the product is the same', async () => {

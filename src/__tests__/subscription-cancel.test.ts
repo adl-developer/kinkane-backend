@@ -44,6 +44,7 @@ vi.mock('../lib/stripe', () => ({
   planForPriceId: () => 'monthly',
   isFoundingPriceId: (priceId: string | null | undefined) => priceId === 'price_monthly_founding',
   isFoundingWindowOpen: () => false,
+  foundingTermOf: () => ({ endsAt: foundingEndsAt, legacy: false }),
 }));
 
 vi.mock('../services/subscriptions/state.service', () => ({
@@ -125,6 +126,12 @@ beforeEach(() => {
 });
 
 afterEach(() => vi.restoreAllMocks());
+
+// The subscriber's founding window end; null = already closed.
+let foundingEndsAt: Date | null = null;
+beforeEach(() => {
+  foundingEndsAt = null;
+});
 
 describe('cancel', () => {
   // The single most important assertion in this file. `cancel_at_period_end`
@@ -306,6 +313,18 @@ describe('reactivate', () => {
       'sub_sched_2',
       expect.objectContaining({ end_behavior: 'release' }),
     );
+  });
+
+  // The rollover waits for the first renewal on or after the window's end.
+  it('does not attach the rollover while the next renewal is still inside the founding window', async () => {
+    foundingEndsAt = new Date('2026-10-01T00:00:00Z'); // after PERIOD_END
+    getCurrent.mockResolvedValue({ ...FOUNDING, cancelAtPeriodEnd: true });
+    stripeUpdate.mockResolvedValue(stripeSubscription(null, 'price_monthly_founding'));
+    const service = await loadService();
+
+    await service.reactivate(7);
+
+    expect(scheduleCreate).not.toHaveBeenCalled();
   });
 
   it('does not attach a schedule for an ordinary subscriber', async () => {

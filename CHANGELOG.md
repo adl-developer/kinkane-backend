@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-11-09
+
+### Features
+
+* give every account the founding price for its first three months ([95b5c65](https://adl.github.com/adl-developer/kinkane-backend/commit/95b5c652c045b91f1642b157e9b98cde4bce45c7)) — [details](changelog/2026-11-09-founding-price-per-account.md)
+
+
 ## 2026-11-07
 
 ### Features

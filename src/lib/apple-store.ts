@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import { config } from '../config';
+import { addMonths } from './stripe';
 import type { SubscriptionPlan, SubscriptionStatus, SubscriptionTier } from '../db/schema';
 
 /**
@@ -49,7 +50,13 @@ export interface AppleTransaction {
   price?: number;
   currency?: string;
   environment?: AppleEnvironment;
+  /** 1 introductory, 2 promotional, 3 offer code, 4 win-back. Set on every period the offer covers. */
+  offerType?: number;
+  offerIdentifier?: string;
 }
+
+/** offerType for a promotional offer — the kind the founding offers are. */
+const PROMOTIONAL_OFFER = 2;
 
 /** The fields of JWSRenewalInfoDecodedPayload this server reads. */
 export interface AppleRenewalInfo {
@@ -128,6 +135,70 @@ export function planForAppleProduct(productId: string | null | undefined): Subsc
 /** Whether an App Store product id is one of the Founding Member products. */
 export function isFoundingAppleProduct(productId: string | null | undefined): boolean {
   return appleProduct(productId)?.founding ?? false;
+}
+
+/**
+ * The founding promotional offers, by plan. They must exist in App Store
+ * Connect under these identifiers: monthly has one per possible length (1..N
+ * months, N = FOUNDING_PERIOD_MONTHS) so the founding price can stop at the
+ * first renewal after the buyer's window, as on Stripe; annual has one that
+ * covers the first year.
+ */
+export function foundingAppleOfferId(plan: SubscriptionPlan, months = 1): string {
+  return plan === 'annual' ? 'founding_annual_1y' : `founding_monthly_${months}m`;
+}
+
+/** Whether a transaction was billed under one of the founding promotional offers. */
+export function isFoundingAppleOffer(transaction: Pick<AppleTransaction, 'offerType' | 'offerIdentifier'>): boolean {
+  const id = transaction.offerIdentifier;
+  return (
+    transaction.offerType === PROMOTIONAL_OFFER &&
+    Boolean(id && (id === foundingAppleOfferId('annual') || /^founding_monthly_\d+m$/.test(id)))
+  );
+}
+
+/**
+ * Which founding offer a buyer gets now: monthly covers every renewal that
+ * starts before their window closes, annual the first year. Null once the
+ * window has closed.
+ */
+export function foundingAppleOfferFor(
+  plan: SubscriptionPlan,
+  windowEndsAt: Date | null,
+  now: Date = new Date(),
+): string | null {
+  if (!windowEndsAt || now >= windowEndsAt) return null;
+  if (plan === 'annual') return foundingAppleOfferId('annual');
+  let months = 1;
+  while (addMonths(now, months) < windowEndsAt) months += 1;
+  return foundingAppleOfferId('monthly', Math.min(months, config.stripe.foundingPeriodMonths));
+}
+
+export interface SignedAppleOffer {
+  productId: string;
+  offerId: string;
+  keyId: string;
+  nonce: string;
+  timestamp: number;
+  signature: string;
+  appAccountToken: string;
+}
+
+/**
+ * Signs a promotional offer for StoreKit, with the same In-App Purchase key the
+ * App Store Server API uses. Apple's format: the fields joined by U+2063,
+ * ECDSA P-256 / SHA-256, DER signature in base64.
+ */
+export function signAppleOffer(productId: string, offerId: string, appAccountToken: string): SignedAppleOffer {
+  assertAppleConfigured();
+  const { bundleId, keyId, privateKey } = config.apple;
+  const nonce = crypto.randomUUID();
+  const timestamp = Date.now();
+  const payload = [bundleId, keyId, productId, offerId, appAccountToken.toLowerCase(), nonce, timestamp].join(
+    '\u2063',
+  );
+  const signature = crypto.sign('sha256', Buffer.from(payload, 'utf8'), privateKey!).toString('base64');
+  return { productId, offerId, keyId: keyId!, nonce, timestamp, signature, appAccountToken };
 }
 
 /**

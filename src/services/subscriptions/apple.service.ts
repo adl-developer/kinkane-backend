@@ -2,13 +2,17 @@ import { eq, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { users, subscriptionEvents, appleNotificationEvents } from '../../db/schema';
 import { getBillingProvider } from '../../db/schema';
-import type { UserSubscription, NewSubscriptionEvent } from '../../db/schema';
+import type { UserSubscription, NewSubscriptionEvent, SubscriptionPlan } from '../../db/schema';
 import { config } from '../../config';
 import {
   appleStore,
   appAccountTokenFor,
   decodeJws,
+  foundingAppleOfferFor,
+  isFoundingAppleOffer,
   isFoundingAppleProduct,
+  signAppleOffer,
+  type SignedAppleOffer,
   mapAppleStatus,
   planForAppleProduct,
   type AppleNotificationPayload,
@@ -113,6 +117,22 @@ function eventForNotification(
 }
 
 export const appleSubscriptionsService = {
+  /**
+   * POST /user/subscription/apple/offer — the signed founding promotional offer
+   * the app attaches to an App Store purchase of `plan`, or null once this
+   * user's founding window has closed (they buy at the standard price).
+   */
+  async foundingOffer(userId: number, plan: SubscriptionPlan): Promise<SignedAppleOffer | null> {
+    const productId = config.apple.products[plan];
+    if (!productId) throw httpError('App Store purchases are not available right now', 503, 'APPLE_IAP_UNAVAILABLE');
+    // Refuse before StoreKit charges them, rather than in /apple/verify after.
+    if (hasLiveStripe(await subscriptionStateService.getCurrent(userId))) {
+      throw httpError('You already have Kinkané Plus through the website', 409, 'STRIPE_SUBSCRIPTION_ACTIVE');
+    }
+    const offerId = foundingAppleOfferFor(plan, await subscriptionStateService.foundingEndsAt(userId));
+    return offerId ? signAppleOffer(productId, offerId, appAccountTokenFor(userId)) : null;
+  },
+
   /**
    * POST /user/subscription/apple/verify — the app has just completed (or
    * restored) a purchase and hands us its transaction id. Asks Apple for the
@@ -396,18 +416,27 @@ export const appleSubscriptionsService = {
       !planChanged &&
       Boolean(existing?.priceId && plan && existing.priceId !== transaction.productId);
 
-    // Founding Member comes from buying a founding ("Early") product while the
-    // offer is open — FOUNDING_OFFER_ENDS_AT, the same window Stripe checkout
-    // honours — judged by when this purchase was made, so a founding product
-    // still on sale after the window grants nothing. The flag then stays while
-    // this chain keeps running, including after it renews onto a standard
-    // product, as a Stripe founding member keeps it after the price rolls over.
-    // It is not carried onto a different chain (Stripe's included), nor back
-    // onto this one after it ended and was resubscribed.
+    // Founding Member means "paying a founding price right now". Apple stamps
+    // the founding promotional offer on every period it covers, so the flag
+    // drops on the first renewal after it. Legacy: a founding ("Early")
+    // product bought while the old launch-wide window (FOUNDING_OFFER_ENDS_AT)
+    // was open stays founding while this chain is on it.
     const purchasedAt = transaction.purchaseDate ? new Date(transaction.purchaseDate) : new Date();
     const isFoundingMember =
-      (isFoundingAppleProduct(transaction.productId) && isFoundingWindowOpen(purchasedAt)) ||
-      (wasRunningHere && existing?.isFoundingMember === true);
+      isFoundingAppleOffer(transaction) ||
+      (isFoundingAppleProduct(transaction.productId) &&
+        (isFoundingWindowOpen(config.stripe.legacyFoundingEndsAt, purchasedAt) ||
+          (wasRunningHere && existing?.isFoundingMember === true)));
+    // Founding is sold as promotional offers now, so a fresh "Early" purchase
+    // means one is still on sale (or an old build lists it). Apple keeps billing
+    // it at the founding price with no end, which only App Store Connect can stop.
+    if (converted && isFoundingAppleProduct(transaction.productId)) {
+      logger.error('New App Store purchase of an Early product — take it off sale in App Store Connect', {
+        userId,
+        originalTransactionId,
+        productId: transaction.productId,
+      });
+    }
     const notificationEvent = ctx.notification
       ? eventForNotification(ctx.notification, transaction)
       : null;

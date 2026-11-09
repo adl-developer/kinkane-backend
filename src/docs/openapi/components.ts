@@ -1173,14 +1173,21 @@ const commerceSchemas = {
       cancelAtPeriodEnd: { type: 'boolean', example: false },
       isFoundingMember: {
         type: 'boolean',
-        description: 'Locked in at the launch price. Lost if they cancel and resubscribe later.',
+        description: 'True while this user is paying a founding price; false from the first renewal at the standard price.',
         example: true,
       },
       hasBillingAccount: { type: 'boolean', example: true },
       foundingOfferActive: {
         type: 'boolean',
-        description: 'Whether the launch window is still open for *new* subscribers.',
+        description: 'Whether this user is still inside their founding window (their first `FOUNDING_PERIOD_MONTHS` months after sign-up, 3 by default), so a new purchase gets the founding price.',
         example: false,
+      },
+      foundingOfferEndsAt: {
+        type: 'string',
+        format: 'date-time',
+        nullable: true,
+        description: 'When this user’s founding window closes. Null once it has.',
+        example: '2027-02-09T10:00:00.000Z',
       },
       paymentsAvailable: {
         type: 'boolean',

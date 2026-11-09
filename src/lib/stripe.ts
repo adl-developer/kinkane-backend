@@ -54,14 +54,51 @@ export function stripe(): Stripe {
 
 // ── Founding Member pricing ────────────────────────────────────────────────────
 
+/** Adds calendar months in UTC, clamped to month end (31 Jan + 1 = 28/29 Feb). */
+export function addMonths(date: Date, months: number): Date {
+  const d = new Date(date);
+  const day = d.getUTCDate();
+  d.setUTCDate(1);
+  d.setUTCMonth(d.getUTCMonth() + months);
+  const lastDay = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
+  d.setUTCDate(Math.min(day, lastDay));
+  return d;
+}
+
 /**
- * Whether the launch promotion is still running. Founding pricing is expressed
- * as its own Stripe Prices rather than a coupon, so that what a subscriber is
- * paying is always readable from the subscription itself.
+ * When an account's founding window closes: sign-up plus FOUNDING_PERIOD_MONTHS.
+ * Null when the offer is switched off.
  */
-export function isFoundingWindowOpen(now: Date = new Date()): boolean {
-  const endsAt = config.stripe.foundingOfferEndsAt;
+export function foundingWindowEndsAt(signedUpAt: Date): Date | null {
+  const months = config.stripe.foundingPeriodMonths;
+  return months > 0 ? addMonths(signedUpAt, months) : null;
+}
+
+/**
+ * Whether a founding window is still open. Founding pricing is expressed as its
+ * own Stripe Prices rather than a coupon, so that what a subscriber is paying
+ * is always readable from the subscription itself.
+ */
+export function isFoundingWindowOpen(endsAt: Date | null | undefined, now: Date = new Date()): boolean {
   return Boolean(endsAt && now < endsAt);
+}
+
+/**
+ * The founding window a Stripe subscription was sold under. Checkout stamps its
+ * end into the subscription's metadata; a subscription without one was bought
+ * under the old launch-wide window (`legacy`) and keeps that window's end date
+ * and that rule's timing.
+ */
+export function foundingTermOf(subscription: Pick<Stripe.Subscription, 'metadata'>): {
+  endsAt: Date | null;
+  legacy: boolean;
+} {
+  const stamped = subscription.metadata?.foundingEndsAt;
+  if (stamped) {
+    const date = new Date(stamped);
+    if (!Number.isNaN(date.getTime())) return { endsAt: date, legacy: false };
+  }
+  return { endsAt: config.stripe.legacyFoundingEndsAt ?? null, legacy: true };
 }
 
 export interface ResolvedPrice {
@@ -77,12 +114,17 @@ export interface ResolvedPrice {
  * ('monthly' | 'annual') — it can never hand us a price id, which is what stops
  * a crafted request from buying Plus at a price of its own choosing.
  *
- * Founding Members get the introductory price for their first term only; the
- * rollover to standard pricing is set up as a Stripe subscription schedule at
- * checkout (see subscriptions/checkout.service.ts), which is why the standard
- * price id comes back alongside it.
+ * `foundingEndsAt` is the buyer's founding window (see foundingWindowEndsAt):
+ * inside it they get the founding price, and the rollover to standard is
+ * attached as a Stripe subscription schedule once a renewal would land after
+ * it (see scheduleFoundingRollover), which is why the standard price id comes
+ * back alongside it.
  */
-export function resolvePrice(plan: SubscriptionPlan, now: Date = new Date()): ResolvedPrice {
+export function resolvePrice(
+  plan: SubscriptionPlan,
+  foundingEndsAt: Date | null,
+  now: Date = new Date(),
+): ResolvedPrice {
   const { prices } = config.stripe;
   const standardPriceId = plan === 'monthly' ? prices.monthly : prices.annual;
 
@@ -97,7 +139,7 @@ export function resolvePrice(plan: SubscriptionPlan, now: Date = new Date()): Re
 
   // A founding window with no founding price configured is a misconfiguration,
   // not a reason to charge someone the wrong amount — fall back to standard.
-  if (isFoundingWindowOpen(now) && foundingPriceId) {
+  if (isFoundingWindowOpen(foundingEndsAt, now) && foundingPriceId) {
     return { priceId: foundingPriceId, standardPriceId, isFounding: true };
   }
 

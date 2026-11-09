@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import express from 'express';
 import { requireAuth } from '../middleware/auth.middleware';
 import { wrap, wrapHttp } from '../lib/route-helpers';
-import { checkoutLimiter } from '../middleware/rate-limit.middleware';
+import { checkoutLimiter, appleOfferLimiter } from '../middleware/rate-limit.middleware';
 import { subscriptionsController } from '../controllers/subscriptions.controller';
 
 const router = Router();
@@ -11,12 +11,15 @@ const router = Router();
  * GET /api/v1/user/subscription
  *
  * The authenticated user's current subscription — tier, status, plan, trial
- * countdown, renewal date and whether the Founding Member offer is still open.
+ * countdown, renewal date and whether this user's Founding Member offer (their
+ * first FOUNDING_PERIOD_MONTHS after sign-up) is still open, and until when.
+ * `isFoundingMember` is true only while they're paying a founding price.
  * The single source of truth for the client's paywall and account screen.
  *
  * Returns 200: { tier, status, plan, trialEndsAt, trialDaysLeft,
  *                currentPeriodEnd, cancelAtPeriodEnd, isFoundingMember,
- *                hasBillingAccount, foundingOfferActive, paymentsAvailable }
+ *                hasBillingAccount, foundingOfferActive, foundingOfferEndsAt,
+ *                paymentsAvailable }
  * Errors: 401 unauthenticated | 404 no subscription row
  */
 router.get('/', requireAuth, wrap(subscriptionsController.get));
@@ -37,9 +40,10 @@ router.get('/history', requireAuth, wrap(subscriptionsController.history));
  * GET /api/v1/user/subscription/plans
  *
  * The purchasable plans with live pricing from Stripe, so the client never
- * hardcodes an amount. During the launch window the returned amounts are the
- * Founding Member prices, with `standardAmountCents` alongside for showing the
- * saving.
+ * hardcodes an amount. Inside the user's founding window (their first
+ * FOUNDING_PERIOD_MONTHS after sign-up) the returned amounts are the Founding
+ * Member prices, with `standardAmountCents` alongside for showing the saving,
+ * and `foundingOfferEndsAt` is when that window closes.
  *
  * Returns 200: { foundingOfferActive, foundingOfferEndsAt, plans: [...] }
  * Errors: 401 unauthenticated | 503 payments not configured
@@ -124,7 +128,7 @@ router.post(
  * Undoes a scheduled cancellation while the period is still running — the
  * request that always follows a cancel button. Without it, a user who cancelled
  * by accident can only return via a fresh checkout, which means a new billing
- * date and, during the launch window, losing their Founding Member price.
+ * date and, once their founding window has closed, losing their Founding Member price.
  *
  * Returns 200: { cancelAtPeriodEnd: false, accessEndsAt, tier, status }
  * Errors: 401 unauthenticated | 404 no subscription |
@@ -132,6 +136,29 @@ router.post(
  *         elapsed and Stripe deleted it — start a new one) | 503 not configured
  */
 router.post('/reactivate', requireAuth, wrapHttp(subscriptionsController.reactivate));
+
+/**
+ * POST /api/v1/user/subscription/apple/offer
+ *
+ * The signed founding promotional offer for an App Store purchase. Inside the
+ * user's founding window the app passes it to StoreKit with the purchase
+ * (Product.PurchaseOption.promotionalOffer); `offer: null` means buy at the
+ * standard price. Fetch it right before purchasing — the signature is single
+ * use and Apple only accepts it for a short time.
+ *
+ * Body: { plan: 'monthly'|'annual' }
+ * Returns 200: { offer: { productId, offerId, keyId, nonce, timestamp,
+ *                         signature, appAccountToken } | null }
+ * Errors: 400 validation | 401 unauthenticated |
+ *         409 STRIPE_SUBSCRIPTION_ACTIVE (already paying on the web) |
+ *         429 rate limit (60/hour) | 503 APPLE_IAP_UNAVAILABLE
+ */
+router.post(
+  '/apple/offer',
+  requireAuth,
+  appleOfferLimiter,
+  wrapHttp(subscriptionsController.appleOffer),
+);
 
 /**
  * POST /api/v1/user/subscription/apple/verify
