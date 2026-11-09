@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-11-07
+
+### Features
+
+* email people when their account, group or content is restored ([1851ca9](https://adl.github.com/adl-developer/kinkane-backend/commit/1851ca9fa29d5067506c77c072c1f9328b6050d6)) — [details](changelog/2026-11-07-restored-emails.md)
+
+
 ## 2026-10-26
 
 ### Features
