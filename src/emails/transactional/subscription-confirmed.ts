@@ -33,7 +33,7 @@ export async function sendSubscriptionConfirmedEmail(
 
   const foundingLine = payload.isFounding
     ? p(
-        "As a <strong>Founding Member</strong>, you've locked in your introductory price for your first term.",
+        'As a <strong>Founding Member</strong>, you keep your introductory price while the launch offer runs. After it closes, you move to the standard price.',
       )
     : '';
 
@@ -59,7 +59,7 @@ export async function sendSubscriptionConfirmedEmail(
     ? `Your ${planLabel} membership renews on ${renewalDate}.`
     : `Your ${planLabel} membership is now active.`;
   const textFounding = payload.isFounding
-    ? "\n\nAs a Founding Member, you've locked in your introductory price for your first term."
+    ? '\n\nAs a Founding Member, you keep your introductory price while the launch offer runs. After it closes, you move to the standard price.'
     : '';
 
   await sendEmail({

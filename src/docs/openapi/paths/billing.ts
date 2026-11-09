@@ -107,7 +107,7 @@ export const billingPaths = {
               standardAmountCents: {
                 type: 'integer',
                 description: 'The non-promotional price, for showing the saving. Equal to `amountCents` outside the launch window.',
-                example: 7999,
+                example: 5999,
               },
               currency: { type: 'string', example: 'USD' },
               interval: { type: 'string', enum: ['month', 'year'], example: 'year' },
