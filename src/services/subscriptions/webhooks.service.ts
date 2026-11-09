@@ -4,7 +4,7 @@ import { db } from '../../db';
 import { users, subscriptionEvents, stripeWebhookEvents } from '../../db/schema';
 import type { SubscriptionStatus, SubscriptionPlan } from '../../db/schema';
 import { config } from '../../config';
-import { stripe, planForPriceId, isFoundingPriceId, resolvePrice, isFoundingWindowOpen } from '../../lib/stripe';
+import { stripe, planForPriceId, isFoundingPriceId, resolvePrice } from '../../lib/stripe';
 import { logger } from '../../lib/logger';
 import { enqueueEmail } from '../../lib/email-queue';
 import { subscriptionStateService } from './state.service';
@@ -345,13 +345,9 @@ export const webhooksService = {
 
     await entitlementsService.invalidate(userId);
 
-    // Deliberately NO price rollover attached here. Founding pricing continues
-    // for every renewal while the offer window is open, so no schedule is
-    // needed at signup. The rollover is scheduled from onInvoicePaid the first
-    // time a renewal is billed after the window has closed — that way, a
-    // founding member who signed up on the very last day of the window gets
-    // their whole first term at the founding price without an inadvertent
-    // early rollover.
+    // No price rollover attached here: onInvoicePaid (which also fires for
+    // this first invoice) attaches it once the next renewal would land after
+    // the subscriber's founding window.
 
     const [user] = await db
       .select({ email: users.email, name: users.name })
@@ -445,7 +441,8 @@ export const webhooksService = {
         status,
         plan,
         priceId,
-        isFoundingMember: existing?.isFoundingMember || isFoundingPriceId(priceId),
+        // Founding Member means "paying a founding price right now".
+        isFoundingMember: isFoundingPriceId(priceId),
         currentPeriodEnd: periodEnd(subscription),
         cancelAtPeriodEnd: subscription.cancel_at_period_end,
         pendingPlan: nextPendingPlan,
@@ -594,6 +591,7 @@ export const webhooksService = {
         status,
         plan: planForPriceId(priceId),
         priceId,
+        isFoundingMember: isFoundingPriceId(priceId),
         currentPeriodEnd: periodEnd(subscription),
         cancelAtPeriodEnd: subscription.cancel_at_period_end,
         stripeCustomerId,
@@ -618,13 +616,11 @@ export const webhooksService = {
 
     if (updated) await entitlementsService.invalidate(userId);
 
-    // A founding member who just renewed at the founding price, past the end
-    // of the offer window, needs a rollover set up so their NEXT renewal
-    // moves them to standard pricing. Guarded checks inside
-    // scheduleFoundingRollover mean this is a no-op for anyone else, and for
-    // a renewal that happens while the window is still open — so it's safe
-    // to run on every invoice.paid without inspecting the situation here.
-    if (isFoundingPriceId(priceId) && !isFoundingWindowOpen()) {
+    // A founding member whose next renewal lands after their founding window
+    // needs a rollover set up so that renewal bills standard. The checks
+    // inside scheduleFoundingRollover make this a no-op for anyone else, and
+    // for a renewal that still starts inside the window.
+    if (isFoundingPriceId(priceId)) {
       await schedulesService.scheduleFoundingRollover(subscription.id, userId);
     }
   },

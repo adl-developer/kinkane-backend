@@ -39,7 +39,7 @@ export const billingPaths = {
         '',
         'Two fields decide what UI to show before anything else:',
         '- **`paymentsAvailable`** — false when Stripe is not configured on this deployment. Hide purchase UI entirely rather than letting the buttons 503.',
-        '- **`foundingOfferActive`** — whether the launch pricing is still open to *new* subscribers, as distinct from `isFoundingMember`, which is whether *this* user already has it.',
+        '- **`foundingOfferActive`** / **`foundingOfferEndsAt`** — whether this user is still inside their founding window (their first 3 months after sign-up) and when it closes. Distinct from `isFoundingMember`, which is whether they are paying a founding price right now.',
         '',
         '**The trial is ours, not Stripe’s.** A `trialing` user has no Stripe subscription behind them, which is why `/cancel` returns 409 `NO_PAID_SUBSCRIPTION` for them — there is genuinely nothing to cancel.',
       ].join('\n'),
@@ -91,12 +91,12 @@ export const billingPaths = {
       tags: [TAG],
       summary: 'Get purchasable plans and live prices',
       description:
-        'Prices are read from Stripe at call time so **the client never hardcodes an amount**.\n\nDuring the launch window the returned `amountCents` are the Founding Member prices, with `standardAmountCents` alongside so the saving can be shown without a second source of truth.',
+        'Prices are read from Stripe at call time so **the client never hardcodes an amount**.\n\nInside the user’s founding window (their first 3 months after sign-up) the returned `amountCents` are the Founding Member prices, with `standardAmountCents` alongside so the saving can be shown without a second source of truth.',
       responses: {
         200: json('The available plans.',
           object({
             foundingOfferActive: { type: 'boolean', example: true },
-            foundingOfferEndsAt: { type: 'string', format: 'date-time', nullable: true, example: '2026-12-31T23:59:59.000Z' },
+            foundingOfferEndsAt: { type: 'string', format: 'date-time', nullable: true, description: 'When this user’s founding window closes; null once it has.', example: '2027-02-09T10:00:00.000Z' },
             plans: arrayOf(object({
               plan: { type: 'string', enum: ['monthly', 'annual'], example: 'annual' },
               amountCents: {
@@ -106,7 +106,7 @@ export const billingPaths = {
               },
               standardAmountCents: {
                 type: 'integer',
-                description: 'The non-promotional price, for showing the saving. Equal to `amountCents` outside the launch window.',
+                description: 'The non-promotional price, for showing the saving. Equal to `amountCents` outside the user’s founding window.',
                 example: 5999,
               },
               currency: { type: 'string', example: 'USD' },
@@ -129,7 +129,7 @@ export const billingPaths = {
       description: [
         'Creates a Stripe Checkout session and returns its URL.',
         '',
-        '**The client names a plan, never a price.** Prices are resolved server-side from `plan` plus whether the launch window is open, so a crafted request cannot choose what it pays.',
+        '**The client names a plan, never a price.** Prices are resolved server-side from `plan` plus whether the user’s founding window is open, so a crafted request cannot choose what it pays.',
         '',
         '`successUrl` and `cancelUrl` are optional overrides and **must be on the Kinkané origin** — an off-origin URL is rejected, so this cannot be turned into an open redirect.',
         '',
@@ -190,7 +190,7 @@ export const billingPaths = {
       tags: [TAG],
       summary: 'Undo a scheduled cancellation',
       description:
-        'Clears `cancelAtPeriodEnd` while the period is still running — the request that always follows a cancel button.\n\nWithout it, someone who cancelled by accident could only come back via a fresh checkout, which means a new billing date and, during the launch window, **losing their Founding Member price permanently**.',
+        'Clears `cancelAtPeriodEnd` while the period is still running — the request that always follows a cancel button.\n\nWithout it, someone who cancelled by accident could only come back via a fresh checkout, which means a new billing date and, once their founding window has closed, **losing their Founding Member price permanently**.',
       responses: {
         200: json('Reactivated; billing continues as before.',
           object({
@@ -264,6 +264,46 @@ export const billingPaths = {
         429: resp('RateLimited'),
         503: resp('PaymentsUnavailable'),
         500: resp('ServerError'),
+      },
+    },
+  },
+
+  '/api/v1/user/subscription/apple/offer': {
+    post: {
+      tags: [TAG],
+      summary: 'Get the signed founding offer for an App Store purchase',
+      description: [
+        'Inside the user’s founding window (their first 3 months after sign-up) this returns a signed **promotional offer** for the plan; pass it to StoreKit with the purchase (`Product.PurchaseOption.promotionalOffer(offerID:keyID:nonce:signature:timestamp:)`) together with `appAccountToken`. Apple bills the founding price for the periods the offer covers, then the standard price.',
+        '',
+        'Monthly gets founding pricing on every renewal that starts before the window closes; annual gets it for the first year.',
+        '',
+        '`offer: null` means the window has closed: buy at the standard price with no offer. Fetch this right before purchasing — Apple only accepts a signature for a short time.',
+        '',
+        '**Rate limit:** 20 per hour.',
+      ].join('\n'),
+      requestBody: body(object({
+        plan: { type: 'string', enum: ['monthly', 'annual'], example: 'monthly' },
+      }, ['plan'])),
+      responses: {
+        200: json('The offer, or null.', object({
+          offer: {
+            type: 'object',
+            nullable: true,
+            properties: {
+              productId: { type: 'string', example: 'app.kinkane.plus.monthly' },
+              offerId: { type: 'string', example: 'founding_monthly_3m' },
+              keyId: { type: 'string', example: 'ABC123DEFG' },
+              nonce: { type: 'string', format: 'uuid' },
+              timestamp: { type: 'integer', description: 'Milliseconds since the epoch.', example: 1762682400000 },
+              signature: { type: 'string', description: 'Base64.' },
+              appAccountToken: { type: 'string', format: 'uuid' },
+            },
+          },
+        })),
+        400: json('`plan` missing or invalid.', ref('ValidationError')),
+        401: resp('Unauthorized'),
+        429: resp('RateLimited'),
+        503: resp('AppleIapUnavailable'),
       },
     },
   },

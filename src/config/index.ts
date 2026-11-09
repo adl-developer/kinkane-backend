@@ -295,10 +295,14 @@ const envSchema = z.object({
   STRIPE_PRICE_PLUS_ANNUAL: z.string().min(1).optional(),
   STRIPE_PRICE_PLUS_MONTHLY_FOUNDING: z.string().min(1).optional(),
   STRIPE_PRICE_PLUS_ANNUAL_FOUNDING: z.string().min(1).optional(),
-  // While NOW() is before this, checkout uses the Founding Member prices and
-  // schedules a rollover to standard pricing after the first term. Unset means
-  // the launch promotion is over (or hasn't been configured), and everyone
-  // gets standard pricing.
+  // Every account gets founding pricing for its first N months after sign-up;
+  // the first renewal after that bills the standard price. 0 switches the
+  // offer off for new subscriptions.
+  FOUNDING_PERIOD_MONTHS: z.coerce.number().int().min(0).default(3),
+  // Legacy: the launch-wide window that applied before founding pricing became
+  // per-account. Only read for subscriptions bought under that rule (they carry
+  // no founding end date of their own) — they keep founding pricing until this
+  // date, then roll onto standard at their next renewal.
   FOUNDING_OFFER_ENDS_AT: z.coerce.date().optional(),
   // Where Stripe returns the user after checkout. Default to the app URL so a
   // minimal config still works end to end.
@@ -953,7 +957,8 @@ export const config = {
       monthlyFounding: env.STRIPE_PRICE_PLUS_MONTHLY_FOUNDING,
       annualFounding: env.STRIPE_PRICE_PLUS_ANNUAL_FOUNDING,
     },
-    foundingOfferEndsAt: env.FOUNDING_OFFER_ENDS_AT,
+    foundingPeriodMonths: env.FOUNDING_PERIOD_MONTHS,
+    legacyFoundingEndsAt: env.FOUNDING_OFFER_ENDS_AT,
     checkoutSuccessUrl: env.STRIPE_CHECKOUT_SUCCESS_URL ?? `${env.APP_URL}/account/subscription?checkout=success`,
     checkoutCancelUrl: env.STRIPE_CHECKOUT_CANCEL_URL ?? `${env.APP_URL}/account/subscription?checkout=cancelled`,
   },

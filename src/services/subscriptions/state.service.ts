@@ -1,6 +1,7 @@
 import { and, eq, isNull, desc, lte, gt, or } from 'drizzle-orm';
 import { db } from '../../db';
 import {
+  users,
   userSubscriptions,
   subscriptionEvents,
   subscriptionStateHistory,
@@ -15,6 +16,7 @@ import type {
   BillingProvider,
 } from '../../db/schema';
 import { logger } from '../../lib/logger';
+import { foundingWindowEndsAt } from '../../lib/stripe';
 
 /**
  * The single writer for subscription state.
@@ -355,6 +357,16 @@ export const subscriptionStateService = {
     const sub = await this.get(userId);
     if (!sub) return null;
     return (await this.expireTrialIfDue(sub)) ?? sub;
+  },
+
+  /** When this user's founding window closes (sign-up + FOUNDING_PERIOD_MONTHS), or null. */
+  async foundingEndsAt(userId: number): Promise<Date | null> {
+    const [user] = await db
+      .select({ createdAt: users.createdAt })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    return user ? foundingWindowEndsAt(user.createdAt) : null;
   },
 
   /** Effective tier for a user, with the read-time trial fallback applied. */

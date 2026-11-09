@@ -71,6 +71,8 @@ const appleVerifySchema = z.object({
   transactionId: z.string().regex(/^\d{1,32}$/, 'transactionId must be an App Store transaction id'),
 });
 
+const appleOfferSchema = z.object({ plan: z.enum(['monthly', 'annual']) });
+
 const appleNotificationSchema = z.object({
   signedPayload: z.string().min(1).max(100_000),
 });
@@ -80,7 +82,7 @@ const appleNotificationSchema = z.object({
  * and of the Apple verify response, so the app updates its paywall from either
  * without a second call.
  */
-function serializeSubscription(userId: number, sub: UserSubscription) {
+function serializeSubscription(userId: number, sub: UserSubscription, foundingEndsAt: Date | null) {
   let trialDaysLeft: number | null = null;
   if (sub.status === 'trialing' && sub.trialEndsAt) {
     const msLeft = sub.trialEndsAt.getTime() - Date.now();
@@ -101,7 +103,9 @@ function serializeSubscription(userId: number, sub: UserSubscription) {
     pendingPlan: sub.pendingPlan,
     isFoundingMember: sub.isFoundingMember,
     hasBillingAccount: Boolean(sub.stripeCustomerId),
-    foundingOfferActive: isFoundingWindowOpen(),
+    // This account's founding window (sign-up + FOUNDING_PERIOD_MONTHS).
+    foundingOfferActive: isFoundingWindowOpen(foundingEndsAt),
+    foundingOfferEndsAt: isFoundingWindowOpen(foundingEndsAt) ? foundingEndsAt : null,
     paymentsAvailable: isStripeConfigured(),
     appleIapAvailable: isAppleConfigured(),
     // Pass as `appAccountToken` when starting an App Store purchase.
@@ -131,7 +135,9 @@ export const subscriptionsController = {
       return;
     }
 
-    res.status(200).json(serializeSubscription(req.user.id, sub));
+    res
+      .status(200)
+      .json(serializeSubscription(req.user.id, sub, await subscriptionStateService.foundingEndsAt(req.user.id)));
   },
 
   /**
@@ -156,8 +162,8 @@ export const subscriptionsController = {
   },
 
   /** GET /api/v1/user/subscription/plans */
-  async plans(_req: AuthenticatedRequest, res: Response): Promise<void> {
-    res.status(200).json(await checkoutService.listPlans());
+  async plans(req: AuthenticatedRequest, res: Response): Promise<void> {
+    res.status(200).json(await checkoutService.listPlans(req.user.id));
   },
 
   /** POST /api/v1/user/subscription/checkout-session */
@@ -243,6 +249,17 @@ export const subscriptionsController = {
     res.status(200).json(result);
   },
 
+  /** POST /api/v1/user/subscription/apple/offer */
+  async appleOffer(req: AuthenticatedRequest, res: Response): Promise<void> {
+    assertAppleConfigured();
+    const parsed = appleOfferSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Invalid request', details: parsed.error.flatten().fieldErrors });
+      return;
+    }
+    res.status(200).json({ offer: await appleSubscriptionsService.foundingOffer(req.user.id, parsed.data.plan) });
+  },
+
   /**
    * POST /api/v1/user/subscription/apple/verify
    *
@@ -258,7 +275,9 @@ export const subscriptionsController = {
     }
 
     const sub = await appleSubscriptionsService.verifyPurchase(req.user.id, parsed.data.transactionId);
-    res.status(200).json(serializeSubscription(req.user.id, sub));
+    res
+      .status(200)
+      .json(serializeSubscription(req.user.id, sub, await subscriptionStateService.foundingEndsAt(req.user.id)));
   },
 
   /**

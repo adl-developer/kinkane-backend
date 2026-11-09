@@ -1,5 +1,5 @@
 import type Stripe from 'stripe';
-import { stripe, planForPriceId, resolvePrice, isFoundingWindowOpen, isFoundingPriceId } from '../../lib/stripe';
+import { stripe, planForPriceId, resolvePrice, isFoundingPriceId, foundingEndsAtOf } from '../../lib/stripe';
 import { logger } from '../../lib/logger';
 import type { SubscriptionPlan } from '../../db/schema';
 
@@ -23,9 +23,9 @@ import type { SubscriptionPlan } from '../../db/schema';
  * The two rollovers that use this file are:
  *
  *   1. **Founding → standard.** Founding members keep founding pricing on
- *      every renewal until the offer window closes AND their current period
- *      ends. See `scheduleFoundingRollover`, called from the invoice.paid
- *      webhook once both conditions hold.
+ *      every renewal that starts inside their founding window (sign-up +
+ *      FOUNDING_PERIOD_MONTHS); the first renewal after it bills standard.
+ *      See `scheduleFoundingRollover`, called from the invoice.paid webhook.
  *   2. **Plan change (monthly ↔ annual, or into/out of founding).** Deferred
  *      to the next natural renewal so nobody is billed the new plan's rate
  *      mid-cycle. See `schedulePlanChange`.
@@ -53,33 +53,32 @@ function phaseItemPriceId(item: Stripe.SubscriptionSchedule.Phase.Item): string 
 }
 
 /**
- * The price id to switch to when a founding member changes plans mid-flight,
- * or when we're scheduling a new plan for anyone else.
+ * The price id a plan change switches to, at the end of the current period.
  *
- * The rule: if the founding offer window is still open AND this subscriber
- * is already a founding member, keep them on founding pricing for the new
- * plan too. Otherwise fall back to standard pricing. Every founding rate is
- * eligibility-gated on the current window, so once it closes nobody can be
- * granted founding — including via a plan change from another founding plan.
+ * Founding pricing carries over only for a subscriber already on a founding
+ * price whose change lands inside their founding window — judged at the date
+ * it takes effect, so a change that lands after the window bills standard.
  */
-function pickTargetPriceId(targetPlan: SubscriptionPlan, isFoundingMember: boolean): string {
-  const resolved = resolvePrice(targetPlan);
-  if (isFoundingMember && resolved.isFounding && resolved.priceId !== resolved.standardPriceId) {
-    return resolved.priceId;
-  }
-  return resolved.standardPriceId;
+function pickTargetPriceId(targetPlan: SubscriptionPlan, subscription: Stripe.Subscription): string {
+  const periodEnd = currentPeriodEndOf(subscription);
+  const effectiveAt = periodEnd ? new Date(periodEnd * 1000) : new Date();
+  const foundingEndsAt = isFoundingPriceId(firstPriceId(subscription))
+    ? foundingEndsAtOf(subscription)
+    : null;
+  return resolvePrice(targetPlan, foundingEndsAt, effectiveAt).priceId;
 }
 
 export const schedulesService = {
   /**
    * Attaches a rollover from a founding price to its standard equivalent,
-   * timed to happen at the subscriber's very next renewal.
+   * timed to happen at the subscriber's very next renewal — but only once that
+   * renewal falls on or after their founding window's end. Before then it's a
+   * no-op, so it's safe to invoke on every invoice.paid (and after a release).
    *
-   * Called from the invoice.paid webhook once the founding window has closed
-   * and a renewal has been billed — the subscriber's current period runs to
-   * completion on founding pricing, and the next one starts at standard. A
-   * no-op when a schedule is already attached (an earlier call, or a pending
-   * plan change) so it's safe to invoke every renewal.
+   * Also a no-op while a schedule has a change still pending (an earlier
+   * rollover, or a plan change). A schedule whose last phase is already
+   * running — a plan change onto a founding price — is released and replaced,
+   * or that founding price would never end.
    *
    * Errors are swallowed with a loud log rather than rethrown: this is a
    * webhook-driven housekeeping step and a Stripe blip must not turn a
@@ -100,16 +99,27 @@ export const schedulesService = {
           : subscriptionOrId;
       const subscriptionId = subscription.id;
 
-      if (scheduleIdOf(subscription)) return;
-
       const priceId = firstPriceId(subscription);
       if (!isFoundingPriceId(priceId)) return;
 
       const plan = planForPriceId(priceId);
       if (!plan) return;
 
-      const { standardPriceId } = resolvePrice(plan);
+      const { standardPriceId } = resolvePrice(plan, null);
       if (standardPriceId === priceId) return;
+
+      // Not due yet: the next renewal still starts inside the founding window.
+      const foundingEndsAt = foundingEndsAtOf(subscription);
+      const periodEnd = currentPeriodEndOf(subscription);
+      if (foundingEndsAt && periodEnd && periodEnd * 1000 < foundingEndsAt.getTime()) return;
+
+      const existingScheduleId = scheduleIdOf(subscription);
+      if (existingScheduleId) {
+        const existing = await stripe().subscriptionSchedules.retrieve(existingScheduleId);
+        const lastPhase = existing.phases[existing.phases.length - 1];
+        if (!lastPhase || lastPhase.start_date > Math.floor(Date.now() / 1000)) return;
+        await stripe().subscriptionSchedules.release(existingScheduleId);
+      }
 
       const schedule = await stripe().subscriptionSchedules.create({
         from_subscription: subscriptionId,
@@ -189,17 +199,16 @@ export const schedulesService = {
    *
    * Never rewrites the currently active phase, which would cause Stripe to
    * pro-rate the switch and bill the new plan mid-cycle. The target price
-   * comes from `pickTargetPriceId` so founding members changing plans during
-   * the window stay on founding — see there for why.
+   * comes from `pickTargetPriceId` so founding members changing plans inside
+   * their window stay on founding — see there for why.
    */
   async schedulePlanChange(
     subscriptionId: string,
     userId: number,
     targetPlan: SubscriptionPlan,
-    isFoundingMember: boolean,
   ): Promise<void> {
     const subscription = await stripe().subscriptions.retrieve(subscriptionId);
-    const targetPriceId = pickTargetPriceId(targetPlan, isFoundingMember);
+    const targetPriceId = pickTargetPriceId(targetPlan, subscription);
     const scheduleId = scheduleIdOf(subscription);
     const currentPeriodEnd = currentPeriodEndOf(subscription);
 

@@ -99,7 +99,7 @@ async function reconcileStripe(): Promise<void> {
             status,
             plan: planForPriceId(priceId),
             priceId,
-            isFoundingMember: row.isFoundingMember || isFoundingPriceId(priceId),
+            isFoundingMember: isFoundingPriceId(priceId),
             currentPeriodEnd,
             cancelAtPeriodEnd: remote.cancel_at_period_end,
             billingProvider: 'stripe',
