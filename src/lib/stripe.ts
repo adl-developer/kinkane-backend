@@ -84,17 +84,21 @@ export function isFoundingWindowOpen(endsAt: Date | null | undefined, now: Date 
 }
 
 /**
- * The founding end date a Stripe subscription was sold with. Checkout stamps it
- * into the subscription's metadata; a subscription without one was bought
- * under the old launch-wide window and keeps that window's end date.
+ * The founding window a Stripe subscription was sold under. Checkout stamps its
+ * end into the subscription's metadata; a subscription without one was bought
+ * under the old launch-wide window (`legacy`) and keeps that window's end date
+ * and that rule's timing.
  */
-export function foundingEndsAtOf(subscription: Pick<Stripe.Subscription, 'metadata'>): Date | null {
+export function foundingTermOf(subscription: Pick<Stripe.Subscription, 'metadata'>): {
+  endsAt: Date | null;
+  legacy: boolean;
+} {
   const stamped = subscription.metadata?.foundingEndsAt;
   if (stamped) {
     const date = new Date(stamped);
-    if (!Number.isNaN(date.getTime())) return date;
+    if (!Number.isNaN(date.getTime())) return { endsAt: date, legacy: false };
   }
-  return config.stripe.legacyFoundingEndsAt ?? null;
+  return { endsAt: config.stripe.legacyFoundingEndsAt ?? null, legacy: true };
 }
 
 export interface ResolvedPrice {

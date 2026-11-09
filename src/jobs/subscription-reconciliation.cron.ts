@@ -5,6 +5,7 @@ import { userSubscriptions } from '../db/schema';
 import { stripe, isStripeConfigured, planForPriceId, isFoundingPriceId } from '../lib/stripe';
 import { subscriptionStateService } from '../services/subscriptions/state.service';
 import { entitlementsService } from '../services/subscriptions/entitlements.service';
+import { schedulesService } from '../services/subscriptions/schedules.service';
 import { appleSubscriptionsService } from '../services/subscriptions/apple.service';
 import { isAppleConfigured } from '../lib/apple-store';
 import { logger } from '../lib/logger';
@@ -82,6 +83,13 @@ async function reconcileStripe(): Promise<void> {
           row.cancelAtPeriodEnd !== remote.cancel_at_period_end ||
           row.currentPeriodEnd?.getTime() !== currentPeriodEnd?.getTime() ||
           row.billingProvider !== 'stripe';
+
+        // Retry net for the founding rollover: invoice.paid attaches it but
+        // swallows a Stripe error, and for annual that invoice is the only
+        // chance for a year. A no-op unless due and not yet attached.
+        if (isFoundingPriceId(priceId) && tier === 'plus' && !remote.cancel_at_period_end) {
+          await schedulesService.scheduleFoundingRollover(remote, row.userId);
+        }
 
         if (!drifted) continue;
 

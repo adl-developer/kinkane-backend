@@ -39,7 +39,7 @@ export const billingPaths = {
         '',
         'Two fields decide what UI to show before anything else:',
         '- **`paymentsAvailable`** — false when Stripe is not configured on this deployment. Hide purchase UI entirely rather than letting the buttons 503.',
-        '- **`foundingOfferActive`** / **`foundingOfferEndsAt`** — whether this user is still inside their founding window (their first 3 months after sign-up) and when it closes. Distinct from `isFoundingMember`, which is whether they are paying a founding price right now.',
+        '- **`foundingOfferActive`** / **`foundingOfferEndsAt`** — whether this user is still inside their founding window (their first `FOUNDING_PERIOD_MONTHS` months after sign-up, 3 by default) and when it closes. Distinct from `isFoundingMember`, which is whether they are paying a founding price right now.',
         '',
         '**The trial is ours, not Stripe’s.** A `trialing` user has no Stripe subscription behind them, which is why `/cancel` returns 409 `NO_PAID_SUBSCRIPTION` for them — there is genuinely nothing to cancel.',
       ].join('\n'),
@@ -91,7 +91,7 @@ export const billingPaths = {
       tags: [TAG],
       summary: 'Get purchasable plans and live prices',
       description:
-        'Prices are read from Stripe at call time so **the client never hardcodes an amount**.\n\nInside the user’s founding window (their first 3 months after sign-up) the returned `amountCents` are the Founding Member prices, with `standardAmountCents` alongside so the saving can be shown without a second source of truth.',
+        'Prices are read from Stripe at call time so **the client never hardcodes an amount**.\n\nInside the user’s founding window (their first `FOUNDING_PERIOD_MONTHS` months after sign-up, 3 by default) the returned `amountCents` are the Founding Member prices, with `standardAmountCents` alongside so the saving can be shown without a second source of truth.',
       responses: {
         200: json('The available plans.',
           object({
@@ -273,13 +273,13 @@ export const billingPaths = {
       tags: [TAG],
       summary: 'Get the signed founding offer for an App Store purchase',
       description: [
-        'Inside the user’s founding window (their first 3 months after sign-up) this returns a signed **promotional offer** for the plan; pass it to StoreKit with the purchase (`Product.PurchaseOption.promotionalOffer(offerID:keyID:nonce:signature:timestamp:)`) together with `appAccountToken`. Apple bills the founding price for the periods the offer covers, then the standard price.',
+        'Inside the user’s founding window (their first `FOUNDING_PERIOD_MONTHS` months after sign-up, 3 by default) this returns a signed **promotional offer** for the plan; pass it to StoreKit with the purchase (`Product.PurchaseOption.promotionalOffer(offerID:keyID:nonce:signature:timestamp:)`) together with `appAccountToken`. Apple bills the founding price for the periods the offer covers, then the standard price.',
         '',
         'Monthly gets founding pricing on every renewal that starts before the window closes; annual gets it for the first year.',
         '',
         '`offer: null` means the window has closed: buy at the standard price with no offer. Fetch this right before purchasing — Apple only accepts a signature for a short time.',
         '',
-        '**Rate limit:** 20 per hour.',
+        '**Rate limit:** 60 per hour.',
       ].join('\n'),
       requestBody: body(object({
         plan: { type: 'string', enum: ['monthly', 'annual'], example: 'monthly' },
@@ -302,6 +302,7 @@ export const billingPaths = {
         })),
         400: json('`plan` missing or invalid.', ref('ValidationError')),
         401: resp('Unauthorized'),
+        409: json('`STRIPE_SUBSCRIPTION_ACTIVE`: already paying on the web, so an App Store purchase would bill twice.', ref('Error')),
         429: resp('RateLimited'),
         503: resp('AppleIapUnavailable'),
       },

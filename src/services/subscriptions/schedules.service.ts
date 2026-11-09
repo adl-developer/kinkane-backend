@@ -1,5 +1,12 @@
 import type Stripe from 'stripe';
-import { stripe, planForPriceId, resolvePrice, isFoundingPriceId, foundingEndsAtOf } from '../../lib/stripe';
+import {
+  stripe,
+  planForPriceId,
+  resolvePrice,
+  isFoundingPriceId,
+  isFoundingWindowOpen,
+  foundingTermOf,
+} from '../../lib/stripe';
 import { logger } from '../../lib/logger';
 import type { SubscriptionPlan } from '../../db/schema';
 
@@ -58,14 +65,24 @@ function phaseItemPriceId(item: Stripe.SubscriptionSchedule.Phase.Item): string 
  * Founding pricing carries over only for a subscriber already on a founding
  * price whose change lands inside their founding window — judged at the date
  * it takes effect, so a change that lands after the window bills standard.
+ * Legacy subscriptions keep the old rule: judged now, against the launch-wide
+ * window.
  */
 function pickTargetPriceId(targetPlan: SubscriptionPlan, subscription: Stripe.Subscription): string {
+  if (!isFoundingPriceId(firstPriceId(subscription))) return resolvePrice(targetPlan, null).priceId;
+  const { endsAt, legacy } = foundingTermOf(subscription);
   const periodEnd = currentPeriodEndOf(subscription);
-  const effectiveAt = periodEnd ? new Date(periodEnd * 1000) : new Date();
-  const foundingEndsAt = isFoundingPriceId(firstPriceId(subscription))
-    ? foundingEndsAtOf(subscription)
-    : null;
-  return resolvePrice(targetPlan, foundingEndsAt, effectiveAt).priceId;
+  const effectiveAt = !legacy && periodEnd ? new Date(periodEnd * 1000) : new Date();
+  return resolvePrice(targetPlan, endsAt, effectiveAt).priceId;
+}
+
+/**
+ * Every phase we write carries the subscription's metadata. Stripe applies a
+ * phase's metadata to the subscription when the phase starts, and losing
+ * `foundingEndsAt` (or `userId`) there would misread the founding window.
+ */
+function metadataOf(subscription: Stripe.Subscription): Stripe.MetadataParam {
+  return { ...subscription.metadata };
 }
 
 export const schedulesService = {
@@ -108,10 +125,16 @@ export const schedulesService = {
       const { standardPriceId } = resolvePrice(plan, null);
       if (standardPriceId === priceId) return;
 
-      // Not due yet: the next renewal still starts inside the founding window.
-      const foundingEndsAt = foundingEndsAtOf(subscription);
+      // Not due yet. Per-account window: the next renewal still starts inside
+      // it. Legacy (old launch-wide rule): founding continues on every renewal
+      // billed while that window is open; the rollover attaches on the first
+      // one after it closes.
+      const { endsAt, legacy } = foundingTermOf(subscription);
       const periodEnd = currentPeriodEndOf(subscription);
-      if (foundingEndsAt && periodEnd && periodEnd * 1000 < foundingEndsAt.getTime()) return;
+      const notDue = legacy
+        ? isFoundingWindowOpen(endsAt)
+        : Boolean(endsAt && periodEnd && periodEnd * 1000 < endsAt.getTime());
+      if (notDue) return;
 
       const existingScheduleId = scheduleIdOf(subscription);
       if (existingScheduleId) {
@@ -136,8 +159,9 @@ export const schedulesService = {
             items: [{ price: priceId!, quantity: 1 }],
             start_date: schedule.phases[0].start_date,
             end_date: schedule.phases[0].end_date,
+            metadata: metadataOf(subscription),
           },
-          { items: [{ price: standardPriceId, quantity: 1 }] },
+          { items: [{ price: standardPriceId, quantity: 1 }], metadata: metadataOf(subscription) },
         ],
       });
 
@@ -224,8 +248,9 @@ export const schedulesService = {
             items: [{ price: currentPriceId!, quantity: 1 }],
             start_date: schedule.phases[0].start_date,
             end_date: schedule.phases[0].end_date,
+            metadata: metadataOf(subscription),
           },
-          { items: [{ price: targetPriceId, quantity: 1 }] },
+          { items: [{ price: targetPriceId, quantity: 1 }], metadata: metadataOf(subscription) },
         ],
       });
 
@@ -259,6 +284,7 @@ export const schedulesService = {
       })),
       start_date: phase.start_date,
       end_date: phase.end_date ?? undefined,
+      metadata: metadataOf(subscription),
     }));
 
     const currentPhase = schedule.phases[currentPhaseIndex];
@@ -276,9 +302,10 @@ export const schedulesService = {
       })),
       start_date: currentPhase.start_date,
       end_date: currentPhaseEnd,
+      metadata: metadataOf(subscription),
     };
 
-    const newFuture = { items: [{ price: targetPriceId, quantity: 1 }] };
+    const newFuture = { items: [{ price: targetPriceId, quantity: 1 }], metadata: metadataOf(subscription) };
 
     await stripe().subscriptionSchedules.update(scheduleId, {
       end_behavior: 'release',

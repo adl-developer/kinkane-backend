@@ -82,6 +82,25 @@ Apple marks every period the offer covers, so the server sets
 - No backfill of `is_founding_member`: nobody has rolled onto standard yet,
   because the legacy window is still open.
 
+## Review fixes
+
+- **Legacy timing kept.** Subscriptions with no `foundingEndsAt` stay founding
+  on every renewal billed before 2027-01-14, and roll on the first invoice after
+  it, exactly as before. Without this, legacy monthly members would have lost a
+  month and legacy annual members a year.
+- **Metadata on every schedule phase.** Rollover and plan-change schedules copy
+  the subscription's metadata onto each phase, so `foundingEndsAt` and `userId`
+  survive a phase change.
+- **Rollover retry.** The daily reconciliation cron re-runs the rollover check
+  for every live founding subscription. invoice.paid swallows Stripe errors,
+  and for annual the first invoice is otherwise the only chance for a year.
+- **Apple:** `/apple/offer` refuses with 409 `STRIPE_SUBSCRIPTION_ACTIVE` for
+  web subscribers, so they can't be billed twice. It has its own 60/hour limit,
+  so offers can't use up `/apple/verify`'s budget. A new purchase of an "Early"
+  product is logged as an error, because only App Store Connect can stop it.
+- Email and docs follow `FOUNDING_PERIOD_MONTHS` instead of saying 3. Subscription
+  reads look up the founding window in parallel.
+
 ## Verification
 
 - Unit tests: per-account window (month-end clamping, offer off), metadata vs
@@ -90,5 +109,8 @@ Apple marks every period the offer covers, so the server sets
   generated P-256 key.
 - Updated Apple sync tests (flag drops after the offer) and reactivate tests
   (rollover waits until the next renewal is past the window).
-- Full suite: 1650 tests pass; `tsc` clean. Not run against live Stripe or the
+- New `founding-rollover` tests: rollover due/not due, the legacy timing, a
+  pending change left alone, a finished plan-change schedule replaced,
+  metadata on every phase, and plan-change target prices.
+- Full suite: 1660 tests pass; `tsc` clean. Not run against live Stripe or the
   App Store sandbox.

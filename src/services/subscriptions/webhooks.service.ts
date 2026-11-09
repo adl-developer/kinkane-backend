@@ -4,7 +4,7 @@ import { db } from '../../db';
 import { users, subscriptionEvents, stripeWebhookEvents } from '../../db/schema';
 import type { SubscriptionStatus, SubscriptionPlan } from '../../db/schema';
 import { config } from '../../config';
-import { stripe, planForPriceId, isFoundingPriceId, resolvePrice } from '../../lib/stripe';
+import { stripe, planForPriceId, isFoundingPriceId } from '../../lib/stripe';
 import { logger } from '../../lib/logger';
 import { enqueueEmail } from '../../lib/email-queue';
 import { subscriptionStateService } from './state.service';

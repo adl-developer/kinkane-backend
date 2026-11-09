@@ -224,6 +224,19 @@ export const checkoutLimiter = rateLimit({
   store: new RedisStore({ prefix: 'rl:checkout:', sendCommand }),
 });
 
+// Signed App Store offers: 60 per hour per user. Kept apart from checkout so
+// fetching an offer before each StoreKit attempt can never use up the budget
+// /apple/verify needs once Apple has charged.
+export const appleOfferLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: json429,
+  keyGenerator: byUser,
+  store: new RedisStore({ prefix: 'rl:apple-offer:', sendCommand }),
+});
+
 // Payment confirmation: 60 per minute per user. This endpoint is polled by a
 // client sitting on a "confirming your payment" spinner, so it has to tolerate
 // a tight loop — but a pending payment falls through to a live Stripe lookup,

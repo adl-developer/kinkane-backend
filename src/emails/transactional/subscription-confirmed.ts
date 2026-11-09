@@ -1,6 +1,7 @@
 import { sendEmail, FROM } from '../../lib/resend';
 import { emailLayout, ctaButton, greeting, signOff, escapeHtml, p } from '../lib/layout';
 import { appLink } from '../../lib/app-link';
+import { config } from '../../config';
 
 export interface SubscriptionConfirmedPayload {
   plan: 'monthly' | 'annual';
@@ -32,11 +33,13 @@ export async function sendSubscriptionConfirmedEmail(
     : null;
 
   // Annual founding covers the first year; monthly runs until the buyer's
-  // first three months since sign-up are up.
+  // first FOUNDING_PERIOD_MONTHS since sign-up are up.
   const foundingTerm =
     payload.plan === 'annual'
       ? 'for your first year'
-      : 'until your first three months with Kinkané are up';
+      : config.stripe.foundingPeriodMonths === 1
+        ? 'until your first month with Kinkané is up'
+        : `until your first ${config.stripe.foundingPeriodMonths} months with Kinkané are up`;
   const foundingLine = payload.isFounding
     ? p(
         `As a <strong>Founding Member</strong>, you pay your introductory price ${foundingTerm}. After that, you move to the standard price.`,

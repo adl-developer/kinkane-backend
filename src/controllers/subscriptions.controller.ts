@@ -128,16 +128,17 @@ export const subscriptionsController = {
    * Everything the client needs to render the paywall and the account screen.
    */
   async get(req: AuthenticatedRequest, res: Response): Promise<void> {
-    const sub = await subscriptionStateService.getCurrent(req.user.id);
+    const [sub, foundingEndsAt] = await Promise.all([
+      subscriptionStateService.getCurrent(req.user.id),
+      subscriptionStateService.foundingEndsAt(req.user.id),
+    ]);
 
     if (!sub) {
       res.status(404).json({ error: 'Subscription not found' });
       return;
     }
 
-    res
-      .status(200)
-      .json(serializeSubscription(req.user.id, sub, await subscriptionStateService.foundingEndsAt(req.user.id)));
+    res.status(200).json(serializeSubscription(req.user.id, sub, foundingEndsAt));
   },
 
   /**
@@ -274,10 +275,11 @@ export const subscriptionsController = {
       return;
     }
 
-    const sub = await appleSubscriptionsService.verifyPurchase(req.user.id, parsed.data.transactionId);
-    res
-      .status(200)
-      .json(serializeSubscription(req.user.id, sub, await subscriptionStateService.foundingEndsAt(req.user.id)));
+    const [sub, foundingEndsAt] = await Promise.all([
+      appleSubscriptionsService.verifyPurchase(req.user.id, parsed.data.transactionId),
+      subscriptionStateService.foundingEndsAt(req.user.id),
+    ]);
+    res.status(200).json(serializeSubscription(req.user.id, sub, foundingEndsAt));
   },
 
   /**

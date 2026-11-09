@@ -1179,7 +1179,7 @@ const commerceSchemas = {
       hasBillingAccount: { type: 'boolean', example: true },
       foundingOfferActive: {
         type: 'boolean',
-        description: 'Whether this user is still inside their founding window (their first 3 months after sign-up), so a new purchase gets the founding price.',
+        description: 'Whether this user is still inside their founding window (their first `FOUNDING_PERIOD_MONTHS` months after sign-up, 3 by default), so a new purchase gets the founding price.',
         example: false,
       },
       foundingOfferEndsAt: {

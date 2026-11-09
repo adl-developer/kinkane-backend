@@ -129,18 +129,22 @@ describe('foundingWindowEndsAt', () => {
   });
 });
 
-describe('foundingEndsAtOf', () => {
-  it("reads the end date checkout stamped on the subscription", async () => {
-    const { foundingEndsAtOf } = await loadStripeLib({ ...PRICES, FOUNDING_OFFER_ENDS_AT: '2027-01-14T00:00:00Z' });
-    expect(foundingEndsAtOf({ metadata: { foundingEndsAt: '2027-02-09T10:00:00.000Z' } })).toEqual(
-      new Date('2027-02-09T10:00:00Z'),
-    );
+describe('foundingTermOf', () => {
+  it('reads the end date checkout stamped on the subscription', async () => {
+    const { foundingTermOf } = await loadStripeLib({ ...PRICES, FOUNDING_OFFER_ENDS_AT: '2027-01-14T00:00:00Z' });
+    expect(foundingTermOf({ metadata: { foundingEndsAt: '2027-02-09T10:00:00.000Z' } })).toEqual({
+      endsAt: new Date('2027-02-09T10:00:00Z'),
+      legacy: false,
+    });
   });
 
   // Subscriptions bought under the old launch-wide rule keep that deal.
-  it('falls back to the legacy launch window for older subscriptions', async () => {
-    const { foundingEndsAtOf } = await loadStripeLib({ ...PRICES, FOUNDING_OFFER_ENDS_AT: '2027-01-14T00:00:00Z' });
-    expect(foundingEndsAtOf({ metadata: { isFounding: 'true' } })).toEqual(new Date('2027-01-14T00:00:00Z'));
+  it('treats a subscription without one as legacy, on the launch window', async () => {
+    const { foundingTermOf } = await loadStripeLib({ ...PRICES, FOUNDING_OFFER_ENDS_AT: '2027-01-14T00:00:00Z' });
+    expect(foundingTermOf({ metadata: { isFounding: 'true' } })).toEqual({
+      endsAt: new Date('2027-01-14T00:00:00Z'),
+      legacy: true,
+    });
   });
 });
 

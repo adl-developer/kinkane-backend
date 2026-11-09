@@ -44,7 +44,7 @@ vi.mock('../lib/stripe', () => ({
   planForPriceId: () => 'monthly',
   isFoundingPriceId: (priceId: string | null | undefined) => priceId === 'price_monthly_founding',
   isFoundingWindowOpen: () => false,
-  foundingEndsAtOf: () => foundingEndsAt,
+  foundingTermOf: () => ({ endsAt: foundingEndsAt, legacy: false }),
 }));
 
 vi.mock('../services/subscriptions/state.service', () => ({

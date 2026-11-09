@@ -125,6 +125,10 @@ export const appleSubscriptionsService = {
   async foundingOffer(userId: number, plan: SubscriptionPlan): Promise<SignedAppleOffer | null> {
     const productId = config.apple.products[plan];
     if (!productId) throw httpError('App Store purchases are not available right now', 503, 'APPLE_IAP_UNAVAILABLE');
+    // Refuse before StoreKit charges them, rather than in /apple/verify after.
+    if (hasLiveStripe(await subscriptionStateService.getCurrent(userId))) {
+      throw httpError('You already have Kinkané Plus through the website', 409, 'STRIPE_SUBSCRIPTION_ACTIVE');
+    }
     const offerId = foundingAppleOfferFor(plan, await subscriptionStateService.foundingEndsAt(userId));
     return offerId ? signAppleOffer(productId, offerId, appAccountTokenFor(userId)) : null;
   },
@@ -423,6 +427,16 @@ export const appleSubscriptionsService = {
       (isFoundingAppleProduct(transaction.productId) &&
         (isFoundingWindowOpen(config.stripe.legacyFoundingEndsAt, purchasedAt) ||
           (wasRunningHere && existing?.isFoundingMember === true)));
+    // Founding is sold as promotional offers now, so a fresh "Early" purchase
+    // means one is still on sale (or an old build lists it). Apple keeps billing
+    // it at the founding price with no end, which only App Store Connect can stop.
+    if (converted && isFoundingAppleProduct(transaction.productId)) {
+      logger.error('New App Store purchase of an Early product — take it off sale in App Store Connect', {
+        userId,
+        originalTransactionId,
+        productId: transaction.productId,
+      });
+    }
     const notificationEvent = ctx.notification
       ? eventForNotification(ctx.notification, transaction)
       : null;

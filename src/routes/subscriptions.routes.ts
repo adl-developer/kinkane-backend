@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import express from 'express';
 import { requireAuth } from '../middleware/auth.middleware';
 import { wrap, wrapHttp } from '../lib/route-helpers';
-import { checkoutLimiter } from '../middleware/rate-limit.middleware';
+import { checkoutLimiter, appleOfferLimiter } from '../middleware/rate-limit.middleware';
 import { subscriptionsController } from '../controllers/subscriptions.controller';
 
 const router = Router();
@@ -149,13 +149,14 @@ router.post('/reactivate', requireAuth, wrapHttp(subscriptionsController.reactiv
  * Body: { plan: 'monthly'|'annual' }
  * Returns 200: { offer: { productId, offerId, keyId, nonce, timestamp,
  *                         signature, appAccountToken } | null }
- * Errors: 400 validation | 401 unauthenticated | 429 rate limit |
- *         503 APPLE_IAP_UNAVAILABLE
+ * Errors: 400 validation | 401 unauthenticated |
+ *         409 STRIPE_SUBSCRIPTION_ACTIVE (already paying on the web) |
+ *         429 rate limit (60/hour) | 503 APPLE_IAP_UNAVAILABLE
  */
 router.post(
   '/apple/offer',
   requireAuth,
-  checkoutLimiter,
+  appleOfferLimiter,
   wrapHttp(subscriptionsController.appleOffer),
 );
 
