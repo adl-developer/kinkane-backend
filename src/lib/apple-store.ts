@@ -1,7 +1,6 @@
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import { config } from '../config';
-import { addMonths } from './stripe';
 import type { SubscriptionPlan, SubscriptionStatus, SubscriptionTier } from '../db/schema';
 
 /**
@@ -158,9 +157,9 @@ export function isFoundingAppleOffer(transaction: Pick<AppleTransaction, 'offerT
 }
 
 /**
- * Which founding offer a buyer gets now: monthly covers every renewal that
- * starts before their window closes, annual the first year. Null once the
- * window has closed.
+ * Which founding offer a buyer gets now: one period — the first month, or the
+ * first year. Null once the window has closed (or, via foundingEndsAt, once
+ * the account has used its founding period).
  */
 export function foundingAppleOfferFor(
   plan: SubscriptionPlan,
@@ -168,10 +167,7 @@ export function foundingAppleOfferFor(
   now: Date = new Date(),
 ): string | null {
   if (!windowEndsAt || now >= windowEndsAt) return null;
-  if (plan === 'annual') return foundingAppleOfferId('annual');
-  let months = 1;
-  while (addMonths(now, months) < windowEndsAt) months += 1;
-  return foundingAppleOfferId('monthly', Math.min(months, config.stripe.foundingPeriodMonths));
+  return plan === 'annual' ? foundingAppleOfferId('annual') : foundingAppleOfferId('monthly', 1);
 }
 
 export interface SignedAppleOffer {

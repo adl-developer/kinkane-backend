@@ -39,7 +39,7 @@ export const billingPaths = {
         '',
         'Two fields decide what UI to show before anything else:',
         '- **`paymentsAvailable`** — false when Stripe is not configured on this deployment. Hide purchase UI entirely rather than letting the buttons 503.',
-        '- **`foundingOfferActive`** / **`foundingOfferEndsAt`** — whether this user is still inside their founding window (their first `FOUNDING_PERIOD_MONTHS` months after sign-up, 3 by default) and when it closes. Distinct from `isFoundingMember`, which is whether they are paying a founding price right now.',
+        '- **`foundingOfferActive`** / **`foundingOfferEndsAt`** — whether this user is still inside their founding window (their first `FOUNDING_PERIOD_MONTHS` months after sign-up, 3 by default) and when it closes. The founding price is **one billing period (first month or first year), once per account**, across website and App Store: once a founding period has been paid this is `false`/`null`, even if the user cancels and returns inside the window. Distinct from `isFoundingMember`, which is whether they are paying a founding price right now.',
         '',
         '**The trial is ours, not Stripe’s.** A `trialing` user has no Stripe subscription behind them, which is why `/cancel` returns 409 `NO_PAID_SUBSCRIPTION` for them — there is genuinely nothing to cancel.',
       ].join('\n'),
@@ -91,12 +91,12 @@ export const billingPaths = {
       tags: [TAG],
       summary: 'Get purchasable plans and live prices',
       description:
-        'Prices are read from Stripe at call time so **the client never hardcodes an amount**.\n\nInside the user’s founding window (their first `FOUNDING_PERIOD_MONTHS` months after sign-up, 3 by default) the returned `amountCents` are the Founding Member prices, with `standardAmountCents` alongside so the saving can be shown without a second source of truth.',
+        'Prices are read from Stripe at call time so **the client never hardcodes an amount**.\n\nInside the user’s founding window (their first `FOUNDING_PERIOD_MONTHS` months after sign-up, 3 by default) the returned `amountCents` are the Founding Member prices, with `standardAmountCents` alongside so the saving can be shown without a second source of truth. The founding price is **one billing period (first month or first year), once per account**, across website and App Store: once a founding period has been paid this is `false`/`null`, even if the user cancels and returns inside the window.',
       responses: {
         200: json('The available plans.',
           object({
             foundingOfferActive: { type: 'boolean', example: true },
-            foundingOfferEndsAt: { type: 'string', format: 'date-time', nullable: true, description: 'When this user’s founding window closes; null once it has.', example: '2027-02-09T10:00:00.000Z' },
+            foundingOfferEndsAt: { type: 'string', format: 'date-time', nullable: true, description: 'When this user’s founding window closes; null once it has, or once they have used their founding period.', example: '2027-02-09T10:00:00.000Z' },
             plans: arrayOf(object({
               plan: { type: 'string', enum: ['monthly', 'annual'], example: 'annual' },
               amountCents: {
@@ -190,7 +190,7 @@ export const billingPaths = {
       tags: [TAG],
       summary: 'Undo a scheduled cancellation',
       description:
-        'Clears `cancelAtPeriodEnd` while the period is still running — the request that always follows a cancel button.\n\nWithout it, someone who cancelled by accident could only come back via a fresh checkout, which means a new billing date and, once their founding window has closed, **losing their Founding Member price permanently**.',
+        'Clears `cancelAtPeriodEnd` while the period is still running — the request that always follows a cancel button.\n\nWithout it, someone who cancelled by accident could only come back via a fresh checkout, which means a new billing date.\n\nReactivating never extends the founding price: the next renewal is always standard.',
       responses: {
         200: json('Reactivated; billing continues as before.',
           object({
@@ -278,7 +278,7 @@ export const billingPaths = {
       tags: [TAG],
       summary: 'Cancel a pending plan switch',
       description: [
-        'Withdraws a switch scheduled with `POST /change`. The user stays on their current plan and renews on it as before; a Founding Member still moves to the standard price when their founding window ends.',
+        'Withdraws a switch scheduled with `POST /change`. The user stays on their current plan and renews on it as before; a Founding Member still moves to the standard price at their next renewal.',
         '',
         'No password is needed: this only restores what the user already had. To cancel the subscription itself, use `POST /cancel`.',
       ].join('\n'),
@@ -312,7 +312,7 @@ export const billingPaths = {
       description: [
         'Inside the user’s founding window (their first `FOUNDING_PERIOD_MONTHS` months after sign-up, 3 by default) this returns a signed **promotional offer** for the plan; pass it to StoreKit with the purchase (`Product.PurchaseOption.promotionalOffer(offerID:keyID:nonce:signature:timestamp:)`) together with `appAccountToken`. Apple bills the founding price for the periods the offer covers, then the standard price.',
         '',
-        'Monthly gets founding pricing on every renewal that starts before the window closes; annual gets it for the first year.',
+        'The founding price covers one period (first month or first year), once per account; afterwards `offer` is `null`. Set the App Store Connect offers to a duration of 1 period to match.',
         '',
         '`offer: null` means the window has closed: buy at the standard price with no offer. Fetch this right before purchasing — Apple only accepts a signature for a short time.',
         '',

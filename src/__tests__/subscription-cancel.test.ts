@@ -316,7 +316,9 @@ describe('reactivate', () => {
   });
 
   // The rollover waits for the first renewal on or after the window's end.
-  it('does not attach the rollover while the next renewal is still inside the founding window', async () => {
+  // Reactivating never extends the discount: the next renewal is standard
+  // even while the founding window is still open.
+  it('attaches the rollover even while the next renewal is inside the founding window', async () => {
     foundingEndsAt = new Date('2026-10-01T00:00:00Z'); // after PERIOD_END
     getCurrent.mockResolvedValue({ ...FOUNDING, cancelAtPeriodEnd: true });
     stripeUpdate.mockResolvedValue(stripeSubscription(null, 'price_monthly_founding'));
@@ -324,7 +326,7 @@ describe('reactivate', () => {
 
     await service.reactivate(7);
 
-    expect(scheduleCreate).not.toHaveBeenCalled();
+    expect(scheduleCreate).toHaveBeenCalled();
   });
 
   it('does not attach a schedule for an ordinary subscriber', async () => {

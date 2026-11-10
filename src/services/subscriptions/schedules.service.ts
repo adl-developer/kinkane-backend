@@ -4,8 +4,6 @@ import {
   planForPriceId,
   resolvePrice,
   isFoundingPriceId,
-  isFoundingWindowOpen,
-  foundingTermOf,
 } from '../../lib/stripe';
 import { logger } from '../../lib/logger';
 import type { SubscriptionPlan } from '../../db/schema';
@@ -29,9 +27,8 @@ import type { SubscriptionPlan } from '../../db/schema';
  *
  * The two rollovers that use this file are:
  *
- *   1. **Founding → standard.** Founding members keep founding pricing on
- *      every renewal that starts inside their founding window (sign-up +
- *      FOUNDING_PERIOD_MONTHS); the first renewal after it bills standard.
+ *   1. **Founding → standard.** Founding pricing covers one billing period;
+ *      the next renewal bills standard.
  *      See `scheduleFoundingRollover`, called from the invoice.paid webhook.
  *   2. **Plan change (monthly ↔ annual, or into/out of founding).** Deferred
  *      to the next natural renewal so nobody is billed the new plan's rate
@@ -61,19 +58,11 @@ function phaseItemPriceId(item: Stripe.SubscriptionSchedule.Phase.Item): string 
 
 /**
  * The price id a plan change switches to, at the end of the current period.
- *
- * Founding pricing carries over only for a subscriber already on a founding
- * price whose change lands inside their founding window — judged at the date
- * it takes effect, so a change that lands after the window bills standard.
- * Legacy subscriptions keep the old rule: judged now, against the launch-wide
- * window.
+ * Always standard: founding covers one period only, and a change takes effect
+ * at a renewal, which is after it.
  */
-function pickTargetPriceId(targetPlan: SubscriptionPlan, subscription: Stripe.Subscription): string {
-  if (!isFoundingPriceId(firstPriceId(subscription))) return resolvePrice(targetPlan, null).priceId;
-  const { endsAt, legacy } = foundingTermOf(subscription);
-  const periodEnd = currentPeriodEndOf(subscription);
-  const effectiveAt = !legacy && periodEnd ? new Date(periodEnd * 1000) : new Date();
-  return resolvePrice(targetPlan, endsAt, effectiveAt).priceId;
+function pickTargetPriceId(targetPlan: SubscriptionPlan): string {
+  return resolvePrice(targetPlan, null).priceId;
 }
 
 /**
@@ -88,9 +77,9 @@ function metadataOf(subscription: Stripe.Subscription): Stripe.MetadataParam {
 export const schedulesService = {
   /**
    * Attaches a rollover from a founding price to its standard equivalent,
-   * timed to happen at the subscriber's very next renewal — but only once that
-   * renewal falls on or after their founding window's end. Before then it's a
-   * no-op, so it's safe to invoke on every invoice.paid (and after a release).
+   * timed to happen at the subscriber's very next renewal: founding covers one
+   * billing period. Idempotent, so it's safe to invoke on every invoice.paid
+   * (and after a release).
    *
    * Also a no-op while a schedule has a change still pending (an earlier
    * rollover, or a plan change). A schedule whose last phase is already
@@ -125,17 +114,8 @@ export const schedulesService = {
       const { standardPriceId } = resolvePrice(plan, null);
       if (standardPriceId === priceId) return;
 
-      // Not due yet. Per-account window: the next renewal still starts inside
-      // it. Legacy (old launch-wide rule): founding continues on every renewal
-      // billed while that window is open; the rollover attaches on the first
-      // one after it closes.
-      const { endsAt, legacy } = foundingTermOf(subscription);
-      const periodEnd = currentPeriodEndOf(subscription);
-      const notDue = legacy
-        ? isFoundingWindowOpen(endsAt)
-        : Boolean(endsAt && periodEnd && periodEnd * 1000 < endsAt.getTime());
-      if (notDue) return;
-
+      // Founding is one billing period, so the rollover is always due at the
+      // next renewal — legacy subscriptions included (changed 2026-11-10).
       const existingScheduleId = scheduleIdOf(subscription);
       if (existingScheduleId) {
         const existing = await stripe().subscriptionSchedules.retrieve(existingScheduleId);
@@ -232,7 +212,7 @@ export const schedulesService = {
     targetPlan: SubscriptionPlan,
   ): Promise<void> {
     const subscription = await stripe().subscriptions.retrieve(subscriptionId);
-    const targetPriceId = pickTargetPriceId(targetPlan, subscription);
+    const targetPriceId = pickTargetPriceId(targetPlan);
     const scheduleId = scheduleIdOf(subscription);
     const currentPeriodEnd = currentPeriodEndOf(subscription);
 

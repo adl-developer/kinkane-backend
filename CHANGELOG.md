@@ -7,6 +7,10 @@
 
 * let subscribers cancel a pending plan switch, and require it before changing plan again ([f061061](https://adl.github.com/adl-developer/kinkane-backend/commit/f06106121dd4a24a61a9c4173d860bf415c33c5d)) — [details](changelog/2026-11-10-cancel-pending-plan-change.md)
 
+### Bug Fixes
+
+* keep plan-switch records accurate when subscriptions end or change at the same time ([0d58ce8](https://adl.github.com/adl-developer/kinkane-backend/commit/0d58ce83b3a475021acd394a6ba818bc897e3d34)) — [details](changelog/2026-11-10-cancel-pending-plan-change.md)
+
 
 ## 2026-11-09
 

@@ -43,7 +43,8 @@ router.get('/history', requireAuth, wrap(subscriptionsController.history));
  * hardcodes an amount. Inside the user's founding window (their first
  * FOUNDING_PERIOD_MONTHS after sign-up) the returned amounts are the Founding
  * Member prices, with `standardAmountCents` alongside for showing the saving,
- * and `foundingOfferEndsAt` is when that window closes.
+ * and `foundingOfferEndsAt` is when that window closes. Founding is one
+ * billing period, once per account: once used, both read as not offered.
  *
  * Returns 200: { foundingOfferActive, foundingOfferEndsAt, plans: [...] }
  * Errors: 401 unauthenticated | 503 payments not configured

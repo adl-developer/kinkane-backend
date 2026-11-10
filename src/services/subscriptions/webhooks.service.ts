@@ -618,10 +618,8 @@ export const webhooksService = {
 
     if (updated) await entitlementsService.invalidate(userId);
 
-    // A founding member whose next renewal lands after their founding window
-    // needs a rollover set up so that renewal bills standard. The checks
-    // inside scheduleFoundingRollover make this a no-op for anyone else, and
-    // for a renewal that still starts inside the window.
+    // Founding is one period, so a founding-priced invoice means the next
+    // renewal must bill standard. scheduleFoundingRollover is idempotent.
     if (isFoundingPriceId(priceId)) {
       await schedulesService.scheduleFoundingRollover(subscription.id, userId);
     }
