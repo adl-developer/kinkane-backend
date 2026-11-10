@@ -42,7 +42,7 @@ export async function sendSubscriptionConfirmedEmail(
         : `until your first ${config.stripe.foundingPeriodMonths} months with Kinkané are up`;
   const foundingLine = payload.isFounding
     ? p(
-        `As a <strong>Founding Member</strong>, you pay your introductory price ${foundingTerm}. After that, you move to the standard price.`,
+        `You pay your introductory price ${foundingTerm}. After that, you move to the standard price.`,
       )
     : '';
 
@@ -68,7 +68,7 @@ export async function sendSubscriptionConfirmedEmail(
     ? `Your ${planLabel} membership renews on ${renewalDate}.`
     : `Your ${planLabel} membership is now active.`;
   const textFounding = payload.isFounding
-    ? `\n\nAs a Founding Member, you pay your introductory price ${foundingTerm}. After that, you move to the standard price.`
+    ? `\n\nYou pay your introductory price ${foundingTerm}. After that, you move to the standard price.`
     : '';
 
   await sendEmail({
