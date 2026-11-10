@@ -240,6 +240,11 @@ export const subscriptionsController = {
     res.status(200).json(result);
   },
 
+  /** DELETE /api/v1/user/subscription/change */
+  async cancelPendingChange(req: AuthenticatedRequest, res: Response): Promise<void> {
+    res.status(200).json(await checkoutService.cancelPendingChange(req.user.id));
+  },
+
   /**
    * POST /api/v1/user/subscription/reactivate
    *

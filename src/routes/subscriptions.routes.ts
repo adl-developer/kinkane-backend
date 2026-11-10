@@ -113,13 +113,32 @@ router.post('/cancel', requireAuth, wrapHttp(subscriptionsController.cancel));
  * Errors: 400 validation | 401 unauthenticated | 401 incorrect password |
  *         401 expired sign-in token | 404 no subscription |
  *         409 NO_PAID_SUBSCRIPTION | 409 PENDING_CANCELLATION (reactivate first) |
- *         409 already on this plan | 503 payments not configured
+ *         409 PLAN_CHANGE_PENDING (+ pendingPlan, effectiveAt: cancel it first
+ *         via DELETE /change) | 409 already on this plan | 503 payments not configured
  */
 router.post(
   '/change',
   requireAuth,
   checkoutLimiter,
   wrapHttp(subscriptionsController.changePlan),
+);
+
+/**
+ * DELETE /api/v1/user/subscription/change
+ *
+ * Cancels a pending plan switch; the user stays on their current plan. No
+ * password: it only restores what they already had. POST /cancel is separate
+ * and still cancels the whole subscription (clearing any pending switch).
+ *
+ * Returns 200: { currentPlan, pendingPlan: null, effectiveAt, tier, status }
+ * Errors: 401 unauthenticated | 404 no subscription |
+ *         409 NO_PENDING_CHANGE | 409 MANAGED_BY_APPLE | 503 payments not configured
+ */
+router.delete(
+  '/change',
+  requireAuth,
+  checkoutLimiter,
+  wrapHttp(subscriptionsController.cancelPendingChange),
 );
 
 /**

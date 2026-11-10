@@ -401,3 +401,89 @@ describe('terminateForAccountDeletion', () => {
     expect(stopped).toBe(false);
   });
 });
+
+describe('changePlan with a switch already pending', () => {
+  const PENDING = { ...PAYING, pendingPlan: 'annual' };
+
+  // Any second change, including "back to my current plan" and "free", must go
+  // through DELETE /change first so a pending switch is never silently replaced.
+  it.each(['monthly', 'annual', 'free'] as const)('refuses %s with PLAN_CHANGE_PENDING', async (plan) => {
+    getCurrent.mockResolvedValue(PENDING);
+    const service = await loadService();
+
+    await expect(service.changePlan(7, plan, plan === 'free' ? 'not_using' : undefined)).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'PLAN_CHANGE_PENDING',
+      details: { pendingPlan: 'annual', effectiveAt: PAYING.currentPeriodEnd },
+    });
+    expect(scheduleRelease).not.toHaveBeenCalled();
+    expect(scheduleUpdate).not.toHaveBeenCalled();
+    expect(stripeUpdate).not.toHaveBeenCalled();
+  });
+
+  it('still says "already on this plan" when nothing is pending', async () => {
+    getCurrent.mockResolvedValue(PAYING);
+    const service = await loadService();
+
+    await expect(service.changePlan(7, 'monthly')).rejects.toMatchObject({ statusCode: 409 });
+    expect(scheduleRelease).not.toHaveBeenCalled();
+  });
+
+  // The rule is for plan changes only; leaving must stay one step.
+  it('does not block POST /cancel', async () => {
+    getCurrent.mockResolvedValue(PENDING);
+    stripeRetrieve.mockResolvedValue(stripeSubscription('sub_sched_1'));
+    const service = await loadService();
+
+    const result = await service.cancel(7);
+
+    expect(scheduleRelease).toHaveBeenCalledWith('sub_sched_1');
+    expect(stripeUpdate).toHaveBeenCalledWith('sub_1', { cancel_at_period_end: true });
+    expect(result.cancelAtPeriodEnd).toBe(true);
+  });
+});
+
+describe('cancelPendingChange', () => {
+  it('releases the schedule and clears pendingPlan, keeping the current plan', async () => {
+    getCurrent.mockResolvedValue({ ...PAYING, pendingPlan: 'annual' });
+    stripeRetrieve.mockResolvedValue(stripeSubscription('sub_sched_1'));
+    const service = await loadService();
+
+    const result = await service.cancelPendingChange(7);
+
+    expect(scheduleRelease).toHaveBeenCalledWith('sub_sched_1');
+    expect(applyState).toHaveBeenCalledWith(
+      7,
+      expect.objectContaining({ plan: 'monthly', pendingPlan: null }),
+      { reason: 'subscription_updated' },
+    );
+    expect(result).toMatchObject({ currentPlan: 'monthly', pendingPlan: null, effectiveAt: PAYING.currentPeriodEnd });
+  });
+
+  it('refuses with NO_PENDING_CHANGE when nothing is pending', async () => {
+    getCurrent.mockResolvedValue(PAYING);
+    const service = await loadService();
+
+    await expect(service.cancelPendingChange(7)).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'NO_PENDING_CHANGE',
+    });
+    expect(scheduleRelease).not.toHaveBeenCalled();
+    expect(applyState).not.toHaveBeenCalled();
+  });
+
+  it('404s when there is no subscription row', async () => {
+    getCurrent.mockResolvedValue(null);
+    const service = await loadService();
+
+    await expect(service.cancelPendingChange(7)).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it('sends an App Store subscriber to Apple', async () => {
+    getCurrent.mockResolvedValue({ ...PAYING, pendingPlan: 'annual', billingProvider: 'apple' });
+    const service = await loadService();
+
+    await expect(service.cancelPendingChange(7)).rejects.toMatchObject({ code: 'MANAGED_BY_APPLE' });
+    expect(scheduleRelease).not.toHaveBeenCalled();
+  });
+});
