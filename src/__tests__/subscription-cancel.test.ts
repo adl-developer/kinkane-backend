@@ -316,7 +316,9 @@ describe('reactivate', () => {
   });
 
   // The rollover waits for the first renewal on or after the window's end.
-  it('does not attach the rollover while the next renewal is still inside the founding window', async () => {
+  // Reactivating never extends the discount: the next renewal is standard
+  // even while the founding window is still open.
+  it('attaches the rollover even while the next renewal is inside the founding window', async () => {
     foundingEndsAt = new Date('2026-10-01T00:00:00Z'); // after PERIOD_END
     getCurrent.mockResolvedValue({ ...FOUNDING, cancelAtPeriodEnd: true });
     stripeUpdate.mockResolvedValue(stripeSubscription(null, 'price_monthly_founding'));
@@ -324,7 +326,7 @@ describe('reactivate', () => {
 
     await service.reactivate(7);
 
-    expect(scheduleCreate).not.toHaveBeenCalled();
+    expect(scheduleCreate).toHaveBeenCalled();
   });
 
   it('does not attach a schedule for an ordinary subscriber', async () => {
@@ -399,5 +401,139 @@ describe('terminateForAccountDeletion', () => {
 
     expect(stripeCancel).not.toHaveBeenCalled();
     expect(stopped).toBe(false);
+  });
+});
+
+describe('changePlan with a switch already pending', () => {
+  const PENDING = { ...PAYING, pendingPlan: 'annual' };
+
+  // Any second change, including "back to my current plan" and "free", must go
+  // through DELETE /change first so a pending switch is never silently replaced.
+  it.each(['monthly', 'annual', 'free'] as const)('refuses %s with PLAN_CHANGE_PENDING', async (plan) => {
+    getCurrent.mockResolvedValue(PENDING);
+    const service = await loadService();
+
+    await expect(service.changePlan(7, plan, plan === 'free' ? 'not_using' : undefined)).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'PLAN_CHANGE_PENDING',
+      details: { pendingPlan: 'annual', effectiveAt: PAYING.currentPeriodEnd },
+    });
+    expect(scheduleRelease).not.toHaveBeenCalled();
+    expect(scheduleUpdate).not.toHaveBeenCalled();
+    expect(stripeUpdate).not.toHaveBeenCalled();
+  });
+
+  it('writes only pendingPlan when scheduling a switch', async () => {
+    getCurrent.mockResolvedValue(PAYING);
+    const service = await loadService();
+
+    await service.changePlan(7, 'annual');
+
+    expect(applyState).toHaveBeenCalledWith(
+      7,
+      { tier: 'plus', status: 'active', pendingPlan: 'annual' },
+      { reason: 'subscription_updated' },
+    );
+  });
+
+  it('still says "already on this plan" when nothing is pending', async () => {
+    getCurrent.mockResolvedValue(PAYING);
+    const service = await loadService();
+
+    await expect(service.changePlan(7, 'monthly')).rejects.toMatchObject({ statusCode: 409 });
+    expect(scheduleRelease).not.toHaveBeenCalled();
+  });
+
+  // The rule is for plan changes only; leaving must stay one step.
+  it('does not block POST /cancel', async () => {
+    getCurrent.mockResolvedValue(PENDING);
+    stripeRetrieve.mockResolvedValue(stripeSubscription('sub_sched_1'));
+    const service = await loadService();
+
+    const result = await service.cancel(7);
+
+    expect(scheduleRelease).toHaveBeenCalledWith('sub_sched_1');
+    expect(stripeUpdate).toHaveBeenCalledWith('sub_1', { cancel_at_period_end: true });
+    expect(result.cancelAtPeriodEnd).toBe(true);
+  });
+});
+
+describe('cancelPendingChange', () => {
+  it('releases the schedule and clears pendingPlan, keeping the current plan', async () => {
+    getCurrent.mockResolvedValue({ ...PAYING, pendingPlan: 'annual' });
+    stripeRetrieve.mockResolvedValue(stripeSubscription('sub_sched_1'));
+    const service = await loadService();
+
+    const result = await service.cancelPendingChange(7);
+
+    expect(scheduleRelease).toHaveBeenCalledWith('sub_sched_1');
+    // Only pendingPlan is written, so a webhook's newer price or period end survives.
+    expect(applyState).toHaveBeenCalledWith(
+      7,
+      { tier: 'plus', status: 'active', pendingPlan: null },
+      { reason: 'subscription_updated' },
+    );
+    expect(result).toMatchObject({ currentPlan: 'monthly', pendingPlan: null, effectiveAt: PAYING.currentPeriodEnd });
+  });
+
+  // Releasing the switch's schedule also drops the founding-to-standard
+  // rollover; without re-attaching it the founding price would never end.
+  it('re-attaches the founding rollover after releasing the schedule', async () => {
+    getCurrent.mockResolvedValue({ ...FOUNDING, pendingPlan: 'annual' });
+    stripeRetrieve
+      .mockResolvedValueOnce(stripeSubscription('sub_sched_1', 'price_monthly_founding'))
+      .mockResolvedValue(stripeSubscription(null, 'price_monthly_founding'));
+    const service = await loadService();
+
+    await service.cancelPendingChange(7);
+
+    expect(scheduleRelease).toHaveBeenCalledWith('sub_sched_1');
+    expect(scheduleCreate).toHaveBeenCalledWith({ from_subscription: 'sub_1' });
+    expect(scheduleRelease.mock.invocationCallOrder[0]).toBeLessThan(
+      scheduleCreate.mock.invocationCallOrder[0],
+    );
+    expect(scheduleUpdate).toHaveBeenCalledWith(
+      'sub_sched_2',
+      expect.objectContaining({ end_behavior: 'release' }),
+    );
+  });
+
+  it('refuses a stale pending switch on a subscription that has ended', async () => {
+    getCurrent.mockResolvedValue({ ...PAYING, status: 'cancelled', tier: 'free', pendingPlan: 'annual' });
+    const service = await loadService();
+
+    await expect(service.cancelPendingChange(7)).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'NO_PAID_SUBSCRIPTION',
+    });
+    expect(stripeRetrieve).not.toHaveBeenCalled();
+    expect(applyState).not.toHaveBeenCalled();
+  });
+
+  it('refuses with NO_PENDING_CHANGE when nothing is pending', async () => {
+    getCurrent.mockResolvedValue(PAYING);
+    const service = await loadService();
+
+    await expect(service.cancelPendingChange(7)).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'NO_PENDING_CHANGE',
+    });
+    expect(scheduleRelease).not.toHaveBeenCalled();
+    expect(applyState).not.toHaveBeenCalled();
+  });
+
+  it('404s when there is no subscription row', async () => {
+    getCurrent.mockResolvedValue(null);
+    const service = await loadService();
+
+    await expect(service.cancelPendingChange(7)).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it('sends an App Store subscriber to Apple', async () => {
+    getCurrent.mockResolvedValue({ ...PAYING, pendingPlan: 'annual', billingProvider: 'apple' });
+    const service = await loadService();
+
+    await expect(service.cancelPendingChange(7)).rejects.toMatchObject({ code: 'MANAGED_BY_APPLE' });
+    expect(scheduleRelease).not.toHaveBeenCalled();
   });
 });

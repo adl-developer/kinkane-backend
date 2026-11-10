@@ -1,0 +1,1 @@
+ALTER TABLE "user_subscriptions" ADD COLUMN "renewal_reminder_sent_for" timestamp with time zone;

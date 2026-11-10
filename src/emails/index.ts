@@ -13,6 +13,8 @@ export { sendSubscriptionConfirmedEmail } from './transactional/subscription-con
 export type { SubscriptionConfirmedPayload } from './transactional/subscription-confirmed';
 export { sendSubscriptionPaymentFailedEmail } from './transactional/subscription-payment-failed';
 export { sendSubscriptionCancelledEmail } from './transactional/subscription-cancelled';
+export { sendSubscriptionRenewalReminderEmail } from './transactional/subscription-renewal-reminder';
+export type { SubscriptionRenewalReminderPayload } from './transactional/subscription-renewal-reminder';
 export { sendReferralInviteEmail } from './transactional/referral-invite';
 export { sendContactMessageEmail } from './transactional/contact-message';
 export { sendRestockRequestAdminEmail, sendRestockRequestCustomerEmail } from './transactional/restock-request';

@@ -43,7 +43,8 @@ router.get('/history', requireAuth, wrap(subscriptionsController.history));
  * hardcodes an amount. Inside the user's founding window (their first
  * FOUNDING_PERIOD_MONTHS after sign-up) the returned amounts are the Founding
  * Member prices, with `standardAmountCents` alongside for showing the saving,
- * and `foundingOfferEndsAt` is when that window closes.
+ * and `foundingOfferEndsAt` is when that window closes. Founding is one
+ * billing period, once per account: once used, both read as not offered.
  *
  * Returns 200: { foundingOfferActive, foundingOfferEndsAt, plans: [...] }
  * Errors: 401 unauthenticated | 503 payments not configured
@@ -113,7 +114,8 @@ router.post('/cancel', requireAuth, wrapHttp(subscriptionsController.cancel));
  * Errors: 400 validation | 401 unauthenticated | 401 incorrect password |
  *         401 expired sign-in token | 404 no subscription |
  *         409 NO_PAID_SUBSCRIPTION | 409 PENDING_CANCELLATION (reactivate first) |
- *         409 already on this plan | 503 payments not configured
+ *         409 PLAN_CHANGE_PENDING (+ pendingPlan, effectiveAt: cancel it first
+ *         via DELETE /change) | 409 already on this plan | 503 payments not configured
  */
 router.post(
   '/change',
@@ -121,6 +123,21 @@ router.post(
   checkoutLimiter,
   wrapHttp(subscriptionsController.changePlan),
 );
+
+/**
+ * DELETE /api/v1/user/subscription/change
+ *
+ * Cancels a pending plan switch; the user stays on their current plan. No
+ * password: it only restores what they already had. POST /cancel is separate
+ * and still cancels the whole subscription (clearing any pending switch).
+ *
+ * Returns 200: { currentPlan, pendingPlan: null, effectiveAt, tier, status }
+ * Errors: 401 unauthenticated | 404 no subscription |
+ *         409 NO_PAID_SUBSCRIPTION | 409 NO_PENDING_CHANGE | 409 MANAGED_BY_APPLE | 503 payments not configured
+ */
+// No rate limiter, like /reactivate: it 409s without touching Stripe unless a
+// switch is pending, and scheduling one is already limited on POST /change.
+router.delete('/change', requireAuth, wrapHttp(subscriptionsController.cancelPendingChange));
 
 /**
  * POST /api/v1/user/subscription/reactivate

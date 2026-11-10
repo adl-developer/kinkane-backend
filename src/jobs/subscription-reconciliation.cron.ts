@@ -60,7 +60,10 @@ async function reconcileStripe(): Promise<void> {
     for (const row of rows) {
       checked += 1;
       try {
-        const remote = await stripe().subscriptions.retrieve(row.stripeSubscriptionId!);
+        // Schedule expanded so the founding rollover check below needs no second call.
+        const remote = await stripe().subscriptions.retrieve(row.stripeSubscriptionId!, {
+          expand: ['schedule'],
+        });
         const priceId = remote.items.data[0]?.price?.id ?? null;
         const periodEndSeconds = remote.items.data[0]?.current_period_end;
         const currentPeriodEnd =

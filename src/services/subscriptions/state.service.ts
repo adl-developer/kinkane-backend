@@ -1,4 +1,4 @@
-import { and, eq, isNull, desc, lte, gt, or } from 'drizzle-orm';
+import { and, eq, isNull, desc, lte, gt, or, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import {
   users,
@@ -16,7 +16,7 @@ import type {
   BillingProvider,
 } from '../../db/schema';
 import { logger } from '../../lib/logger';
-import { foundingWindowEndsAt } from '../../lib/stripe';
+import { foundingWindowEndsAt, isFoundingWindowOpen } from '../../lib/stripe';
 
 /**
  * The single writer for subscription state.
@@ -359,14 +359,31 @@ export const subscriptionStateService = {
     return (await this.expireTrialIfDue(sub)) ?? sub;
   },
 
-  /** When this user's founding window closes (sign-up + FOUNDING_PERIOD_MONTHS), or null. */
+  /**
+   * When this user's founding window closes (sign-up + FOUNDING_PERIOD_MONTHS),
+   * or null when there is no offer for them — including once they have paid a
+   * founding price, on web or App Store: the discount is one period, once per
+   * account. "Used" is read from history, so it survives cancelling and
+   * resubscribing.
+   */
   async foundingEndsAt(userId: number): Promise<Date | null> {
+    // One round trip: this runs on every subscription read.
     const [user] = await db
-      .select({ createdAt: users.createdAt })
+      .select({
+        createdAt: users.createdAt,
+        usedFounding: sql<boolean>`EXISTS (
+          SELECT 1 FROM ${subscriptionStateHistory}
+          WHERE ${subscriptionStateHistory.userId} = ${userId}
+            AND ${subscriptionStateHistory.isFoundingMember}
+            AND ${subscriptionStateHistory.tier} = 'plus'
+        )`,
+      })
       .from(users)
       .where(eq(users.id, userId))
       .limit(1);
-    return user ? foundingWindowEndsAt(user.createdAt) : null;
+    if (!user || user.usedFounding) return null;
+    const endsAt = foundingWindowEndsAt(user.createdAt);
+    return isFoundingWindowOpen(endsAt) ? endsAt : null;
   },
 
   /** Effective tier for a user, with the read-time trial fallback applied. */

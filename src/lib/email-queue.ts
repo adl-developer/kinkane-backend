@@ -3,6 +3,7 @@ import { Queue } from 'bullmq';
 import { config } from '../config';
 import type {
   RecommendedBook, NewsletterPayload, WeeklyDigestPayload, OrderConfirmedPayload, RemovedContentKind, ReportFiledPayload,
+  SubscriptionRenewalReminderPayload,
 } from '../emails';
 
 // BullMQ requires maxRetriesPerRequest: null — a separate connection from the
@@ -35,6 +36,7 @@ export interface EmailJobMap {
   'subscription-confirmed':     { to: string; name: string; plan: 'monthly' | 'annual'; isFounding: boolean; currentPeriodEnd: string | null };
   'subscription-payment-failed':{ to: string; name: string; amountCents: number | null; currency: string | null };
   'subscription-cancelled':     { to: string; name: string; accessEndsAt: string | null };
+  'subscription-renewal-reminder': { to: string; name: string } & SubscriptionRenewalReminderPayload;
   // No videoUrl: the campaign copy has no slot for it, and the copy set in
   // force is decided at send time rather than baked into the job.
   'referral-invite':            { to: string; referrerName: string; link: string };
@@ -82,6 +84,7 @@ export const EMAIL_PRIORITY: Record<EmailJobName, number> = {
   'subscription-confirmed':     1,
   'subscription-payment-failed':1,
   'subscription-cancelled':     1,
+  'subscription-renewal-reminder': 1,
   // A person is standing in the app waiting to see the invite land in their
   // friend's inbox, which puts it above digests but below anything a user is
   // actually blocked on.

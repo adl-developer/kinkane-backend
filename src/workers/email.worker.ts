@@ -18,6 +18,7 @@ import {
   sendRateReviewReminderEmail,
   sendSubscriptionConfirmedEmail,
   sendSubscriptionPaymentFailedEmail,
+  sendSubscriptionRenewalReminderEmail,
   sendSubscriptionCancelledEmail,
   sendReferralInviteEmail,
   sendOrderConfirmedEmail,
@@ -132,6 +133,11 @@ async function processEmailJob(job: Job): Promise<void> {
       const { to, name: userName, amountCents, currency } =
         job.data as EmailJobMap['subscription-payment-failed'];
       await sendSubscriptionPaymentFailedEmail(to, userName, amountCents, currency);
+      break;
+    }
+    case 'subscription-renewal-reminder': {
+      const { to, name: userName, ...payload } = job.data as EmailJobMap['subscription-renewal-reminder'];
+      await sendSubscriptionRenewalReminderEmail(to, userName, payload);
       break;
     }
     case 'subscription-cancelled': {

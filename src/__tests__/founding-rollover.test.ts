@@ -76,13 +76,15 @@ afterEach(() => {
 });
 
 describe('scheduleFoundingRollover — per-account window', () => {
-  it('waits while the next renewal still starts inside the window', async () => {
+  // Founding is one billing period: the very next renewal is standard, even
+  // when it still falls inside the account's founding window.
+  it('rolls at the next renewal even inside the window', async () => {
     const service = await load();
     await service.scheduleFoundingRollover(
       subscription({ periodEnd: '2026-12-09T00:00:00Z', foundingEndsAt: '2027-01-01T00:00:00Z' }) as never,
       7,
     );
-    expect(scheduleCreate).not.toHaveBeenCalled();
+    expect(scheduleCreate).toHaveBeenCalledWith({ from_subscription: 'sub_1' });
   });
 
   it('rolls at the first renewal on or after the window end, keeping metadata on every phase', async () => {
@@ -114,6 +116,22 @@ describe('scheduleFoundingRollover — per-account window', () => {
     expect(scheduleCreate).not.toHaveBeenCalled();
   });
 
+  // The daily reconciliation fetches the subscription with its schedule
+  // expanded, so the pending check needs no second Stripe call.
+  it('uses an expanded schedule instead of retrieving it', async () => {
+    const service = await load();
+    const expanded = {
+      id: 'sub_sched_0',
+      phases: [{ start_date: sec('2026-11-01T00:00:00Z') }, { start_date: sec('2026-12-09T00:00:00Z') }],
+    };
+    await service.scheduleFoundingRollover(
+      { ...subscription({ periodEnd: '2026-12-09T00:00:00Z' }), schedule: expanded } as never,
+      7,
+    );
+    expect(scheduleRetrieve).not.toHaveBeenCalled();
+    expect(scheduleCreate).not.toHaveBeenCalled();
+  });
+
   // A plan change onto a founding price leaves a schedule whose last phase is
   // running and never ends — it has to be replaced by a rollover.
   it('replaces a finished plan-change schedule with the rollover', async () => {
@@ -134,10 +152,11 @@ describe('scheduleFoundingRollover — per-account window', () => {
 });
 
 describe('scheduleFoundingRollover — legacy launch window', () => {
-  it('keeps founding on renewals billed while the launch window is open', async () => {
+  // Existing founding members move to standard at their next renewal too.
+  it('rolls at the next renewal while the launch window is still open', async () => {
     const service = await load();
     await service.scheduleFoundingRollover(subscription({ periodEnd: '2027-01-20T00:00:00Z' }) as never, 7);
-    expect(scheduleCreate).not.toHaveBeenCalled();
+    expect(scheduleCreate).toHaveBeenCalled();
   });
 
   it('rolls on the first invoice after the launch window closes', async () => {
@@ -157,10 +176,11 @@ describe('schedulePlanChange target price', () => {
     return phases[phases.length - 1].items[0].price;
   }
 
-  it('keeps founding when the change lands inside the window', async () => {
+  // A change lands at a renewal, which is after the one founding period.
+  it('bills standard even when the change lands inside the window', async () => {
     expect(
       await targetFor(subscription({ periodEnd: '2026-12-09T00:00:00Z', foundingEndsAt: '2027-01-01T00:00:00Z' })),
-    ).toBe('price_annual_founding');
+    ).toBe('price_annual');
   });
 
   it('bills standard when the change lands after the window', async () => {
@@ -177,9 +197,7 @@ describe('schedulePlanChange target price', () => {
     ).toBe('price_annual');
   });
 
-  it('judges legacy subscriptions against the launch window now', async () => {
-    expect(await targetFor(subscription({ periodEnd: '2027-02-09T00:00:00Z' }))).toBe(
-      'price_annual_founding',
-    );
+  it('bills standard for legacy subscriptions too', async () => {
+    expect(await targetFor(subscription({ periodEnd: '2027-02-09T00:00:00Z' }))).toBe('price_annual');
   });
 });

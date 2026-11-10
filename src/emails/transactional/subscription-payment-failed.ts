@@ -1,6 +1,7 @@
 import { sendEmail, FROM } from '../../lib/resend';
 import { emailLayout, ctaButton, greeting, signOff, escapeHtml, p } from '../lib/layout';
 import { appLink } from '../../lib/app-link';
+import { formatMoneyForDisplay } from '../../lib/money';
 
 /**
  * Sent when a renewal charge fails.
@@ -21,10 +22,7 @@ export async function sendSubscriptionPaymentFailedEmail(
 
   const amount =
     amountCents != null && currency
-      ? new Intl.NumberFormat('en-GB', {
-          style: 'currency',
-          currency: currency.toUpperCase(),
-        }).format(amountCents / 100)
+      ? formatMoneyForDisplay(amountCents, currency)
       : null;
 
   const amountLine = amount

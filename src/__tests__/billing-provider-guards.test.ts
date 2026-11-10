@@ -134,6 +134,33 @@ describe('Stripe webhooks for an unlabelled Stripe member', () => {
   });
 });
 
+describe('Stripe subscription ending with a switch pending', () => {
+  // The switch can never happen now; leaving it would block a later /change
+  // and show "switching to annual" on a free account.
+  it('clears pendingPlan', async () => {
+    const stripeMember = {
+      ...APPLE_BILLED,
+      billingProvider: 'stripe',
+      appleOriginalTransactionId: null,
+      stripeSubscriptionId: 'sub_live',
+      pendingPlan: 'annual',
+    };
+    getByStripeCustomerId.mockResolvedValue(stripeMember);
+    get.mockResolvedValue(stripeMember);
+    const service = await webhooks();
+
+    await service.handleEvent(
+      event('customer.subscription.deleted', { ...STRIPE_SUBSCRIPTION, id: 'sub_live' }) as never,
+    );
+
+    expect(applyState).toHaveBeenCalledWith(
+      7,
+      expect.objectContaining({ status: 'cancelled', pendingPlan: null }),
+      expect.anything(),
+    );
+  });
+});
+
 describe('Stripe checkout for a member billed by Apple', () => {
   async function checkout() {
     vi.resetModules();

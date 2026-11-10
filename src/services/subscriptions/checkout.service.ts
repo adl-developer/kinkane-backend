@@ -592,6 +592,20 @@ export const checkoutService = {
       );
     }
 
+    // One pending change at a time: the user withdraws it explicitly
+    // (cancelPendingChange) before choosing again, so a change is never
+    // silently overwritten. POST /cancel is deliberately not gated by this.
+    if (sub.pendingPlan) {
+      throw Object.assign(
+        new Error(`Cancel your pending switch to ${sub.pendingPlan} before changing plans again`),
+        {
+          statusCode: 409,
+          code: 'PLAN_CHANGE_PENDING',
+          details: { pendingPlan: sub.pendingPlan, effectiveAt: sub.currentPeriodEnd ?? null },
+        },
+      );
+    }
+
     if (plan === 'free') {
       const cancelled = await this.cancel(userId, reason, reasonOther);
       return {
@@ -604,75 +618,25 @@ export const checkoutService = {
     }
 
     if (plan === sub.plan) {
-      if (!sub.pendingPlan) {
-        throw Object.assign(new Error('You are already on this plan'), { statusCode: 409 });
-      }
-
-      // Picking their current plan again undoes an earlier pending switch.
-      // releaseFrom detaches the entire schedule — including any
-      // founding-to-standard rollover that was part of it — so reattach the
-      // rollover (a no-op unless it's due) or a founding member would keep the
-      // founding price indefinitely.
-      await schedulesService.releaseFrom(sub.stripeSubscriptionId, userId);
-      await schedulesService.scheduleFoundingRollover(sub.stripeSubscriptionId, userId);
-
-      const state = await subscriptionStateService.applyState(
-        userId,
-        {
-          tier: sub.tier,
-          status: sub.status,
-          plan: sub.plan,
-          priceId: sub.priceId,
-          isFoundingMember: sub.isFoundingMember,
-          currentPeriodEnd: sub.currentPeriodEnd,
-          cancelAtPeriodEnd: sub.cancelAtPeriodEnd,
-          pendingPlan: null,
-          stripeCustomerId: sub.stripeCustomerId,
-          stripeSubscriptionId: sub.stripeSubscriptionId,
-        },
-        { reason: 'subscription_updated' },
-      );
-
-      logger.info('Pending plan change undone', { userId, stripeSubscriptionId: sub.stripeSubscriptionId });
-
-      return {
-        currentPlan: state?.plan ?? sub.plan,
-        pendingPlan: null,
-        effectiveAt: state?.currentPeriodEnd ?? sub.currentPeriodEnd ?? null,
-        tier: state?.tier ?? sub.tier,
-        status: state?.status ?? sub.status,
-      };
+      throw Object.assign(new Error('You are already on this plan'), { statusCode: 409 });
     }
 
     await schedulesService.schedulePlanChange(sub.stripeSubscriptionId, userId, plan);
 
+    // Only pendingPlan changes here. Leaving the other columns undefined keeps
+    // whatever a webhook may have written since getCurrent above.
     const state = await subscriptionStateService.applyState(
       userId,
-      {
-        tier: sub.tier,
-        status: sub.status,
-        plan: sub.plan,
-        priceId: sub.priceId,
-        isFoundingMember: sub.isFoundingMember,
-        currentPeriodEnd: sub.currentPeriodEnd,
-        cancelAtPeriodEnd: sub.cancelAtPeriodEnd,
-        pendingPlan: plan,
-        stripeCustomerId: sub.stripeCustomerId,
-        stripeSubscriptionId: sub.stripeSubscriptionId,
-      },
+      { tier: sub.tier, status: sub.status, pendingPlan: plan },
       { reason: 'subscription_updated' },
     );
 
-    // If applyState returned null, a concurrent writer moved the row on
-    // between the getCurrent above and here — likely a webhook. The schedule
-    // is already attached in Stripe, so its `customer.subscription.updated`
-    // will land shortly and set pendingPlan correctly via the webhook's own
-    // reconciliation. Log at error with the correlation ids so the (rare)
-    // case where the webhook also fails is findable, but don't roll back the
-    // Stripe write: the user's intent was recorded, and Stripe is the source
-    // of truth for what will actually be billed.
+    // With no guards, null means the row itself is gone (account deleted
+    // mid-request). Webhooks never set pendingPlan to a plan, only clear it,
+    // so nothing will mirror this switch later: log loudly for follow-up.
+    // Stripe stays the source of truth for what is billed.
     if (!state) {
-      logger.error('Plan change written to Stripe but local state race prevented mirror', {
+      logger.error('Plan change written to Stripe but the subscription row was not updated', {
         userId,
         stripeSubscriptionId: sub.stripeSubscriptionId,
         toPlan: plan,
@@ -690,6 +654,72 @@ export const checkoutService = {
     return {
       currentPlan: state?.plan ?? sub.plan,
       pendingPlan: state?.pendingPlan ?? plan,
+      effectiveAt: state?.currentPeriodEnd ?? sub.currentPeriodEnd ?? null,
+      tier: state?.tier ?? sub.tier,
+      status: state?.status ?? sub.status,
+    };
+  },
+
+  /**
+   * Withdraws a scheduled plan switch, keeping the current plan. This is the
+   * only way to clear one: changePlan refuses while a switch is pending.
+   */
+  async cancelPendingChange(userId: number): Promise<PlanChangeResult> {
+    assertStripeConfigured();
+
+    const sub = await subscriptionStateService.getCurrent(userId);
+    if (!sub) {
+      throw Object.assign(new Error('Subscription not found'), { statusCode: 404 });
+    }
+
+    assertNotAppleBilled(sub);
+
+    if (!sub.stripeSubscriptionId || (sub.status !== 'active' && sub.status !== 'past_due')) {
+      throw Object.assign(
+        new Error('You do not have a paid subscription to change'),
+        { statusCode: 409, code: 'NO_PAID_SUBSCRIPTION' },
+      );
+    }
+
+    if (!sub.pendingPlan) {
+      throw Object.assign(new Error('You have no pending plan change to cancel'), {
+        statusCode: 409,
+        code: 'NO_PENDING_CHANGE',
+      });
+    }
+
+    // releaseFrom detaches the entire schedule — including any
+    // founding-to-standard rollover that was part of it — so reattach the
+    // rollover (a no-op unless it's due) or a founding member would keep the
+    // founding price indefinitely.
+    await schedulesService.releaseFrom(sub.stripeSubscriptionId, userId);
+    await schedulesService.scheduleFoundingRollover(sub.stripeSubscriptionId, userId);
+
+    const state = await subscriptionStateService.applyState(
+      userId,
+      { tier: sub.tier, status: sub.status, pendingPlan: null },
+      { reason: 'subscription_updated' },
+    );
+
+    // Null means the row is gone. The schedule is already released, so the
+    // next subscription.updated webhook (schedule now null) would clear it anyway.
+    if (!state) {
+      logger.error('Pending plan change released in Stripe but the subscription row was not updated', {
+        userId,
+        stripeSubscriptionId: sub.stripeSubscriptionId,
+        cancelledPlan: sub.pendingPlan,
+      });
+    }
+
+    logger.info('Pending plan change cancelled', {
+      userId,
+      stripeSubscriptionId: sub.stripeSubscriptionId,
+      cancelledPlan: sub.pendingPlan,
+    });
+
+    return {
+      currentPlan: state?.plan ?? sub.plan,
+      pendingPlan: null,
       effectiveAt: state?.currentPeriodEnd ?? sub.currentPeriodEnd ?? null,
       tier: state?.tier ?? sub.tier,
       status: state?.status ?? sub.status,

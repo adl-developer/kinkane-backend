@@ -156,12 +156,11 @@ describe('foundingAppleOfferFor', () => {
   }
   const now = new Date('2026-11-09T00:00:00Z');
 
-  // Monthly covers every renewal that starts before the window closes, the
-  // same as the Stripe rollover.
-  it('picks the monthly offer whose length reaches the window end', async () => {
+  // Founding is one period, the same as the Stripe rollover.
+  it('always offers one founding month, however long the window has left', async () => {
     const { foundingAppleOfferFor } = await load();
-    expect(foundingAppleOfferFor('monthly', new Date('2027-02-09T00:00:00Z'), now)).toBe('founding_monthly_3m');
-    expect(foundingAppleOfferFor('monthly', new Date('2026-12-20T00:00:00Z'), now)).toBe('founding_monthly_2m');
+    expect(foundingAppleOfferFor('monthly', new Date('2027-02-09T00:00:00Z'), now)).toBe('founding_monthly_1m');
+    expect(foundingAppleOfferFor('monthly', new Date('2026-12-20T00:00:00Z'), now)).toBe('founding_monthly_1m');
     expect(foundingAppleOfferFor('monthly', new Date('2026-12-09T00:00:00Z'), now)).toBe('founding_monthly_1m');
     expect(foundingAppleOfferFor('monthly', new Date('2026-11-10T00:00:00Z'), now)).toBe('founding_monthly_1m');
   });

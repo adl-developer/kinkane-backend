@@ -1,6 +1,20 @@
 # Changelog
 
 
+## 2026-11-10
+
+### Features
+
+* email website subscribers a week before every renewal ([7cb6f50](https://adl.github.com/adl-developer/kinkane-backend/commit/7cb6f501cfdd74914e122c96f7bbe9f446fb1941)) — [details](changelog/2026-11-10-cancel-pending-plan-change.md)
+* give each account the founding price for one billing period, once ([807badf](https://adl.github.com/adl-developer/kinkane-backend/commit/807badf90c10f4c3ba52d81506d6542bf833eb08)) — [details](changelog/2026-11-10-founding-price-one-period-once.md)
+* let subscribers cancel a pending plan switch, and require it before changing plan again ([f061061](https://adl.github.com/adl-developer/kinkane-backend/commit/f06106121dd4a24a61a9c4173d860bf415c33c5d)) — [details](changelog/2026-11-10-cancel-pending-plan-change.md)
+
+### Bug Fixes
+
+* make renewal reminders always quote the right price and plan ([1591392](https://adl.github.com/adl-developer/kinkane-backend/commit/1591392d986a773cf0535df093d2951fa64b6e07)) — [details](changelog/2026-11-10-renewal-reminder-emails.md)
+* keep plan-switch records accurate when subscriptions end or change at the same time ([0d58ce8](https://adl.github.com/adl-developer/kinkane-backend/commit/0d58ce83b3a475021acd394a6ba818bc897e3d34)) — [details](changelog/2026-11-10-cancel-pending-plan-change.md)
+
+
 ## 2026-11-09
 
 ### Features

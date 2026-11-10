@@ -98,6 +98,9 @@ export const userSubscriptions = pgTable(
     // of the time. The effective date is always `currentPeriodEnd` — there is
     // deliberately no separate `pendingPlanEffectiveAt` column to duplicate it.
     pendingPlan: subscriptionPlanEnum('pending_plan'),
+    // The `currentPeriodEnd` the week-ahead renewal reminder was last sent for,
+    // so the daily job emails each renewal once, across workers.
+    renewalReminderSentFor: timestamp('renewal_reminder_sent_for', { withTimezone: true }),
     stripeCustomerId: varchar('stripe_customer_id', { length: 256 }),
     // Presence of this column is load-bearing: it is the guard that stops the
     // trial-expiry sweep from downgrading someone who has paid. Never write it
