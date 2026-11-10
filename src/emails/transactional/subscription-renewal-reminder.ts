@@ -1,6 +1,7 @@
 import { sendEmail, FROM } from '../../lib/resend';
 import { emailLayout, ctaButton, greeting, signOff, escapeHtml, p } from '../lib/layout';
 import { appLink } from '../../lib/app-link';
+import { formatMoneyForDisplay as money } from '../../lib/money';
 
 export interface SubscriptionRenewalReminderPayload {
   plan: 'monthly' | 'annual';
@@ -11,12 +12,6 @@ export interface SubscriptionRenewalReminderPayload {
   currency: string;
   /** The founding price they paid this period; set only when this renewal moves them to standard. */
   foundingAmountCents?: number | null;
-}
-
-function money(cents: number, currency: string): string {
-  return new Intl.NumberFormat('en-GB', { style: 'currency', currency: currency.toUpperCase() }).format(
-    cents / 100,
-  );
 }
 
 /**

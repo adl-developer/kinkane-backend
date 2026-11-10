@@ -130,6 +130,14 @@ export function formatMinor(minor: number, currency: string): string {
   return `${major.toFixed(places)} ${code}`;
 }
 
+/** A minor-unit amount as customers read it in emails, e.g. "US$6.99". */
+export function formatMoneyForDisplay(minor: number, currency: string): string {
+  const code = currency.toUpperCase();
+  return new Intl.NumberFormat('en-GB', { style: 'currency', currency: code }).format(
+    minor / minorUnitsPerMajor(code),
+  );
+}
+
 /**
  * Applies a percentage to a minor-unit amount, rounding to the nearest unit.
  *
