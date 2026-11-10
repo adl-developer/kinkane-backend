@@ -421,6 +421,19 @@ describe('changePlan with a switch already pending', () => {
     expect(stripeUpdate).not.toHaveBeenCalled();
   });
 
+  it('writes only pendingPlan when scheduling a switch', async () => {
+    getCurrent.mockResolvedValue(PAYING);
+    const service = await loadService();
+
+    await service.changePlan(7, 'annual');
+
+    expect(applyState).toHaveBeenCalledWith(
+      7,
+      { tier: 'plus', status: 'active', pendingPlan: 'annual' },
+      { reason: 'subscription_updated' },
+    );
+  });
+
   it('still says "already on this plan" when nothing is pending', async () => {
     getCurrent.mockResolvedValue(PAYING);
     const service = await loadService();
@@ -452,12 +465,47 @@ describe('cancelPendingChange', () => {
     const result = await service.cancelPendingChange(7);
 
     expect(scheduleRelease).toHaveBeenCalledWith('sub_sched_1');
+    // Only pendingPlan is written, so a webhook's newer price or period end survives.
     expect(applyState).toHaveBeenCalledWith(
       7,
-      expect.objectContaining({ plan: 'monthly', pendingPlan: null }),
+      { tier: 'plus', status: 'active', pendingPlan: null },
       { reason: 'subscription_updated' },
     );
     expect(result).toMatchObject({ currentPlan: 'monthly', pendingPlan: null, effectiveAt: PAYING.currentPeriodEnd });
+  });
+
+  // Releasing the switch's schedule also drops the founding-to-standard
+  // rollover; without re-attaching it the founding price would never end.
+  it('re-attaches the founding rollover after releasing the schedule', async () => {
+    getCurrent.mockResolvedValue({ ...FOUNDING, pendingPlan: 'annual' });
+    stripeRetrieve
+      .mockResolvedValueOnce(stripeSubscription('sub_sched_1', 'price_monthly_founding'))
+      .mockResolvedValue(stripeSubscription(null, 'price_monthly_founding'));
+    const service = await loadService();
+
+    await service.cancelPendingChange(7);
+
+    expect(scheduleRelease).toHaveBeenCalledWith('sub_sched_1');
+    expect(scheduleCreate).toHaveBeenCalledWith({ from_subscription: 'sub_1' });
+    expect(scheduleRelease.mock.invocationCallOrder[0]).toBeLessThan(
+      scheduleCreate.mock.invocationCallOrder[0],
+    );
+    expect(scheduleUpdate).toHaveBeenCalledWith(
+      'sub_sched_2',
+      expect.objectContaining({ end_behavior: 'release' }),
+    );
+  });
+
+  it('refuses a stale pending switch on a subscription that has ended', async () => {
+    getCurrent.mockResolvedValue({ ...PAYING, status: 'cancelled', tier: 'free', pendingPlan: 'annual' });
+    const service = await loadService();
+
+    await expect(service.cancelPendingChange(7)).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'NO_PAID_SUBSCRIPTION',
+    });
+    expect(stripeRetrieve).not.toHaveBeenCalled();
+    expect(applyState).not.toHaveBeenCalled();
   });
 
   it('refuses with NO_PENDING_CHANGE when nothing is pending', async () => {

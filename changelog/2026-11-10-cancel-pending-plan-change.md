@@ -34,6 +34,27 @@ pending change explicitly before making another one.
   the founding price still ends on time.
 - **Apple subscribers** get `409 MANAGED_BY_APPLE`, the same as every other
   Stripe billing action.
+- **Only the changed columns are written.** Both `/change` and
+  `DELETE /change` now update just `pending_plan` (plus tier/status, which the
+  state service requires), instead of writing back a full copy read at the
+  start of the request. A webhook that updated the price or period end in the
+  meantime is no longer overwritten.
+- **An ended subscription clears its pending switch.** The
+  subscription-deleted webhook now sets `pending_plan` to null. Before, a
+  cancelled account could keep showing "switching to annual", and
+  `DELETE /change` now refuses with `NO_PAID_SUBSCRIPTION` for an ended
+  subscription.
+- **No rate limit on `DELETE /change`**, like `/reactivate`. It returns a 409
+  without calling Stripe unless a switch is pending, and scheduling one is
+  already limited on `POST /change`. Sharing the checkout limit would have let
+  plan comparisons use up a user's checkout attempts.
+
+## Deploy order
+
+Apps currently undo a switch by sending the current plan to `POST /change`,
+which now returns `409 PLAN_CHANGE_PENDING`. The app and website must call
+`DELETE /change` before, or at the same time as, this backend deploys.
+Otherwise users with a pending switch can't withdraw it.
 
 ## Billing
 
@@ -49,7 +70,11 @@ Unit tests in `src/__tests__/subscription-cancel.test.ts` cover these cases:
 - a second change (monthly, annual or free) is refused and nothing is written to Stripe
 - `/cancel` still goes through while a switch is pending
 - `DELETE /change` releases the schedule and clears `pendingPlan`
+- a Founding Member's founding-to-standard switch is re-attached after release
+- only `pending_plan` is written, on both endpoints
+- an ended subscription with a stale switch is refused, and the
+  subscription-deleted webhook clears `pending_plan`
 - `NO_PENDING_CHANGE`, a missing subscription row, and Apple-billed users
 
-Typecheck and the full suite (1669 tests) pass. It has not been run against
+Typecheck and the full suite (1673 tests) pass. It has not been run against
 Stripe's test mode.

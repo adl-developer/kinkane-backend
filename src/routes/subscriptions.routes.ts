@@ -132,14 +132,11 @@ router.post(
  *
  * Returns 200: { currentPlan, pendingPlan: null, effectiveAt, tier, status }
  * Errors: 401 unauthenticated | 404 no subscription |
- *         409 NO_PENDING_CHANGE | 409 MANAGED_BY_APPLE | 503 payments not configured
+ *         409 NO_PAID_SUBSCRIPTION | 409 NO_PENDING_CHANGE | 409 MANAGED_BY_APPLE | 503 payments not configured
  */
-router.delete(
-  '/change',
-  requireAuth,
-  checkoutLimiter,
-  wrapHttp(subscriptionsController.cancelPendingChange),
-);
+// No rate limiter, like /reactivate: it 409s without touching Stripe unless a
+// switch is pending, and scheduling one is already limited on POST /change.
+router.delete('/change', requireAuth, wrapHttp(subscriptionsController.cancelPendingChange));
 
 /**
  * POST /api/v1/user/subscription/reactivate

@@ -545,6 +545,8 @@ export const webhooksService = {
         tier: 'free',
         status: 'cancelled',
         cancelAtPeriodEnd: false,
+        // A switch that was waiting on this subscription can never happen now.
+        pendingPlan: null,
         // stripe_subscription_id is kept, not cleared: it's how this row is
         // traced back to its Stripe history, and clearing it would make the
         // trial-expiry guard treat a former subscriber as a fresh trialist.
