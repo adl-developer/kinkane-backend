@@ -5,8 +5,15 @@ import { users, userSubscriptions } from '../db/schema';
 import { stripe, isStripeConfigured, isFoundingPriceId } from '../lib/stripe';
 import { enqueueEmail } from '../lib/email-queue';
 import { logger } from '../lib/logger';
+import { schedulesService } from '../services/subscriptions/schedules.service';
+import type Stripe from 'stripe';
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
+function linePriceId(line: Stripe.InvoiceLineItem): string | null {
+  const price = line.pricing?.price_details?.price;
+  return price == null ? null : typeof price === 'string' ? price : price.id;
+}
 
 /**
  * Daily at 09:00 UTC: emails every website (Stripe) subscriber whose renewal
@@ -30,6 +37,7 @@ export async function sendDueRenewalReminders(now: Date = new Date()): Promise<n
     .select({
       userId: userSubscriptions.userId,
       plan: userSubscriptions.plan,
+      pendingPlan: userSubscriptions.pendingPlan,
       priceId: userSubscriptions.priceId,
       currentPeriodEnd: userSubscriptions.currentPeriodEnd,
       stripeSubscriptionId: userSubscriptions.stripeSubscriptionId,
@@ -72,25 +80,31 @@ export async function sendDueRenewalReminders(now: Date = new Date()): Promise<n
     if (!claimed) continue;
 
     try {
+      const onFounding = isFoundingPriceId(row.priceId);
+      // Make sure the founding-to-standard switch is in Stripe before asking
+      // what the renewal costs: right after deploy, or when invoice.paid's
+      // attach failed, it may not be there yet. Idempotent.
+      if (onFounding) {
+        await schedulesService.scheduleFoundingRollover(row.stripeSubscriptionId, row.userId);
+      }
+
       const preview = await stripe().invoices.createPreview({ subscription: row.stripeSubscriptionId });
 
-      // Founding is one period, so a founding-priced renewal is the one that
-      // moves to standard. Say so only if Stripe agrees the amount changes —
-      // if the rollover failed to attach, it would still bill founding.
+      // "Founding price ends" only when the renewal's own price is no longer a
+      // founding one. Comparing totals would misfire on tax, credit or discounts.
       let foundingAmountCents: number | null = null;
-      if (isFoundingPriceId(row.priceId)) {
-        const founding = await stripe().prices.retrieve(row.priceId!);
-        if (founding.unit_amount != null && founding.unit_amount !== preview.amount_due) {
-          foundingAmountCents = founding.unit_amount;
-        }
+      if (onFounding && !preview.lines.data.some((l) => isFoundingPriceId(linePriceId(l)))) {
+        foundingAmountCents = (await stripe().prices.retrieve(row.priceId!)).unit_amount;
       }
 
       await enqueueEmail('subscription-renewal-reminder', {
         to: row.email,
         name: row.name,
-        plan: row.plan,
+        // A pending switch takes effect at this renewal, so that's the plan billed.
+        plan: row.pendingPlan ?? row.plan,
         renewsAt: row.currentPeriodEnd.toISOString(),
-        amountCents: preview.amount_due,
+        // Before any account credit is applied: what the renewal costs.
+        amountCents: preview.total,
         currency: preview.currency,
         foundingAmountCents,
       });

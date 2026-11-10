@@ -22,11 +22,14 @@ told about tends to come back as a chargeback.
 
 ## How it works
 
-- **Amounts come from Stripe's invoice preview**, so they match what will
-  actually be charged, including tax or discounts. The founding wording is
-  used only when the subscription is on a founding price *and* Stripe's
-  preview shows a different amount. If the switch to standard somehow failed
-  to attach, the email doesn't announce a rise that isn't happening.
+- **Amounts come from Stripe's invoice preview** (its total, before any
+  account credit), so they match what the renewal costs, including tax or
+  discounts. For a founding member, the job first makes sure the switch to
+  standard is set up in Stripe, then previews. The founding wording is used
+  only when the renewal's own price is no longer a founding price. A
+  difference in totals caused by tax or credit never triggers it.
+- **A pending plan switch** takes effect at this renewal, so the email names
+  the plan being switched to.
 - **Sent once per renewal:** new column
   `user_subscriptions.renewal_reminder_sent_for` (migration `0093`) records
   the `current_period_end` that was reminded. A conditional update claims it,

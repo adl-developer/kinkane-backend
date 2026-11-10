@@ -49,6 +49,16 @@ vi.mock('../lib/stripe', async (importOriginal) => ({
   isFoundingPriceId: (id: string | null | undefined) => Boolean(id?.endsWith('_founding')),
 }));
 
+const scheduleFoundingRollover = vi.fn().mockResolvedValue(undefined);
+vi.mock('../services/subscriptions/schedules.service', () => ({
+  schedulesService: { scheduleFoundingRollover: (...args: unknown[]) => scheduleFoundingRollover(...args) },
+}));
+
+/** A Stripe invoice preview whose single line bills `priceId`. */
+function preview(total: number, priceId: string, extra: Record<string, unknown> = {}) {
+  return { total, amount_due: total, currency: 'usd', lines: { data: [{ pricing: { price_details: { price: priceId } } }] }, ...extra };
+}
+
 let db: typeof import('../db').db;
 let sql: typeof import('drizzle-orm').sql;
 
@@ -67,15 +77,21 @@ async function makeUser(tag: string, createdAt = NOW): Promise<number> {
 
 async function subscribe(
   userId: number,
-  opts: { renewsInDays: number; priceId?: string; provider?: 'stripe' | 'apple'; cancelling?: boolean },
+  opts: {
+    renewsInDays: number;
+    priceId?: string;
+    provider?: 'stripe' | 'apple';
+    cancelling?: boolean;
+    pendingPlan?: 'monthly' | 'annual';
+  },
 ): Promise<void> {
   await db.execute(sql`
     INSERT INTO user_subscriptions
       (user_id, tier, status, plan, price_id, current_period_end, cancel_at_period_end,
-       stripe_subscription_id, billing_provider)
+       stripe_subscription_id, billing_provider, pending_plan)
     VALUES (${userId}, 'plus', 'active', 'monthly', ${opts.priceId ?? 'price_monthly'},
             ${new Date(NOW.getTime() + opts.renewsInDays * DAY).toISOString()}, ${opts.cancelling ?? false},
-            ${`sub_${userId}`}, ${opts.provider ?? 'stripe'})`);
+            ${`sub_${userId}`}, ${opts.provider ?? 'stripe'}, ${opts.pendingPlan ?? null})`);
 }
 
 describeIfDb('founding once per account', () => {
@@ -131,7 +147,8 @@ describeIfDb('renewal reminders', () => {
   });
   beforeEach(async () => {
     enqueueEmail.mockClear();
-    createPreview.mockReset().mockResolvedValue({ amount_due: 699, currency: 'usd' });
+    createPreview.mockReset().mockResolvedValue(preview(699, 'price_monthly'));
+    scheduleFoundingRollover.mockClear();
     pricesRetrieve.mockReset().mockResolvedValue({ unit_amount: 599 });
     await db.execute(sql`DELETE FROM users WHERE email LIKE ${EMAIL_PREFIX + '%'}`);
   });
@@ -187,14 +204,52 @@ describeIfDb('renewal reminders', () => {
     expect(enqueueEmail.mock.calls[0][1]).toMatchObject({ amountCents: 699, foundingAmountCents: 599 });
   });
 
-  // If the rollover never attached, Stripe would bill founding again; the email
-  // must not announce a price rise that isn't going to happen.
-  it('sends the normal wording when Stripe still bills the founding amount', async () => {
-    createPreview.mockResolvedValue({ amount_due: 599, currency: 'usd' });
+  // Right after deploy (or a failed attach on invoice.paid) the switch to
+  // standard may not be in Stripe yet; it must be before the amount is read.
+  it('attaches the founding rollover before asking Stripe for the amount', async () => {
+    const userId = await makeUser('attach');
+    await subscribe(userId, { renewsInDays: 2, priceId: 'price_monthly_founding' });
+
+    await run();
+    expect(scheduleFoundingRollover).toHaveBeenCalledWith(`sub_${userId}`, userId);
+    expect(scheduleFoundingRollover.mock.invocationCallOrder[0]).toBeLessThan(
+      createPreview.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('leaves the rollover alone for standard-price subscribers', async () => {
+    await subscribe(await makeUser('standard'), { renewsInDays: 2 });
+
+    await run();
+    expect(scheduleFoundingRollover).not.toHaveBeenCalled();
+  });
+
+  // The switch lands at this renewal, so the email names the plan being billed.
+  it('names the pending plan when a switch takes effect at this renewal', async () => {
+    createPreview.mockResolvedValue(preview(5999, 'price_annual'));
+    await subscribe(await makeUser('switching'), { renewsInDays: 2, pendingPlan: 'annual' });
+
+    await run();
+    expect(enqueueEmail.mock.calls[0][1]).toMatchObject({ plan: 'annual', amountCents: 5999 });
+  });
+
+  // Account credit lowers amount_due, not the price of the renewal.
+  it('quotes the renewal total, not what is left after account credit', async () => {
+    createPreview.mockResolvedValue(preview(699, 'price_monthly', { amount_due: 0 }));
+    await subscribe(await makeUser('credit'), { renewsInDays: 2 });
+
+    await run();
+    expect(enqueueEmail.mock.calls[0][1]).toMatchObject({ amountCents: 699 });
+  });
+
+  // If Stripe still bills the founding price, the email must not announce a
+  // rise — even when tax makes the total differ from the founding price.
+  it('sends the normal wording when Stripe still bills the founding price, tax included', async () => {
+    createPreview.mockResolvedValue(preview(719, 'price_monthly_founding'));
     await subscribe(await makeUser('stuck'), { renewsInDays: 2, priceId: 'price_monthly_founding' });
 
     await run();
-    expect(enqueueEmail.mock.calls[0][1]).toMatchObject({ amountCents: 599, foundingAmountCents: null });
+    expect(enqueueEmail.mock.calls[0][1]).toMatchObject({ amountCents: 719, foundingAmountCents: null });
   });
 
   // Every worker runs the sweep at once; the claim comes first, so Stripe is
