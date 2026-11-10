@@ -5,6 +5,7 @@
 
 ### Features
 
+* give each account the founding price for one billing period, once ([807badf](https://adl.github.com/adl-developer/kinkane-backend/commit/807badf90c10f4c3ba52d81506d6542bf833eb08)) — [details](changelog/2026-11-10-founding-price-one-period-once.md)
 * let subscribers cancel a pending plan switch, and require it before changing plan again ([f061061](https://adl.github.com/adl-developer/kinkane-backend/commit/f06106121dd4a24a61a9c4173d860bf415c33c5d)) — [details](changelog/2026-11-10-cancel-pending-plan-change.md)
 
 ### Bug Fixes

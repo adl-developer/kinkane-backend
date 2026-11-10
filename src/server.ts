@@ -7,6 +7,7 @@ import { startGuestCleanupCron, stopGuestCleanupCron } from './jobs/guest-cleanu
 import { startWeeklyDigestCron, stopWeeklyDigestCron } from './jobs/weekly-digest.cron';
 import { startRecommendationCron, stopRecommendationCron } from './jobs/recommendation.cron';
 import { startTrialExpiryCron, stopTrialExpiryCron } from './jobs/trial-expiry.cron';
+import { startRenewalReminderCron, stopRenewalReminderCron } from './jobs/renewal-reminder.cron';
 import {
   startSubscriptionReconciliationCron,
   stopSubscriptionReconciliationCron,
@@ -42,6 +43,7 @@ async function main(): Promise<void> {
   const weeklyDigestTask = startWeeklyDigestCron();
   const recommendationCronTask = startRecommendationCron();
   const trialExpiryCronTask = startTrialExpiryCron();
+  const renewalReminderTask = startRenewalReminderCron();
   const subscriptionReconciliationTask = startSubscriptionReconciliationCron();
   const preferenceHistoryCleanupTask = startPreferenceHistoryCleanupCron();
   const interactionCleanupTask = startInteractionCleanupCron();
@@ -69,6 +71,7 @@ async function main(): Promise<void> {
     stopWeeklyDigestCron(weeklyDigestTask);
     stopRecommendationCron(recommendationCronTask);
     stopTrialExpiryCron(trialExpiryCronTask);
+    stopRenewalReminderCron(renewalReminderTask);
     stopSubscriptionReconciliationCron(subscriptionReconciliationTask);
     stopPreferenceHistoryCleanupCron(preferenceHistoryCleanupTask);
     stopInteractionCleanupCron(interactionCleanupTask);
