@@ -118,7 +118,12 @@ export const schedulesService = {
       // next renewal — legacy subscriptions included (changed 2026-11-10).
       const existingScheduleId = scheduleIdOf(subscription);
       if (existingScheduleId) {
-        const existing = await stripe().subscriptionSchedules.retrieve(existingScheduleId);
+        // Callers that fetched the subscription with expand: ['schedule']
+        // (the daily reconciliation) save a Stripe call here.
+        const existing =
+          typeof subscription.schedule === 'object' && subscription.schedule
+            ? subscription.schedule
+            : await stripe().subscriptionSchedules.retrieve(existingScheduleId);
         const lastPhase = existing.phases[existing.phases.length - 1];
         if (!lastPhase || lastPhase.start_date > Math.floor(Date.now() / 1000)) return;
         await stripe().subscriptionSchedules.release(existingScheduleId);

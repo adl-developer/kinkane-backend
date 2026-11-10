@@ -1,4 +1,4 @@
-import { and, eq, isNull, desc, lte, gt, or } from 'drizzle-orm';
+import { and, eq, isNull, desc, lte, gt, or, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import {
   users,
@@ -367,26 +367,23 @@ export const subscriptionStateService = {
    * resubscribing.
    */
   async foundingEndsAt(userId: number): Promise<Date | null> {
+    // One round trip: this runs on every subscription read.
     const [user] = await db
-      .select({ createdAt: users.createdAt })
+      .select({
+        createdAt: users.createdAt,
+        usedFounding: sql<boolean>`EXISTS (
+          SELECT 1 FROM ${subscriptionStateHistory}
+          WHERE ${subscriptionStateHistory.userId} = ${userId}
+            AND ${subscriptionStateHistory.isFoundingMember}
+            AND ${subscriptionStateHistory.tier} = 'plus'
+        )`,
+      })
       .from(users)
       .where(eq(users.id, userId))
       .limit(1);
-    const endsAt = user ? foundingWindowEndsAt(user.createdAt) : null;
-    if (!isFoundingWindowOpen(endsAt)) return null;
-
-    const [used] = await db
-      .select({ id: subscriptionStateHistory.id })
-      .from(subscriptionStateHistory)
-      .where(
-        and(
-          eq(subscriptionStateHistory.userId, userId),
-          eq(subscriptionStateHistory.isFoundingMember, true),
-          eq(subscriptionStateHistory.tier, 'plus'),
-        ),
-      )
-      .limit(1);
-    return used ? null : endsAt;
+    if (!user || user.usedFounding) return null;
+    const endsAt = foundingWindowEndsAt(user.createdAt);
+    return isFoundingWindowOpen(endsAt) ? endsAt : null;
   },
 
   /** Effective tier for a user, with the read-time trial fallback applied. */

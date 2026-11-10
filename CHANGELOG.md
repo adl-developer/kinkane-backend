@@ -11,6 +11,7 @@
 
 ### Bug Fixes
 
+* make renewal reminders always quote the right price and plan ([1591392](https://adl.github.com/adl-developer/kinkane-backend/commit/1591392d986a773cf0535df093d2951fa64b6e07)) — [details](changelog/2026-11-10-renewal-reminder-emails.md)
 * keep plan-switch records accurate when subscriptions end or change at the same time ([0d58ce8](https://adl.github.com/adl-developer/kinkane-backend/commit/0d58ce83b3a475021acd394a6ba818bc897e3d34)) — [details](changelog/2026-11-10-cancel-pending-plan-change.md)
 
 

@@ -116,6 +116,22 @@ describe('scheduleFoundingRollover — per-account window', () => {
     expect(scheduleCreate).not.toHaveBeenCalled();
   });
 
+  // The daily reconciliation fetches the subscription with its schedule
+  // expanded, so the pending check needs no second Stripe call.
+  it('uses an expanded schedule instead of retrieving it', async () => {
+    const service = await load();
+    const expanded = {
+      id: 'sub_sched_0',
+      phases: [{ start_date: sec('2026-11-01T00:00:00Z') }, { start_date: sec('2026-12-09T00:00:00Z') }],
+    };
+    await service.scheduleFoundingRollover(
+      { ...subscription({ periodEnd: '2026-12-09T00:00:00Z' }), schedule: expanded } as never,
+      7,
+    );
+    expect(scheduleRetrieve).not.toHaveBeenCalled();
+    expect(scheduleCreate).not.toHaveBeenCalled();
+  });
+
   // A plan change onto a founding price leaves a schedule whose last phase is
   // running and never ends — it has to be replaced by a rollover.
   it('replaces a finished plan-change schedule with the rollover', async () => {
