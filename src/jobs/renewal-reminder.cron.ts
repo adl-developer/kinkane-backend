@@ -18,8 +18,10 @@ const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
  * what will be charged — including the founding-to-standard switch, which
  * gets its own wording.
  *
- * `renewal_reminder_sent_for` is claimed with a conditional UPDATE, so workers
- * running this at the same moment can't double-send.
+ * Each subscriber is claimed (`renewal_reminder_sent_for` set by a conditional
+ * UPDATE) before Stripe is called, so workers running this at the same moment
+ * neither double-send nor repeat each other's Stripe calls. A failure after
+ * the claim releases it for the next day's run.
  */
 export async function sendDueRenewalReminders(now: Date = new Date()): Promise<number> {
   if (!isStripeConfigured()) return 0;
@@ -53,6 +55,22 @@ export async function sendDueRenewalReminders(now: Date = new Date()): Promise<n
   let sent = 0;
   for (const row of due) {
     if (!row.stripeSubscriptionId || !row.currentPeriodEnd || !row.plan) continue;
+
+    // Claim before calling Stripe, so every worker running this sweep at once
+    // makes one Stripe call per subscriber between them, not one each.
+    const [claimed] = await db
+      .update(userSubscriptions)
+      .set({ renewalReminderSentFor: row.currentPeriodEnd })
+      .where(
+        and(
+          eq(userSubscriptions.userId, row.userId),
+          eq(userSubscriptions.currentPeriodEnd, row.currentPeriodEnd),
+          sql`${userSubscriptions.renewalReminderSentFor} IS DISTINCT FROM ${userSubscriptions.currentPeriodEnd}`,
+        ),
+      )
+      .returning({ userId: userSubscriptions.userId });
+    if (!claimed) continue;
+
     try {
       const preview = await stripe().invoices.createPreview({ subscription: row.stripeSubscriptionId });
 
@@ -66,19 +84,6 @@ export async function sendDueRenewalReminders(now: Date = new Date()): Promise<n
           foundingAmountCents = founding.unit_amount;
         }
       }
-
-      const [claimed] = await db
-        .update(userSubscriptions)
-        .set({ renewalReminderSentFor: row.currentPeriodEnd })
-        .where(
-          and(
-            eq(userSubscriptions.userId, row.userId),
-            eq(userSubscriptions.currentPeriodEnd, row.currentPeriodEnd),
-            sql`${userSubscriptions.renewalReminderSentFor} IS DISTINCT FROM ${userSubscriptions.currentPeriodEnd}`,
-          ),
-        )
-        .returning({ userId: userSubscriptions.userId });
-      if (!claimed) continue;
 
       await enqueueEmail('subscription-renewal-reminder', {
         to: row.email,
@@ -95,7 +100,7 @@ export async function sendDueRenewalReminders(now: Date = new Date()): Promise<n
         userId: row.userId,
         error: err instanceof Error ? err.message : String(err),
       });
-      // Release a claim made before the failure, so tomorrow's run retries.
+      // Release our claim, so tomorrow's run retries.
       await db
         .update(userSubscriptions)
         .set({ renewalReminderSentFor: null })

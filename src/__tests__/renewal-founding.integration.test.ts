@@ -197,6 +197,18 @@ describeIfDb('renewal reminders', () => {
     expect(enqueueEmail.mock.calls[0][1]).toMatchObject({ amountCents: 599, foundingAmountCents: null });
   });
 
+  // Every worker runs the sweep at once; the claim comes first, so Stripe is
+  // asked once per subscriber between them, and one email goes out.
+  it('calls Stripe once when two workers run at the same moment', async () => {
+    await subscribe(await makeUser('race'), { renewsInDays: 5 });
+
+    const results = await Promise.all([run(), run()]);
+
+    expect(results.reduce((a, b) => a + b, 0)).toBe(1);
+    expect(createPreview).toHaveBeenCalledTimes(1);
+    expect(enqueueEmail).toHaveBeenCalledTimes(1);
+  });
+
   it('retries the next day when Stripe fails', async () => {
     await subscribe(await makeUser('flaky'), { renewsInDays: 4 });
     createPreview.mockRejectedValueOnce(new Error('Stripe is down'));
