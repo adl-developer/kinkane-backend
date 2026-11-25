@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-11-25
+
+### Bug Fixes
+
+* stop the nightly preference history cleanup from failing every run ([1744b2c](https://adl.github.com/adl-developer/kinkane-backend/commit/1744b2ceac2f0eed8f47b425ba6bfc6989354caf)) — [details](changelog/2026-11-25-search-forthcoming-books.md)
+
+
 ## 2026-11-10
 
 ### Features

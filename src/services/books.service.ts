@@ -722,8 +722,8 @@ export function buildFeedCondition(): SQL {
  * other editions. Withdrawn and unsellable titles are excluded; order-in titles
  * are kept, matching `GET /books?shoppable=true`.
  */
-function buildCatalogueCondition(): SQL {
-  return and(eq(books.isRemoved, false), buildShoppableCondition())!;
+function buildCatalogueCondition({ includeForthcoming = false } = {}): SQL {
+  return and(eq(books.isRemoved, false), buildShoppableCondition({ includeForthcoming }))!;
 }
 
 /**
@@ -3285,7 +3285,8 @@ export const booksService = {
     // v6: dedupe shows one edition per work (hardback first) again.
     // v7: only sellable, non-removed books — v6 entries can hold either.
     // v8: an apostrophe inside a word matches either ' or ’ — v7 entries miss such titles.
-    const cacheKey = `suggestions:v8:${type}:${dedupe}:${createHash('sha256').update(`${q}:${limit}`).digest('hex')}`;
+    // v9: forthcoming (NYP) titles are included — v8 entries miss them.
+    const cacheKey = `suggestions:v9:${type}:${dedupe}:${createHash('sha256').update(`${q}:${limit}`).digest('hex')}`;
     const cached = await redis.get(cacheKey);
     if (cached) return JSON.parse(cached) as SuggestionItem[];
 
@@ -3347,8 +3348,8 @@ export const booksService = {
     // Every suggestion is a tap through to a product page, so removed and
     // unsellable books never show. Typeahead is search, though, not a feed: it
     // keeps order-in titles like GET /books does, so a reader typing a specific
-    // title can still find it when it is not on the shelf.
-    const sellable = buildCatalogueCondition();
+    // title can still find it when it is not on the shelf — or not yet published.
+    const sellable = buildCatalogueCondition({ includeForthcoming: true });
 
     // Ranks author matches by name-match tier, then fetches those books — the same two-step
     // as fetchAuthorBranch, and for the same reason: ordering these by title alone would

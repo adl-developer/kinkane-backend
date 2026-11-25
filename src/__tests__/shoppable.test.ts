@@ -64,6 +64,12 @@ describe('buildShoppableCondition', () => {
     }
   });
 
+  it('lets forthcoming (NYP) titles through only when asked — search, never the shop', () => {
+    const forthcoming = dialect.sqlToQuery(buildShoppableCondition({ includeForthcoming: true }));
+    expect(forthcoming.params).toEqual(UNSUPPLIABLE_REPORT_CODES.filter((c) => c !== 'NYP'));
+    expect(compiled.params).toContain('NYP');
+  });
+
   it('keeps a null report code — no code means no problem', () => {
     expect(sql).toContain('gs.report_code is null');
   });
