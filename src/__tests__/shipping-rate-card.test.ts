@@ -202,7 +202,8 @@ describe('quoteShipping from the rate table', () => {
 
       const quote = quoteShipping({
         countryCode: 'GB', serviceCode: '001', itemCount: 1, subtotalGbpPence: 1500,
-        parcel: parcel({ weightG: 240, fitsLargeLetter: true }), rateCard,
+        // Off-peak, or this fails every 17 Nov – 6 Jan when the peak price applies.
+        parcel: parcel({ weightG: 240, fitsLargeLetter: true }), rateCard, at: new Date('2026-06-01T12:00:00Z'),
       });
 
       expect(quote.gbpPence).toBe(191 + 70);
