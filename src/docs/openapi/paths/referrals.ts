@@ -230,12 +230,13 @@ export const referralPaths = {
   '/api/v1/referrals/analytics': {
     get: {
       tags: [TAG],
-      ...publicEndpoint,
-      summary: 'Campaign-wide referral performance',
+      // Optional auth: anonymous or Bearer.
+      security: [{}, { bearerAuth: [] }],
+      summary: "The caller's referral performance (campaign-wide without a token)",
       description: [
         'Totals, one weekly bucket per week of the campaign for the sent/converted and cumulative charts, and the top referrers.',
         '',
-        'Unauthenticated, like the leaderboard: every figure here is an aggregate over the whole campaign, and the only people named are top referrers at the same first-name-only redaction the leaderboard already uses.',
+        "**With a valid Bearer token, `totals` and `weekly` are the caller's own**: invites and shares they sent, unique taps on their links, people who signed up under them, and the countries/continents their whole network reached (the same rule as `/referrals/me/stats`). Without a token — kept so older clients keep working — they are campaign-wide. An invalid or expired token is treated as no token. `topReferrers` is campaign-wide either way, at the same first-name-only redaction the leaderboard uses. Staff see the full campaign at `/admin/console/referrals/analytics`.",
         '',
         '**`topReferrers` ranks by signups, not points** — a different ordering from `/referrals/leaderboard`. Someone with three cross-continent referrals outscores someone with fifteen domestic ones, so "top referrer" means two different people depending on which question is asked. Both figures are returned so a client can show either without a second call.',
         '',
