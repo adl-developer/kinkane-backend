@@ -63,6 +63,7 @@ import {
   isSellableBand,
   SHOP_BAND,
   SHOP_BAND_ORDER,
+  SEARCH_SHOP_BAND_ORDER,
   STOCK_TIER,
   type ShopBand,
   type StockTier,
@@ -1350,7 +1351,8 @@ function buildWhereClause(opts: ListBooksOptions, searchCondition?: SQL): SQL | 
   // paginating over. A total that still counted the unsellable books would promise
   // pages the band ladder can never fill.
   if (opts.shoppable) {
-    conditions.push(buildShoppableCondition());
+    // A search keeps forthcoming titles (the FORTHCOMING band); browsing the shop does not.
+    conditions.push(buildShoppableCondition({ includeForthcoming: !!opts.q }));
     const priceBounds = buildPriceBoundsCondition({
       minGbpPence: opts.priceMinGbpPence,
       maxGbpPence: opts.priceMaxGbpPence,
@@ -2469,7 +2471,8 @@ export const booksService = {
     // grouped — a v11 page lists the editions this version hides.
     // v13: an apostrophe inside a word matches either ' or ’ — a v12 page for "segi’s"
     // holds the unrelated fuzzy matches that query used to fall through to.
-    const rowsCacheKey = `books:list:v13:${createHash('sha256').update(JSON.stringify(opts)).digest('hex')}`;
+    // v14: a shoppable search lists forthcoming (NYP) titles last — a v13 page omits them.
+    const rowsCacheKey = `books:list:v14:${createHash('sha256').update(JSON.stringify(opts)).digest('hex')}`;
     // Keyed only on the fields that affect the count (not limit/offset/sort) so every
     // page of the same filter — and every sort direction — shares one cached total.
     //
@@ -2516,7 +2519,8 @@ export const booksService = {
     // against a listing that ends well short of it.
     // v8: an apostrophe inside a word matches either ' or ’, so a v7 total for such a
     // query undercounts — usually to zero.
-    const countCacheKey = `books:count:v8:${createHash('sha256')
+    // v9: a shoppable search counts forthcoming (NYP) titles too.
+    const countCacheKey = `books:count:v9:${createHash('sha256')
       .update(JSON.stringify(countFilters))
       .digest('hex')}`;
 
@@ -2914,6 +2918,7 @@ export const booksService = {
                 // concession to this shortcut — it is required anyway, because the
                 // counts are a snapshot of a table the hourly feed writes to and only
                 // the rows themselves are authoritative.
+                const bandOrder = opts.q ? SEARCH_SHOP_BAND_ORDER : SHOP_BAND_ORDER;
                 const planned = new Map<ShopBand, number>();
                 // Bands ahead of the first planned one are entirely behind this
                 // offset; bands past it are fetched from the top, whether or not the
@@ -2923,9 +2928,9 @@ export const booksService = {
                   // Every band but the last: planShopBands treats the tail as
                   // unbounded, so it never needs a count of its own.
                   const sizes = await Promise.all(
-                    SHOP_BAND_ORDER.slice(0, -1).map((band) => countShopBand(band)),
+                    bandOrder.slice(0, -1).map((band) => countShopBand(band)),
                   );
-                  for (const segment of planShopBands(effectiveOffset, want, sizes)) {
+                  for (const segment of planShopBands(effectiveOffset, want, sizes, bandOrder)) {
                     planned.set(segment.band, segment.offset);
                   }
                   // An empty plan means nothing was asked for; skip every band.
@@ -2935,7 +2940,7 @@ export const booksService = {
                 }
 
                 const collected: ListRow[] = [];
-                for (const band of SHOP_BAND_ORDER) {
+                for (const band of bandOrder) {
                   if (band < firstBand) continue;
                   if (collected.length >= want) break;
                   const rows = await fetchRawRows(
