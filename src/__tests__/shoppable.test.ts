@@ -9,6 +9,7 @@ import {
   isSellableBand,
   SHOP_BAND,
   SHOP_BAND_ORDER,
+  SEARCH_SHOP_BAND_ORDER,
   type ShopBand,
   UNSUPPLIABLE_REPORT_CODES,
   UNSUPPLIABLE_REPORT_CODE_SET,
@@ -423,5 +424,28 @@ describe('stockTierFor', () => {
   it('orders the tiers so that lower is better', () => {
     expect(STOCK_TIER.IN_STOCK).toBeLessThan(STOCK_TIER.TO_ORDER);
     expect(STOCK_TIER.TO_ORDER).toBeLessThan(STOCK_TIER.UNAVAILABLE);
+  });
+});
+
+describe('forthcoming (NYP) band', () => {
+  it('matches only priced NYP titles', () => {
+    const q = dialect.sqlToQuery(buildShopBandCondition(SHOP_BAND.FORTHCOMING));
+    expect(q.sql.toLowerCase()).toContain("upper(btrim(gs.report_code)) = 'nyp'");
+    expect(q.sql.toLowerCase()).toContain('gs.rrp_gbp > 0');
+  });
+
+  it('is never sellable, so its rows carry no Add button or price', () => {
+    expect(isSellableBand(SHOP_BAND.FORTHCOMING)).toBe(false);
+  });
+
+  it('is listed last, and only in search', () => {
+    expect(SEARCH_SHOP_BAND_ORDER).toEqual([...SHOP_BAND_ORDER, SHOP_BAND.FORTHCOMING]);
+    expect(SHOP_BAND_ORDER).not.toContain(SHOP_BAND.FORTHCOMING);
+  });
+
+  it('plans pages past the four buyable bands into it', () => {
+    expect(planShopBands(10, 5, [3, 2, 4, 1], SEARCH_SHOP_BAND_ORDER)).toEqual([
+      { band: SHOP_BAND.FORTHCOMING, offset: 0, take: 5 },
+    ]);
   });
 });

@@ -284,7 +284,10 @@ export const SHOP_BAND = {
   IN_STOCK_RESTRICTED: 1,
   TO_ORDER: 2,
   TO_ORDER_RESTRICTED: 3,
-  UNSELLABLE: 4,
+  // Not yet published (NYP): listed after everything buyable, and only for a search —
+  // a reader typing a title should find it — but never sellable, so no Add button.
+  FORTHCOMING: 4,
+  UNSELLABLE: 5,
 } as const;
 export type ShopBand = (typeof SHOP_BAND)[keyof typeof SHOP_BAND];
 
@@ -299,9 +302,12 @@ export const SHOP_BAND_ORDER: readonly ShopBand[] = [
   SHOP_BAND.TO_ORDER_RESTRICTED,
 ];
 
+/** A shoppable *search* also lists forthcoming titles, after every buyable one. */
+export const SEARCH_SHOP_BAND_ORDER: readonly ShopBand[] = [...SHOP_BAND_ORDER, SHOP_BAND.FORTHCOMING];
+
 /** True for every band a customer can put in a basket. */
 export function isSellableBand(band: ShopBand): boolean {
-  return band !== SHOP_BAND.UNSELLABLE;
+  return band !== SHOP_BAND.UNSELLABLE && band !== SHOP_BAND.FORTHCOMING;
 }
 
 /**
@@ -384,6 +390,18 @@ export function buildMarketRestrictedCondition(regions?: readonly string[]): SQL
  * offset onto them — see planShopBands.
  */
 export function buildShopBandCondition(band: ShopBand, regions?: readonly string[]): SQL {
+  if (band === SHOP_BAND.FORTHCOMING) {
+    return sql`(
+      ${books.isbn13} IS NOT NULL
+      AND EXISTS (
+        SELECT 1 FROM ${gardnersStock} gs
+        WHERE gs.isbn13 = ${books.isbn13}
+          AND gs.rrp_gbp > 0
+          AND upper(btrim(gs.report_code)) = 'NYP'
+      )
+    )`;
+  }
+
   const codes = sql.join(
     UNSUPPLIABLE_REPORT_CODES.map((code) => sql`${code}`),
     sql`, `,
@@ -512,14 +530,15 @@ export function planShopBands(
   offset: number,
   need: number,
   bandSizes: readonly number[],
+  order: readonly ShopBand[] = SHOP_BAND_ORDER,
 ): ShopBandSegment[] {
   const segments: ShopBandSegment[] = [];
   let remainingOffset = offset;
   let remaining = need;
 
-  for (const [index, band] of SHOP_BAND_ORDER.entries()) {
+  for (const [index, band] of order.entries()) {
     if (remaining <= 0) break;
-    const size = index < SHOP_BAND_ORDER.length - 1
+    const size = index < order.length - 1
       ? (bandSizes[index] ?? Number.POSITIVE_INFINITY)
       : Number.POSITIVE_INFINITY;
     if (remainingOffset >= size) {
