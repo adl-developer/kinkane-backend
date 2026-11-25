@@ -240,7 +240,7 @@ export const preferenceHistoryService = {
           FROM user_preference_history
         ) ranked
         WHERE ranked.rn > 1
-          AND ranked.recorded_at < ${cutoff}
+          AND ranked.recorded_at < ${cutoff.toISOString()}::timestamptz
       )
       RETURNING id
     `);
