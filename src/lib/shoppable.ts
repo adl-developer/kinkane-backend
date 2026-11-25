@@ -177,9 +177,12 @@ export function stockTierFor(
  * certainly unbuyable, but what survives still has to clear the full gate at
  * add-to-cart.
  */
-export function buildShoppableCondition(): SQL {
+export function buildShoppableCondition({ includeForthcoming = false } = {}): SQL {
+  // Forthcoming (NYP) titles are findable in search but still refused at add-to-cart.
+  // The narrower code list no longer implies idx_gardners_stock_shoppable's predicate,
+  // so that path probes uq_gardners_stock_isbn13 instead — still one lookup per row.
   const codes = sql.join(
-    UNSUPPLIABLE_REPORT_CODES.map((code) => sql`${code}`),
+    UNSUPPLIABLE_REPORT_CODES.filter((code) => !includeForthcoming || code !== 'NYP').map((code) => sql`${code}`),
     sql`, `,
   );
 

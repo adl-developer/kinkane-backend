@@ -52,12 +52,13 @@ describe('buildFeedCondition', () => {
 
   it('keeps order-in titles in search typeahead and other editions', () => {
     // Those are a reader looking for a specific book, which GET /books also
-    // lets them find when it has to be ordered in.
+    // lets them find when it has to be ordered in. Typeahead also finds
+    // forthcoming (NYP) titles; other editions, being buy links, does not.
     const suggestions = booksService.slice(
       booksService.indexOf('const excluding = (rows: SuggestionRow[])'),
       booksService.indexOf('// Ranks author matches by name-match tier'),
     );
-    expect(suggestions).toContain('buildCatalogueCondition()');
+    expect(suggestions).toContain('buildCatalogueCondition({ includeForthcoming: true })');
     const editions = booksService.slice(booksService.indexOf('async function fetchOtherEditions('));
     expect(editions.slice(0, editions.indexOf('\n}\n'))).toContain('buildCatalogueCondition()');
   });
