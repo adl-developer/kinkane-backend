@@ -1,6 +1,6 @@
 import { sql, eq, and, gte, isNotNull, desc } from 'drizzle-orm';
 import { db } from '../db';
-import { referrals, referralInvites, referralClicks, users, countries } from '../db/schema';
+import { referrals, referralInvites, referralClicks, referralCodes, users, countries } from '../db/schema';
 import { redis } from '../lib/redis';
 import { logger } from '../lib/logger';
 import { config } from '../config';
@@ -227,10 +227,33 @@ export const referralAnalyticsService = {
     return cached('referrals:analytics:v3', () => this.computeCampaign());
   },
 
-  /** The uncached aggregate. Split out so the cache wrapper stays readable. */
-  async computeCampaign(): Promise<CampaignAnalytics> {
+  /**
+   * The same screen scoped to one referrer: their sends, the clicks on their
+   * links, the people who signed up under them, and the countries their whole
+   * network reached (matching /me/stats, so both screens agree).
+   *
+   * Uncached: these are indexed single-user reads, and someone who has just
+   * shared a link expects the Sent card to move straight away. Week numbers
+   * stay anchored to the campaign start so "Wk 3" means the same dates for
+   * everyone. topReferrers stays campaign-wide — it is the public leaderboard.
+   */
+  async forUser(userId: number): Promise<CampaignAnalytics> {
+    return this.computeCampaign(userId);
+  },
+
+  /** The uncached aggregate, campaign-wide or for one referrer. */
+  async computeCampaign(userId?: number): Promise<CampaignAnalytics> {
     const buckets = weekBuckets(await campaignStart());
     const since = new Date(`${buckets[0].weekStart}T00:00:00Z`);
+
+    // undefined drops out of and(), so each filter is a no-op campaign-wide.
+    const mine = userId !== undefined;
+    const sentBy = mine ? eq(referralInvites.userId, userId) : undefined;
+    const clickedOn = mine
+      ? sql`${referralClicks.codeId} in (select ${referralCodes.id} from ${referralCodes} where ${referralCodes.userId} = ${userId})`
+      : undefined;
+    const referredBy = mine ? eq(referrals.referrerUserId, userId) : undefined;
+    const reachedBy = mine ? sql`${referrals.ancestorPath} @> ARRAY[${userId}]::integer[]` : undefined;
 
     const [
       [sentRow],
@@ -241,7 +264,7 @@ export const referralAnalyticsService = {
       weeklyConverted,
       topReferrers,
     ] = await Promise.all([
-      db.select({ n: sql<number>`count(*)::int` }).from(referralInvites),
+      db.select({ n: sql<number>`count(*)::int` }).from(referralInvites).where(sentBy),
 
       // Deduped per (code, person), so the campaign total equals the sum of
       // everyone's own `clicks` rather than something smaller.
@@ -265,7 +288,7 @@ export const referralAnalyticsService = {
           n: sql<number>`count(distinct (${referralClicks.codeId}, coalesce(${referralClicks.ipHash}, ${referralClicks.id}::text), coalesce(${referralClicks.userAgent}, '')))::int`,
         })
         .from(referralClicks)
-        .where(eq(referralClicks.isBot, false)),
+        .where(and(eq(referralClicks.isBot, false), clickedOn)),
 
       db
         .select({
@@ -280,7 +303,7 @@ export const referralAnalyticsService = {
           successfulBeforeWindow: sql<number>`count(*) filter (where ${referrals.signedUpAt} < ${since.toISOString()}::timestamptz and ${referrals.creditedAt} is not null)::int`,
         })
         .from(referrals)
-        .where(eq(referrals.status, 'active')),
+        .where(and(eq(referrals.status, 'active'), referredBy)),
 
       // Continents via a join rather than a distinct on country: two countries
       // can share one continent, so counting distinct country codes and calling
@@ -293,7 +316,7 @@ export const referralAnalyticsService = {
         })
         .from(referrals)
         .leftJoin(countries, eq(countries.code, referrals.redeemerCountry))
-        .where(and(eq(referrals.status, 'active'), isNotNull(referrals.redeemerCountry))),
+        .where(and(eq(referrals.status, 'active'), isNotNull(referrals.redeemerCountry), reachedBy)),
 
       db
         .select({
@@ -301,7 +324,7 @@ export const referralAnalyticsService = {
           n: sql<number>`count(*)::int`,
         })
         .from(referralInvites)
-        .where(gte(referralInvites.sentAt, since))
+        .where(and(gte(referralInvites.sentAt, since), sentBy))
         .groupBy(sql`1`),
 
       db
@@ -311,7 +334,7 @@ export const referralAnalyticsService = {
           successful: sql<number>`count(*) filter (where ${referrals.creditedAt} is not null)::int`,
         })
         .from(referrals)
-        .where(and(eq(referrals.status, 'active'), gte(referrals.signedUpAt, since)))
+        .where(and(eq(referrals.status, 'active'), gte(referrals.signedUpAt, since), referredBy))
         .groupBy(sql`1`),
 
       this.topReferrers(5),

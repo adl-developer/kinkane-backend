@@ -2,7 +2,7 @@ import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { RedisStore } from 'rate-limit-redis';
 import { redis } from '../lib/redis';
-import { requireAuth } from '../middleware/auth.middleware';
+import { requireAuth, optionalAuth } from '../middleware/auth.middleware';
 import { referralsController } from '../controllers/referrals.controller';
 import { wrap } from '../lib/route-helpers';
 
@@ -75,12 +75,15 @@ router.get('/leaderboard', wrap(referralsController.leaderboard));
 /**
  * GET /api/v1/referrals/analytics
  *
- * Campaign-wide performance: totals, one weekly bucket per week of the campaign
- * for the sent/converted and cumulative charts, and the top referrers ranked by
+ * Referral performance: totals, one weekly bucket per week of the campaign for
+ * the sent/converted and cumulative charts, and the top referrers ranked by
  * signups.
  *
- * Unauthenticated, like the leaderboard — every figure is an aggregate, and the
- * only people named are top referrers at first-name-only redaction.
+ * Optional auth. With a valid Bearer token, totals and weekly are the caller's
+ * own (their sends, clicks on their links, their signups, countries their
+ * network reached). Without one — kept for older clients — they are
+ * campaign-wide. topReferrers is campaign-wide either way. Staff see the full
+ * campaign at /admin/console/referrals/analytics.
  *
  * `weekly` is anchored to REFERRAL_CAMPAIGN_STARTS_AT, not to today: it runs
  * from week 1 of the competition through the week in progress, so it grows by
@@ -91,7 +94,7 @@ router.get('/leaderboard', wrap(referralsController.leaderboard));
  *   converted, cumulative }], topReferrers: [{ rank, name, country, signups,
  *   points }] }
  */
-router.get('/analytics', campaignLimiter, wrap(referralsController.analytics));
+router.get('/analytics', campaignLimiter, optionalAuth, wrap(referralsController.analytics));
 
 /**
  * GET /api/v1/referrals/map

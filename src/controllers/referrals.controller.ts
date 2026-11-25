@@ -136,15 +136,19 @@ export const referralsController = {
   },
 
   /**
-   * GET /api/v1/referrals/analytics — campaign-wide figures. Public.
+   * GET /api/v1/referrals/analytics — the Analytics screen.
    *
-   * Unauthenticated by decision: the campaign's momentum is the marketing, and
-   * every figure here is an aggregate. The only people named are the top
-   * referrers, at the same first-name-only redaction the public leaderboard
-   * already uses.
+   * With a valid token the figures are the caller's own; staff see the
+   * campaign-wide view at /admin/console/referrals/analytics. Auth stays
+   * optional so a client that calls this without a token keeps working — it
+   * gets the campaign-wide aggregate, which names nobody but the top referrers
+   * at the public leaderboard's first-name-only redaction.
    */
-  async analytics(_req: Request, res: Response): Promise<void> {
-    res.status(200).json(await referralAnalyticsService.campaign());
+  async analytics(req: Request, res: Response): Promise<void> {
+    const userId = (req as Partial<AuthenticatedRequest>).user?.id;
+    res
+      .status(200)
+      .json(userId ? await referralAnalyticsService.forUser(userId) : await referralAnalyticsService.campaign());
   },
 
   /**

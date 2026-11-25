@@ -167,6 +167,29 @@ describeIfDb('admin referral analytics and Travellers', () => {
     if (db) await cleanUp();
   });
 
+  it("scopes the public Analytics screen to the signed-in referrer", async () => {
+    const { referralAnalyticsService } = await import('../services/referral-analytics.service');
+    const mine = await referralAnalyticsService.forUser(ids.ama);
+
+    expect(mine.totals).toMatchObject({
+      sent: 2,
+      clicks: 2,
+      // Bayo verified, Dede not; Claire is Bayo's, not Ama's.
+      signups: 2,
+      successful: 1,
+      conversionRate: 50,
+      // Whole network, as /me/stats: NG and GH directly, FR through Bayo.
+      countries: 3,
+    });
+    const last = mine.weekly[mine.weekly.length - 1];
+    expect(last.cumulative).toBe(2);
+    expect(mine.weekly.reduce((n, w) => n + w.sent, 0)).toBe(2);
+
+    const nobody = await referralAnalyticsService.forUser(ids.xavier);
+    expect(nobody.totals).toMatchObject({ sent: 0, clicks: 0, signups: 0, successful: 0, countries: 0 });
+    expect(nobody.weekly.every((w) => w.sent === 0 && w.cumulative === 0)).toBe(true);
+  });
+
   async function all() {
     return service.travellers({ q: EMAIL_PREFIX, sort: 'points', limit: 100, offset: 0 });
   }
