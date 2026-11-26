@@ -136,13 +136,13 @@ export const referralPaths = {
       tags: [TAG],
       summary: 'Get the caller’s own standing',
       description:
-        'The caller’s funnel and score: the invite funnel, points broken down by how they were earned, whether they have closed a circuit, and which countries their code has reached.\n\n**`sent`, `successful` and `pending` do not reconcile, and are not meant to.** `sent` counts invites and shares this user initiated; `successful` and `pending` count people who actually arrived, which includes everyone who found the link second-hand — a forwarded WhatsApp message, a link pasted into a group chat. Forcing the three to add up would mean either discarding those signups or inventing sends that never happened.\n\n**Carries no identities.** For the people themselves, at a redaction, see `/referrals/me/network`.',
+        'The caller’s funnel and score: the invite funnel, points broken down by how they were earned, whether they have closed a circuit, and which countries their code has reached.\n\n**`sent` is never below `signups`.** It counts invites and shares this user initiated, but a link forwarded on (a WhatsApp message, a link pasted into a group chat) brings people in with no recorded send, so `sent` is raised to `signups` whenever it would read lower. `sent ≥ successful + pending` always holds; the two need not be equal.\n\n**Carries no identities.** For the people themselves, at a redaction, see `/referrals/me/network`.',
       responses: {
         200: json('The caller’s stats.',
           object({
             clicks: { type: 'integer', description: 'Unique link taps, deduped on hashed IP and user agent, bots excluded.', example: 84 },
             signups: { type: 'integer', description: 'Everyone who signed up under this code, credited or not.', example: 18 },
-            sent: { type: 'integer', description: 'Invites emailed plus shares initiated. See the note above on why this does not reconcile with the other two.', example: 18 },
+            sent: { type: 'integer', description: 'Invites emailed plus shares initiated, floored at `signups`. See the note above.', example: 18 },
             successful: { type: 'integer', description: 'Signups whose email is verified — the ones that actually scored.', example: 12 },
             pending: { type: 'integer', description: 'Signed up but not yet verified. The one state a referrer can act on.', example: 6 },
             countriesReached: {
@@ -248,7 +248,7 @@ export const referralPaths = {
         200: json('Campaign performance.',
           object({
             totals: object({
-              sent: { type: 'integer', example: 1247 },
+              sent: { type: 'integer', description: 'Invites and shares, floored at `signups` (forwarded links bring signups with no recorded send).', example: 1247 },
               clicks: { type: 'integer', description: 'Unique link taps, deduped on hashed IP and user agent, bots excluded. The denominator of conversionRate.', example: 1247 },
               signups: { type: 'integer', description: 'Everyone who signed up, credited or not.', example: 412 },
               successful: { type: 'integer', description: 'Verified signups — the ones that scored.', example: 389 },
@@ -260,7 +260,7 @@ export const referralPaths = {
               weekNumber: { type: 'integer', description: 'Week of the campaign, 1-based. What a chart labels "Wk 3".', example: 3 },
               weekStart: { type: 'string', format: 'date', description: 'Monday, UTC.', example: '2026-07-06' },
               weekEnd: { type: 'string', format: 'date', description: 'The Sunday that closes the bucket, inclusive.', example: '2026-07-12' },
-              sent: { type: 'integer', example: 190 },
+              sent: { type: 'integer', description: "Floored at that week's `converted`.", example: 190 },
               converted: { type: 'integer', description: 'Signups this week, verified or not.', example: 61 },
               successful: { type: 'integer', description: 'Of this week\'s signups, the ones now verified.', example: 57 },
               cumulative: { type: 'integer', description: 'Running total of converted, **including signups from before week 1**, so the last bucket equals `totals.signups`.', example: 284 },

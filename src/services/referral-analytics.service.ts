@@ -354,7 +354,8 @@ export const referralAnalyticsService = {
       runningSuccessful += successfulWeeks[i];
       return {
         ...b,
-        sent: sentWeeks[i],
+        // Floored like totals.sent: a week's signups imply at least that many sends.
+        sent: Math.max(sentWeeks[i], convWeeks[i]),
         converted: convWeeks[i],
         successful: successfulWeeks[i],
         cumulative: running,
@@ -362,7 +363,9 @@ export const referralAnalyticsService = {
       };
     });
 
-    const sent = sentRow.n;
+    // Forwarded or copied links produce signups with no recorded send, so Sent
+    // never reads below signups. Display floor only — nothing is written.
+    const sent = Math.max(sentRow.n, signupRow.signups);
     const clicks = clickRow.n;
     const successful = signupRow.successful;
 

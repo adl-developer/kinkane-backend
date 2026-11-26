@@ -9,6 +9,7 @@
 
 ### Bug Fixes
 
+* show not-yet-published books at the end of shop search results ([45b00c4](https://adl.github.com/adl-developer/kinkane-backend/commit/45b00c4965813e2cfcdf01636c381decd289f76a)) — [details](changelog/2026-11-25-shop-search-forthcoming-books.md)
 * let search find books that are not published yet ([5f03198](https://adl.github.com/adl-developer/kinkane-backend/commit/5f031984873a049b1a6a5442b1e2e938424bdb49)) — [details](changelog/2026-11-25-search-forthcoming-books.md)
 * stop the nightly preference history cleanup from failing every run ([1744b2c](https://adl.github.com/adl-developer/kinkane-backend/commit/1744b2ceac2f0eed8f47b425ba6bfc6989354caf))
 

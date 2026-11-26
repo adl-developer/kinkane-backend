@@ -190,6 +190,21 @@ describeIfDb('admin referral analytics and Travellers', () => {
     expect(nobody.weekly.every((w) => w.sent === 0 && w.cumulative === 0)).toBe(true);
   });
 
+  it('never reports Sent below the people referred', async () => {
+    const { referralAnalyticsService } = await import('../services/referral-analytics.service');
+    const { referralsService } = await import('../services/referrals.service');
+    // Bayo referred Claire; drop Bayo's only send so the link reads as forwarded.
+    await db.execute(sql`DELETE FROM referral_invites WHERE user_id = ${ids.bayo}`);
+    try {
+      expect((await referralsService.statsFor(ids.bayo)).sent).toBe(1);
+      const bayo = await referralAnalyticsService.forUser(ids.bayo);
+      expect(bayo.totals.sent).toBe(1);
+      expect(bayo.weekly.every((w) => w.sent >= w.converted)).toBe(true);
+    } finally {
+      await db.execute(sql`INSERT INTO referral_invites (user_id, channel) VALUES (${ids.bayo}, 'sms')`);
+    }
+  });
+
   async function all() {
     return service.travellers({ q: EMAIL_PREFIX, sort: 'points', limit: 100, offset: 0 });
   }

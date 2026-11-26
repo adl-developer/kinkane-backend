@@ -567,13 +567,13 @@ export const referralsService = {
    * personally brought in, whereas reach is the whole point of a competition
    * called Around the World and is meaningless if it stops at one generation.
    *
-   * Three of these figures are the Sent / Successful / Pending card, and they
-   * deliberately do *not* satisfy Sent = Successful + Pending. Sent counts
-   * invites and shares this user initiated; successful and pending count people
-   * who arrived, which includes everyone who found the link second-hand — a
-   * forwarded WhatsApp message, a link pasted into a group. Forcing the three
-   * to reconcile would mean either discarding those signups or inventing sends
-   * that never happened.
+   * Three of these figures are the Sent / Successful / Pending card. Sent
+   * counts invites and shares this user initiated; successful and pending count
+   * people who arrived, which includes everyone who found the link second-hand
+   * — a forwarded WhatsApp message, a link pasted into a group. Each of those
+   * arrivals had a send behind it that we never saw, so Sent is floored at
+   * signups on read (nothing is written). Sent ≥ Successful + Pending always
+   * holds; equality does not.
    */
   async statsFor(userId: number): Promise<{
     clicks: number;
@@ -655,7 +655,8 @@ export const referralsService = {
       // The total headcount of people who signed up under this user, credited
       // or not. `successful` is the narrower, points-bearing figure.
       signups: funnelRow.signups,
-      sent: sentRow.n,
+      // Untracked sends (forwarded links) still produced these signups.
+      sent: Math.max(sentRow.n, funnelRow.signups),
       successful: funnelRow.successful,
       pending: funnelRow.signups - funnelRow.successful,
       // Counted from everyone who arrived, not only the credited — an unverified
