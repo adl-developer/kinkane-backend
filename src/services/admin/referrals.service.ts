@@ -1,6 +1,7 @@
-import { and, asc, desc, eq, ilike, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, ilike, isNotNull, or, sql, type SQL } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import { db } from '../../db';
-import { users } from '../../db/schema';
+import { countries, referrals, users } from '../../db/schema';
 import { likeContains } from '../../lib/escape-like';
 import { referralAnalyticsService, type CampaignAnalytics } from '../referral-analytics.service';
 
@@ -113,6 +114,41 @@ const ORDER: Record<TravellerSort, SQL[]> = {
   recent: [desc(users.createdAt), desc(users.id)],
 };
 
+export interface AdminReferralListQuery {
+  q?: string;
+  limit: number;
+  offset: number;
+}
+
+const CONTINENT_NAMES: Record<string, string> = {
+  AF: 'Africa',
+  EU: 'Europe',
+  AS: 'Asia',
+  NA: 'North America',
+  SA: 'South America',
+  OC: 'Australia & Oceania',
+};
+
+// Only for a code the countries table doesn't carry (XK, say); everything
+// seeded there already has its own name.
+const regionNames = new Intl.DisplayNames(['en'], { type: 'region' });
+
+/** A full country name for an ISO code, or null when there is no code. */
+function countryName(code: string | null, seeded: string | null): string | null {
+  if (!code) return null;
+  if (seeded) return seeded;
+  try {
+    return regionNames.of(code.trim()) ?? code;
+  } catch {
+    return code;
+  }
+}
+
+const sender = alias(users, 'sender');
+const receiver = alias(users, 'receiver');
+const senderCountry = alias(countries, 'sender_country');
+const receiverCountry = alias(countries, 'receiver_country');
+
 export const adminReferralsService = {
   /**
    * Totals, the weekly sent/converted series and the running cumulative signups.
@@ -178,12 +214,150 @@ export const adminReferralsService = {
     return {
       travellers: rows.map(({ referredById: id, referredByName: name, ...r }) => ({
         ...r,
+        // Floored like the app's own invite screen: a forwarded or copied link
+        // brings signups with no recorded send. Display only.
+        invitesSent: Math.max(r.invitesSent, r.signups),
         // Present only for people who arrived through someone's link. A
         // Traveller who started their own branch has no referrer.
         referredBy: id === null ? null : { id: Number(id), name },
         pending: r.signups - r.successful,
       })),
       total: total.n,
+    };
+  },
+
+  /**
+   * Every referral, newest first: who sent it, who it brought in, both of
+   * their countries and when the account was created.
+   *
+   * One row per person who signed up through a link, verified or not — the
+   * same rows the Sent tile is floored to. A share that nobody acted on has no
+   * receiver, so it cannot be a row here.
+   *
+   * The receiver's country is the one snapshotted at sign-up (what scored),
+   * the sender's is their current one.
+   */
+  async referrals(query: AdminReferralListQuery) {
+    const conditions: SQL[] = [eq(referrals.status, 'active')];
+    if (query.q) {
+      const like = likeContains(query.q);
+      conditions.push(
+        or(
+          ilike(sender.name, like),
+          ilike(sender.email, like),
+          ilike(sender.username, like),
+          ilike(receiver.name, like),
+          ilike(receiver.email, like),
+          ilike(receiver.username, like),
+        )!,
+      );
+    }
+    const where = and(...conditions);
+
+    const base = () =>
+      db
+        .select({
+          id: referrals.id,
+          signedUpAt: referrals.signedUpAt,
+          creditedAt: referrals.creditedAt,
+          senderId: sender.id,
+          senderName: sender.name,
+          senderUsername: sender.username,
+          senderEmail: sender.email,
+          senderCountryCode: sender.countryCode,
+          senderCountryName: senderCountry.name,
+          receiverId: receiver.id,
+          receiverName: receiver.name,
+          receiverUsername: receiver.username,
+          receiverEmail: receiver.email,
+          receiverCountryCode: referrals.redeemerCountry,
+          receiverCountryName: receiverCountry.name,
+        })
+        .from(referrals)
+        .innerJoin(sender, eq(sender.id, referrals.referrerUserId))
+        .innerJoin(receiver, eq(receiver.id, referrals.referredUserId))
+        .leftJoin(senderCountry, eq(senderCountry.code, sender.countryCode))
+        .leftJoin(receiverCountry, eq(receiverCountry.code, referrals.redeemerCountry));
+
+    const [rows, [total]] = await Promise.all([
+      base()
+        .where(where)
+        .orderBy(desc(referrals.signedUpAt), desc(referrals.id))
+        .limit(query.limit)
+        .offset(query.offset),
+      db
+        .select({ n: sql<number>`count(*)::int` })
+        .from(referrals)
+        .innerJoin(sender, eq(sender.id, referrals.referrerUserId))
+        .innerJoin(receiver, eq(receiver.id, referrals.referredUserId))
+        .where(where),
+    ]);
+
+    return {
+      referrals: rows.map((r) => ({
+        id: r.id,
+        signedUpAt: r.signedUpAt,
+        verified: r.creditedAt !== null,
+        sender: {
+          id: r.senderId,
+          name: r.senderName,
+          username: r.senderUsername,
+          email: r.senderEmail,
+          countryCode: r.senderCountryCode,
+          country: countryName(r.senderCountryCode, r.senderCountryName),
+        },
+        receiver: {
+          id: r.receiverId,
+          name: r.receiverName,
+          username: r.receiverUsername,
+          email: r.receiverEmail,
+          countryCode: r.receiverCountryCode,
+          country: countryName(r.receiverCountryCode, r.receiverCountryName),
+        },
+      })),
+      total: total.n,
+    };
+  },
+
+  /**
+   * The countries and continents behind the "Countries Reached" tile, by full
+   * name. Same filter as totals.countries / totals.continents, so the list
+   * lengths equal the tile.
+   */
+  async reach() {
+    const rows = await db
+      .select({
+        code: referrals.redeemerCountry,
+        name: countries.name,
+        continent: countries.continent,
+        signups: sql<number>`count(*)::int`,
+      })
+      .from(referrals)
+      .leftJoin(countries, eq(countries.code, referrals.redeemerCountry))
+      .where(and(eq(referrals.status, 'active'), isNotNull(referrals.redeemerCountry)))
+      .groupBy(referrals.redeemerCountry, countries.name, countries.continent);
+
+    const countryList = rows
+      .map((r) => ({
+        code: r.code as string,
+        name: countryName(r.code, r.name) as string,
+        continent: r.continent ? CONTINENT_NAMES[r.continent] : null,
+        signups: r.signups,
+      }))
+      .sort((a, b) => b.signups - a.signups || a.name.localeCompare(b.name));
+
+    const byContinent = new Map<string, { name: string; countries: number; signups: number }>();
+    for (const c of countryList) {
+      if (!c.continent) continue;
+      const entry = byContinent.get(c.continent) ?? { name: c.continent, countries: 0, signups: 0 };
+      entry.countries += 1;
+      entry.signups += c.signups;
+      byContinent.set(c.continent, entry);
+    }
+
+    return {
+      countries: countryList,
+      continents: [...byContinent.values()].sort((a, b) => b.signups - a.signups || a.name.localeCompare(b.name)),
     };
   },
 };
