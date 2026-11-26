@@ -200,6 +200,8 @@ describeIfDb('admin referral analytics and Travellers', () => {
       const bayo = await referralAnalyticsService.forUser(ids.bayo);
       expect(bayo.totals.sent).toBe(1);
       expect(bayo.weekly.every((w) => w.sent >= w.converted)).toBe(true);
+      const { travellers } = await service.travellers({ q: 'Bayo Adeyemi', sort: 'points', limit: 5, offset: 0 });
+      expect(travellers.find((t) => t.id === ids.bayo)?.invitesSent).toBe(1);
     } finally {
       await db.execute(sql`INSERT INTO referral_invites (user_id, channel) VALUES (${ids.bayo}, 'sms')`);
     }

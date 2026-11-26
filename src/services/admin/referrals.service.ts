@@ -214,6 +214,9 @@ export const adminReferralsService = {
     return {
       travellers: rows.map(({ referredById: id, referredByName: name, ...r }) => ({
         ...r,
+        // Floored like the app's own invite screen: a forwarded or copied link
+        // brings signups with no recorded send. Display only.
+        invitesSent: Math.max(r.invitesSent, r.signups),
         // Present only for people who arrived through someone's link. A
         // Traveller who started their own branch has no referrer.
         referredBy: id === null ? null : { id: Number(id), name },

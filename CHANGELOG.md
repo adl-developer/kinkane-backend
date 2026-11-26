@@ -3,6 +3,10 @@
 
 ## 2026-11-26
 
+### Features
+
+* let each admin referral tile open the list behind its number ([2d75b4a](https://adl.github.com/adl-developer/kinkane-backend/commit/2d75b4a0ad7caeb47ae89b8f8696c9d481f032a9)) — [details](changelog/2026-11-26-admin-referral-tile-drilldowns.md)
+
 ### Bug Fixes
 
 * never show referral Sent below signups ([a461c52](https://adl.github.com/adl-developer/kinkane-backend/commit/a461c527414c7436b86b07acd0aa35ae503010e9)) — [details](changelog/2026-11-26-admin-referral-tile-drilldowns.md)
