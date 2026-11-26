@@ -165,10 +165,10 @@ router.post('/me/rotate', wrap(referralsController.rotate));
  * has reached. Deliberately no identities of the people they referred — for
  * those, see /me/network.
  *
- * `sent` counts invites and shares this user initiated; `successful` and
- * `pending` count people who arrived and whether their email is verified yet.
- * The three do not reconcile, and are not meant to: a forwarded link produces a
- * signup with no send behind it. See referralsService.statsFor.
+ * `sent` counts invites and shares this user initiated, floored at `signups`:
+ * a forwarded link produces a signup with no recorded send, so Sent never reads
+ * below the people referred. `successful` and `pending` count people who
+ * arrived and whether their email is verified yet. See referralsService.statsFor.
  *
  * Returns 200: { clicks, signups, sent, successful, pending, countriesReached,
  *   points, pointsByKind, hasCircuit, country }
