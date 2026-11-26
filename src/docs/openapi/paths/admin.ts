@@ -448,6 +448,74 @@ export const adminPaths = {
     },
   },
 
+  '/admin/console/referrals/list': {
+    get: {
+      tags: [TAG],
+      summary: 'Every referral, one row each (Total Referrals Sent drill-down)',
+      description: [
+        'One row per person who signed up through someone\'s link, verified or not, newest first: who sent it, who it brought in, both countries (full name plus ISO code) and when the account was created.',
+        '',
+        'The receiver\'s country is the one recorded at sign-up (what scored); the sender\'s is their current country. A share nobody acted on has no receiver, so it never appears here.',
+      ].join('\n'),
+      parameters: [
+        param('q', 'query', { type: 'string', maxLength: 200 }, 'Matches the sender\'s or receiver\'s name, email or username.'),
+        ...pagingParams,
+      ],
+      responses: {
+        200: json('The page.', object({
+          referrals: arrayOf(object({
+            id: { type: 'integer', example: 311 },
+            signedUpAt: { type: 'string', format: 'date-time', description: 'When the receiver\'s account was created.' },
+            verified: { type: 'boolean', description: 'Receiver has verified their email (counts as a successful signup).' },
+            sender: object({
+              id: { type: 'integer', example: 7 },
+              name: { type: 'string', example: 'Ama Owusu' },
+              username: { type: 'string', nullable: true, example: 'ama' },
+              email: { type: 'string', example: 'ama@example.com' },
+              countryCode: { type: 'string', nullable: true, example: 'GH' },
+              country: { type: 'string', nullable: true, example: 'Ghana' },
+            }),
+            receiver: object({
+              id: { type: 'integer', example: 42 },
+              name: { type: 'string', example: 'Claire Martin' },
+              username: { type: 'string', nullable: true, example: 'claire' },
+              email: { type: 'string', example: 'claire@example.com' },
+              countryCode: { type: 'string', nullable: true, example: 'FR' },
+              country: { type: 'string', nullable: true, example: 'France' },
+            }),
+          })),
+          total: { type: 'integer', example: 102 },
+        })),
+        400: json('Validation failed.', ref('ValidationError')),
+        ...adminErrors,
+      },
+    },
+  },
+
+  '/admin/console/referrals/countries': {
+    get: {
+      tags: [TAG],
+      summary: 'Countries and continents reached, by full name (Countries Reached drill-down)',
+      description: 'Same rule as `totals.countries` / `totals.continents` on the analytics call, so `countries.length` and `continents.length` equal those tiles. Each sorted by signups, most first.',
+      responses: {
+        200: json('Reach.', object({
+          countries: arrayOf(object({
+            code: { type: 'string', example: 'GH' },
+            name: { type: 'string', example: 'Ghana' },
+            continent: { type: 'string', nullable: true, example: 'Africa' },
+            signups: { type: 'integer', example: 40 },
+          })),
+          continents: arrayOf(object({
+            name: { type: 'string', example: 'Africa' },
+            countries: { type: 'integer', example: 6 },
+            signups: { type: 'integer', example: 70 },
+          })),
+        })),
+        ...adminErrors,
+      },
+    },
+  },
+
   '/admin/console/customers': {
     get: {
       tags: [TAG],
@@ -465,6 +533,7 @@ export const adminPaths = {
       ].join('\n'),
       parameters: [
         param('q', 'query', { type: 'string', maxLength: 200 }, 'Matches name or email.'),
+        param('referred', 'query', { type: 'string', enum: ['successful'] }, 'Only customers who joined through a referral link and verified their email — the referrals screen\'s Total Successful Signups. `total` then equals that tile; `stats` stays whole-base.'),
         ...pagingParams,
       ],
       responses: {

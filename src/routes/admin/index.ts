@@ -91,6 +91,8 @@ router.post('/reports/:id/unblacklist-group', wrapHttp(adminController.unblackli
 // token-guarded /admin/referrals surface.
 router.get('/referrals/analytics', wrapHttp(adminController.referralAnalytics));
 router.get('/referrals/travellers', wrapHttp(adminController.referralTravellers));
+router.get('/referrals/list', wrapHttp(adminController.referralList));
+router.get('/referrals/countries', wrapHttp(adminController.referralCountries));
 
 // ── Restock requests ──────────────────────────────────────────────────────────
 // "Request Restock" presses from the shop. Marking one fulfilled changes nothing

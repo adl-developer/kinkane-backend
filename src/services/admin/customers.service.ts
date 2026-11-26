@@ -14,6 +14,8 @@ import { ACTIVE_CUSTOMER_WINDOW_DAYS, countsAsCustomer } from './dashboard.servi
 
 export interface AdminCustomerQuery {
   q?: string;
+  /** 'successful': only people who joined through a referral link and verified — the referrals screen's Successful Signups. */
+  referred?: 'successful';
   limit: number;
   offset: number;
 }
@@ -48,6 +50,12 @@ export const adminCustomersService = {
       // of acting as a wildcard.
       const like = likeContains(query.q);
       conditions.push(or(ilike(users.name, like), ilike(users.email, like))!);
+    }
+    if (query.referred === 'successful') {
+      conditions.push(sql`exists (
+        select 1 from referrals r
+        where r.referred_user_id = ${customerId} and r.status = 'active' and r.credited_at is not null
+      )`);
     }
     const where = and(...conditions);
 

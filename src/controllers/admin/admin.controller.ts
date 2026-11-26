@@ -61,6 +61,11 @@ const shippingMarginQuerySchema = z.object({
 
 const customersQuerySchema = pageSchema.extend({
   q: z.string().trim().min(1).max(200).optional(),
+  referred: z.enum(['successful']).optional(),
+});
+
+const referralListQuerySchema = pageSchema.extend({
+  q: z.string().trim().min(1).max(200).optional(),
 });
 
 const travellersQuerySchema = pageSchema.extend({
@@ -267,6 +272,18 @@ export const adminController = {
     const parsed = travellersQuerySchema.safeParse(req.query);
     if (!parsed.success) return badRequest(res, parsed.error);
     res.status(200).json(await adminReferralsService.travellers(parsed.data));
+  },
+
+  /** GET /admin/console/referrals/list — one row per referral: sender, receiver, countries, sign-up date. */
+  async referralList(req: Request, res: Response): Promise<void> {
+    const parsed = referralListQuerySchema.safeParse(req.query);
+    if (!parsed.success) return badRequest(res, parsed.error);
+    res.status(200).json(await adminReferralsService.referrals(parsed.data));
+  },
+
+  /** GET /admin/console/referrals/countries — countries and continents reached, by full name. */
+  async referralCountries(_req: Request, res: Response): Promise<void> {
+    res.status(200).json(await adminReferralsService.reach());
   },
 
   /** GET /admin/orders/export */

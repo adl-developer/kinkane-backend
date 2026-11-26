@@ -293,4 +293,48 @@ describeIfDb('admin referral analytics and Travellers', () => {
     expect(last.cumulativeSuccessful).toBe(totals.successful);
     expect(weekly.every((w) => w.successful <= w.converted)).toBe(true);
   });
+
+  it('lists each referral with sender, receiver and both countries by full name', async () => {
+    const { referrals, total } = await service.referrals({ q: EMAIL_PREFIX, limit: 100, offset: 0 });
+
+    // Voided Efua → Yaw excluded; unverified Dede included.
+    expect(total).toBe(3);
+    const byReceiver = Object.fromEntries(referrals.map((r) => [r.receiver.name.split(' ')[0], r]));
+    expect(Object.keys(byReceiver).sort()).toEqual(['Bayo', 'Claire', 'Dede']);
+    expect(byReceiver.Claire).toMatchObject({
+      verified: true,
+      sender: { id: ids.bayo, name: 'Bayo Adeyemi', countryCode: 'NG', country: 'Nigeria' },
+      receiver: { id: ids.claire, countryCode: 'FR', country: 'France' },
+    });
+    expect(byReceiver.Dede.verified).toBe(false);
+    // Newest first: Dede signed up in 2020.
+    expect(referrals[referrals.length - 1].receiver.id).toBe(ids.dede);
+  });
+
+  it('finds a referral by either side', async () => {
+    const { referrals } = await service.referrals({ q: 'Claire Martin', limit: 20, offset: 0 });
+    expect(referrals.map((r) => r.receiver.id)).toEqual([ids.claire]);
+  });
+
+  it('names every country and continent the tiles count', async () => {
+    const [{ totals }, reach] = await Promise.all([service.analytics(), service.reach()]);
+
+    expect(reach.countries).toHaveLength(totals.countries);
+    expect(reach.continents).toHaveLength(totals.continents);
+    expect(reach.countries.map((c) => c.name)).toEqual(expect.arrayContaining(['Ghana', 'Nigeria', 'France']));
+    expect(reach.continents.map((c) => c.name)).toEqual(expect.arrayContaining(['Africa', 'Europe']));
+  });
+
+  it('filters Customers to verified referral signups, matching the Successful tile', async () => {
+    const { adminCustomersService } = await import('../services/admin/customers.service');
+    const { customers } = await adminCustomersService.list({ q: EMAIL_PREFIX, referred: 'successful', limit: 50, offset: 0 });
+    // Bayo and Claire verified; Dede unverified, Yaw voided.
+    expect(customers.map((c) => c.id).sort()).toEqual([ids.bayo, ids.claire].sort());
+
+    const [{ totals }, all] = await Promise.all([
+      service.analytics(),
+      adminCustomersService.list({ referred: 'successful', limit: 1, offset: 0 }),
+    ]);
+    expect(all.total).toBe(totals.successful);
+  });
 });

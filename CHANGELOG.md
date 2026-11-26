@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-11-26
+
+### Bug Fixes
+
+* never show referral Sent below signups ([a461c52](https://adl.github.com/adl-developer/kinkane-backend/commit/a461c527414c7436b86b07acd0aa35ae503010e9)) — [details](changelog/2026-11-26-admin-referral-tile-drilldowns.md)
+
+
 ## 2026-11-25
 
 ### Features
