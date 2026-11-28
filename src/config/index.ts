@@ -29,6 +29,9 @@ const envSchema = z.object({
     .transform((v) => (v === undefined ? undefined : v === 'true')),
 
   DATABASE_URL: z.string().url(),
+  // Caps every statement on the app's pool; 0 disables. Without it, slow searches overlapped
+  // under load and ran for 3–6 minutes each, pinning the DB CPU (2026-11-27).
+  DATABASE_STATEMENT_TIMEOUT_MS: z.coerce.number().int().min(0).default(30000),
   REDIS_URL: z.string().url(),
 
   JWT_ACCESS_SECRET: z.string().min(32),
@@ -870,6 +873,7 @@ export const config = {
   logRequestPayloads: env.LOG_REQUEST_PAYLOADS ?? env.NODE_ENV === 'development',
   database: {
     url: env.DATABASE_URL,
+    statementTimeoutMs: env.DATABASE_STATEMENT_TIMEOUT_MS,
   },
   redis: {
     url: env.REDIS_URL,

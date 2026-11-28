@@ -11,6 +11,9 @@ import { onNotice } from './notices';
 const client = postgres(config.database.url, {
   ssl: resolveSslMode(config.database.url),
   onnotice: onNotice,
+  // Sent as a startup parameter, so every pooled connection carries it. SET LOCAL still
+  // overrides it per transaction (see withStatementTimeout in books.service.ts).
+  connection: { statement_timeout: config.database.statementTimeoutMs },
 });
 
 export const db = drizzle(client, { schema });

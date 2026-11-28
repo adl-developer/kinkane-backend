@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-11-28
+
+### Bug Fixes
+
+* stop slow database queries from running for minutes and overloading the database ([d5d6a7b](https://adl.github.com/adl-developer/kinkane-backend/commit/d5d6a7b072c5698f5af81fed36afd09a2e260eca)) — [details](changelog/2026-11-28-database-queries-time-out.md)
+
+
 ## 2026-11-26
 
 ### Features
@@ -9,6 +16,7 @@
 
 ### Bug Fixes
 
+* show admin Travellers' Sent as at least their signups ([89de1b3](https://adl.github.com/adl-developer/kinkane-backend/commit/89de1b394e3579d22b1bdd911f47f565ac20af77)) — [details](changelog/2026-11-26-admin-referral-tile-drilldowns.md)
 * never show referral Sent below signups ([a461c52](https://adl.github.com/adl-developer/kinkane-backend/commit/a461c527414c7436b86b07acd0aa35ae503010e9)) — [details](changelog/2026-11-26-admin-referral-tile-drilldowns.md)
 
 
