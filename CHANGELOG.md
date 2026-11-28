@@ -9,6 +9,7 @@
 
 ### Bug Fixes
 
+* show admin Travellers' Sent as at least their signups ([89de1b3](https://adl.github.com/adl-developer/kinkane-backend/commit/89de1b394e3579d22b1bdd911f47f565ac20af77)) — [details](changelog/2026-11-26-admin-referral-tile-drilldowns.md)
 * never show referral Sent below signups ([a461c52](https://adl.github.com/adl-developer/kinkane-backend/commit/a461c527414c7436b86b07acd0aa35ae503010e9)) — [details](changelog/2026-11-26-admin-referral-tile-drilldowns.md)
 
 
