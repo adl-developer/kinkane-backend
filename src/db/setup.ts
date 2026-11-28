@@ -103,6 +103,15 @@ async function main() {
   await sql`DROP INDEX CONCURRENTLY IF EXISTS idx_book_contributors_person_name_trgm`;
   await sql`DROP INDEX CONCURRENTLY IF EXISTS idx_book_contributors_author_name_trgm`;
 
+  // The other half of author search's fuzzy arm: `q <% name OR to_tsvector('simple', name)
+  // @@ …`. The trigram index above serves only the left side, and Postgres can't use an
+  // index for one side of an OR, so without this every fuzzy search read all ~3M
+  // contributor rows (3–4s on prod, 2026-11-27). With both sides indexed it plans a
+  // BitmapOr of the two. Same expression and same exact-match rule as the trigram index.
+  await sql.unsafe(
+    `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_book_contributors_norm_name_tsv ON book_contributors USING GIN (to_tsvector('simple', ${NORMALISED_PERSON_NAME}))`,
+  );
+
   // The author-name counterpart of idx_books_title_lower_pattern above, and it exists
   // for the same reason: the trigram index serves ILIKE, but for a common name fragment
   // ("jo", "sm") it becomes a poor filter and Postgres falls back to rechecking a large

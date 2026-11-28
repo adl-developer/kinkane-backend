@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 2026-11-28
+
+### Bug Fixes
+
+* stop slow database queries from running for minutes and overloading the database ([d5d6a7b](https://adl.github.com/adl-developer/kinkane-backend/commit/d5d6a7b072c5698f5af81fed36afd09a2e260eca)) — [details](changelog/2026-11-28-database-queries-time-out.md)
+
+
 ## 2026-11-26
 
 ### Features
